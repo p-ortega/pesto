@@ -196,3 +196,87 @@ def test_two_launches_do_not_share_a_token():
 
     assert client_a.get("/api/health", params={"token": token_b}).status_code == 401
     assert client_b.get("/api/health", params={"token": token_a}).status_code == 401
+
+
+def test_a_query_param_token_is_handed_off_to_a_cookie():
+    app, token = create_app()
+    response = _client(app).get("/api/health", params={"token": token})
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "pesto_token=" in set_cookie
+    assert "httponly" in set_cookie.lower()
+    assert "samesite=strict" in set_cookie.lower()
+    assert "path=/" in set_cookie.lower()
+
+
+def test_a_cookie_alone_authenticates_a_later_request():
+    app, token = create_app()
+    client = _client(app)
+    first = client.get("/api/health", params={"token": token})
+    assert first.status_code == 200
+
+    # The client's cookie jar now carries the handed-off cookie; a follow-up
+    # request with no query token and no header authenticates via the cookie.
+    second = client.get("/api/health")
+    assert second.status_code == 200
+
+
+def test_a_bad_cookie_is_refused():
+    app, _token = create_app()
+    client = _client(app)
+    client.cookies.set("pesto_token", "definitely-wrong")
+    response = client.get("/api/health")
+    assert response.status_code == 401
+    assert "set-cookie" not in response.headers
+
+
+def test_no_referrer_policy_on_every_response():
+    app, token = create_app()
+    client = _client(app)
+
+    ok = client.get("/api/health", params={"token": token})
+    assert ok.headers.get("referrer-policy") == "no-referrer"
+
+    unauthorized = client.get("/api/health")
+    assert unauthorized.headers.get("referrer-policy") == "no-referrer"
+
+    bad_host = client.get(
+        "/api/health",
+        params={"token": token},
+        headers={"host": "evil.example.com"},
+    )
+    assert bad_host.headers.get("referrer-policy") == "no-referrer"
+
+
+def test_every_registered_route_refuses_a_tokenless_request():
+    app, _token = create_app()
+    client = _client(app)
+
+    routes = [
+        route
+        for route in app.routes
+        if hasattr(route, "path") and hasattr(route, "methods")
+    ]
+    assert routes, "route table is empty -- this invariant must not pass vacuously"
+
+    checked_paths = set()
+    for route in routes:
+        for method in route.methods:
+            if method in ("HEAD", "OPTIONS"):
+                continue
+            response = client.request(method, route.path)
+            assert response.status_code == 401, f"{method} {route.path} answered without a token"
+            checked_paths.add(route.path)
+
+    assert "/api/health" in checked_paths
+
+
+def test_two_concurrent_apps_refuse_each_others_tokens():
+    app_a, token_a = create_app()
+    app_b, token_b = create_app()
+
+    client_a = _client(app_a)
+    client_b = _client(app_b)
+
+    assert client_a.get("/api/health", params={"token": token_b}).status_code == 401
+    assert client_b.get("/api/health", params={"token": token_a}).status_code == 401
