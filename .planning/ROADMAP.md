@@ -65,7 +65,7 @@ stale.
 
   4. Touching a source file marks only the artifacts derived from it as stale (by size, mtime and
      checksum), and bumping `CACHE_VERSION` marks everything stale.
-**Plans**: 1/5 plans executed
+**Plans**: 2/5 plans executed
 
 Plans:
 **Wave 1**
@@ -74,7 +74,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — Tracer: `pesto` serves a token-gated `/api/health` on a free loopback port, imports deferred
+- [x] 01-02-PLAN.md — Tracer: `pesto` serves a token-gated `/api/health` on a free loopback port, imports deferred
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -328,7 +328,7 @@ it now would be guessing. Full detail in REQUIREMENTS.md § Future Milestones.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Launcher, Server and Cache Foundation | 1/5 | In Progress|  |
+| 1. Launcher, Server and Cache Foundation | 2/5 | In Progress|  |
 | 2. Reading a PEST++ Run | 0/TBD | Not started | - |
 | 3. The Grid and Parameters on Cells | 0/TBD | Not started | - |
 | 4. Ingest into the Cache | 0/TBD | Not started | - |
