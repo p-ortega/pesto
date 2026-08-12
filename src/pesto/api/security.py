@@ -2,8 +2,9 @@
 
 The session token is minted once per process and is immutable for that
 process's lifetime, so every request handled by this process compares
-against the same value, and two pesto processes running at the same time
-hold distinct tokens on distinct ports.
+against the same value, concurrent requests all compare against that one
+value, and two pesto processes running at the same time hold distinct
+tokens on distinct ports and each refuses the other's token with 401.
 
 This is a single piece of middleware, not two gates bolted together: the
 Host check runs first and refuses a foreign hostname with 400 before the
@@ -17,6 +18,13 @@ Do not reach for the framework's bundled host-allowlist middleware here: it
 has a documented port-handling defect (Kludex/starlette #1997/#1998), and
 pesto's own port changes every launch, so a fixed allowlist is the wrong
 shape regardless.
+
+The URL token authenticates the first request only (D-03, following the
+Jupyter model): once a request is authenticated purely by the query
+parameter, the response hands the caller a `pesto_token` cookie, and that
+cookie carries the session afterwards. `Referrer-Policy: no-referrer` is set
+on every response, success and refusal alike, so a token that did travel in
+a URL cannot ride a `Referer` header to a third-party origin.
 """
 
 from __future__ import annotations
@@ -25,13 +33,15 @@ import hmac
 import secrets
 
 from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 TOKEN_QUERY_PARAM = "token"
 TOKEN_HEADER = "x-pesto-token"
 TOKEN_COOKIE = "pesto_token"
+
+_REFERRER_POLICY = "no-referrer"
 
 
 def mint_token() -> str:
@@ -63,6 +73,16 @@ def _supplied_token(request: Request) -> str:
     return request.cookies.get(TOKEN_COOKIE, "")
 
 
+def _problem_response(status_code: int, title: str) -> JSONResponse:
+    response = JSONResponse(
+        {"type": "about:blank", "title": title, "status": status_code},
+        status_code=status_code,
+        media_type="application/problem+json",
+    )
+    response.headers["Referrer-Policy"] = _REFERRER_POLICY
+    return response
+
+
 def install_security(app: FastAPI, token: str) -> None:
     """Register the one HTTP middleware guard every route passes through."""
 
@@ -70,18 +90,30 @@ def install_security(app: FastAPI, token: str) -> None:
     async def _guard(request: Request, call_next):
         host = request.headers.get("host", "")
         if _hostname_only(host) not in LOCAL_HOSTNAMES:
-            return JSONResponse(
-                {"type": "about:blank", "title": "invalid host", "status": 400},
-                status_code=400,
-                media_type="application/problem+json",
-            )
+            return _problem_response(400, "invalid host")
 
-        supplied = _supplied_token(request)
+        query_token = request.query_params.get(TOKEN_QUERY_PARAM)
+        header_token = request.headers.get(TOKEN_HEADER)
+        cookie_token = request.cookies.get(TOKEN_COOKIE, "")
+        supplied = query_token or header_token or cookie_token
+
         if not hmac.compare_digest(supplied, token):
-            return JSONResponse(
-                {"type": "about:blank", "title": "invalid or missing token", "status": 401},
-                status_code=401,
-                media_type="application/problem+json",
+            return _problem_response(401, "invalid or missing token")
+
+        response: Response = await call_next(request)
+        response.headers["Referrer-Policy"] = _REFERRER_POLICY
+
+        # Only the very first, query-authenticated request gets a cookie
+        # handoff -- a request already carrying a header or cookie token
+        # needs no new one.
+        if query_token and not header_token and not cookie_token:
+            response.set_cookie(
+                TOKEN_COOKIE,
+                token,
+                httponly=True,
+                samesite="strict",
+                path="/",
+                secure=False,
             )
 
-        return await call_next(request)
+        return response
