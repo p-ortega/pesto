@@ -32,6 +32,7 @@ detail: `.planning/INGEST-CONFLICTS.md`, summarised in PROJECT.md § Open Decisi
 ## Phases
 
 **Phase Numbering:**
+
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
@@ -45,28 +46,46 @@ detail: `.planning/INGEST-CONFLICTS.md`, summarised in PROJECT.md § Open Decisi
 ## Phase Details
 
 ### Phase 1: Launcher, Server and Cache Foundation
+
 **Goal**: pesto starts from the command line, opens a browser window on a free loopback port before
 any heavy library has finished importing, and knows where each run's cache lives and whether it is
 stale.
 **Depends on**: Nothing (first phase)
 **Requirements**: LAUNCH-01, LAUNCH-02, LAUNCH-03, LAUNCH-04
 **Success Criteria** (what must be TRUE):
+
   1. User runs pesto and a browser window appears in about 150 ms — verifiably before pyemu and
      flopy have imported, because nothing at module load touches them and the imports happen on a
      background thread started once the port is bound.
+
   2. The server accepts connections on `127.0.0.1` and refuses them from any other address.
   3. Opening a run directory produces a cache root at `.pesto/` inside it, or a stable path under
      `~/.cache/pesto/` when that directory is read-only, on a network share or short on space; an
      explicit override wins over both.
+
   4. Touching a source file marks only the artifacts derived from it as stale (by size, mtime and
      checksum), and bumping `CACHE_VERSION` marks everything stale.
 **Plans**: 5 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 01-01-PLAN.md — Package legitimacy gate: confirm the eleven PyPI dependencies before any install
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 01-02-PLAN.md — Tracer: `pesto` serves a token-gated `/api/health` on a free loopback port, imports deferred
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 01-03-PLAN.md — Cache root by probe with user-cache fallback, the cache layout, and the `.gitignore` line
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 01-04-PLAN.md — Checksummed fingerprints, cheap-then-expensive staleness, atomic manifest
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 01-05-PLAN.md — Human check: the browser opens, opens fast, and the printed URL works
 
 **Open Decisions**: **OPEN-05 — RESOLVED during Phase 1 planning by CONTEXT.md D-01/D-02: the token is
@@ -83,21 +102,27 @@ request-side enforcement lands in Phase 5.
 it is the natural home — otherwise it moves to M4.
 
 ### Phase 2: Reading a PEST++ Run
+
 **Goal**: Pointed at a real pestpp-ies working directory, pesto reads it and says what is in it —
 whatever shape the files happen to be in, and whatever the run's `NOPTMAX` was.
 **Depends on**: Phase 1
 **Requirements**: READ-01, READ-02, READ-03, READ-04, READ-05
 **Success Criteria** (what must be TRUE):
+
   1. The same ensemble expressed as `.csv`, `.jcb` and dense `.bin`, realization-major or
      variable-major, hash-ordered or control-file-ordered, reads to identical realization-major
      float32 values.
+
   2. Pointed at a run directory, pesto lists the control file, per-iteration parameter and
      observation ensembles, phi files and grid file it found, and names anything it could not read
      instead of skipping it silently.
+
   3. A run whose survivors are named `['base','34','35','176',...]` reports those names in that
      order — row 1 is realization `34`, not `1`.
+
   4. Parameter and observation tables carry group, bounds and `partrans`, including for `PstFrom`
      control files that reference external parameter data.
+
   5. A `NOPTMAX <= 0` run — single evaluation, prior Monte Carlo, forecast directory — opens without
      the caller special-casing it.
 **Plans**: TBD
@@ -107,21 +132,26 @@ not revisit discovery. The forbidden pyemu APIs constraint bites hardest here: u
 `get_dense_binary_info` and `read_dense(only_rows=...)` for selective reads.
 
 ### Phase 3: The Grid and Parameters on Cells
+
 **Goal**: A MODFLOW 6 grid file becomes buffers the graphics card can use directly, and every
 parameter group either resolves to a layer and cell or is honestly marked as unplaceable — with all
 MODFLOW knowledge behind one boundary.
 **Depends on**: Phase 2
 **Requirements**: GRID-01, GRID-02, GRID-03, GRID-04, GRID-05
 **Success Criteria** (what must be TRUE):
+
   1. A DIS or DISV grid file yields `positions` float32 `(n_vert, 2)`, `cell_index` float32
      `(n_vert,)`, `indices` uint32 `(n_tri * 3,)`, plus layer count, bounds, `idomain` and CRS —
      with vertices unshared so each one knows its cell, and 4-to-7-sided polygons fanned into
      triangles.
+
   2. For each parameter group, pesto reports which resolution rule placed it — `kij`, `idx-triple`,
      `idx-pair`, `ij-name-layer` or `ij-single-layer` — including the benchmark case of `i`, `j`,
      `idx0`, `idx1`, `idx2` present but **no** `k`.
+
   3. A group nothing matched is marked `-1` (never `0`); the map draws the grid with nothing plotted
      on it, every other view still works, and pesto states this once rather than repeatedly.
+
   4. Buffers are produced in model coordinates and nothing reprojects the mesh.
   5. A run with no grid file, or a grid with no CRS, is handled as a normal state — no map, or model
      coordinates without a scale bar — not as an error.
@@ -139,21 +169,27 @@ structured rows and columns, so a DISV model can be `PstFrom`-built and still ar
 cell information. That path is a designed state, not a bug.
 
 ### Phase 4: Ingest into the Cache
+
 **Goal**: A whole run turns into a compact float32 cache — ensembles, realization index, summaries —
 written artifact by artifact so one malformed file costs one artifact, with progress reported as
 real figures while it happens.
 **Depends on**: Phase 3
 **Requirements**: INGEST-01, INGEST-02, INGEST-03, INGEST-04, INGEST-05
 **Success Criteria** (what must be TRUE):
+
   1. Ingesting a benchmark run writes the first and last iteration's parameter ensembles as float32
      under the documented cache layout, with a manifest recording each source file's size, mtime and
      checksum.
+
   2. Each iteration's realization names are recorded in file order, so a later comparison between
      iteration 0 and iteration N can join by name rather than row position.
+
   3. Per-parameter summaries — mean, std, min, max, q05/q25/q50/q75/q95, `n_valid`, at-bounds
      fraction — exist for every ingested iteration.
+
   4. A deliberately malformed ensemble file fails its own artifact and its own worker process; the
      rest of the run still ingests and the failure is reported by artifact name and reason.
+
   5. While ingest runs, the caller sees per-artifact rows with real sizes and timings, and re-running
      ingest on an unchanged directory re-reads nothing.
 **Plans**: TBD
@@ -172,6 +208,7 @@ the process pool buys fault isolation, not throughput. The sources disagree on t
 gives process-level isolation.
 
 ### Phase 5: Serving and Drawing the Map
+
 **Goal**: The user opens pesto, browses to a run directory, watches it ingest, and then drags layer
 and realization sliders over a parameter field drawn on the graphics card that answers instantly —
 with the colour, scale and theme controls the visual contract puts in M0.
@@ -179,17 +216,22 @@ with the colour, scale and theme controls the visual contract puts in M0.
 **Requirements**: SERVE-01, SERVE-02, SERVE-03, MAP-01, MAP-02, MAP-03, MAP-04, MAP-05, MAP-06,
 MAP-07, MAP-08, MAP-09, MAP-10, MAP-11, MAP-12
 **Success Criteria** (what must be TRUE):
+
   1. User browses the filesystem from inside the app and picks a run directory; the picker runs
      server-side, so the browser never learns a path it was not handed.
+
   2. User sees the model grid drawn on the graphics card coloured by a chosen parameter group's
      field, and dragging the layer or realization slider — or switching between a single
      realization's values and a statistic across realizations — redraws without a visible wait.
+
   3. User can pick any of the nine colormaps, reverse any of them, and switch the value scale
      between linear and log10 defaulted from the parameter's own `partrans`, with robust 2-98%
      limits by default.
+
   4. User clicks a cell and sees its value; the selected cell is marked with a ring, inactive cells
      are drawn as a hairline outline and nothing else, and the Dark/Light/System theme applies to
      chrome and canvas alike using only the visual contract's tokens.
+
   5. Every state the user can reach is a designed state that names what is missing and why —
      choosing a directory, ingesting, no grid file, no projection, no cell mapping, an artifact
      failed, no WebGL2 — and a graphics context lost to laptop sleep is re-established and
@@ -216,21 +258,27 @@ must be themed rather than the hardcoded `gl.clearColor(0.09, 0.09, 0.11, 1)`. A
 (a single realization's field), which the design spec's enum lacks.
 
 ### Phase 6: Measuring M0 Against Its Budgets
+
 **Goal**: M0 is measured on the real benchmark runs, and the numbers — not an opinion — decide
 whether M1 proceeds as designed or the design changes first.
 **Depends on**: Phase 5
 **Requirements**: REQ-m0-exit-criteria-v1, REQ-m0-exit-criteria-v2
 **Success Criteria** (what must be TRUE):
+
   1. Opening a benchmark run that has already been ingested completes in 1.5 s or less. *(Agreed by
      both exit variants.)*
+
   2. The `grid/values` request the map makes on every slider move has a p95 of 100 ms or less.
      *(Agreed by both exit variants.)*
+
   3. The cache is no more than 1.5x the size of the source files it was built from. *(Agreed by both
      exit variants.)*
+
   4. Ingest cost and rendering responsiveness are measured on both benchmark runs
      (`forecast_20250618105403`, DISV `nlay 38 ncpl 9902`, dense 494 x 117407, 2,167,174 obs; and
      `hm_20250406221554`, DISV `nlay 36 ncpl 17726`, JCB 500 x 141163) with disk time and processing
      time recorded separately — and judged against whichever exit variant OPEN-01 selects.
+
   5. The measured results are written up (to `docs/superpowers/plans/m0-results.md`, which is
      **not** committed because `docs/` is gitignored) and M1 is either green-lit or the design
      changes before it begins.
@@ -259,14 +307,17 @@ it now would be guessing. Full detail in REQUIREMENTS.md § Future Milestones.
   contract: section view, overlays, local-image basemap, discrete colour classes, symmetric scaling,
   texture fill. Also absorbs two gaps knowingly carried out of M0 — caching the parameter-to-cell
   resolve, and replacing `MeshLayer.pickAtWorld`'s linear triangle scan.
+
 - 📋 **M2 — phi and the derived diagnostics.** All six phi histories and the phi view; brushing
   realizations to recolour the map; spread shrinkage, at-bounds counts, prior distance, RMSE and
   mean error by group; PDC and PCS read from pestpp's own files; which realizations were dropped,
   when and why. Plus tile-service basemaps and pyemu-snippet export.
+
 - 📋 **M3 — linked runs.** Opening a workspace of several directories; declaring what each run is;
   verifying the realization join by parameter hash and reporting the result honestly; selection
   propagation across runs; filtering a forecast ensemble by history-matching survival or phi
   threshold.
+
 - 📋 **M4 — packaging and rough edges.** Double-clickable app with an icon; chunked CSV reader;
   iteration-selection UI with size and time estimates; configurable cache location and read-only
   fallback; confirming the no-CRS and no-cell-information paths behave as described.
