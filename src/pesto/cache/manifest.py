@@ -18,9 +18,14 @@ this week's.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+import os
+import tempfile
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
+
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
 
 ArtifactState = Literal["ok", "missing", "failed", "not_ingested"]
 
@@ -99,3 +104,143 @@ class SourceFingerprint:
         except OSError:
             return False
         return digest == self.checksum
+
+
+@dataclass
+class Artifact:
+    """One independently readable piece of a run's cache.
+
+    Keeping the failure reason is what lets a later phase report a failure
+    by artifact name and cause instead of a silent absence.
+    """
+
+    name: str
+    state: ArtifactState
+    reason: str | None = None
+    sources: list[SourceFingerprint] = field(default_factory=list)
+
+
+def _write_atomic(target: Path, payload: str) -> None:
+    """Write ``payload`` to ``target`` so a concurrent reader never observes
+    a half-written file.
+
+    A temporary file is created in ``target``'s own directory -- keeping the
+    final swap on one filesystem -- flushed and fsynced, then swapped into
+    place with ``os.replace``, which is atomic on both POSIX and Windows. A
+    reader therefore always sees either the whole previous manifest or the
+    whole new one, never something in between. The temporary file is
+    removed in a ``finally`` if the replace did not happen, so a failed save
+    leaves no litter behind in the cache root.
+    """
+    directory = target.parent
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", dir=directory, prefix=".manifest-", suffix=".tmp", delete=False
+    )
+    tmp_path = Path(tmp.name)
+    replaced = False
+    try:
+        tmp.write(payload)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp_path, target)
+        replaced = True
+    finally:
+        if not replaced and tmp_path.exists():
+            tmp_path.unlink()
+
+
+@dataclass
+class Manifest:
+    """A run's cache state: which artifacts exist, what sources they were
+    built from, and whether each one is still fresh.
+
+    A manifest that is absent, unreadable, not valid JSON, or built at a
+    different ``CACHE_VERSION`` yields no artifacts at all -- so every
+    artifact reports stale. Per D-08 a ``CACHE_VERSION`` bump is a hard
+    reset that outranks size, mtime and checksum alike.
+    """
+
+    cache_version: int
+    run_dir: str
+    artifacts: dict[str, Artifact] = field(default_factory=dict)
+
+    @classmethod
+    def empty(cls, run_dir: str) -> "Manifest":
+        return cls(cache_version=CACHE_VERSION, run_dir=str(run_dir))
+
+    def mark_ok(self, name: str, sources: list[SourceFingerprint]) -> None:
+        self.artifacts[name] = Artifact(
+            name=name, state="ok", reason=None, sources=list(sources)
+        )
+
+    def mark_failed(self, name: str, reason: str) -> None:
+        self.artifacts[name] = Artifact(name=name, state="failed", reason=reason, sources=[])
+
+    def mark_missing(self, name: str, reason: str) -> None:
+        self.artifacts[name] = Artifact(name=name, state="missing", reason=reason, sources=[])
+
+    def is_stale(self, name: str) -> bool:
+        """An artifact that was never ingested, or whose recorded state is
+        anything other than ``ok``, reports stale. An ``ok`` artifact is
+        stale only when at least one of its recorded sources no longer
+        matches."""
+        artifact = self.artifacts.get(name)
+        if artifact is None or artifact.state != "ok":
+            return True
+        return not all(source.matches(Path(self.run_dir)) for source in artifact.sources)
+
+    def save(self, layout: CacheLayout) -> None:
+        layout.ensure()
+        payload = json.dumps(
+            {
+                "cache_version": self.cache_version,
+                "run_dir": self.run_dir,
+                "artifacts": {
+                    name: asdict(artifact) for name, artifact in self.artifacts.items()
+                },
+            },
+            indent=2,
+        )
+        _write_atomic(layout.manifest, payload)
+
+    @classmethod
+    def load(cls, layout: CacheLayout) -> "Manifest":
+        """Load the manifest at ``layout.manifest``.
+
+        Every failure mode -- absent, unreadable, not valid JSON, an
+        unexpected ``cache_version``, or an artifact entry missing a
+        required field (e.g. ``checksum``, from a manifest written by an
+        earlier build) -- resolves to an empty manifest rather than raising.
+        A parse failure must never produce a partially populated manifest
+        that reports something fresh.
+        """
+        try:
+            data = json.loads(layout.manifest.read_text())
+        except (OSError, json.JSONDecodeError):
+            return cls(cache_version=CACHE_VERSION, run_dir="")
+
+        if data.get("cache_version") != CACHE_VERSION:
+            # D-08: a version bump is a hard invalidation, outranking size,
+            # mtime and checksum alike -- no artifacts survive it.
+            return cls(cache_version=CACHE_VERSION, run_dir=data.get("run_dir", ""))
+
+        try:
+            artifacts: dict[str, Artifact] = {}
+            for name, artifact_data in data.get("artifacts", {}).items():
+                fields_copy = dict(artifact_data)
+                fields_copy["sources"] = [
+                    SourceFingerprint(**s) for s in artifact_data.get("sources", [])
+                ]
+                artifacts[name] = Artifact(**fields_copy)
+        except (KeyError, TypeError):
+            # A malformed or outdated entry (e.g. a fingerprint missing the
+            # checksum key) is treated as unreadable: one re-ingest is the
+            # cost, a crash on open is the alternative.
+            return cls(cache_version=CACHE_VERSION, run_dir="")
+
+        return cls(
+            cache_version=CACHE_VERSION,
+            run_dir=data.get("run_dir", ""),
+            artifacts=artifacts,
+        )
