@@ -65,12 +65,12 @@ stale.
 
   4. Touching a source file marks only the artifacts derived from it as stale (by size, mtime and
      checksum), and bumping `CACHE_VERSION` marks everything stale.
-**Plans**: 5 plans
+**Plans**: 1/5 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Package legitimacy gate: confirm the eleven PyPI dependencies before any install
+- [x] 01-01-PLAN.md — Package legitimacy gate: confirm the eleven PyPI dependencies before any install
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -328,7 +328,7 @@ it now would be guessing. Full detail in REQUIREMENTS.md § Future Milestones.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Launcher, Server and Cache Foundation | 0/5 | Planned | - |
+| 1. Launcher, Server and Cache Foundation | 1/5 | In Progress|  |
 | 2. Reading a PEST++ Run | 0/TBD | Not started | - |
 | 3. The Grid and Parameters on Cells | 0/TBD | Not started | - |
 | 4. Ingest into the Cache | 0/TBD | Not started | - |
