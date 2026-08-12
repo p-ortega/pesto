@@ -23,7 +23,7 @@ detail: `.planning/INGEST-CONFLICTS.md`, summarised in PROJECT.md § Open Decisi
 
 | ID | Resolve during | Subject |
 |----|----------------|---------|
-| OPEN-05 | Phase 1 | Session token on the launcher URL |
+| OPEN-05 | Phase 1 | Session token on the launcher URL — **resolved** by CONTEXT.md D-01/D-02, built in Phase 1 |
 | OPEN-02 | Phase 3 | `SpatialAdapter` surface — where `locate_par` lives |
 | OPEN-03 | Phase 4 | Parameter ensemble storage orientation — per-group or per-file |
 | OPEN-04 | Phase 5 | Header configuration chips at M0, or deferred to M1 |
@@ -60,8 +60,18 @@ stale.
      explicit override wins over both.
   4. Touching a source file marks only the artifacts derived from it as stale (by size, mtime and
      checksum), and bumping `CACHE_VERSION` marks everything stale.
-**Plans**: TBD
-**Open Decisions**: **OPEN-05 — session token.** Design spec §2 requires the URL to carry a session
+**Plans**: 5 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Package legitimacy gate: confirm the eleven PyPI dependencies before any install
+- [ ] 01-02-PLAN.md — Tracer: `pesto` serves a token-gated `/api/health` on a free loopback port, imports deferred
+- [ ] 01-03-PLAN.md — Cache root by probe with user-cache fallback, the cache layout, and the `.gitignore` line
+- [ ] 01-04-PLAN.md — Checksummed fingerprints, cheap-then-expensive staleness, atomic manifest
+- [ ] 01-05-PLAN.md — Human check: the browser opens, opens fast, and the printed URL works
+
+**Open Decisions**: **OPEN-05 — RESOLVED during Phase 1 planning by CONTEXT.md D-01/D-02: the token is
+built now, in Phase 1, not deferred to M4.** Original text retained below for provenance.
+**OPEN-05 — session token.** Design spec §2 requires the URL to carry a session
 token so nothing is reachable "not from another machine, **not from another user on the same
 machine**". M0 plan Task 1 implements loopback binding and a random port but no token, and no
 document defers it to a later milestone. Resolve before planning: build token issuance and checking
@@ -267,7 +277,7 @@ it now would be guessing. Full detail in REQUIREMENTS.md § Future Milestones.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Launcher, Server and Cache Foundation | 0/TBD | Not started | - |
+| 1. Launcher, Server and Cache Foundation | 0/5 | Planned | - |
 | 2. Reading a PEST++ Run | 0/TBD | Not started | - |
 | 3. The Grid and Parameters on Cells | 0/TBD | Not started | - |
 | 4. Ingest into the Cache | 0/TBD | Not started | - |
