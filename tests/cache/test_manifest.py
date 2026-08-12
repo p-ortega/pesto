@@ -8,9 +8,11 @@ sample), plus per-artifact state and CACHE_VERSION invalidation (D-08).
 from __future__ import annotations
 
 import builtins
+import json
 import os
 
-from pesto.cache.manifest import SourceFingerprint
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
+from pesto.cache.manifest import Manifest, SourceFingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -152,3 +154,195 @@ def test_fingerprinting_does_not_modify_the_source(tmp_path):
     assert before_stat.st_mtime_ns == after_stat.st_mtime_ns
     assert before_stat.st_size == after_stat.st_size
     assert before_bytes == after_bytes
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Artifact state, atomic manifest persistence, CACHE_VERSION reset
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_artifact_is_stale(tmp_path):
+    manifest = Manifest.empty(str(tmp_path))
+
+    assert manifest.is_stale("par_0") is True
+
+
+def test_ok_artifact_is_not_stale_until_its_source_changes(tmp_path):
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"initial content")
+    fp = SourceFingerprint.of(source)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp])
+
+    assert manifest.is_stale("par_0") is False
+
+    source.write_bytes(b"changed content, different bytes")
+    new_mtime_ns = fp.mtime_ns + 1_000_000_000
+    os.utime(source, ns=(new_mtime_ns, new_mtime_ns))
+
+    assert manifest.is_stale("par_0") is True
+
+
+def test_failed_artifact_records_a_reason_and_stays_stale(tmp_path):
+    manifest = Manifest.empty(str(tmp_path))
+
+    manifest.mark_failed("par_2", "unexpected end of file")
+
+    artifact = manifest.artifacts["par_2"]
+    assert artifact.state == "failed"
+    assert artifact.reason is not None
+    assert "unexpected end of file" in artifact.reason
+    assert manifest.is_stale("par_2") is True
+
+
+def test_missing_artifact_records_a_reason_and_stays_stale(tmp_path):
+    manifest = Manifest.empty(str(tmp_path))
+
+    manifest.mark_missing("par_3", "source file not found")
+
+    artifact = manifest.artifacts["par_3"]
+    assert artifact.state == "missing"
+    assert artifact.reason is not None
+    assert "source file not found" in artifact.reason
+    assert manifest.is_stale("par_3") is True
+
+
+def test_only_the_affected_artifact_goes_stale(tmp_path):
+    source_a = tmp_path / "par_0.f32"
+    source_a.write_bytes(b"artifact a content")
+    source_b = tmp_path / "par_1.f32"
+    source_b.write_bytes(b"artifact b content")
+
+    fp_a = SourceFingerprint.of(source_a)
+    fp_b = SourceFingerprint.of(source_b)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp_a])
+    manifest.mark_ok("par_1", [fp_b])
+
+    source_a.write_bytes(b"artifact a CHANGED content")
+    new_mtime_ns = fp_a.mtime_ns + 1_000_000_000
+    os.utime(source_a, ns=(new_mtime_ns, new_mtime_ns))
+
+    assert manifest.is_stale("par_0") is True
+    assert manifest.is_stale("par_1") is False
+
+
+def test_round_trips_through_disk(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"ok artifact content")
+    fp = SourceFingerprint.of(source)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp])
+    manifest.mark_missing("par_1", "not found")
+    manifest.save(layout)
+
+    reloaded = Manifest.load(layout)
+
+    assert reloaded.cache_version == CACHE_VERSION
+    assert reloaded.artifacts["par_0"].state == "ok"
+    assert reloaded.artifacts["par_1"].state == "missing"
+    assert reloaded.is_stale("par_0") is False
+
+
+def test_the_checksum_survives_the_round_trip(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    source = tmp_path / "par_0.f32"
+    content = b"content that will be copied"
+    source.write_bytes(content)
+    fp = SourceFingerprint.of(source)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp])
+    manifest.save(layout)
+
+    reloaded = Manifest.load(layout)
+    reloaded_fp = reloaded.artifacts["par_0"].sources[0]
+
+    assert reloaded_fp.checksum == fp.checksum
+
+    # Copy with a rewritten mtime, identical content: still fresh through the
+    # reloaded manifest.
+    source.write_bytes(content)
+    new_mtime_ns = fp.mtime_ns + 5_000_000_000
+    os.utime(source, ns=(new_mtime_ns, new_mtime_ns))
+
+    assert reloaded.is_stale("par_0") is False
+
+
+def test_a_version_bump_invalidates_everything(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"content")
+    fp = SourceFingerprint.of(source)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp])
+    manifest.save(layout)
+
+    payload = json.loads(layout.manifest.read_text())
+    payload["cache_version"] = payload["cache_version"] + 1
+    layout.manifest.write_text(json.dumps(payload))
+
+    reloaded = Manifest.load(layout)
+
+    assert reloaded.artifacts == {}
+    assert reloaded.is_stale("par_0") is True
+
+
+def test_loading_a_missing_or_corrupt_manifest_gives_an_empty_one(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    # No manifest.json written yet.
+    reloaded = Manifest.load(layout)
+    assert reloaded.artifacts == {}
+
+    layout.manifest.write_text("{not json")
+    reloaded_corrupt = Manifest.load(layout)
+    assert reloaded_corrupt.artifacts == {}
+
+
+def test_save_is_atomic(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.save(layout)
+
+    entries = list(layout.root.iterdir())
+    names = {p.name for p in entries}
+
+    assert "manifest.json" in names
+    leftover = [n for n in names if n != "manifest.json" and (".tmp" in n or n.startswith(".manifest"))]
+    assert leftover == []
+
+
+def test_a_torn_write_cannot_look_fresh(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"content")
+    fp = SourceFingerprint.of(source)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp])
+    manifest.save(layout)
+
+    full_bytes = layout.manifest.read_bytes()
+    layout.manifest.write_bytes(full_bytes[: len(full_bytes) // 2])
+
+    reloaded = Manifest.load(layout)
+
+    assert reloaded.artifacts == {}
+    assert reloaded.is_stale("par_0") is True
