@@ -1,2 +1,4 @@
 .superpowers/
 docs/
+tests/fixtures/
+.DS_Store

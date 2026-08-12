@@ -1,0 +1,33 @@
+[project]
+name = "pesto"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pyarrow>=18.0",
+    "flopy>=3.9.5",
+    "pyemu>=1.7",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+pesto = "pesto.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pesto"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
