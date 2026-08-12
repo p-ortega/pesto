@@ -17,7 +17,7 @@ Milestone M0 only. M1-M4 are recorded under Future Milestones and are not in thi
       150 ms on a free port — nothing at module load touches pyemu or flopy; one background thread
       imports them immediately after the port is bound.
 
-- [ ] **LAUNCH-02**: The server listens only on `127.0.0.1` and is not reachable from another
+- [x] **LAUNCH-02**: The server listens only on `127.0.0.1` and is not reachable from another
       machine. `[OPEN-05 — whether a session token also blocks another user on the same machine]`
 
 - [ ] **LAUNCH-03**: Each run caches itself under `.pesto/` in the run directory, falling back to a
@@ -270,7 +270,7 @@ decomposed here.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | LAUNCH-01 | Phase 1 | Complete |
-| LAUNCH-02 | Phase 1 | Pending |
+| LAUNCH-02 | Phase 1 | Complete |
 | LAUNCH-03 | Phase 1 | Pending |
 | LAUNCH-04 | Phase 1 | Pending |
 | READ-01 | Phase 2 | Pending |

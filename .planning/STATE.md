@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: launcher-server-and-cache-foundation
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-08-12T13:16:58.570Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-08-12T14:01:04.473Z"
 last_activity: 2026-08-12
 last_activity_desc: Doc ingest synthesized and M0 roadmap created from three source specs
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 5
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-08-12)
 ## Current Position
 
 Phase: 01 (launcher-server-and-cache-foundation) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-08-12 — Phase 01 execution started
 
-Progress: [██░░░░░░░░] 20%
+Progress: [████░░░░░░] 40%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [██░░░░░░░░] 20%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 3min | 1 tasks | 1 files |
+| Phase 01 P02 | 30min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,9 @@ classified as SPEC, none used ADR structure, none carried `locked: true`. Candid
 choices are listed in PROJECT.md § Key Decisions as unprotected.
 
 - [Phase ?]: All eleven PyPI packages approved as presented; pyemu pinned >=1.7 from registry, not git+develop branch
+- [Phase ?]: Session token is the primary access-control identity; Host-header/loopback binding is defense-in-depth, checked first only to avoid leaking token-validity to a foreign origin
+- [Phase ?]: GET /api/health requires the session token like every other route -- no liveness-probe carve-out (resolves RESEARCH.md Open Question 1)
+- [Phase ?]: Token transport after first load: URL param authenticates once, then an HttpOnly SameSite=Strict cookie carries the session (D-03, Jupyter precedent)
 
 ### Pending Todos
 
@@ -98,8 +102,8 @@ so it is worth settling before Phase 4 planning rather than at Phase 5.
 
 ## Session Continuity
 
-Last session: 2026-08-12T13:16:58.564Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-08-12T14:01:04.465Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
 
 Source documents live under `docs/` and are **gitignored** — reference by path, never `git add`:
