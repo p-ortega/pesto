@@ -1,5 +1,7 @@
 .superpowers/
 docs/
+.planning/
+.gsd/
 tests/fixtures/
 .DS_Store
 __pycache__/
