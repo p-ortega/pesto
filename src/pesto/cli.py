@@ -8,6 +8,7 @@ packages pesto as an icon with no command line to type a path into.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 
@@ -23,10 +24,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default: pick a free one)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Put this run's cache here instead of choosing automatically",
+    )
 
     args = parser.parse_args(argv)
 
+    cache_override = args.cache_dir
+    if cache_override is not None and str(cache_override) == "":
+        parser.error("--cache-dir must not be empty")
+
     from pesto.launch import serve
 
-    serve(host=args.host, port=args.port, open_browser=not args.no_browser, run_dir=args.path)
+    try:
+        serve(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+            run_dir=args.path,
+            cache_override=cache_override,
+        )
+    except NotADirectoryError as exc:
+        # A mistyped run directory should read as a mistyped path, not as a
+        # traceback.
+        print(str(exc), file=sys.stderr)
+        return 2
+
     return 0

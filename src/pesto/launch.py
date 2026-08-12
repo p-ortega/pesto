@@ -21,6 +21,23 @@ import uvicorn
 from pesto.api.app import create_app
 
 
+def prepare_run(run_dir: Path, cache_override: Path | None = None):
+    """Resolve and lay down this run's cache, returning a usable layout.
+
+    The cache layout module is imported here rather than at module scope so
+    that ``pesto.launch`` stays importable without pulling in the
+    ``pesto.cache`` package -- LAUNCH-01's deferred-import contract only
+    guards against pyemu/flopy/matplotlib, but keeping this import local as
+    well means importing ``pesto.launch`` alone never touches the cache
+    package either.
+    """
+    import pesto.cache.layout as cache_layout
+
+    layout = cache_layout.for_run(run_dir, cache_override)
+    layout.ensure()
+    return layout
+
+
 def find_free_port() -> int:
     """Ask the OS for a free ephemeral port on the loopback interface.
 
@@ -39,10 +56,25 @@ def serve(
     port: int | None = None,
     open_browser: bool = True,
     run_dir: Path | None = None,
+    cache_override: Path | None = None,
 ) -> None:
+    cache_root: str | None = None
+    if run_dir is not None:
+        # Prepare the cache before the server exists at all: a mistyped run
+        # directory (NotADirectoryError) must surface before anything is
+        # bound, not after.
+        layout = prepare_run(run_dir, cache_override)
+        cache_root = str(layout.root)
+        # Printing which of the two possible locations was chosen matters for
+        # the same reason D-10 prints the URL unconditionally: the cache can
+        # legitimately land in either place, and a user who cannot see which
+        # one has no way to find, inspect or delete it.
+        print(f"pesto cache at {cache_root}", flush=True)
+
     resolved_port = find_free_port() if port is None else port
     app, token = create_app()
     app.state.initial_run_dir = str(run_dir) if run_dir else None
+    app.state.cache_root = cache_root
     url = f"http://{host}:{resolved_port}/?token={token}"
 
     config = uvicorn.Config(app, host=host, port=resolved_port, log_level="warning")

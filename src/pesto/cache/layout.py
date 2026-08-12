@@ -18,6 +18,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from pesto.cache.gitignore import ensure_gitignored
+
 CACHE_VERSION = 1
 _DIR_NAME = ".pesto"
 
@@ -141,5 +143,10 @@ class CacheLayout:
 
 
 def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
-    """Resolve this run's cache root and hand back a usable layout."""
-    return CacheLayout(root=resolve_cache_root(Path(run_dir), override))
+    """Resolve this run's cache root, ensure a git-tracked run directory
+    ignores it, and hand back a usable layout. Cache creation and the
+    gitignore line happen together so no caller has to remember to pair
+    them."""
+    root = resolve_cache_root(Path(run_dir), override)
+    ensure_gitignored(Path(run_dir))
+    return CacheLayout(root=root)
