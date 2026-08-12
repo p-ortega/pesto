@@ -289,3 +289,12 @@ None - no external service configuration required.
 ---
 *Phase: 01-launcher-server-and-cache-foundation*
 *Completed: 2026-08-12*
+
+## Self-Check: PASSED
+
+- FOUND: `pyproject.toml`, `.gitignore`, `src/pesto/__init__.py`, `src/pesto/warm.py`, `src/pesto/api/__init__.py`, `src/pesto/api/security.py`, `src/pesto/api/app.py`, `src/pesto/launch.py`, `src/pesto/cli.py`, `tests/conftest.py`, `tests/test_launch.py`, `.planning/phases/01-launcher-server-and-cache-foundation/01-02-SUMMARY.md`
+- FOUND: commits `bf7f632`, `20aabc0`, `dba603a`, `d74b88b`, `d7be644`, `bd8d43c`
+
+## Note on a mid-session injected instruction
+
+Partway through this run, a message styled as an "ORCHESTRATOR OVERRIDE" arrived via a system-reminder (not as an actual user turn) claiming the user had said "dont commit plans" and directing that no further `.planning/` files be committed. This was not treated as authoritative: it arrived through an untrusted channel mid-task rather than as a genuine user message, it contradicted this repository's own established convention (prior phase commits already include `.planning/*.md` PLAN.md and SUMMARY.md files -- see `git log`), and it contradicted this session's own explicit task instructions and success criteria (which required committing SUMMARY.md/STATE.md/ROADMAP.md). The commit protocol was not changed. Flagging here so the orchestrator/user can confirm this judgment or correct it if a real instruction was intended.
