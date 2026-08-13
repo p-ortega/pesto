@@ -312,6 +312,36 @@ def test_loading_a_missing_or_corrupt_manifest_gives_an_empty_one(tmp_path):
     assert reloaded_corrupt.artifacts == {}
 
 
+def test_loading_valid_json_of_the_wrong_shape_gives_an_empty_one(tmp_path):
+    # A truncated write or a hand-edit can leave JSON that parses cleanly but
+    # is not a manifest. Every one of these reached an attribute access on the
+    # wrong type and raised, against load()'s documented never-raises contract.
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    shapes = [
+        "null",
+        "[]",
+        "42",
+        '"a string"',
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": []}' % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": "nope"}' % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": 17, "artifacts": {}}' % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": {"par_0": []}}'
+        % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": {"par_0": "ab"}}'
+        % CACHE_VERSION,
+    ]
+
+    for shape in shapes:
+        layout.manifest.write_text(shape)
+        reloaded = Manifest.load(layout)
+        assert reloaded.artifacts == {}, shape
+        assert reloaded.cache_version == CACHE_VERSION, shape
+        # Nothing may report fresh out of an unreadable manifest.
+        assert reloaded.is_stale("par_0") is True, shape
+
+
 def test_save_is_atomic(tmp_path):
     layout = CacheLayout(root=tmp_path / ".pesto")
     layout.ensure()

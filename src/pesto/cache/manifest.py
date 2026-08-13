@@ -208,39 +208,58 @@ class Manifest:
     def load(cls, layout: CacheLayout) -> "Manifest":
         """Load the manifest at ``layout.manifest``.
 
-        Every failure mode -- absent, unreadable, not valid JSON, an
-        unexpected ``cache_version``, or an artifact entry missing a
-        required field (e.g. ``checksum``, from a manifest written by an
-        earlier build) -- resolves to an empty manifest rather than raising.
-        A parse failure must never produce a partially populated manifest
-        that reports something fresh.
+        Every failure mode -- absent, unreadable, not valid JSON, valid JSON
+        of the wrong shape, an unexpected ``cache_version``, or an artifact
+        entry missing a required field (e.g. ``checksum``, from a manifest
+        written by an earlier build) -- resolves to an empty manifest rather
+        than raising. A parse failure must never produce a partially
+        populated manifest that reports something fresh.
         """
         try:
             data = json.loads(layout.manifest.read_text())
         except (OSError, json.JSONDecodeError):
             return cls(cache_version=CACHE_VERSION, run_dir="")
 
+        # Valid JSON is not the same as a manifest. A truncated write or a
+        # hand-edit can leave `null`, a list or a bare number here, all of
+        # which parse cleanly and then have no `.get`. Shape is checked
+        # before anything is read off it.
+        if not isinstance(data, dict):
+            return cls(cache_version=CACHE_VERSION, run_dir="")
+
+        run_dir = data.get("run_dir", "")
+        if not isinstance(run_dir, str):
+            # A non-string run_dir would survive to Path() and raise there
+            # instead, well away from this parse.
+            return cls(cache_version=CACHE_VERSION, run_dir="")
+
         if data.get("cache_version") != CACHE_VERSION:
             # D-08: a version bump is a hard invalidation, outranking size,
             # mtime and checksum alike -- no artifacts survive it.
-            return cls(cache_version=CACHE_VERSION, run_dir=data.get("run_dir", ""))
+            return cls(cache_version=CACHE_VERSION, run_dir=run_dir)
+
+        raw_artifacts = data.get("artifacts", {})
+        if not isinstance(raw_artifacts, dict):
+            return cls(cache_version=CACHE_VERSION, run_dir="")
 
         try:
             artifacts: dict[str, Artifact] = {}
-            for name, artifact_data in data.get("artifacts", {}).items():
+            for name, artifact_data in raw_artifacts.items():
                 fields_copy = dict(artifact_data)
                 fields_copy["sources"] = [
                     SourceFingerprint(**s) for s in artifact_data.get("sources", [])
                 ]
                 artifacts[name] = Artifact(**fields_copy)
-        except (KeyError, TypeError):
+        except (KeyError, TypeError, ValueError, AttributeError):
             # A malformed or outdated entry (e.g. a fingerprint missing the
             # checksum key) is treated as unreadable: one re-ingest is the
-            # cost, a crash on open is the alternative.
+            # cost, a crash on open is the alternative. ValueError and
+            # AttributeError cover an entry that is not a mapping at all --
+            # dict("ab") raises the former, [].get the latter.
             return cls(cache_version=CACHE_VERSION, run_dir="")
 
         return cls(
             cache_version=CACHE_VERSION,
-            run_dir=data.get("run_dir", ""),
+            run_dir=run_dir,
             artifacts=artifacts,
         )
