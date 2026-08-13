@@ -31,3 +31,4 @@ packages = ["src/pesto"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: touches real fixture data outside the repository"]
