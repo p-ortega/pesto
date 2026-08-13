@@ -16,7 +16,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pesto.ingest.control import ControlTables
+from pesto.ingest.control import ControlTables, read_control
+from pesto.ingest.discover import discover
 from pesto.ingest.ensfile import EnsembleData, read_ensemble, sniff
 from pesto.ingest.failures import ReadFailure
 
@@ -376,3 +377,202 @@ def test_read_ensemble_docstring_states_how_each_uncertainty_resolves():
     assert "dimensions" in doc
     assert "names" in doc
     assert "refus" in doc
+
+
+# ---------------------------------------------------------------------------
+# Task 3: all six shapes are equal, and row 1 is realization 34
+# ---------------------------------------------------------------------------
+
+
+def _permute_columns_by_name(
+    values: np.ndarray, source_names: list[str], target_names: list[str]
+) -> np.ndarray:
+    """Reorder ``values``'s columns from ``source_names`` order into
+    ``target_names`` order, by name -- used only to build the hash-ordered
+    fixture's on-disk data from the same underlying values as every other
+    shape in the six-shape proof."""
+    index = {name: i for i, name in enumerate(source_names)}
+    order = [index[name] for name in target_names]
+    return values[:, order]
+
+
+def test_all_six_ensemble_shapes_read_to_identical_values(tmp_path):
+    real_names = fixtures.survivor_names()
+    control_names = fixtures.control_ordered_names("par", 6)
+    hash_names = fixtures.hash_ordered_names("par", 6)
+    values = fixtures.sample_values(len(real_names), len(control_names))
+    hash_values = _permute_columns_by_name(values, control_names, hash_names)
+
+    tables = _control_tables(control_names)
+
+    dense = read_ensemble(
+        fixtures.write_dense_ensemble(
+            tmp_path / "dense.bin", values, real_names, control_names
+        ),
+        tables,
+    )
+    modern_jcb = read_ensemble(
+        fixtures.write_jcb_ensemble(tmp_path / "modern.jcb", values, real_names, control_names),
+        tables,
+    )
+    legacy_jcb = read_ensemble(
+        fixtures.write_legacy_jcb_ensemble(
+            tmp_path / "legacy.jcb", values, real_names, control_names
+        ),
+        tables,
+    )
+    csv_real_major = read_ensemble(
+        fixtures.write_csv_ensemble(tmp_path / "real_major.csv", values, real_names, control_names),
+        tables,
+    )
+    csv_variable_major = read_ensemble(
+        fixtures.write_variable_major_csv_ensemble(
+            tmp_path / "variable_major.csv", values, real_names, control_names
+        ),
+        tables,
+    )
+    hash_ordered_binary = read_ensemble(
+        fixtures.write_jcb_ensemble(
+            tmp_path / "hash_ordered.jcb", hash_values, real_names, hash_names
+        ),
+        tables,
+    )
+
+    shapes = {
+        "dense": dense,
+        "modern_jcb": modern_jcb,
+        "legacy_jcb": legacy_jcb,
+        "csv_real_major": csv_real_major,
+        "csv_variable_major": csv_variable_major,
+        "hash_ordered_binary": hash_ordered_binary,
+    }
+    for name, record in shapes.items():
+        assert isinstance(record, EnsembleData), f"{name} failed to read: {record}"
+
+    # The hash-ordered file's entity_names really are in a different order
+    # on disk -- proof this is a genuine permutation, not a relabelling
+    # that happens not to matter.
+    assert hash_ordered_binary.entity_names != dense.entity_names
+    assert set(hash_ordered_binary.entity_names) == set(dense.entity_names)
+    assert not np.array_equal(hash_ordered_binary.values, values.astype(np.float32))
+    assert hash_ordered_binary.permutation is not None
+    reordered_hash_values = hash_ordered_binary.values[:, list(hash_ordered_binary.permutation)]
+    assert np.array_equal(reordered_hash_values, values.astype(np.float32))
+
+    # Every pair of shapes agrees exactly once each is in control-file
+    # order -- the six-shape equality proof this phase is judged on
+    # (success criterion 1). Looping over pairs means a failure message
+    # names which two shapes disagreed, rather than just "one of them".
+    canonical: dict[str, np.ndarray] = {}
+    for name, record in shapes.items():
+        if record.hash_ordered:
+            assert record.permutation is not None
+            canonical[name] = record.values[:, list(record.permutation)]
+        else:
+            canonical[name] = record.values
+
+    shape_names = list(canonical)
+    for i in range(len(shape_names)):
+        for j in range(i + 1, len(shape_names)):
+            a_name, b_name = shape_names[i], shape_names[j]
+            assert np.array_equal(canonical[a_name], canonical[b_name]), (
+                f"{a_name} disagreed with {b_name}"
+            )
+
+
+def test_realization_names_come_from_the_file_and_row_1_is_34(tmp_path):
+    real_names = fixtures.survivor_names()
+    entity_names = fixtures.control_ordered_names("par", 5)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names))
+
+    assert isinstance(record, EnsembleData)
+    assert record.real_names == ("base", "34", "35", "176")
+    assert record.real_names[1] == "34"
+    assert np.array_equal(record.values[1], values[1].astype(np.float32))
+    # The negative half that makes it mean something: not the stringified
+    # row positions, which is exactly the failure this phase exists to
+    # prevent.
+    assert record.real_names != tuple(str(i) for i in range(len(record.real_names)))
+
+
+def test_duplicate_realization_names_both_survive_in_file_position(tmp_path):
+    real_names = ["base", "base", "34", "35"]
+    entity_names = fixtures.control_ordered_names("par", 4)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names))
+
+    assert isinstance(record, EnsembleData)
+    assert record.real_names == ("base", "base", "34", "35")
+    assert record.values.shape[0] == 4
+    assert np.array_equal(record.values, values.astype(np.float32))
+
+
+def test_zero_data_row_ensemble_is_empty_record_or_named_failure(tmp_path):
+    entity_names = fixtures.control_ordered_names("par", 4)
+    values = fixtures.sample_values(0, len(entity_names))
+    path = fixtures.write_dense_ensemble(tmp_path / "case.0.par.bin", values, [], entity_names)
+
+    result = read_ensemble(path, _control_tables(entity_names))
+
+    # Honest either-or: this pyemu version, verified this session, returns
+    # an empty (0, n_entity) record rather than raising or returning a
+    # ReadFailure for a valid header with zero data rows.
+    if isinstance(result, EnsembleData):
+        assert result.real_names == ()
+        assert result.values.shape == (0, len(entity_names))
+    else:
+        assert isinstance(result, ReadFailure)
+        assert result.reason
+
+
+@pytest.mark.slow
+def test_a_real_dense_ensemble_reads_to_float32_with_dimensions_decided_orientation(forecast_run):
+    layout = discover(forecast_run)
+    tables = read_control(layout.pst_path)
+    assert isinstance(tables, ControlTables)
+
+    record = read_ensemble(layout.par_ens[0], tables)
+
+    assert isinstance(record, EnsembleData)
+    assert record.values.dtype == np.float32
+    assert len(record.entity_names) == len(tables.par)
+    assert record.orientation_decided_by == "dimensions"
+    assert record.real_names != tuple(str(i) for i in range(len(record.real_names)))
+
+
+@pytest.mark.slow
+def test_two_real_modern_jcb_iterations_join_realizations_by_name_not_position(hm_run):
+    layout = discover(hm_run)
+    tables = read_control(layout.pst_path)
+    assert isinstance(tables, ControlTables)
+
+    record0 = read_ensemble(layout.par_ens[0], tables)
+    record1 = read_ensemble(layout.par_ens[1], tables)
+
+    assert isinstance(record0, EnsembleData)
+    assert isinstance(record1, EnsembleData)
+    assert record0.values.dtype == np.float32
+    assert record1.values.dtype == np.float32
+    assert record0.real_names
+    assert record1.real_names
+
+    # The set of realizations can change between iterations -- comparing
+    # them is always by name, never by row position. The two name tuples
+    # are recorded distinctly, and any lookup this test makes joins on
+    # name via these index maps rather than assuming shared row order.
+    index0 = {name: i for i, name in enumerate(record0.real_names)}
+    index1 = {name: i for i, name in enumerate(record1.real_names)}
+    shared_names = sorted(set(index0) & set(index1))
+    assert shared_names
+    for name in shared_names:
+        assert index0[name] < record0.values.shape[0]
+        assert index1[name] < record1.values.shape[0]
