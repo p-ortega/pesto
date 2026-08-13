@@ -219,3 +219,160 @@ def test_arbitrary_bytes_file_returns_read_failure(tmp_path):
     assert isinstance(result, ReadFailure)
     assert result.name == "junk.bin"
     assert result.reason
+
+
+# ---------------------------------------------------------------------------
+# Task 2: decide which axis is realizations, and refuse when it cannot be
+# ---------------------------------------------------------------------------
+
+
+def test_realization_major_decided_by_dimensions(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    entity_names = fixtures.control_ordered_names("par", 6)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names))
+
+    assert isinstance(record, EnsembleData)
+    assert record.orientation == "realization_major"
+    assert record.orientation_decided_by == "dimensions"
+
+
+def test_variable_major_decided_by_dimensions_is_a_transposed_view(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    entity_names = fixtures.control_ordered_names("par", 5)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_variable_major_csv_ensemble(
+        tmp_path / "case.0.par.csv", values, real_names, entity_names
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names))
+
+    assert isinstance(record, EnsembleData)
+    assert record.orientation == "variable_major"
+    assert record.orientation_decided_by == "dimensions"
+    assert record.contiguous is False
+    assert record.values.base is not None
+    assert np.array_equal(record.values, values.astype(np.float32))
+
+
+def test_square_ensemble_is_decided_by_names_never_dimensions(tmp_path):
+    entity_names = fixtures.control_ordered_names("par", 4)
+    real_names = fixtures.survivor_names()  # also length 4 -- a square ensemble
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names))
+
+    assert isinstance(record, EnsembleData)
+    assert record.orientation_decided_by == "names"
+    assert record.orientation == "realization_major"
+    assert record.real_names == tuple(real_names)
+    assert record.entity_names == tuple(entity_names)
+
+
+def test_names_matching_is_case_insensitive_after_stripping(tmp_path):
+    # CSV, not binary: pyemu's own binary readers already lower-case names
+    # as they read, so a binary fixture would not exercise this module's
+    # own case-insensitive comparison. CSV headers are only stripped, never
+    # lowered, by ``_read_csv_matrix``, so the upper-cased names on disk
+    # here are exactly what the orientation decision has to compare.
+    entity_names_control = fixtures.control_ordered_names("par", 4)
+    entity_names_on_disk = [name.upper() for name in entity_names_control]
+    real_names = fixtures.survivor_names()  # length 4 -- square, forces name matching
+    values = fixtures.sample_values(len(real_names), len(entity_names_on_disk))
+    path = fixtures.write_csv_ensemble(
+        tmp_path / "case.0.par.csv", values, real_names, entity_names_on_disk
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names_control))
+
+    assert isinstance(record, EnsembleData)
+    assert record.orientation_decided_by == "names"
+    assert record.entity_names == tuple(entity_names_on_disk)
+
+
+def test_ambiguous_counts_and_no_name_match_refuses_with_a_reason(tmp_path):
+    entity_names_control = fixtures.control_ordered_names("par", 6)
+    real_names = fixtures.control_ordered_names("real", 5)
+    entity_names_on_disk = fixtures.control_ordered_names("unrelated", 7)
+    values = fixtures.sample_values(len(real_names), len(entity_names_on_disk))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names_on_disk
+    )
+
+    result = read_ensemble(path, _control_tables(entity_names_control))
+
+    assert isinstance(result, ReadFailure)
+    assert "7" in result.reason
+    assert "6" in result.reason
+
+
+def test_permutation_maps_file_order_onto_control_file_order(tmp_path):
+    entity_names_control = fixtures.control_ordered_names("par", 6)
+    entity_names_on_disk = fixtures.hash_ordered_names("par", 6)
+    real_names = fixtures.control_ordered_names("real", 4)
+    values = fixtures.sample_values(len(real_names), len(entity_names_on_disk))
+    path = fixtures.write_jcb_ensemble(
+        tmp_path / "case.0.par.jcb", values, real_names, entity_names_on_disk
+    )
+
+    record = read_ensemble(path, _control_tables(entity_names_control))
+
+    assert isinstance(record, EnsembleData)
+    assert record.entity_names == tuple(entity_names_on_disk)
+    assert record.permutation is not None
+    reordered = np.array(record.entity_names)[list(record.permutation)]
+    assert list(reordered) == entity_names_control
+
+
+def test_read_ensemble_with_no_tables_assumes_realization_major(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    entity_names = fixtures.control_ordered_names("par", 6)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+
+    record = read_ensemble(path)
+
+    assert isinstance(record, EnsembleData)
+    assert record.orientation_decided_by == "assumed"
+    assert record.permutation is None
+
+
+def test_read_ensemble_never_writes_to_the_source_file(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    entity_names = fixtures.control_ordered_names("par", 6)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+    before = path.stat()
+
+    tables = _control_tables(entity_names)
+    first = read_ensemble(path, tables)
+    second = read_ensemble(path, tables)
+
+    after = path.stat()
+    assert after.st_size == before.st_size
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert isinstance(first, EnsembleData)
+    assert isinstance(second, EnsembleData)
+    assert np.array_equal(first.values, second.values)
+    assert first.real_names == second.real_names
+    assert first.entity_names == second.entity_names
+    assert first.orientation == second.orientation
+    assert first.orientation_decided_by == second.orientation_decided_by
+
+
+def test_read_ensemble_docstring_states_how_each_uncertainty_resolves():
+    doc = (read_ensemble.__doc__ or "").lower()
+    assert "dimensions" in doc
+    assert "names" in doc
+    assert "refus" in doc
