@@ -30,6 +30,8 @@ def _control_tables(entity_names: list[str]) -> ControlTables:
     return ControlTables(
         par=pd.DataFrame({"parnme": list(entity_names)}),
         obs=pd.DataFrame({"obsnme": []}),
+        par_groups=(),
+        obs_groups=(),
         source_path=Path("unused.pst"),
         notes=(),
     )
