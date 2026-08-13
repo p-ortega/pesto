@@ -30,6 +30,18 @@ _ITER_TOKEN = r"\d+|prior|mean"
 _GRID_EXT = ".grb"
 _PHI_KINDS = ("actual", "meas", "regul", "composite", "group", "lambda")
 
+# The starting ensembles pestpp-ies reads as *input* -- named by the control
+# file under whatever filename the user gave them, never following the
+# case-and-iteration convention its own output follows. RESEARCH.md's
+# Pitfall 1: four real control files, four different naming schemes, zero
+# matches to filename globbing.
+_STARTING_ENSEMBLE_OPTION_KEYS = {
+    "ies_par_en": "par",
+    "ies_parameter_ensemble": "par",
+    "ies_obs_en": "obs",
+    "ies_observation_ensemble": "obs",
+}
+
 # Iteration keys are plain unbounded ints for the ordinary numbered case, or
 # one of the literal tags pestpp's own save path can emit in place of a
 # number ("prior", "mean" -- RESEARCH.md Open Question 1). Never a sentinel
@@ -63,12 +75,14 @@ class RunLayout:
     run_dir: Path
     case: str
     pst_path: Path
-    noptmax: int
+    noptmax: int | None
     iterations: tuple[int, ...]
     par_ens: Mapping[IterationKey, Path]
     obs_ens: Mapping[IterationKey, Path]
     rejected_par_ens: Mapping[IterationKey, Path]
     rejected_obs_ens: Mapping[IterationKey, Path]
+    starting_par_ens: Path | None
+    starting_obs_ens: Path | None
     phi: Mapping[str, Path]
     pdc: Mapping[IterationKey, Path]
     pcs: Mapping[tuple[IterationKey, str], Path]
@@ -101,16 +115,106 @@ class RunLayout:
         return self.pcs.get((iteration, infix.lower()))
 
 
-def _read_noptmax(pst_path: Path) -> int:
-    """Scan the control file's lines for a plain ``noptmax <int>`` keyword
-    line, case-insensitively. Verified this session against four real
-    control files, all of which write it as a plain keyword line."""
-    with open(pst_path, "r", errors="replace") as f:
-        for line in f:
+@dataclass(frozen=True)
+class _ControlScan:
+    """What one line-scan of the control file found. Never a
+    ``pyemu.Pst()`` parse -- this keeps discovery instant on an 11 GB run,
+    the same promise D-09 already makes for ``noptmax``."""
+
+    noptmax: int | None
+    par_en_key: str | None
+    par_en_name: str | None
+    obs_en_key: str | None
+    obs_en_name: str | None
+    notes: tuple[str, ...]
+
+
+def _scan_control_file(pst_path: Path) -> _ControlScan:
+    """Line-scan the control file for ``noptmax`` and the starting-ensemble
+    options (RESEARCH.md Pitfall 1), matching option keys after
+    lower-casing and stripping so an upper-cased or extra-whitespace line
+    still resolves.
+
+    Every uncertainty resolves to the documented safe answer: a control
+    file that cannot be opened or decoded yields no ``noptmax`` and no
+    starting-ensemble names, plus a note naming the file and the reason,
+    rather than raising. Discovery already found this file by name; its own
+    unreadability is a fact about the run, not a reason to abort the whole
+    pass.
+    """
+    try:
+        with pst_path.open("r", encoding="utf-8", errors="strict") as f:
+            lines = f.readlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        return _ControlScan(
+            noptmax=None,
+            par_en_key=None,
+            par_en_name=None,
+            obs_en_key=None,
+            obs_en_name=None,
+            notes=(f"could not read control file {pst_path.name}: {exc}",),
+        )
+
+    noptmax: int | None = None
+    par_en_key: str | None = None
+    par_en_name: str | None = None
+    obs_en_key: str | None = None
+    obs_en_name: str | None = None
+
+    for line in lines:
+        if noptmax is None:
             match = _NOPTMAX_RE.match(line)
             if match:
-                return int(match.group(1))
-    raise ValueError(f"no noptmax line found in control file: {pst_path}")
+                noptmax = int(match.group(1))
+                continue
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            continue
+        raw_key, rest = parts
+        key = raw_key.strip().lower()
+        kind = _STARTING_ENSEMBLE_OPTION_KEYS.get(key)
+        if kind is None:
+            continue
+        rest_tokens = rest.split()
+        if not rest_tokens:
+            continue
+        value = rest_tokens[0]
+
+        if kind == "par" and par_en_name is None:
+            par_en_key, par_en_name = key, value
+        elif kind == "obs" and obs_en_name is None:
+            obs_en_key, obs_en_name = key, value
+
+    return _ControlScan(
+        noptmax=noptmax,
+        par_en_key=par_en_key,
+        par_en_name=par_en_name,
+        obs_en_key=obs_en_key,
+        obs_en_name=obs_en_name,
+        notes=(),
+    )
+
+
+def _resolve_starting_ensemble(
+    run_path: Path, key: str | None, name: str | None, notes: list[str]
+) -> Path | None:
+    """Resolve a starting ensemble named by the control file, relative to
+    ``run_path``. A name the control file gives but that is not on disk is
+    reported as named-and-missing: the field itself comes back ``None`` --
+    exactly as if no option had been given -- and a note names the option
+    key and the filename, so the two cases are distinguishable only through
+    ``notes``, never confused as "no claim was made"."""
+    if name is None:
+        return None
+    candidate = run_path / name
+    if candidate.exists():
+        return candidate
+    notes.append(f"{key} names {name!r}, which is not present in {run_path.name}")
+    return None
 
 
 def discover(run_dir: Path) -> RunLayout:
@@ -142,6 +246,26 @@ def discover(run_dir: Path) -> RunLayout:
     promise that the file behind it is readable. That distinction is what
     lets a later read failure surface as a named, per-artifact fact instead
     of a surprise.
+
+    The control file is also scanned, as plain text, for the starting
+    ensembles pestpp-ies reads as input: the ``ies_par_en``/
+    ``ies_parameter_ensemble`` and ``ies_obs_en``/``ies_observation_ensemble``
+    options, which name a file under whatever convention the user gave it --
+    never the case-and-iteration convention pestpp's own output follows
+    (RESEARCH.md Pitfall 1). This is the one file discovery reads, and it
+    reads it only as a line scan, never a ``pyemu.Pst()`` parse. A starting
+    ensemble the control file names but that is absent from disk comes back
+    as ``None``, exactly like an ordinary run that names none at all, with
+    the distinguishing fact recorded in ``notes`` instead. A control file
+    that cannot be opened or decoded is itself a non-fatal outcome: this
+    function still returns a layout, with ``noptmax`` and both starting
+    ensembles absent and a note naming the file and the reason -- discovery
+    already found the file by name, and one bad read costs a note, not the
+    whole run.
+
+    Calling this function twice on an unchanged directory returns equal
+    layouts, and it writes nothing anywhere: it opens files only for
+    reading and probes existence only with ``Path.exists``.
     """
     run_path = Path(run_dir)
     if not run_path.is_dir():
@@ -153,7 +277,15 @@ def discover(run_dir: Path) -> RunLayout:
     pst_path = pst_matches[0]
     case = pst_path.stem
 
-    noptmax = _read_noptmax(pst_path)
+    scan = _scan_control_file(pst_path)
+    noptmax = scan.noptmax
+    notes: list[str] = list(scan.notes)
+    starting_par_ens = _resolve_starting_ensemble(
+        run_path, scan.par_en_key, scan.par_en_name, notes
+    )
+    starting_obs_ens = _resolve_starting_ensemble(
+        run_path, scan.obs_en_key, scan.obs_en_name, notes
+    )
 
     escaped_case = re.escape(case)
     ens_re = re.compile(
@@ -242,10 +374,12 @@ def discover(run_dir: Path) -> RunLayout:
         obs_ens=obs_ens,
         rejected_par_ens=rejected_par_ens,
         rejected_obs_ens=rejected_obs_ens,
+        starting_par_ens=starting_par_ens,
+        starting_obs_ens=starting_obs_ens,
         phi=phi,
         pdc=pdc,
         pcs=pcs,
         grid=grid,
         noise=noise,
-        notes=(),
+        notes=tuple(notes),
     )
