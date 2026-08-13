@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyemu
+import pytest
 
 from pesto.ingest.control import ControlTables, read_control
 from pesto.ingest.discover import discover
@@ -84,3 +85,54 @@ def test_a_corrupt_ensemble_file_costs_one_artifact_not_the_whole_run(tmp_path):
 
     tables = read_control(layout.pst_path)
     assert isinstance(tables, ControlTables)
+
+
+@pytest.mark.slow
+def test_the_same_path_reads_a_real_pestpp_ies_run(forecast_run):
+    """The identical tracer path against a real benchmark directory: finds
+    the control file, reports the real ``noptmax``, and returns realization
+    names taken from inside the file rather than stringified indices
+    (READ-04, stated as a real behaviour rather than a tautology)."""
+    layout = discover(forecast_run)
+    assert layout.case == "escondida"
+    assert layout.noptmax == -1
+    assert 0 in layout.par_ens
+    assert layout.par_ens[0].name == "escondida.0.par.bin"
+
+    tables = read_control(layout.pst_path)
+    assert isinstance(tables, ControlTables)
+    assert len(tables.par) > 0
+    for column in ("pargp", "parlbnd", "parubnd", "partrans"):
+        assert column in tables.par.columns
+
+    record = read_ensemble(layout.par_ens[0], tables)
+    assert isinstance(record, EnsembleData)
+    assert record.values.dtype == np.float32
+    assert record.values.shape[1] == len(tables.par)
+    assert record.orientation_decided_by == "dimensions"
+    assert len(record.real_names) > 0
+    assert record.real_names != tuple(str(i) for i in range(len(record.real_names)))
+
+
+@pytest.mark.slow
+def test_reading_a_real_run_never_writes_to_it(forecast_run):
+    """The mechanical form of this plan's safety prohibition: a run
+    directory is somebody's finished calibration output, and pesto's only
+    relationship with it is reading. Snapshot every entry directly inside
+    the run directory before the tracer path runs, and assert nothing was
+    created, removed, resized or re-timestamped afterwards."""
+    before = {
+        entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+        for entry in forecast_run.iterdir()
+    }
+
+    layout = discover(forecast_run)
+    tables = read_control(layout.pst_path)
+    read_ensemble(layout.par_ens[0], tables)
+
+    after = {
+        entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+        for entry in forecast_run.iterdir()
+    }
+
+    assert after == before
