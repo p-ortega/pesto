@@ -19,6 +19,45 @@ def _touch(path):
     return path
 
 
+def _all_layout_paths(layout):
+    """Every path a :class:`RunLayout` reports, across every category."""
+    paths = []
+    paths.extend(layout.par_ens.values())
+    paths.extend(layout.obs_ens.values())
+    paths.extend(layout.rejected_par_ens.values())
+    paths.extend(layout.rejected_obs_ens.values())
+    paths.extend(layout.phi.values())
+    paths.extend(layout.pdc.values())
+    paths.extend(layout.pcs.values())
+    if layout.grid is not None:
+        paths.append(layout.grid)
+    if layout.noise is not None:
+        paths.append(layout.noise)
+    if layout.starting_par_ens is not None:
+        paths.append(layout.starting_par_ens)
+    if layout.starting_obs_ens is not None:
+        paths.append(layout.starting_obs_ens)
+    return paths
+
+
+def _layout_shape(layout):
+    """The set of populated fields and mapping keys, independent of the
+    actual paths -- what the noptmax<=0 equivalence test compares."""
+    return {
+        "par_ens_keys": set(layout.par_ens),
+        "obs_ens_keys": set(layout.obs_ens),
+        "rejected_par_ens_keys": set(layout.rejected_par_ens),
+        "rejected_obs_ens_keys": set(layout.rejected_obs_ens),
+        "phi_keys": set(layout.phi),
+        "pdc_keys": set(layout.pdc),
+        "pcs_keys": set(layout.pcs),
+        "grid_present": layout.grid is not None,
+        "noise_present": layout.noise is not None,
+        "starting_par_ens_present": layout.starting_par_ens is not None,
+        "starting_obs_ens_present": layout.starting_obs_ens is not None,
+    }
+
+
 def _write_minimal_control_file(path, noptmax=3, extra_lines=()):
     """A hand-written keyword-format control file, deliberately not routed
     through ``pyemu.Pst.write`` -- ``discover``'s control-file scan is a
@@ -337,6 +376,142 @@ def test_discover_writes_nothing_to_the_run_directory(tmp_path):
     after = {
         entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
         for entry in tmp_path.iterdir()
+    }
+
+    assert after == before
+
+
+# ---------------------------------------------------------------------------
+# Task 3: a NOPTMAX <= 0 run is a normal case, proven on a real forecast
+# directory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("noptmax", [-1, 0])
+def test_noptmax_le_0_run_opens_as_a_normal_populated_layout(tmp_path, noptmax):
+    """READ-05 stated as behaviour, not absence: a NOPTMAX<=0 run comes back
+    with the same populated shape as an ordinary multi-iteration run, no
+    fallback field and no note about noptmax at all."""
+    neg_dir = tmp_path / "neg"
+    pos_dir = tmp_path / "pos"
+    neg_dir.mkdir()
+    pos_dir.mkdir()
+    make_run(neg_dir, noptmax=noptmax, iterations=(0,))
+    make_run(pos_dir, noptmax=3, iterations=(0,))
+
+    neg_layout = discover(neg_dir)
+    pos_layout = discover(pos_dir)
+
+    assert neg_layout.noptmax == noptmax
+    assert 0 in neg_layout.iterations
+    assert neg_layout.par_ens and neg_layout.obs_ens
+    assert neg_layout.grid is not None
+    assert len(neg_layout.phi) == 6
+    assert not any("noptmax" in note.lower() for note in neg_layout.notes)
+
+    # Not merely non-empty -- structurally identical to the ordinary
+    # multi-iteration run generated from the same shape of directory.
+    assert _layout_shape(neg_layout) == _layout_shape(pos_layout)
+
+
+def test_inventory_matches_every_artifact_the_generator_wrote_in_both_directions(tmp_path):
+    """Success criterion 2, as a single set-equality assertion in both
+    directions: the forward direction catches a category discovery missed,
+    the reverse direction catches discovery reporting a decoy."""
+    run = make_run(tmp_path, iterations=(0, 1))
+
+    layout = discover(tmp_path)
+    reported = set(_all_layout_paths(layout))
+
+    expected = set()
+    expected.update(run.par_ens.values())
+    expected.update(run.obs_ens.values())
+    expected.update(run.phi_paths.values())
+    expected.update(run.pdc_paths.values())
+    expected.update(run.pcs_paths.values())
+    expected.update(run.reinflate_pcs_paths.values())
+    expected.add(run.grid_path)
+    if run.starting_par_en is not None:
+        expected.add(run.starting_par_en)
+    if run.starting_obs_en is not None:
+        expected.add(run.starting_obs_en)
+
+    assert reported == expected
+    # And the decoys/template/instruction files the generator also wrote
+    # are genuinely absent from both sides of that equality.
+    for decoy in (*run.decoy_paths, run.tpl_path, run.ins_path):
+        assert decoy not in reported
+
+
+@pytest.mark.slow
+def test_forecast_run_reports_the_real_directorys_full_inventory(forecast_run):
+    """The realistic NOPTMAX<=0 case: a real forecast directory holding
+    2,167,174 observations."""
+    layout = discover(forecast_run)
+
+    assert layout.case == "escondida"
+    assert layout.noptmax == -1
+    assert 0 in layout.par_ens
+    assert layout.par_ens[0].name == "escondida.0.par.bin"
+    assert layout.grid is not None
+    assert layout.grid.name == "coarse.disv.grb"
+    assert len(layout.phi) == 6
+    assert 0 in layout.pdc
+    assert layout.pdc[0].name == "escondida.0.pdc.csv"
+
+    # Deviation from this plan's literal text, recorded in the SUMMARY: the
+    # working copy on this machine currently holds pt_pe_forecast.jcb on
+    # disk (verified directly this session), so the control file's named
+    # starting ensemble resolves as present rather than named-and-missing.
+    assert layout.starting_par_ens is not None
+    assert layout.starting_par_ens.name == "pt_pe_forecast.jcb"
+
+    all_paths = _all_layout_paths(layout)
+    assert not any("factors." in str(path) for path in all_paths)
+    assert not any("adjusted" in path.name for path in all_paths)
+
+
+@pytest.mark.slow
+def test_hm_run_reports_starting_ensembles_and_an_empty_obs_ens_mapping(hm_run):
+    """Neither benchmark working copy holds a per-iteration observation
+    ensemble -- an empty obs_ens mapping must be an ordinary outcome, not a
+    failure, or a reader that treats it as one would refuse both of the
+    developer's real runs."""
+    layout = discover(hm_run)
+
+    assert layout.noptmax == 10
+    assert 0 in layout.iterations
+    assert 1 in layout.iterations
+    assert layout.par_ens[0].name.endswith(".jcb")
+    assert layout.par_ens[1].name.endswith(".jcb")
+    assert layout.obs_ens == {}
+    assert layout.pcs_file(1) is not None
+    assert layout.pcs_file(1).name == "escondida.1.pcs.csv"
+
+    # Deviation from this plan's literal text, recorded in the SUMMARY: both
+    # prior_pe.jcb and noise_oe.jcb currently exist on disk in this working
+    # copy (verified directly this session), so both starting ensembles
+    # resolve as present rather than named-and-missing.
+    assert layout.starting_par_ens is not None
+    assert layout.starting_par_ens.name == "prior_pe.jcb"
+    assert layout.starting_obs_ens is not None
+    assert layout.starting_obs_ens.name == "noise_oe.jcb"
+
+
+@pytest.mark.slow
+def test_discover_never_writes_to_a_real_run_directory(forecast_run):
+    """The mechanical form of this plan's safety prohibition, against a
+    real benchmark directory rather than a synthetic one."""
+    before = {
+        entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+        for entry in forecast_run.iterdir()
+    }
+
+    discover(forecast_run)
+
+    after = {
+        entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+        for entry in forecast_run.iterdir()
     }
 
     assert after == before
