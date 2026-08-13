@@ -11,11 +11,27 @@ import pytest
 
 from pesto.ingest.discover import NoRunFound, discover
 
-from .fixtures import make_run, write_control_file
+from .fixtures import MISSING_FILE, make_run, write_control_file
 
 
 def _touch(path):
     path.write_bytes(b"placeholder -- discover never opens this file")
+    return path
+
+
+def _write_minimal_control_file(path, noptmax=3, extra_lines=()):
+    """A hand-written keyword-format control file, deliberately not routed
+    through ``pyemu.Pst.write`` -- ``discover``'s control-file scan is a
+    plain line-scan, and these tests exercise that scan's own key-matching
+    rules directly, independent of whatever whitespace/casing a real pyemu
+    write happens to produce."""
+    lines = [
+        "pcf version=2\n",
+        "* control data keyword\n",
+        f"noptmax                                {noptmax}\n",
+        *extra_lines,
+    ]
+    path.write_text("".join(lines))
     return path
 
 
@@ -219,3 +235,108 @@ def test_non_directory_raises_not_a_directory_error(tmp_path):
 def test_discover_docstring_names_the_read_promise():
     assert "matched" in discover.__doc__
     assert "readable" in discover.__doc__
+
+
+# ---------------------------------------------------------------------------
+# Task 2: find the starting ensembles the filesystem does not advertise
+# ---------------------------------------------------------------------------
+
+
+def test_starting_parameter_ensemble_named_by_control_file_is_found(tmp_path):
+    write_control_file(
+        tmp_path / "case.pst",
+        par_names=["p0", "p1"],
+        obs_names=["o0"],
+        pestpp_options={"ies_parameter_ensemble": "prior_pe.jcb"},
+    )
+    _touch(tmp_path / "prior_pe.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.starting_par_ens == tmp_path / "prior_pe.jcb"
+
+
+def test_abbreviated_option_spellings_resolve_identically_to_long_forms(tmp_path):
+    write_control_file(
+        tmp_path / "case.pst",
+        par_names=["p0"],
+        obs_names=["o0"],
+        pestpp_options={"ies_par_en": "myprior.jcb", "ies_obs_en": "mynoise.jcb"},
+    )
+    _touch(tmp_path / "myprior.jcb")
+    _touch(tmp_path / "mynoise.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.starting_par_ens == tmp_path / "myprior.jcb"
+    assert layout.starting_obs_ens == tmp_path / "mynoise.jcb"
+
+
+def test_option_key_matches_after_lower_casing_and_stripping(tmp_path):
+    _write_minimal_control_file(
+        tmp_path / "case.pst",
+        extra_lines=["   IES_PAR_EN      myprior.jcb\n"],
+    )
+    _touch(tmp_path / "myprior.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.starting_par_ens == tmp_path / "myprior.jcb"
+
+
+def test_starting_ensemble_named_but_absent_is_named_and_missing(tmp_path):
+    run = make_run(tmp_path, starting_par_en=MISSING_FILE, iterations=(0,))
+
+    layout = discover(tmp_path)
+
+    assert layout.starting_par_ens is None
+    assert not run.starting_par_en.exists()
+    assert any(
+        "ies_parameter_ensemble" in note and "prior_pe.jcb" in note for note in layout.notes
+    )
+
+
+def test_no_starting_ensemble_named_yields_absent_fields_and_no_note(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+
+    layout = discover(tmp_path)
+
+    assert layout.starting_par_ens is None
+    assert layout.starting_obs_ens is None
+    assert layout.notes == ()
+
+
+def test_unreadable_control_file_yields_a_layout_not_an_exception(tmp_path):
+    pst_path = tmp_path / "case.pst"
+    pst_path.write_bytes(b"pcf version=2\nnot valid utf-8: \xff\xfe\x80\x81\n")
+
+    layout = discover(tmp_path)
+
+    assert layout.noptmax is None
+    assert layout.starting_par_ens is None
+    assert layout.starting_obs_ens is None
+    assert any("case.pst" in note for note in layout.notes)
+
+
+def test_discover_is_stable_across_repeated_calls(tmp_path):
+    make_run(tmp_path, iterations=(0, 1))
+
+    assert discover(tmp_path) == discover(tmp_path)
+
+
+def test_discover_writes_nothing_to_the_run_directory(tmp_path):
+    make_run(tmp_path, iterations=(0, 1))
+
+    before = {
+        entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+        for entry in tmp_path.iterdir()
+    }
+
+    discover(tmp_path)
+
+    after = {
+        entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+        for entry in tmp_path.iterdir()
+    }
+
+    assert after == before
