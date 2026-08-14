@@ -35,3 +35,24 @@ def hm_run(benchmark_root: Path) -> Path:
     if not run_dir.is_dir():
         pytest.skip(f"benchmark run directory not found: {run_dir}")
     return run_dir
+
+
+@pytest.fixture(scope="session")
+def pl253_run(benchmark_root: Path) -> Path:
+    """The only benchmark run holding two ``.grb`` files -- ``org.grb`` and
+    ``pl253.disv.grb`` -- the real, unresolved grid-file ambiguity."""
+    run_dir = benchmark_root / "hm_20251104154614"
+    if not run_dir.is_dir():
+        pytest.skip(f"benchmark run directory not found: {run_dir}")
+    return run_dir
+
+
+@pytest.fixture(scope="session")
+def restarted_run(benchmark_root: Path) -> Path:
+    """A restarted run whose control file names
+    ``ies_restart_observation_ensemble``, a file genuinely absent from disk
+    -- the real named-and-missing case for the restart option."""
+    run_dir = benchmark_root / "hm_20250406221554_restarted"
+    if not run_dir.is_dir():
+        pytest.skip(f"benchmark run directory not found: {run_dir}")
+    return run_dir
