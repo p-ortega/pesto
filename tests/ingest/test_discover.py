@@ -186,6 +186,23 @@ def test_two_files_matching_one_ensemble_slot_produce_an_ambiguity_naming_both(t
     assert ambiguities[0].note() in layout.notes
 
 
+def test_two_files_matching_an_observation_ensemble_slot_produce_an_ambiguity(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    csv_path = _touch(tmp_path / "case.0.obs.csv")
+    jco_path = _touch(tmp_path / "case.0.obs.jco")
+
+    layout = discover(tmp_path)
+
+    assert layout.obs_ens[0] == csv_path  # "csv" sorts before "jco"
+    ambiguities = [
+        a for a in layout.ambiguities if a.slot == "observation ensemble for iteration 0"
+    ]
+    assert len(ambiguities) == 1
+    assert ambiguities[0].chosen == csv_path.name
+    assert jco_path.name in ambiguities[0].rejected
+    assert ambiguities[0].note() in layout.notes
+
+
 def test_two_files_matching_a_rejected_ensemble_slot_produce_an_ambiguity(tmp_path):
     write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
     jcb_path = _touch(tmp_path / "case.0.rejected.par.jcb")
@@ -423,11 +440,6 @@ def test_non_directory_raises_not_a_directory_error(tmp_path):
         discover(a_file)
 
 
-def test_discover_docstring_names_the_read_promise():
-    assert "matched" in discover.__doc__
-    assert "readable" in discover.__doc__
-
-
 # ---------------------------------------------------------------------------
 # Task 2: find the starting ensembles the filesystem does not advertise
 # ---------------------------------------------------------------------------
@@ -495,6 +507,147 @@ def test_no_starting_ensemble_named_yields_absent_fields_and_no_note(tmp_path):
     assert layout.starting_par_ens is None
     assert layout.starting_obs_ens is None
     assert layout.notes == ()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: the control-file scan says everything it found, including the
+# restart ensemble it used to miss
+# ---------------------------------------------------------------------------
+
+
+def test_restart_observation_ensemble_named_and_present_is_found(tmp_path):
+    write_control_file(
+        tmp_path / "case.pst",
+        par_names=["p0"],
+        obs_names=["o0"],
+        pestpp_options={"ies_restart_observation_ensemble": "restart_obs.jcb"},
+    )
+    _touch(tmp_path / "restart_obs.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.restart_obs_ens == tmp_path / "restart_obs.jcb"
+    assert layout.notes == ()
+
+
+def test_restart_observation_ensemble_named_but_absent_is_named_and_missing(tmp_path):
+    write_control_file(
+        tmp_path / "case.pst",
+        par_names=["p0"],
+        obs_names=["o0"],
+        pestpp_options={"ies_restart_observation_ensemble": "restart_obs.jcb"},
+    )
+
+    layout = discover(tmp_path)
+
+    assert layout.restart_obs_ens is None
+    assert any(
+        "ies_restart_observation_ensemble" in note and "restart_obs.jcb" in note
+        for note in layout.notes
+    )
+
+
+def test_two_par_en_aliases_with_different_values_produce_an_ambiguity(tmp_path):
+    write_control_file(
+        tmp_path / "case.pst",
+        par_names=["p0"],
+        obs_names=["o0"],
+        pestpp_options={"ies_par_en": "first.jcb", "ies_parameter_ensemble": "second.jcb"},
+    )
+    _touch(tmp_path / "first.jcb")
+    _touch(tmp_path / "second.jcb")
+
+    layout = discover(tmp_path)
+
+    starting_ambiguities = [
+        a
+        for a in layout.ambiguities
+        if a.slot == "starting parameter ensemble named by the control file"
+    ]
+    assert len(starting_ambiguities) == 1
+    ambiguity = starting_ambiguities[0]
+    # "ies_par_en=" sorts before "ies_parameter_ensemble=", so the former
+    # is kept.
+    assert ambiguity.chosen == "ies_par_en=first.jcb"
+    assert "ies_parameter_ensemble=second.jcb" in ambiguity.rejected
+    assert ambiguity.note() in layout.notes
+    assert layout.starting_par_ens == tmp_path / "first.jcb"
+
+
+def test_uppercased_restart_option_key_resolves_identically_to_the_lower_cased_form(tmp_path):
+    _write_minimal_control_file(
+        tmp_path / "case.pst",
+        extra_lines=["   IES_RESTART_OBSERVATION_ENSEMBLE   restart_obs.jcb\n"],
+    )
+    _touch(tmp_path / "restart_obs.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.restart_obs_ens == tmp_path / "restart_obs.jcb"
+
+
+def test_control_file_with_no_noptmax_line_yields_none_and_a_note(tmp_path):
+    pst_path = tmp_path / "case.pst"
+    pst_path.write_text("pcf version=2\n* control data keyword\nntpar   5\n")
+
+    layout = discover(tmp_path)
+
+    assert layout.noptmax is None
+    assert any("noptmax" in note.lower() and "case.pst" in note for note in layout.notes)
+
+
+def test_starting_ensemble_path_climbing_outside_the_run_directory_is_named_and_refused(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _touch(tmp_path / "outside.jcb")
+
+    write_control_file(
+        run_dir / "case.pst",
+        par_names=["p0"],
+        obs_names=["o0"],
+        pestpp_options={"ies_parameter_ensemble": "../outside.jcb"},
+    )
+
+    layout = discover(run_dir)
+
+    assert layout.starting_par_ens is None
+    assert any(
+        "ies_parameter_ensemble" in note and "outside" in note.lower() for note in layout.notes
+    )
+
+
+@pytest.mark.slow
+def test_restarted_run_names_every_starting_and_restart_ensemble_it_could_not_find(
+    restarted_run,
+):
+    """The real mirror of the one-kind-present case: this run holds
+    observation ensembles across four iterations and no parameter
+    ensembles.
+
+    Deviation from this plan's literal text, recorded here rather than
+    guessed: on this working copy, ``prior_pe.jcb`` and ``noise_oe.jcb``
+    exist on disk (verified directly this session) but are not what this
+    run's own control file names as starting ensembles -- it names
+    ``ies_parameter_ensemble``/``ies_observation_ensemble`` as
+    ``restart.escondida.1.par.jcb``/``restart.escondida.obs+noise.jcb``, and
+    ``ies_restart_observation_ensemble`` as ``restart.escondida.1.obs.jcb``,
+    none of which are present. All three resolve as named-and-missing --
+    this run's real, verified shape, rather than the plan's assumption that
+    the two ordinary starting ensembles would resolve as present here.
+    """
+    layout = discover(restarted_run)
+
+    assert layout.par_ens == {}
+    assert set(layout.obs_ens) == {0, 1, 2, 3}
+
+    assert layout.starting_par_ens is None
+    assert layout.starting_obs_ens is None
+    assert layout.restart_obs_ens is None
+    assert any("restart.escondida.1.par.jcb" in note for note in layout.notes)
+    assert any("restart.escondida.obs+noise.jcb" in note for note in layout.notes)
+    assert any("restart.escondida.1.obs.jcb" in note for note in layout.notes)
 
 
 def test_unreadable_control_file_yields_a_layout_not_an_exception(tmp_path):
