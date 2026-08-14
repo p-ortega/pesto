@@ -132,6 +132,37 @@ def test_grid_file_found_despite_no_case_prefix(tmp_path):
     assert not layout.grid.name.startswith("escondida")
 
 
+def test_two_grid_files_keep_the_sorted_first_and_name_the_other(tmp_path):
+    run = make_run(tmp_path, case="escondida", iterations=(0,))
+    # "coarse.disv.grb" (run.grid_path) sorts before this second candidate.
+    second_grid = _touch(tmp_path / "zzz_other.grb")
+
+    layout = discover(tmp_path)
+
+    assert layout.grid == run.grid_path
+    grid_ambiguities = [a for a in layout.ambiguities if a.slot == "grid file"]
+    assert len(grid_ambiguities) == 1
+    ambiguity = grid_ambiguities[0]
+    assert ambiguity.chosen == run.grid_path.name
+    assert second_grid.name in ambiguity.rejected
+    assert ambiguity.note() in layout.notes
+
+
+@pytest.mark.slow
+def test_pl253_run_names_the_grid_file_it_did_not_keep(pl253_run):
+    """The real gap 02-06-SUMMARY.md recorded: two .grb files exist, and the
+    caller must be told about the one that was not kept."""
+    layout = discover(pl253_run)
+
+    assert layout.grid is not None
+    assert layout.grid.name == "org.grb"
+    grid_ambiguities = [a for a in layout.ambiguities if a.slot == "grid file"]
+    assert len(grid_ambiguities) == 1
+    ambiguity = grid_ambiguities[0]
+    assert "pl253.disv.grb" in ambiguity.rejected
+    assert ambiguity.note() in layout.notes
+
+
 def test_pdc_and_pcs_files_found_per_iteration_including_reinflate_variant(tmp_path):
     run = make_run(tmp_path, iterations=(0, 1))
 

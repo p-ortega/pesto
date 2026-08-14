@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from pesto.ingest.choices import Ambiguity, choose_one
+
 _NOPTMAX_RE = re.compile(r"^\s*noptmax\s+(-?\d+)", re.IGNORECASE)
 _MACOS_RESOURCE_FORK_PREFIX = "._"
 
@@ -70,6 +72,11 @@ class RunLayout:
     own save path can emit in place of a number; the two never collide.
     Named accessor methods are provided so callers do not have to remember
     each mapping's key shape.
+
+    ``ambiguities`` carries the choices this read made among recognised
+    files that matched the same slot -- one entry per slot with more than
+    one candidate, each also rendered into ``notes`` so the structured and
+    prose channels never disagree.
     """
 
     run_dir: Path
@@ -89,6 +96,7 @@ class RunLayout:
     grid: Path | None
     noise: Path | None
     notes: tuple[str, ...]
+    ambiguities: tuple[Ambiguity, ...]
 
     def par_ensemble(self, iteration: IterationKey) -> Path | None:
         return self.par_ens.get(iteration)
@@ -313,8 +321,9 @@ def discover(run_dir: Path) -> RunLayout:
     phi: dict[str, Path] = {}
     pdc: dict[IterationKey, Path] = {}
     pcs: dict[tuple[IterationKey, str], Path] = {}
-    grid: Path | None = None
+    grid_candidates: list[tuple[str, Path]] = []
     noise: Path | None = None
+    ambiguities: list[Ambiguity] = []
 
     for candidate in sorted(run_path.iterdir()):
         name = candidate.name
@@ -357,8 +366,15 @@ def discover(run_dir: Path) -> RunLayout:
             pdc[iter_key] = candidate
             continue
 
-        if grid is None and candidate.suffix.lower() == _GRID_EXT:
-            grid = candidate
+        if candidate.suffix.lower() == _GRID_EXT:
+            grid_candidates.append((name, candidate))
+
+    grid: Path | None = None
+    if grid_candidates:
+        grid, grid_ambiguity = choose_one("grid file", grid_candidates)
+        if grid_ambiguity is not None:
+            ambiguities.append(grid_ambiguity)
+            notes.append(grid_ambiguity.note())
 
     iterations = tuple(
         sorted(k for k in set(par_ens) | set(obs_ens) if isinstance(k, int))
@@ -382,4 +398,5 @@ def discover(run_dir: Path) -> RunLayout:
         grid=grid,
         noise=noise,
         notes=tuple(notes),
+        ambiguities=tuple(ambiguities),
     )
