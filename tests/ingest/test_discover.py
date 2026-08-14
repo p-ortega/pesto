@@ -163,6 +163,127 @@ def test_pl253_run_names_the_grid_file_it_did_not_keep(pl253_run):
     assert ambiguity.note() in layout.notes
 
 
+# ---------------------------------------------------------------------------
+# Every slot resolves through the same call, and says what it rejected --
+# one policy, one direction, at every ambiguity site discover() has.
+# ---------------------------------------------------------------------------
+
+
+def test_two_files_matching_one_ensemble_slot_produce_an_ambiguity_naming_both(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    bin_path = _touch(tmp_path / "case.0.par.bin")
+    jcb_path = _touch(tmp_path / "case.0.par.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.par_ens[0] == bin_path  # "bin" sorts before "jcb"
+    ambiguities = [
+        a for a in layout.ambiguities if a.slot == "parameter ensemble for iteration 0"
+    ]
+    assert len(ambiguities) == 1
+    assert ambiguities[0].chosen == bin_path.name
+    assert jcb_path.name in ambiguities[0].rejected
+    assert ambiguities[0].note() in layout.notes
+
+
+def test_two_files_matching_a_rejected_ensemble_slot_produce_an_ambiguity(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    jcb_path = _touch(tmp_path / "case.0.rejected.par.jcb")
+    jco_path = _touch(tmp_path / "case.0.rejected.par.jco")
+
+    layout = discover(tmp_path)
+
+    assert layout.rejected_par_ens[0] == jcb_path  # "jcb" sorts before "jco"
+    ambiguities = [
+        a for a in layout.ambiguities if a.slot == "rejected parameter ensemble for iteration 0"
+    ]
+    assert len(ambiguities) == 1
+    assert ambiguities[0].chosen == jcb_path.name
+    assert jco_path.name in ambiguities[0].rejected
+    assert ambiguities[0].note() in layout.notes
+
+
+def test_two_files_matching_the_noise_ensemble_slot_produce_an_ambiguity(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    bin_path = _touch(tmp_path / "case.obs+noise.bin")
+    jcb_path = _touch(tmp_path / "case.obs+noise.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.noise == bin_path  # "bin" sorts before "jcb"
+    ambiguities = [a for a in layout.ambiguities if a.slot == "measurement-noise ensemble"]
+    assert len(ambiguities) == 1
+    assert ambiguities[0].chosen == bin_path.name
+    assert jcb_path.name in ambiguities[0].rejected
+    assert ambiguities[0].note() in layout.notes
+
+
+def test_two_control_files_produce_an_ambiguity_and_case_comes_from_the_chosen_one(tmp_path):
+    write_control_file(tmp_path / "aaa.pst", par_names=["p0"], obs_names=["o0"])
+    write_control_file(tmp_path / "zzz.pst", par_names=["p0"], obs_names=["o0"])
+
+    layout = discover(tmp_path)
+
+    assert layout.case == "aaa"
+    control_ambiguities = [a for a in layout.ambiguities if a.slot == "control file"]
+    assert len(control_ambiguities) == 1
+    assert control_ambiguities[0].chosen == "aaa.pst"
+    assert "zzz.pst" in control_ambiguities[0].rejected
+    assert control_ambiguities[0].note() in layout.notes
+
+
+@pytest.mark.parametrize(
+    "build_candidates",
+    [
+        lambda root: (
+            _touch(root / "case.0.par.bin"),
+            _touch(root / "case.0.par.jcb"),
+            "parameter ensemble for iteration 0",
+        ),
+        lambda root: (
+            _touch(root / "case.0.rejected.obs.jcb"),
+            _touch(root / "case.0.rejected.obs.jco"),
+            "rejected observation ensemble for iteration 0",
+        ),
+        lambda root: (
+            _touch(root / "case.obs+noise.bin"),
+            _touch(root / "case.obs+noise.jcb"),
+            "measurement-noise ensemble",
+        ),
+    ],
+)
+def test_every_ambiguous_slot_keeps_the_sorted_first_candidate_never_the_sorted_last(
+    tmp_path, build_candidates
+):
+    """The single-policy claim, directly: for every one of these categories
+    the kept file is the sorted-first candidate, never the sorted-last, so
+    no site tie-breaks in the opposite direction."""
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    first, second, slot = build_candidates(tmp_path)
+
+    layout = discover(tmp_path)
+
+    ambiguities = [a for a in layout.ambiguities if a.slot == slot]
+    assert len(ambiguities) == 1
+    assert ambiguities[0].chosen == first.name
+    assert second.name in ambiguities[0].rejected
+
+
+def test_every_ambiguity_note_appears_in_layout_notes(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(tmp_path / "case.0.par.bin")
+    _touch(tmp_path / "case.0.par.jcb")
+    _touch(tmp_path / "zzz_other.grb")
+    _touch(tmp_path / "coarse.disv.grb")
+
+    layout = discover(tmp_path)
+
+    assert len(layout.ambiguities) >= 1
+    assert len(layout.ambiguities) <= len(layout.notes)
+    for ambiguity in layout.ambiguities:
+        assert ambiguity.note() in layout.notes
+
+
 def test_pdc_and_pcs_files_found_per_iteration_including_reinflate_variant(tmp_path):
     run = make_run(tmp_path, iterations=(0, 1))
 
@@ -502,22 +623,56 @@ def test_forecast_run_reports_the_real_directorys_full_inventory(forecast_run):
     assert not any("adjusted" in path.name for path in all_paths)
 
 
+def test_a_run_holding_only_one_ensemble_kind_reports_the_other_as_empty_in_both_directions(
+    tmp_path,
+):
+    """The reader fact the old, stale hm_run assertion was reaching for --
+    proven synthetically so completing local benchmark data can never break
+    it again."""
+    par_only = tmp_path / "par_only"
+    obs_only = tmp_path / "obs_only"
+    par_only.mkdir()
+    obs_only.mkdir()
+
+    write_control_file(par_only / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(par_only / "case.0.par.jcb")
+
+    write_control_file(obs_only / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(obs_only / "case.0.obs.jcb")
+
+    par_layout = discover(par_only)
+    obs_layout = discover(obs_only)
+
+    assert 0 in par_layout.par_ens
+    assert par_layout.obs_ens == {}
+    assert 0 in par_layout.iterations
+    assert par_layout.notes == ()
+
+    assert 0 in obs_layout.obs_ens
+    assert obs_layout.par_ens == {}
+    assert 0 in obs_layout.iterations
+    assert obs_layout.notes == ()
+
+
 @pytest.mark.slow
-def test_hm_run_reports_starting_ensembles_and_an_empty_obs_ens_mapping(hm_run):
-    """Neither benchmark working copy holds a per-iteration observation
-    ensemble -- an empty obs_ens mapping must be an ordinary outcome, not a
-    failure, or a reader that treats it as one would refuse both of the
-    developer's real runs."""
+def test_hm_run_names_the_stray_control_file_it_did_not_keep(hm_run):
+    """What the reader is responsible for on this real directory: its own
+    inventory, and -- new -- the second, 70 MB *.pst file this directory
+    genuinely holds, named rather than silently discarded."""
     layout = discover(hm_run)
 
+    assert layout.case == "escondida"
     assert layout.noptmax == 10
     assert 0 in layout.iterations
     assert 1 in layout.iterations
-    assert layout.par_ens[0].name.endswith(".jcb")
-    assert layout.par_ens[1].name.endswith(".jcb")
-    assert layout.obs_ens == {}
+    assert set(layout.par_ens) <= set(layout.iterations)
     assert layout.pcs_file(1) is not None
     assert layout.pcs_file(1).name == "escondida.1.pcs.csv"
+
+    control_ambiguities = [a for a in layout.ambiguities if a.slot == "control file"]
+    assert len(control_ambiguities) == 1
+    assert "tmp_d.pst" in control_ambiguities[0].rejected
+    assert control_ambiguities[0].note() in layout.notes
 
     # Deviation from this plan's literal text, recorded in the SUMMARY: both
     # prior_pe.jcb and noise_oe.jcb currently exist on disk in this working
