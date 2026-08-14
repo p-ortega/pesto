@@ -255,6 +255,18 @@ def discover(run_dir: Path) -> RunLayout:
     lets a later read failure surface as a named, per-artifact fact instead
     of a surprise.
 
+    The scan collects every candidate that matches a slot -- the control
+    file itself, each per-iteration ensemble, each phi/pdc/pcs entry, the
+    grid file, the measurement-noise ensemble -- and a single resolution
+    pass afterwards is the only place a candidate becomes part of the
+    result, through :func:`pesto.ingest.choices.choose_one`. Whenever more
+    than one candidate matched the same slot, the chosen one and the
+    rejected ones both land in ``ambiguities`` and in ``notes`` -- the
+    control file itself is not exempt: two of the four run directories in
+    the developer's own benchmark set hold a second ``*.pst`` file (a 70 MB
+    ``tmp_d.pst`` left behind by a separate pyemu run), and the run's own
+    control file wins only because its name sorts first.
+
     The control file is also scanned, as plain text, for the starting
     ensembles pestpp-ies reads as input: the ``ies_par_en``/
     ``ies_parameter_ensemble`` and ``ies_obs_en``/``ies_observation_ensemble``
@@ -282,12 +294,21 @@ def discover(run_dir: Path) -> RunLayout:
     pst_matches = sorted(run_path.glob("*.pst"))
     if not pst_matches:
         raise NoRunFound(f"no control file (*.pst) found in {run_path}")
-    pst_path = pst_matches[0]
+
+    notes: list[str] = []
+    ambiguities: list[Ambiguity] = []
+
+    pst_path, control_ambiguity = choose_one(
+        "control file", [(p.name, p) for p in pst_matches]
+    )
+    if control_ambiguity is not None:
+        ambiguities.append(control_ambiguity)
+        notes.append(control_ambiguity.note())
     case = pst_path.stem
 
     scan = _scan_control_file(pst_path)
     noptmax = scan.noptmax
-    notes: list[str] = list(scan.notes)
+    notes.extend(scan.notes)
     starting_par_ens = _resolve_starting_ensemble(
         run_path, scan.par_en_key, scan.par_en_name, notes
     )
@@ -314,16 +335,19 @@ def discover(run_dir: Path) -> RunLayout:
         rf"^{escaped_case}\.{re.escape('obs+noise')}\.(?:{_ENS_EXTS})$", re.IGNORECASE
     )
 
-    par_ens: dict[IterationKey, Path] = {}
-    obs_ens: dict[IterationKey, Path] = {}
-    rejected_par_ens: dict[IterationKey, Path] = {}
-    rejected_obs_ens: dict[IterationKey, Path] = {}
-    phi: dict[str, Path] = {}
-    pdc: dict[IterationKey, Path] = {}
-    pcs: dict[tuple[IterationKey, str], Path] = {}
+    # Every bucket below accumulates candidates only -- (display_name, path)
+    # pairs in the order the scan saw them. Nothing here is a result: the
+    # resolution pass after the loop is the only place a candidate becomes
+    # one, through choose_one.
+    par_ens_candidates: dict[IterationKey, list[tuple[str, Path]]] = {}
+    obs_ens_candidates: dict[IterationKey, list[tuple[str, Path]]] = {}
+    rejected_par_ens_candidates: dict[IterationKey, list[tuple[str, Path]]] = {}
+    rejected_obs_ens_candidates: dict[IterationKey, list[tuple[str, Path]]] = {}
+    phi_candidates: dict[str, list[tuple[str, Path]]] = {}
+    pdc_candidates: dict[IterationKey, list[tuple[str, Path]]] = {}
+    pcs_candidates: dict[tuple[IterationKey, str], list[tuple[str, Path]]] = {}
     grid_candidates: list[tuple[str, Path]] = []
-    noise: Path | None = None
-    ambiguities: list[Ambiguity] = []
+    noise_candidates: list[tuple[str, Path]] = []
 
     for candidate in sorted(run_path.iterdir()):
         name = candidate.name
@@ -337,44 +361,126 @@ def discover(run_dir: Path) -> RunLayout:
             iter_key = _parse_iteration(match.group("iter"))
             kind = match.group("kind").lower()
             if match.group("tag"):
-                target = rejected_par_ens if kind == "par" else rejected_obs_ens
+                target = rejected_par_ens_candidates if kind == "par" else rejected_obs_ens_candidates
             else:
-                target = par_ens if kind == "par" else obs_ens
-            target[iter_key] = candidate
+                target = par_ens_candidates if kind == "par" else obs_ens_candidates
+            target.setdefault(iter_key, []).append((name, candidate))
             continue
 
         match = phi_re.match(name)
         if match:
-            phi[match.group("kind").lower()] = candidate
+            phi_candidates.setdefault(match.group("kind").lower(), []).append((name, candidate))
             continue
 
         match = noise_re.match(name)
         if match:
-            noise = candidate
+            noise_candidates.append((name, candidate))
             continue
 
         match = pcs_re.match(name)
         if match:
             iter_key = _parse_iteration(match.group("iter"))
             infix = (match.group("infix") or "").lower()
-            pcs[(iter_key, infix)] = candidate
+            pcs_candidates.setdefault((iter_key, infix), []).append((name, candidate))
             continue
 
         match = pdc_re.match(name)
         if match:
             iter_key = _parse_iteration(match.group("iter"))
-            pdc[iter_key] = candidate
+            pdc_candidates.setdefault(iter_key, []).append((name, candidate))
             continue
 
         if candidate.suffix.lower() == _GRID_EXT:
             grid_candidates.append((name, candidate))
 
+    # Resolution pass: one call to choose_one per slot, in a deterministic
+    # order (sorted by str(key), since iteration keys mix int and str), so
+    # ambiguities comes out in the same order on every call.
+    par_ens: dict[IterationKey, Path] = {}
+    for key in sorted(par_ens_candidates, key=str):
+        value, ambiguity = choose_one(
+            f"parameter ensemble for iteration {key}", par_ens_candidates[key]
+        )
+        par_ens[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    obs_ens: dict[IterationKey, Path] = {}
+    for key in sorted(obs_ens_candidates, key=str):
+        value, ambiguity = choose_one(
+            f"observation ensemble for iteration {key}", obs_ens_candidates[key]
+        )
+        obs_ens[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    rejected_par_ens: dict[IterationKey, Path] = {}
+    for key in sorted(rejected_par_ens_candidates, key=str):
+        value, ambiguity = choose_one(
+            f"rejected parameter ensemble for iteration {key}",
+            rejected_par_ens_candidates[key],
+        )
+        rejected_par_ens[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    rejected_obs_ens: dict[IterationKey, Path] = {}
+    for key in sorted(rejected_obs_ens_candidates, key=str):
+        value, ambiguity = choose_one(
+            f"rejected observation ensemble for iteration {key}",
+            rejected_obs_ens_candidates[key],
+        )
+        rejected_obs_ens[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    phi_result: dict[str, Path] = {}
+    for key in sorted(phi_candidates, key=str):
+        value, ambiguity = choose_one(f"{key} phi file", phi_candidates[key])
+        phi_result[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    pdc: dict[IterationKey, Path] = {}
+    for key in sorted(pdc_candidates, key=str):
+        value, ambiguity = choose_one(f"pdc file for iteration {key}", pdc_candidates[key])
+        pdc[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    pcs: dict[tuple[IterationKey, str], Path] = {}
+    for key in sorted(pcs_candidates, key=str):
+        iter_key, infix = key
+        slot = (
+            f"pcs file for iteration {iter_key} ({infix} variant)"
+            if infix
+            else f"pcs file for iteration {iter_key}"
+        )
+        value, ambiguity = choose_one(slot, pcs_candidates[key])
+        pcs[key] = value
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
     grid: Path | None = None
     if grid_candidates:
-        grid, grid_ambiguity = choose_one("grid file", grid_candidates)
-        if grid_ambiguity is not None:
-            ambiguities.append(grid_ambiguity)
-            notes.append(grid_ambiguity.note())
+        grid, ambiguity = choose_one("grid file", grid_candidates)
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
+    noise: Path | None = None
+    if noise_candidates:
+        noise, ambiguity = choose_one("measurement-noise ensemble", noise_candidates)
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
 
     iterations = tuple(
         sorted(k for k in set(par_ens) | set(obs_ens) if isinstance(k, int))
@@ -392,7 +498,7 @@ def discover(run_dir: Path) -> RunLayout:
         rejected_obs_ens=rejected_obs_ens,
         starting_par_ens=starting_par_ens,
         starting_obs_ens=starting_obs_ens,
-        phi=phi,
+        phi=phi_result,
         pdc=pdc,
         pcs=pcs,
         grid=grid,
