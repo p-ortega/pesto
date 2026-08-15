@@ -350,18 +350,25 @@ def read_ensemble(
     ``kind`` states what the caller believes ``path`` holds, and is
     validated first, before any file is opened. ``kind="par"`` (the default)
     is the only path this function actually reads. ``kind="obs"`` refuses
-    immediately with a ``ReadFailure`` saying plainly that pesto does not
-    read observation ensemble values yet, that orientation can currently
-    only be validated against the control file's parameter table, and that
-    the file was still found and named -- so the caller learns a stated
-    boundary rather than inferring a corrupt or unreadable file (02-REVIEW.md
+    without reading the file's contents, saying plainly that pesto does not
+    read observation ensemble values yet and that orientation can currently
+    only be validated against the control file's parameter table (02-REVIEW.md
     CR-01; reading observation ensemble content is out of M0's scope, and
-    ``kind`` is the seam a later milestone widens). Any value other than
-    ``"par"`` or ``"obs"`` refuses with a ``ReadFailure`` naming the value
-    given and the two values this function accepts -- an unrecognised
-    ``kind`` is never silently treated as ``"par"``, because a caller that
-    believes it validated something it did not is worse off than one that
-    got a plain refusal.
+    ``kind`` is the seam a later milestone widens).
+
+    That refusal states whether the file is on disk rather than assuming it,
+    because the two cases are different answers: a file that exists is one
+    M0 can report by existence and name, while a path that is not there is
+    a file M0 can report nothing about at all. Deciding this costs one
+    read-only stat and no open (02-REVIEW.md IN-01 -- claiming a file "was
+    found and named" without looking is an answer given where the function
+    could not tell).
+
+    Any value other than ``"par"`` or ``"obs"`` refuses with a
+    ``ReadFailure`` naming the value given and the two values this function
+    accepts -- an unrecognised ``kind`` is never silently treated as
+    ``"par"``, because a caller that believes it validated something it did
+    not is worse off than one that got a plain refusal.
 
     Orientation is decided by dimensions first, names second, and refused
     with a stated reason when neither decides -- see
@@ -378,15 +385,30 @@ def read_ensemble(
     file_path = Path(path)
 
     if kind == "obs":
+        if file_path.exists():
+            found = (
+                f"{file_path.name} was found and named, but pesto "
+                f"does not read observation ensemble values yet"
+            )
+            advice = (
+                "Its existence and name are everything M0 reports about it; "
+                'kind="obs" is the seam that widens once observation ensemble '
+                "reading is supported."
+            )
+        else:
+            found = (
+                f"{file_path.name} is not on disk at {file_path}, and pesto "
+                f"does not read observation ensemble values yet"
+            )
+            advice = (
+                "M0 reports nothing about this file: it was neither found nor read."
+            )
         return ReadFailure(
             name=file_path.name,
             path=str(file_path),
             reason=(
-                f"{file_path.name} was found and named, but pesto does not read "
-                f"observation ensemble values yet -- orientation can only be validated "
-                f'against the control file\'s parameter table in M0. Pass kind="par" once '
-                f"observation ensemble reading is supported, or treat this file's "
-                f"existence and name as everything M0 reports about it."
+                f"{found} -- orientation can only be validated against the "
+                f"control file's parameter table in M0. {advice}"
             ),
         )
     if kind != "par":
