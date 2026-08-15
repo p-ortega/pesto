@@ -21,7 +21,7 @@ from pesto.ingest.control import ControlTables
 from pesto.ingest.failures import ReadFailure
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class EnsembleData:
     """One ensemble file's values and provenance together (D-02), so a
     caller can report e.g. "read from dense .bin, variable-major" without
@@ -30,10 +30,16 @@ class EnsembleData:
     ``permutation``, applied as a fancy index into ``entity_names``, yields
     the control-file order (D-07); it is ``None`` when no control tables
     were supplied to map against. ``entity_names`` itself is always left in
-    file order -- nothing in the read path reorders the values. Note: this
-    dataclass holds a ``numpy.ndarray`` field, so two instances must be
-    compared field-by-field rather than with ``==`` (array equality is not
-    a single bool).
+    file order -- nothing in the read path reorders the values.
+
+    Two instances compare with ``==``: ``values`` is compared with
+    ``numpy.array_equal``, every other field with plain ``==`` (02-REVIEW.md
+    IN-03 -- the dataclass-generated ``__eq__`` would otherwise raise, since
+    ``numpy.ndarray.__eq__`` returns an array rather than a bool). Comparing
+    against a non-``EnsembleData`` object returns ``False`` rather than
+    raising. This record is unhashable -- ``__hash__`` is ``None`` -- because
+    it holds a mutable array; a hash derived from mutable data would either
+    raise or lie about identity.
     """
 
     values: np.ndarray
@@ -47,6 +53,25 @@ class EnsembleData:
     permutation: tuple[int, ...] | None
     hash_ordered: bool
     notes: tuple[str, ...]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EnsembleData):
+            return NotImplemented
+        return (
+            np.array_equal(self.values, other.values)
+            and self.real_names == other.real_names
+            and self.entity_names == other.entity_names
+            and self.source_path == other.source_path
+            and self.on_disk_format == other.on_disk_format
+            and self.orientation == other.orientation
+            and self.orientation_decided_by == other.orientation_decided_by
+            and self.contiguous == other.contiguous
+            and self.permutation == other.permutation
+            and self.hash_ordered == other.hash_ordered
+            and self.notes == other.notes
+        )
+
+    __hash__ = None
 
 
 def sniff(path: Path) -> str:
@@ -231,6 +256,13 @@ def _decide_orientation(
     D-06. When names decide nothing either, this function raises
     ``_OrientationUndecidable`` naming the counts and axes that were
     tried, rather than guessing or silently transposing.
+
+    This function validates against ``tables.par`` only, by design, never
+    ``tables.obs`` -- that is a stated boundary, not an oversight. Reading
+    observation ensemble content is out of scope for M0 (REQUIREMENTS.md Out
+    of Scope); ``read_ensemble``'s ``kind`` argument is the seam a later
+    milestone widens to let a caller validate against the observation table
+    instead, without this function needing to guess which table applies.
     """
     if tables is None:
         return values, row_names, col_names, "realization_major", "assumed", True, None, False
@@ -266,9 +298,14 @@ def _decide_orientation(
             decided_by = "names"
         else:
             raise _OrientationUndecidable(
-                f"ncol={ncol} matches neither {n_par} parameters nor any name in the "
-                f"control file (nrow={nrow}, column name match={col_fraction:.0%}, "
-                f"row name match={row_fraction:.0%})"
+                f"ncol={ncol}, nrow={nrow}: neither axis's count matches the {n_par} "
+                f"parameters in the control file's parameter table, which is the only "
+                f"table this comparison was made against (column name match="
+                f"{col_fraction:.0%}, row name match={row_fraction:.0%}). An observation "
+                f"ensemble would look exactly like this -- pesto does not read observation "
+                f"ensemble values yet, so if this file holds observations, pass "
+                f'kind="obs" to read_ensemble to get that stated directly rather than '
+                f"this refusal."
             )
 
     if entity_is_columns:
@@ -300,13 +337,31 @@ def _decide_orientation(
     )
 
 
-def read_ensemble(path: Path, tables: "ControlTables | None" = None) -> "EnsembleData | ReadFailure":
+def read_ensemble(
+    path: Path, tables: "ControlTables | None" = None, kind: str = "par"
+) -> "EnsembleData | ReadFailure":
     """Read ``path`` into a realization-major float32 array.
 
     Names are taken verbatim from the file and never renumbered, sorted or
     replaced by control-file order -- this is READ-04, and it is the
     difference between reporting realization ``34`` and reporting
     realization ``1``.
+
+    ``kind`` states what the caller believes ``path`` holds, and is
+    validated first, before any file is opened. ``kind="par"`` (the default)
+    is the only path this function actually reads. ``kind="obs"`` refuses
+    immediately with a ``ReadFailure`` saying plainly that pesto does not
+    read observation ensemble values yet, that orientation can currently
+    only be validated against the control file's parameter table, and that
+    the file was still found and named -- so the caller learns a stated
+    boundary rather than inferring a corrupt or unreadable file (02-REVIEW.md
+    CR-01; reading observation ensemble content is out of M0's scope, and
+    ``kind`` is the seam a later milestone widens). Any value other than
+    ``"par"`` or ``"obs"`` refuses with a ``ReadFailure`` naming the value
+    given and the two values this function accepts -- an unrecognised
+    ``kind`` is never silently treated as ``"par"``, because a caller that
+    believes it validated something it did not is worse off than one that
+    got a plain refusal.
 
     Orientation is decided by dimensions first, names second, and refused
     with a stated reason when neither decides -- see
@@ -321,6 +376,29 @@ def read_ensemble(path: Path, tables: "ControlTables | None" = None) -> "Ensembl
     truncates, or re-timestamps the file it is pointed at.
     """
     file_path = Path(path)
+
+    if kind == "obs":
+        return ReadFailure(
+            name=file_path.name,
+            path=str(file_path),
+            reason=(
+                f"{file_path.name} was found and named, but pesto does not read "
+                f"observation ensemble values yet -- orientation can only be validated "
+                f'against the control file\'s parameter table in M0. Pass kind="par" once '
+                f"observation ensemble reading is supported, or treat this file's "
+                f"existence and name as everything M0 reports about it."
+            ),
+        )
+    if kind != "par":
+        return ReadFailure(
+            name=file_path.name,
+            path=str(file_path),
+            reason=(
+                f"read_ensemble was given kind={kind!r}, which it does not recognise -- "
+                f'it accepts only "par" or "obs".'
+            ),
+        )
+
     notes: list[str] = []
     try:
         on_disk_format = sniff(file_path)
