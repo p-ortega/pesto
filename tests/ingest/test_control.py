@@ -82,6 +82,30 @@ def test_whitespace_duplicate_column_collision_keeps_correctly_named_column(tmp_
     assert ambiguity.note() in tables.notes
 
 
+def test_three_way_column_collision_is_one_ambiguity_naming_all_three(tmp_path):
+    pst_path, obs_data_path = write_control_file(tmp_path / "case.pst", _PAR_NAMES, _OBS_NAMES)
+    df = pd.read_csv(obs_data_path)
+    original_id_values = df["id"].tolist()
+    df[" id"] = [-1] * len(df)
+    df["id "] = [-2] * len(df)
+    df.to_csv(obs_data_path, index=False)
+
+    tables = read_control(pst_path)
+
+    assert isinstance(tables, ControlTables)
+    assert [c for c in tables.obs.columns if c == "id"] == ["id"]
+    assert tables.obs["id"].tolist() == original_id_values
+
+    id_ambiguities = [a for a in tables.ambiguities if a.slot == "observation column 'id'"]
+    # One Ambiguity for the whole three-way collision, not one per pair.
+    assert len(id_ambiguities) == 1
+    ambiguity = id_ambiguities[0]
+    assert ambiguity.chosen == "id"
+    assert set(ambiguity.rejected) == {" id", "id "}
+    assert "3 candidates matched" in ambiguity.note()
+    assert ambiguity.note() in tables.notes
+
+
 def test_category_dtype_for_group_and_transform_columns(tmp_path):
     pst_path, _ = write_control_file(tmp_path / "case.pst", _PAR_NAMES, _OBS_NAMES)
 
