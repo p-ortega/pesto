@@ -111,50 +111,57 @@ def _normalize_columns(
     anything is not a choice among candidates, so it becomes a note only,
     never an ``Ambiguity``.
 
-    When two raw names normalise to the same identifier, the column that was
-    already correctly named is kept and the one that needed repairing is
-    dropped; the choice is recorded as an ``Ambiguity`` (``policy``
-    ``COLUMN_COLLISION_POLICY``), and its ``note()`` is what appears in
-    ``notes`` -- the two channels cannot drift apart because one renders the
-    other. A stripped duplicate silently overwriting the correctly named
-    column would be a worse outcome than either column being absent, because
-    the caller would have no way to tell which values it was looking at.
-    When neither raw name is already correctly named, the first one
-    encountered is kept -- the second half of ``COLUMN_COLLISION_POLICY``.
+    When two or more raw names normalise to the same identifier, every one of
+    them is grouped under that identifier before anything is resolved, so a
+    three-way (or wider) collision becomes exactly one ``Ambiguity`` naming
+    every rejected column, not one per pair. The column that was already
+    correctly named is kept and every other one is dropped; the choice is
+    recorded as an ``Ambiguity`` (``policy`` ``COLUMN_COLLISION_POLICY``), and
+    its ``note()`` is what appears in ``notes`` -- the two channels cannot
+    drift apart because one renders the other. A stripped duplicate silently
+    overwriting the correctly named column would be a worse outcome than
+    either column being absent, because the caller would have no way to tell
+    which values it was looking at. When none of the colliding raw names is
+    already correctly named, the first one encountered is kept -- the second
+    half of ``COLUMN_COLLISION_POLICY``.
     """
     columns = list(df.columns)
     cleaned_names = [str(raw).strip().lower() for raw in columns]
 
-    keep_index: dict[str, int] = {}
-    for idx, (raw, cleaned) in enumerate(zip(columns, cleaned_names)):
+    for raw, cleaned in zip(columns, cleaned_names):
         if raw != cleaned:
             notes.append(f"{label} column {raw!r} was stripped/lowered to {cleaned!r}")
 
-        if cleaned not in keep_index:
-            keep_index[cleaned] = idx
+    # Group every column index by its cleaned name first, in first-appearance
+    # order, so a name that three (or more) raw columns collide on is
+    # resolved once, as one Ambiguity naming every rejected candidate --
+    # the same shape choose_one uses for file candidates, not one Ambiguity
+    # per pair.
+    groups: dict[str, list[int]] = {}
+    for idx, cleaned in enumerate(cleaned_names):
+        groups.setdefault(cleaned, []).append(idx)
+
+    kept_indices: list[int] = []
+    for cleaned, indices in groups.items():
+        if len(indices) == 1:
+            kept_indices.append(indices[0])
             continue
 
-        existing_idx = keep_index[cleaned]
-        existing_raw = columns[existing_idx]
-        existing_is_clean = existing_raw == cleaned
-        this_is_clean = raw == cleaned
-        if this_is_clean and not existing_is_clean:
-            keep_index[cleaned] = idx
-            kept_raw = raw
-            rejected_raw = existing_raw
-        else:
-            kept_raw = existing_raw
-            rejected_raw = raw
+        already_clean = [i for i in indices if columns[i] == cleaned]
+        keep = already_clean[0] if already_clean else indices[0]
+        kept_indices.append(keep)
+
+        rejected_raw = tuple(columns[i] for i in indices if i != keep)
         ambiguity = Ambiguity(
             slot=f"{label} column {cleaned!r}",
-            chosen=kept_raw,
-            rejected=(rejected_raw,),
+            chosen=columns[keep],
+            rejected=rejected_raw,
             policy=COLUMN_COLLISION_POLICY,
         )
         ambiguities.append(ambiguity)
         notes.append(ambiguity.note())
 
-    kept_indices = sorted(keep_index.values())
+    kept_indices = sorted(kept_indices)
     kept_columns = [columns[i] for i in kept_indices]
     result = df.loc[:, kept_columns].copy()
     result.columns = [cleaned_names[i] for i in kept_indices]
