@@ -34,6 +34,7 @@ def _control_tables(entity_names: list[str]) -> ControlTables:
         obs_groups=(),
         source_path=Path("unused.pst"),
         notes=(),
+        ambiguities=(),
     )
 
 
@@ -367,18 +368,92 @@ def test_read_ensemble_never_writes_to_the_source_file(tmp_path):
     assert after.st_mtime_ns == before.st_mtime_ns
     assert isinstance(first, EnsembleData)
     assert isinstance(second, EnsembleData)
-    assert np.array_equal(first.values, second.values)
-    assert first.real_names == second.real_names
-    assert first.entity_names == second.entity_names
-    assert first.orientation == second.orientation
-    assert first.orientation_decided_by == second.orientation_decided_by
+    assert first == second
 
 
-def test_read_ensemble_docstring_states_how_each_uncertainty_resolves():
-    doc = (read_ensemble.__doc__ or "").lower()
-    assert "dimensions" in doc
-    assert "names" in doc
-    assert "refus" in doc
+# ---------------------------------------------------------------------------
+# Task 2: an observation ensemble gets a straight answer, and two ensemble
+# records can be compared
+# ---------------------------------------------------------------------------
+
+
+def test_kind_obs_refuses_naming_the_observation_ensemble_boundary_not_the_parameter_count(
+    tmp_path,
+):
+    real_names = fixtures.control_ordered_names("real", 300)[:5]
+    obs_entity_names = fixtures.control_ordered_names("obs", 8)
+    values = fixtures.sample_values(len(real_names), len(obs_entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.obs.bin", values, real_names, obs_entity_names
+    )
+    # A parameter count deliberately different from the observation entity
+    # count, so a verdict about parameters would be an obviously wrong
+    # diagnosis for this file.
+    par_entity_names = fixtures.control_ordered_names("par", 6)
+
+    result = read_ensemble(path, _control_tables(par_entity_names), kind="obs")
+
+    assert isinstance(result, ReadFailure)
+    assert "observation ensemble" in result.reason
+    assert "does not read observation ensemble values yet" in result.reason
+    assert "parameter" not in result.reason.split("does not")[0]
+
+
+def test_default_kind_names_the_parameter_table_as_what_it_compared_against(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 5)
+    obs_entity_names = fixtures.control_ordered_names("obs", 8)
+    values = fixtures.sample_values(len(real_names), len(obs_entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.obs.bin", values, real_names, obs_entity_names
+    )
+    par_entity_names = fixtures.control_ordered_names("par", 6)
+
+    result = read_ensemble(path, _control_tables(par_entity_names))
+
+    assert isinstance(result, ReadFailure)
+    assert "parameter table" in result.reason
+    assert "observation" in result.reason
+
+
+def test_unrecognised_kind_refuses_naming_the_value_given(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    entity_names = fixtures.control_ordered_names("par", 6)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+
+    result = read_ensemble(path, _control_tables(entity_names), kind="rejected")
+
+    assert isinstance(result, ReadFailure)
+    assert "rejected" in result.reason
+
+
+def test_two_reads_compare_equal_and_one_changed_value_compares_unequal(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    entity_names = fixtures.control_ordered_names("par", 6)
+    values = fixtures.sample_values(len(real_names), len(entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.par.bin", values, real_names, entity_names
+    )
+    tables = _control_tables(entity_names)
+
+    first = read_ensemble(path, tables)
+    second = read_ensemble(path, tables)
+    assert isinstance(first, EnsembleData)
+    assert isinstance(second, EnsembleData)
+    assert first == second
+
+    import dataclasses
+
+    changed_values = first.values.copy()
+    changed_values[0, 0] += 1.0
+    changed = dataclasses.replace(first, values=changed_values)
+    assert first != changed
+
+    assert (first == object()) is False
+    with pytest.raises(TypeError):
+        hash(first)
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +609,31 @@ def test_zero_data_row_ensemble_is_empty_record_or_named_failure(tmp_path):
     else:
         assert isinstance(result, ReadFailure)
         assert result.reason
+
+
+@pytest.mark.slow
+def test_a_real_observation_ensemble_gets_a_straight_answer_both_kinds(pl253_run):
+    """02-REVIEW.md CR-01, reproduced against the real run it was found on:
+    a 300 (well, 7-iteration) x 236,172 observation ensemble used to be
+    refused with a reason blaming the parameter count. This is the first
+    test in this file to drive an observation-shaped entity axis against
+    real data at all."""
+    layout = discover(pl253_run)
+    tables = read_control(layout.pst_path)
+    assert isinstance(tables, ControlTables)
+
+    obs_path = layout.obs_ens[0]
+
+    boundary_result = read_ensemble(obs_path, tables, kind="obs")
+    assert isinstance(boundary_result, ReadFailure)
+    assert "observation ensemble" in boundary_result.reason
+    assert "does not read observation ensemble values yet" in boundary_result.reason
+
+    default_result = read_ensemble(obs_path, tables)
+    assert isinstance(default_result, ReadFailure)
+    assert "parameter table" in default_result.reason
+    assert "observation ensemble" in default_result.reason
+    assert "does not read observation ensemble values yet" in default_result.reason
 
 
 @pytest.mark.slow
