@@ -592,7 +592,18 @@ def discover(run_dir: Path) -> RunLayout:
             notes.append(ambiguity.note())
 
     iterations = tuple(
-        sorted(k for k in set(par_ens) | set(obs_ens) if isinstance(k, int))
+        sorted(
+            k
+            for k in (
+                set(par_ens)
+                | set(obs_ens)
+                | set(rejected_par_ens)
+                | set(rejected_obs_ens)
+                | set(pdc)
+                | {iter_key for iter_key, _ in pcs}
+            )
+            if isinstance(k, int)
+        )
     )
 
     return RunLayout(
