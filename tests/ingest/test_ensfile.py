@@ -399,6 +399,43 @@ def test_kind_obs_refuses_naming_the_observation_ensemble_boundary_not_the_param
     assert "parameter" not in result.reason.split("does not")[0]
 
 
+def test_kind_obs_does_not_claim_a_missing_file_was_found(tmp_path):
+    """02-REVIEW.md IN-01: the kind="obs" refusal used to say the file "was
+    found and named" without ever looking, so a path that is not on disk got
+    reported as present. Existence is stated, not assumed."""
+    par_entity_names = fixtures.control_ordered_names("par", 6)
+    missing = tmp_path / "never-written.obs.bin"
+    assert not missing.exists()
+
+    result = read_ensemble(missing, _control_tables(par_entity_names), kind="obs")
+
+    assert isinstance(result, ReadFailure)
+    assert "was found" not in result.reason
+    assert "is not on disk" in result.reason
+    assert str(missing) in result.reason
+    # The boundary is still the reason it refused, not a bare missing-file error.
+    assert "does not read observation ensemble values yet" in result.reason
+
+
+def test_kind_obs_refusal_points_at_obs_not_par_for_the_widened_seam(tmp_path):
+    """The refusal used to advise passing kind="par" "once observation
+    ensemble reading is supported" -- the wrong argument at exactly the
+    moment the advice becomes actionable. It names kind="obs"."""
+    real_names = fixtures.control_ordered_names("real", 4)
+    obs_entity_names = fixtures.control_ordered_names("obs", 8)
+    values = fixtures.sample_values(len(real_names), len(obs_entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.obs.bin", values, real_names, obs_entity_names
+    )
+    par_entity_names = fixtures.control_ordered_names("par", 6)
+
+    result = read_ensemble(path, _control_tables(par_entity_names), kind="obs")
+
+    assert isinstance(result, ReadFailure)
+    assert 'kind="obs"' in result.reason
+    assert 'kind="par"' not in result.reason
+
+
 def test_default_kind_names_the_parameter_table_as_what_it_compared_against(tmp_path):
     real_names = fixtures.control_ordered_names("real", 5)
     obs_entity_names = fixtures.control_ordered_names("obs", 8)
