@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from pesto.ingest.choices import Ambiguity
 from pesto.ingest.failures import ReadFailure
 
 PAR_CORE = ("parnme", "pargp", "parlbnd", "parubnd", "partrans")
@@ -55,6 +56,22 @@ _OBS_CATEGORY_COLUMNS = ("obgnme",)
 _PAR_FLOAT_COLUMNS = ("parlbnd", "parubnd")
 _OBS_FLOAT_COLUMNS = ("weight",)
 
+COLUMN_COLLISION_POLICY = (
+    "when two raw column names normalise to the same identifier, the column "
+    "that was already correctly named is kept; when neither was already "
+    "correct, the first one encountered is kept"
+)
+"""The column-collision tie-break, stated once. Deliberately a separate
+constant from ``choices.AMBIGUITY_POLICY``, not the same rule reworded: for
+two *files* competing for one slot there is no discriminator between them, so
+sorted order is the only honest tie-break available. For two *columns*
+competing for one name there is a real discriminator -- one of them did not
+need repairing -- and the order their filenames happen to sort in has no
+bearing on which column is correct. Stating two named policies, each at the
+site that needs it, is the fix for 02-REVIEW.md WR-03; the defect was two
+*implied* policies pointing in opposite, undocumented directions, not the
+existence of two policies."""
+
 
 @dataclass(frozen=True)
 class ControlTables:
@@ -64,6 +81,11 @@ class ControlTables:
     ``par_groups`` and ``obs_groups`` list the distinct group names each
     table carries, in first-appearance order -- not sorted, because ordering
     in this project comes from the file rather than from a comparison.
+
+    ``ambiguities`` carries the choices this read made among competing
+    columns -- currently just the column-collision case ``_normalize_columns``
+    resolves -- each also rendered into ``notes`` so the two channels cannot
+    drift apart.
     """
 
     par: pd.DataFrame
@@ -72,9 +94,12 @@ class ControlTables:
     obs_groups: tuple[str, ...]
     source_path: Path
     notes: tuple[str, ...]
+    ambiguities: tuple[Ambiguity, ...]
 
 
-def _normalize_columns(df: pd.DataFrame, notes: list[str], label: str) -> pd.DataFrame:
+def _normalize_columns(
+    df: pd.DataFrame, notes: list[str], label: str, ambiguities: list[Ambiguity]
+) -> pd.DataFrame:
     """Strip and lower every column name, keeping control-file column order
     and resolving any collision the normalisation creates.
 
@@ -82,16 +107,20 @@ def _normalize_columns(df: pd.DataFrame, notes: list[str], label: str) -> pd.Dat
     them, so a header written with a leading space survives as a distinct
     column an exact-match lookup misses silently (RESEARCH.md Pitfall 2). A
     note is appended naming every column whose raw name differed from its
-    normalised name.
+    normalised name -- but a repaired name that did not collide with
+    anything is not a choice among candidates, so it becomes a note only,
+    never an ``Ambiguity``.
 
     When two raw names normalise to the same identifier, the column that was
     already correctly named is kept and the one that needed repairing is
-    dropped; both raw names are recorded in a note. A stripped duplicate
-    silently overwriting the correctly named column would be a worse outcome
-    than either column being absent, because the caller would have no way to
-    tell which values it was looking at. When neither raw name is already
-    correctly named, the first one encountered is kept -- an arbitrary but
-    documented tie-break, and a note still records the collision.
+    dropped; the choice is recorded as an ``Ambiguity`` (``policy``
+    ``COLUMN_COLLISION_POLICY``), and its ``note()`` is what appears in
+    ``notes`` -- the two channels cannot drift apart because one renders the
+    other. A stripped duplicate silently overwriting the correctly named
+    column would be a worse outcome than either column being absent, because
+    the caller would have no way to tell which values it was looking at.
+    When neither raw name is already correctly named, the first one
+    encountered is kept -- the second half of ``COLUMN_COLLISION_POLICY``.
     """
     columns = list(df.columns)
     cleaned_names = [str(raw).strip().lower() for raw in columns]
@@ -112,12 +141,18 @@ def _normalize_columns(df: pd.DataFrame, notes: list[str], label: str) -> pd.Dat
         if this_is_clean and not existing_is_clean:
             keep_index[cleaned] = idx
             kept_raw = raw
+            rejected_raw = existing_raw
         else:
             kept_raw = existing_raw
-        notes.append(
-            f"{label} columns {existing_raw!r} and {raw!r} both normalise to "
-            f"{cleaned!r}; kept {kept_raw!r}"
+            rejected_raw = raw
+        ambiguity = Ambiguity(
+            slot=f"{label} column {cleaned!r}",
+            chosen=kept_raw,
+            rejected=(rejected_raw,),
+            policy=COLUMN_COLLISION_POLICY,
         )
+        ambiguities.append(ambiguity)
+        notes.append(ambiguity.note())
 
     kept_indices = sorted(keep_index.values())
     kept_columns = [columns[i] for i in kept_indices]
@@ -147,19 +182,41 @@ def _distinct_in_order(df: pd.DataFrame, column: str) -> tuple[str, ...]:
 
 
 def _tighten_dtypes(
-    df: pd.DataFrame, category_columns: tuple[str, ...], float_columns: tuple[str, ...]
+    df: pd.DataFrame,
+    category_columns: tuple[str, ...],
+    float_columns: tuple[str, ...],
+    notes: list[str],
+    label: str,
 ) -> pd.DataFrame:
     """Tighten dtypes per D-04, as the last step: category for group/
     transform columns, float for bounds and weight. Columns absent from the
     frame are left alone -- there is nothing to tighten. Every other
-    column's dtype is left exactly as pandas inferred it."""
+    column's dtype is left exactly as pandas inferred it.
+
+    A value ``pandas`` cannot read as a number is reported, not blanked: the
+    null mask is compared before and after ``pd.to_numeric``, and every
+    conversion that created a new null appends a note naming ``label``, the
+    column and the number of rows affected, saying the values could not be
+    read as a number and are recorded as absent. ``errors="coerce"`` still
+    turns the unreadable value into ``NaN`` -- one bad value costs a note,
+    not the whole control file -- but the note is what makes that NaN an
+    honest, traceable absence instead of a fabricated one.
+    """
     df = df.copy()
     for column in category_columns:
         if column in df.columns:
             df[column] = df[column].astype("category")
     for column in float_columns:
         if column in df.columns:
-            df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
+            before_null = df[column].isna()
+            converted = pd.to_numeric(df[column], errors="coerce").astype("float64")
+            new_nulls = int((converted.isna() & ~before_null).sum())
+            if new_nulls:
+                notes.append(
+                    f"{label} column {column!r} had {new_nulls} value(s) that could not be "
+                    f"read as a number; recorded as absent"
+                )
+            df[column] = converted
     return df
 
 
@@ -186,8 +243,9 @@ def read_control(pst_path: Path) -> "ControlTables | ReadFailure":
         pst = pyemu.Pst(str(path))
 
         notes: list[str] = []
-        par = _normalize_columns(pst.parameter_data, notes, "parameter")
-        obs = _normalize_columns(pst.observation_data, notes, "observation")
+        ambiguities: list[Ambiguity] = []
+        par = _normalize_columns(pst.parameter_data, notes, "parameter", ambiguities)
+        obs = _normalize_columns(pst.observation_data, notes, "observation", ambiguities)
 
         _note_missing_core_columns(par, PAR_CORE, notes, "parameter")
         _note_missing_core_columns(obs, OBS_CORE, notes, "observation")
@@ -195,8 +253,8 @@ def read_control(pst_path: Path) -> "ControlTables | ReadFailure":
         par_groups = _distinct_in_order(par, "pargp")
         obs_groups = _distinct_in_order(obs, "obgnme")
 
-        par = _tighten_dtypes(par, _PAR_CATEGORY_COLUMNS, _PAR_FLOAT_COLUMNS)
-        obs = _tighten_dtypes(obs, _OBS_CATEGORY_COLUMNS, _OBS_FLOAT_COLUMNS)
+        par = _tighten_dtypes(par, _PAR_CATEGORY_COLUMNS, _PAR_FLOAT_COLUMNS, notes, "parameter")
+        obs = _tighten_dtypes(obs, _OBS_CATEGORY_COLUMNS, _OBS_FLOAT_COLUMNS, notes, "observation")
 
         return ControlTables(
             par=par,
@@ -205,6 +263,7 @@ def read_control(pst_path: Path) -> "ControlTables | ReadFailure":
             obs_groups=obs_groups,
             source_path=path,
             notes=tuple(notes),
+            ambiguities=tuple(ambiguities),
         )
     except Exception as exc:
         return ReadFailure(
