@@ -417,6 +417,16 @@ def test_macos_resource_fork_files_are_skipped(tmp_path):
     assert len(layout.par_ens) == 1
 
 
+def test_macos_resource_fork_stub_control_file_is_skipped(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(tmp_path / "._case.pst")
+
+    layout = discover(tmp_path)
+
+    assert layout.case == "case"
+    assert not any("control file" in note for note in layout.notes)
+
+
 def test_directory_with_control_file_and_no_ensembles_returns_empty_mappings(tmp_path):
     write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
 

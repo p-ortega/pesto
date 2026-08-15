@@ -389,7 +389,11 @@ def discover(run_dir: Path) -> RunLayout:
     if not run_path.is_dir():
         raise NotADirectoryError(f"not a directory: {run_path}")
 
-    pst_matches = sorted(run_path.glob("*.pst"))
+    pst_matches = sorted(
+        p
+        for p in run_path.glob("*.pst")
+        if not p.name.startswith(_MACOS_RESOURCE_FORK_PREFIX) and p.is_file()
+    )
     if not pst_matches:
         raise NoRunFound(f"no control file (*.pst) found in {run_path}")
 
