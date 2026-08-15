@@ -14,9 +14,12 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from pesto.ingest.choices import Ambiguity
 from pesto.ingest.control import (
+    COLUMN_COLLISION_POLICY,
     ControlTables,
     _note_missing_core_columns,
+    _tighten_dtypes,
     read_control,
 )
 from pesto.ingest.failures import ReadFailure
@@ -50,6 +53,9 @@ def test_leading_space_header_is_stripped_and_noted(tmp_path):
     assert isinstance(tables, ControlTables)
     assert "standard_deviation" in tables.obs.columns
     assert any("standard_deviation" in note for note in tables.notes)
+    # A stripped-but-not-colliding column is a repair, not a choice among
+    # candidates: it must produce a note and no Ambiguity.
+    assert not any("standard_deviation" in a.slot for a in tables.ambiguities)
 
 
 def test_whitespace_duplicate_column_collision_keeps_correctly_named_column(tmp_path):
@@ -66,6 +72,14 @@ def test_whitespace_duplicate_column_collision_keeps_correctly_named_column(tmp_
     assert id_columns == ["id"]
     assert tables.obs["id"].tolist() == original_id_values
     assert any("'id'" in note and " id" in note for note in tables.notes)
+
+    id_ambiguities = [a for a in tables.ambiguities if a.slot == "observation column 'id'"]
+    assert len(id_ambiguities) == 1
+    ambiguity = id_ambiguities[0]
+    assert {ambiguity.chosen, *ambiguity.rejected} == {"id", " id"}
+    assert ambiguity.chosen == "id"
+    assert ambiguity.policy == COLUMN_COLLISION_POLICY
+    assert ambiguity.note() in tables.notes
 
 
 def test_category_dtype_for_group_and_transform_columns(tmp_path):
@@ -143,6 +157,39 @@ def test_note_missing_core_columns_notes_absence_rather_than_fabricating():
     assert "parubnd" not in df.columns
 
 
+def test_tighten_dtypes_reports_an_unparsable_bound_instead_of_blanking_it_silently():
+    """A defensive unit test, called directly on the helper rather than
+    through ``read_control``: the installed pyemu (1.7.0) raises before
+    ``read_control`` ever reaches this line when ``parlbnd`` holds a
+    non-numeric string (verified directly this session, both for ``parlbnd``
+    and ``weight``), so the only honest way to prove this helper is safe
+    when that upstream guarantee ever loosens is to call it directly
+    (02-REVIEW.md WR-02)."""
+    df = pd.DataFrame({"parlbnd": ["1.0", "nope", "3.0"]})
+    notes: list[str] = []
+
+    result = _tighten_dtypes(df, (), ("parlbnd",), notes, "parameter")
+
+    assert pd.api.types.is_float_dtype(result["parlbnd"].dtype)
+    assert int(result["parlbnd"].isna().sum()) == 1
+    assert any("parlbnd" in note and "1" in note for note in notes)
+
+
+def test_tighten_dtypes_coerces_every_unparsable_weight_and_counts_them_in_one_note():
+    """The same helper, a different column and label, and more than one bad
+    value -- proves the row count in the note is the count of values
+    ``to_numeric`` actually had to coerce, not a fixed "one bad value"
+    message."""
+    df = pd.DataFrame({"weight": ["1.0", "nope", "also-not-a-number", "4.0"]})
+    notes: list[str] = []
+
+    result = _tighten_dtypes(df, (), ("weight",), notes, "observation")
+
+    assert pd.api.types.is_float_dtype(result["weight"].dtype)
+    assert int(result["weight"].isna().sum()) == 2
+    assert any("weight" in note and "2" in note for note in notes)
+
+
 # ---------------------------------------------------------------------------
 # Task 2: the read-only guarantee, the repeat-read guarantee, the empty
 # observation section, and real PstFrom control files.
@@ -179,6 +226,7 @@ def test_two_successive_reads_return_equal_tables(tmp_path):
     pd.testing.assert_frame_equal(first.par, second.par)
     pd.testing.assert_frame_equal(first.obs, second.obs)
     assert first.notes == second.notes
+    assert first.ambiguities == second.ambiguities
 
 
 def test_empty_observation_section_is_an_empty_typed_table_or_a_named_failure(tmp_path):
