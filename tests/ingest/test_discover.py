@@ -333,6 +333,18 @@ def test_rejected_ensemble_recognised_as_distinct_artifact(tmp_path):
     assert rejected_par not in layout.par_ens.values()
 
 
+def test_iterations_includes_one_seen_only_in_rejected_ensemble_or_pdc_pcs(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(tmp_path / "case.5.rejected.par.jcb")
+    _touch(tmp_path / "case.5.pdc.csv")
+
+    layout = discover(tmp_path)
+
+    assert 5 in layout.iterations
+    assert layout.rejected_par_ens[5] is not None
+    assert layout.pdc[5] is not None
+
+
 def test_decoy_files_sharing_an_ensemble_extension_are_not_reported_as_ensembles(tmp_path):
     run = make_run(tmp_path, case="case", iterations=(0,))
 
