@@ -41,6 +41,8 @@ _RULE_COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ij-single-layer", ("i", "j")),
 )
 
+_NAME_COLUMNS = ("pname", "pargp", "parnme")
+
 
 def _numeric(block: pd.DataFrame, column: str) -> np.ndarray:
     """``block[column]`` coerced to numeric; a value that cannot be read as
@@ -94,20 +96,43 @@ def _candidate_idx_pair(block: pd.DataFrame, shape: GridShape):
     return cell, layer
 
 
-def _candidate_ij_name_layer(
-    name: object, block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]
-):
+def _layer_from_names(block: pd.DataFrame, pattern: re.Pattern[str]) -> np.ndarray | None:
+    """Search ``pname``, ``pargp`` and ``parnme`` in that order for a layer
+    number -- matching the locked rule table's "layer parsed from ``pname``
+    or ``pargp``" wording (03-RESEARCH.md Pattern 4) plus the M0 reference's
+    ``parnme`` fallback.
+
+    ``ControlTables.par`` never carries ``parnme`` as a column -- it is the
+    table's own index -- so the reference implementation's bare
+    ``frame["parnme"]`` lookup silently finds nothing and moves on, even
+    though the name is right there on every row. The ``parnme`` case here
+    reaches into ``block.index`` instead, when that index is named
+    ``parnme``, so the rule can do what the table actually says.
+    """
+    for column in _NAME_COLUMNS:
+        if column in block.columns:
+            values = block[column].astype(str)
+        elif column == "parnme" and block.index.name == "parnme":
+            values = block.index.to_series().astype(str)
+        else:
+            continue
+        found = values.str.extract(pattern, expand=False)
+        if found.notna().any():
+            numbers = pd.to_numeric(found, errors="coerce")
+            # Names are conventionally one-based; layer indices are
+            # zero-based.
+            return (numbers - 1).to_numpy(dtype=np.float64)
+    return None
+
+
+def _candidate_ij_name_layer(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
     if shape.ncol is None or not {"i", "j"}.issubset(block.columns):
         return None
-    match = pattern.search(str(name))
-    if match is None:
-        return None
-    layer_value = int(match.group(1)) - 1
-    if layer_value < 0:
+    layer = _layer_from_names(block, pattern)
+    if layer is None:
         return None
     i = _numeric(block, "i")
     j = _numeric(block, "j")
-    layer = np.full(len(block), float(layer_value))
     return i * shape.ncol + j, layer
 
 
@@ -120,7 +145,7 @@ def _candidate_ij_single_layer(block: pd.DataFrame, shape: GridShape):
     return i * shape.ncol + j, layer
 
 
-def _resolve_group(name: object, block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
+def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
     """Try each rule in ``RULE_NAMES`` order; the first one whose columns
     are present and that produces at least one in-range hit takes the
     whole group. Rows that rule still cannot place stay ``-1`` within it --
@@ -129,7 +154,7 @@ def _resolve_group(name: object, block: pd.DataFrame, shape: GridShape, pattern:
         ("kij", _candidate_kij(block, shape)),
         ("idx-triple", _candidate_idx_triple(block, shape)),
         ("idx-pair", _candidate_idx_pair(block, shape)),
-        ("ij-name-layer", _candidate_ij_name_layer(name, block, shape, pattern)),
+        ("ij-name-layer", _candidate_ij_name_layer(block, shape, pattern)),
         ("ij-single-layer", _candidate_ij_single_layer(block, shape)),
     )
     for rule, candidate in candidates:
@@ -196,7 +221,7 @@ def resolve(
 
     for name, block in par.groupby("pargp", sort=True, observed=True):
         positions = row_position.loc[block.index].to_numpy()
-        rule, candidate_cell, candidate_layer, valid = _resolve_group(name, block, shape, pattern)
+        rule, candidate_cell, candidate_layer, valid = _resolve_group(block, shape, pattern)
         total = len(block)
 
         if rule == UNMAPPED:
