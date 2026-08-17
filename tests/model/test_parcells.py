@@ -713,3 +713,75 @@ def test_the_summary_counts_parameters_from_the_table_not_from_the_groups_it_tra
     summary = _summarize((GroupResolution(group="g", rule=UNMAPPED, mapped=0, total=1),), 2)
 
     assert "every one of the" not in summary
+
+
+# ---------------------------------------------------------------------------
+# Task 3: a fractional placement value is refused and named, never
+# truncated toward zero.
+# ---------------------------------------------------------------------------
+
+
+def test_a_fractional_placement_value_is_refused_and_named_rather_than_truncated():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1.9]}, parnme=["par:a"]
+    )
+
+    result = resolve(par, shape)
+
+    assert _placements(result)["par:a"] == (-1, -1)
+    group = _group(result, "g")
+    assert group.mapped == 0
+    matching_notes = [n for n in result.notes if "g" in n and "'idx1'" in n]
+    assert len(matching_notes) == 1
+
+
+def test_a_fractional_i_that_multiplies_into_a_whole_cell_number_is_still_refused():
+    """``ncol = 2`` and ``i = 1.5``: ``i * ncol + j`` is ``1.5 * 2 + 0 == 3.0``,
+    a whole number that a check on the combined value alone would accept --
+    the case a per-column check is needed to catch."""
+    shape = GridShape(ncpl=20, nlay=2, nrow=5, ncol=2)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1.5], "idx2": [0]},
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert _placements(result)["par:a"] == (-1, -1)
+
+
+def test_a_whole_number_written_as_a_float_is_accepted():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [2.0]}, parnme=["par:a"]
+    )
+
+    result = resolve(par, shape)
+
+    assert _placements(result)["par:a"] == (2, 0)
+    group = _group(result, "g")
+    assert group.mapped == 1
+    assert not any("g" in n for n in result.notes)
+
+
+def test_a_rule_whose_only_hits_are_fractional_yields_to_the_next_rule_with_a_whole_one():
+    shape = GridShape(ncpl=20, nlay=3, nrow=4, ncol=5)
+    par = _par_frame(
+        {
+            "pargp": ["fallthrough"],
+            "k": [1.5],
+            "i": [1.5],
+            "j": [1.5],
+            "idx0": [1],
+            "idx1": [1],
+            "idx2": [2],
+        },
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    group = _group(result, "fallthrough")
+    assert group.rule == "idx-triple"
+    assert _placements(result)["par:a"] == (1 * 5 + 2, 1)
