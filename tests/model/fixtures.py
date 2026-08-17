@@ -101,6 +101,7 @@ def write_disv_grb(
     nlay: int = 2,
     inactive_layer: int = 1,
     inactive_cell: int = 1,
+    inconsistent_botm: bool = False,
 ) -> Path:
     """Write a small synthetic DISV binary grid file to ``path`` and return
     it.
@@ -111,6 +112,14 @@ def write_disv_grb(
     zero-based) -- one file that exercises unshared-vertex expansion,
     mixed-sided fanning, model-coordinate placement and a non-trivial
     ``idomain`` at once.
+
+    ``inconsistent_botm=True`` declares ``BOTM`` with length ``ncpl``
+    instead of ``nlay * ncpl`` -- every individual record is still well
+    formed, but the grid they describe is not. Against flopy's own reader,
+    this is the shape that reaches "parsed but no model grid could be
+    built": flopy's ``_set_modelgrid`` catches the resulting reshape
+    failure internally, prints a line, and leaves the model grid unset,
+    never raising to its caller.
     """
     path = Path(path)
     ncpl = len(_RINGS)
@@ -167,7 +176,11 @@ def write_disv_grb(
         ("YORIGIN", "DOUBLE", 0, (), yorigin),
         ("ANGROT", "DOUBLE", 0, (), angrot),
         ("TOP", "DOUBLE", 1, (ncpl,), top),
-        ("BOTM", "DOUBLE", 1, (nlay * ncpl,), botm.reshape(-1)),
+        (
+            ("BOTM", "DOUBLE", 1, (ncpl,), botm[0])
+            if inconsistent_botm
+            else ("BOTM", "DOUBLE", 1, (nlay * ncpl,), botm.reshape(-1))
+        ),
         ("VERTICES", "DOUBLE", 2, (2, nvert), verts_array),
         ("CELLX", "DOUBLE", 1, (ncpl,), cellx),
         ("CELLY", "DOUBLE", 1, (ncpl,), celly),
