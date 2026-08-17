@@ -1,4 +1,23 @@
-"""The MODFLOW 6 implementation of the spatial adapter."""
+"""The MODFLOW 6 implementation of the spatial adapter.
+
+The binary grid file (``.grb``) gives the same interface for a structured
+(DIS) grid and a vertex (DISV) grid, so the mesh is built identically
+whatever the discretisation; only the grid shape differs, and a vertex grid
+has no rows or columns at all.
+
+This module keeps two rules. First, construction opens nothing and loads no
+heavy library -- pesto's launcher opens a browser window before ``flopy`` or
+``pyemu`` finish importing, and this adapter must not be the thing that
+makes that wait longer. Second, a grid file that cannot be read costs one
+failure record, never an exception at the caller and never a
+plausible-looking empty mesh; three real failure modes -- a truncated or
+corrupt file, a file flopy parses into no grid at all, and a grid that
+declares no cells -- are each handled explicitly for this reason.
+
+``crs()`` returns nothing for every run this milestone can open, because the
+binary grid format carries no projection field and ``pyproj`` is not a
+project dependency. That is a normal state here, not an error.
+"""
 
 from __future__ import annotations
 

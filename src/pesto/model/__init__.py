@@ -1,4 +1,30 @@
-"""The boundary between pesto and any particular kind of model."""
+"""The boundary between pesto and any particular kind of model.
+
+Everything downstream of this package talks about a mesh, a grid shape,
+placed parameters and an optional projection; nothing outside this package
+knows what MODFLOW is. That is what makes a second model type one new file
+rather than a rewrite of the whole app.
+
+The ``SpatialAdapter`` protocol below reconciles two drafts that disagreed:
+design spec section 2's surface, which carries ``locate_par`` and
+``locate_obs``, and the M0 plan's Task 8 draft, which carries ``grid_shape``
+and ``idomain``. Merging them costs one deliberate subtraction --
+``layers()`` is dropped, because it is redundant with ``grid_shape().nlay``
+-- and one amendment: ``locate_par`` returns the frozen ``ParCells`` record
+rather than a plain DataFrame, per decision D-02, because a DataFrame has
+nowhere to put which rule placed each parameter group.
+
+``MeshBuffers`` keeps ``positions`` and ``cell_index`` as float32 while
+``indices`` is uint32. An element buffer -- the triangle index list a GPU
+reads to know which vertices form each triangle -- has to be an unsigned
+integer type; that is what the drawing call requires. A per-vertex
+attribute such as ``cell_index`` is conventionally float on a GPU, and
+float32 represents every whole number up to 16,777,216 exactly, which
+comfortably covers any grid this project reads. Vertices are duplicated
+once per cell rather than shared between neighbours, because a shared
+vertex cannot carry a value that differs by cell, and the renderer needs
+every vertex it draws to know which cell it belongs to.
+"""
 
 from __future__ import annotations
 
