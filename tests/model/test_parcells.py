@@ -19,8 +19,16 @@ from __future__ import annotations
 
 import pandas as pd
 
+import numpy as np
+import pytest
+
 from pesto.model import GridShape, GroupResolution, ParCells
-from pesto.model._parcells import RULE_NAMES, UNMAPPED, resolve
+from pesto.model._parcells import (
+    RULE_NAMES,
+    UNMAPPED,
+    UNRECOGNIZED_PLACEMENT_COLUMNS,
+    resolve,
+)
 
 
 def _par_frame(rows: dict, parnme: list[str]) -> pd.DataFrame:
@@ -408,3 +416,190 @@ def test_a_group_whose_candidates_are_all_out_of_range_writes_nothing_leaving_mi
 
     assert result.cell.tolist() == [-1, -1]
     assert result.layer.tolist() == [-1, -1]
+
+
+# ---------------------------------------------------------------------------
+# Task 3: unplaceable is -1, said once, with nothing dropped.
+# ---------------------------------------------------------------------------
+
+
+def test_summary_for_a_scale_matching_the_real_measured_777_of_785_group_run():
+    """03-RESEARCH.md Pitfall 5, measured against a real DISV run: 777 of
+    785 parameter groups carry no placement columns at all. The one-sentence
+    summary must hold at exactly this scale -- one period, both counts, and
+    not one of the 777 group names."""
+    n_unplaceable = 777
+    n_placeable = 8
+    rows: dict[str, list] = {"pargp": [], "idx0": [], "idx1": []}
+    parnme: list[str] = []
+    for i in range(n_unplaceable):
+        rows["pargp"].append(f"unplaceable_group_{i}")
+        rows["idx0"].append(None)
+        rows["idx1"].append(None)
+        parnme.append(f"par:unplaceable:{i}")
+    for i in range(n_placeable):
+        rows["pargp"].append(f"placeable_group_{i}")
+        rows["idx0"].append(0)
+        rows["idx1"].append(i)
+        parnme.append(f"par:placeable:{i}")
+
+    shape = GridShape(ncpl=100, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(rows, parnme=parnme)
+
+    result = resolve(par, shape)
+
+    assert len(result.groups) == n_unplaceable + n_placeable
+    assert result.summary.count(".") == 1
+    assert str(n_unplaceable) in result.summary
+    assert str(n_unplaceable + n_placeable) in result.summary
+    for i in range(n_unplaceable):
+        assert f"unplaceable_group_{i}" not in result.summary
+
+
+def test_placed_groups_and_unplaced_groups_partition_every_group_with_no_overlap():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {
+            "pargp": ["placed", "placed", "empty"],
+            "idx0": [0, 1, None],
+            "idx1": [1, 2, None],
+        },
+        parnme=["par:a", "par:b", "par:c"],
+    )
+
+    result = resolve(par, shape)
+
+    all_groups = {g.group for g in result.groups}
+    assert set(result.placed_groups) | set(result.unplaced_groups) == all_groups
+    assert set(result.placed_groups) & set(result.unplaced_groups) == set()
+
+
+def test_no_group_anywhere_in_this_module_gives_cell_zero_or_layer_zero_as_a_stand_in():
+    """The blunt, module-wide never-zero assertion: an unplaceable case has
+    cell/layer exactly -1, never 0, which is a real cell."""
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["a", "b"], "idx0": [None, None], "idx1": [None, None]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+    unplaced_rows = result.cell == -1
+
+    assert unplaced_rows.all()
+    assert (result.cell[unplaced_rows] == -1).all()
+    assert not (result.cell[unplaced_rows] == 0).any()
+    assert (result.layer[unplaced_rows] == -1).all()
+    assert not (result.layer[unplaced_rows] == 0).any()
+
+
+def test_a_group_carrying_an_unrecognised_placement_column_with_data_gets_exactly_one_note():
+    """03-RESEARCH.md Pitfall 5: two groups in a real run carry ``layer``/
+    ``icpl`` instead of ``idx0``/``idx1`` -- column names the locked rule
+    table does not read at all. The rule table is not amended; a note says
+    the data was seen and deliberately not used."""
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["gwt_src_benzene_decayexp"], "icpl": [3]}, parnme=["par:a"]
+    )
+
+    result = resolve(par, shape)
+
+    group = _group(result, "gwt_src_benzene_decayexp")
+    assert group.rule == UNMAPPED
+    matching_notes = [
+        n for n in result.notes if "gwt_src_benzene_decayexp" in n and "icpl" in n
+    ]
+    assert len(matching_notes) == 1
+
+
+def test_a_group_with_no_placement_columns_at_all_produces_no_note():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["ordinary"]}, parnme=["par:a"])
+
+    result = resolve(par, shape)
+
+    assert _group(result, "ordinary").rule == UNMAPPED
+    assert not any("ordinary" in n for n in result.notes)
+
+
+def test_unrecognized_placement_columns_constant_names_layer_icpl_and_node():
+    assert set(UNRECOGNIZED_PLACEMENT_COLUMNS) == {"layer", "icpl", "node"}
+
+
+def test_a_group_with_some_in_range_and_some_out_of_range_reports_the_shortfall():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["mixed", "mixed"], "idx0": [0, 0], "idx1": [1, 99]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    group = _group(result, "mixed")
+    assert group.mapped == 1
+    assert group.total == 2
+    assert any("mixed" in n for n in result.notes)
+
+
+def test_boundary_zero_accepted_nlay_and_ncpl_rejected():
+    shape = GridShape(ncpl=5, nlay=3, nrow=None, ncol=None)
+    par = _par_frame(
+        {
+            "pargp": ["boundary", "boundary"],
+            "idx0": [0, 3],  # 0 accepted, 3 == nlay rejected
+            "idx1": [0, 5],  # 0 accepted, 5 == ncpl rejected
+        },
+        parnme=["par:in", "par:out"],
+    )
+
+    result = resolve(par, shape)
+
+    placements = _placements(result)
+    assert placements["par:in"] == (0, 0)
+    assert placements["par:out"] == (-1, -1)
+
+
+def test_empty_parameter_table_gives_zero_length_arrays_and_a_non_error_summary():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": [], "idx0": [], "idx1": []}, parnme=[])
+
+    result = resolve(par, shape)
+
+    assert result.cell.dtype == np.int32
+    assert result.layer.dtype == np.int32
+    assert len(result.cell) == 0
+    assert len(result.layer) == 0
+    assert result.groups == ()
+    assert result.summary
+
+
+def test_summary_when_every_group_placed_says_so_in_one_sentence():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["g"], "idx0": [0], "idx1": [1]}, parnme=["par:a"])
+
+    result = resolve(par, shape)
+
+    assert result.summary.count(".") == 1
+    assert not any(g.mapped == 0 for g in result.groups)
+
+
+@pytest.mark.parametrize("column", ["k", "i", "j", "idx0", "idx1", "idx2"])
+def test_a_column_that_cannot_be_read_as_a_number_is_coerced_to_nan_not_fabricated(column):
+    """A malformed placement value should not crash resolution -- it is
+    coerced to NaN, which then fails the range check honestly."""
+    shape = GridShape(ncpl=10, nlay=2, nrow=4, ncol=3)
+    rows = {
+        "pargp": ["g"],
+        "k": [0],
+        "i": [0],
+        "j": [0],
+        "idx0": [0],
+        "idx1": [0],
+        "idx2": [0],
+    }
+    rows[column] = ["not-a-number"]
+    par = _par_frame(rows, parnme=["par:a"])
+
+    result = resolve(par, shape)  # must not raise
+    assert isinstance(result, ParCells)
