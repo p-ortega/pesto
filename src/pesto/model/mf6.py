@@ -10,9 +10,12 @@ heavy library -- pesto's launcher opens a browser window before ``flopy`` or
 ``pyemu`` finish importing, and this adapter must not be the thing that
 makes that wait longer. Second, a grid file that cannot be read costs one
 failure record, never an exception at the caller and never a
-plausible-looking empty mesh; three real failure modes -- a truncated or
-corrupt file, a file flopy parses into no grid at all, and a grid that
-declares no cells -- are each handled explicitly for this reason.
+plausible-looking empty mesh; four real failure modes -- a truncated or
+corrupt grid file, a file flopy parses into no grid at all, a grid that
+declares no cells, and a parameter table with no ``pargp`` column -- are
+each handled explicitly for this reason. The fourth is a defect in the
+parameter table handed to ``locate_par``, not in the grid file, so it is
+named and reasoned about separately from the other three.
 
 ``crs()`` returns nothing for every run this milestone can open, because the
 binary grid format carries no projection field and ``pyproj`` is not a

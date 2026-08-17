@@ -38,11 +38,13 @@ import re
 import numpy as np
 import pandas as pd
 
+from pesto.ingest.failures import ReadFailure
 from pesto.model import GridShape, GroupResolution, ParCells
 
 DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
 RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer")
 UNMAPPED = "unmapped"
+GROUP_COLUMN = "pargp"
 
 UNRECOGNIZED_PLACEMENT_COLUMNS = ("layer", "icpl", "node")
 """Column names that look like placement metadata -- each reads like a cell
@@ -225,7 +227,7 @@ def resolve(
     par: pd.DataFrame,
     shape: GridShape,
     layer_pattern: str = DEFAULT_LAYER_PATTERN,
-) -> ParCells:
+) -> ParCells | ReadFailure:
     """Place every parameter in ``par`` on a layer and cell, one group
     (``pargp``) at a time, trying the five rules in ``RULE_NAMES`` order.
 
@@ -237,7 +239,22 @@ def resolve(
     pandas then returns every matching row for each request rather than one
     row per request, misaligning the write entirely. ``par`` itself is only
     read here, never mutated or reindexed.
+
+    Returns a ``ReadFailure`` naming the parameter table, rather than
+    raising, when ``par`` carries no ``pargp`` column at all -- there is
+    nothing to group by, so every rule below is unreachable.
     """
+    if GROUP_COLUMN not in par.columns:
+        return ReadFailure(
+            name="parameter table",
+            path="",
+            reason=(
+                "the parameter table carries no 'pargp' column -- every rule "
+                "is tried one parameter group at a time, so with no group "
+                "column there is nothing to try"
+            ),
+        )
+
     n = len(par)
     cell = np.full(n, -1, dtype=np.int32)
     layer = np.full(n, -1, dtype=np.int32)
@@ -245,7 +262,7 @@ def resolve(
     groups: list[GroupResolution] = []
     pattern = re.compile(layer_pattern, re.IGNORECASE)
 
-    grouped = par.groupby("pargp", sort=True, observed=True)
+    grouped = par.groupby(GROUP_COLUMN, sort=True, observed=True)
     for name, block in grouped:
         # grouped.indices[name] gives integer row positions, computed by
         # groupby itself -- a label-based lookup (e.g. block.index) would
