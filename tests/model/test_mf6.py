@@ -321,6 +321,25 @@ def test_reading_a_good_and_a_corrupt_grid_file_never_writes_to_their_directory(
     assert after == before
 
 
+def test_locate_par_on_a_table_with_no_pargp_column_returns_a_read_failure_not_a_keyerror(
+    tmp_path,
+):
+    from pesto.model.mf6 import Mf6Adapter
+
+    grid_path = write_disv_grb(tmp_path / "t.disv.grb")
+    adapter = Mf6Adapter(grid_path)
+
+    par = pd.DataFrame(
+        {"idx0": [0], "idx1": [0]}, index=pd.Index(["par:a"], name="parnme")
+    )
+
+    result = adapter.locate_par(par)
+
+    assert isinstance(result, ReadFailure)
+    assert "pargp" in result.reason
+    assert result.name == "parameter table"
+
+
 def test_a_grid_with_no_cells_names_the_path_it_could_not_read(tmp_path, monkeypatch):
     from pesto.model.mf6 import Mf6Adapter
 
