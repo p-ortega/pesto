@@ -12,12 +12,23 @@ Five rules are tried in order for every parameter group: ``kij``,
 first rule whose columns are present and that produces at least one
 in-range hit takes the whole group.
 
-Row positions used to write into the ``cell``/``layer`` arrays are integer
-positions into the parameter table, never index labels -- the table is
-indexed by parameter name, so treating that index as row numbers would put
-parameters on the wrong cells with no error at all. A parameter nothing
-matched is ``-1``, never ``0``, because ``0`` is a real cell and a stated
-absence beats a wrong answer that looks right.
+Row positions used to write into the ``cell``/``layer`` arrays come from
+``pandas.DataFrame.groupby(...).indices``, a mapping from group name to the
+integer row positions that group occupies -- never from ``block.index``
+label lookups, which break silently the moment two parameters share a
+``parnme`` (label-based lookup then returns a row for every match, not one
+row per request). A parameter nothing matched is ``-1``, never ``0``,
+because ``0`` is a real cell and a stated absence beats a wrong answer that
+looks right.
+
+A parameter group that resolves ``unmapped`` is not itself unrecorded: its
+``GroupResolution`` row is always kept, and a group additionally carrying
+``layer``, ``icpl`` or ``node`` -- placement-looking columns the rule table
+above does not read -- gets one note naming it and them, so real placement
+data stored under an unrecognised name is never silently dropped. An
+ordinary unmapped group carrying none of the rule table's columns gets no
+note at all: a real ``PstFrom``-built DISV run is typically 99% unmapped
+groups, and a note per group would turn "says so once" into a wall of text.
 """
 
 from __future__ import annotations
@@ -33,13 +44,15 @@ DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
 RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer")
 UNMAPPED = "unmapped"
 
-_RULE_COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("kij", ("k", "i", "j")),
-    ("idx-triple", ("idx0", "idx1", "idx2")),
-    ("idx-pair", ("idx0", "idx1")),
-    ("ij-name-layer", ("i", "j")),
-    ("ij-single-layer", ("i", "j")),
-)
+UNRECOGNIZED_PLACEMENT_COLUMNS = ("layer", "icpl", "node")
+"""Column names that look like placement metadata -- each reads like a cell
+or layer index -- but that no rule in ``RULE_NAMES`` actually consults. A
+real measured DISV run carries two groups (~918 parameters combined) whose
+placement data lives under ``layer``/``icpl`` rather than ``idx0``/``idx1``
+(03-RESEARCH.md Pitfall 5). The rule table is locked as written, so the fix
+here is not a sixth rule -- it is a note saying the data was seen and
+deliberately left unused, so it is distinguishable from a group that never
+carried any placement data at all."""
 
 _NAME_COLUMNS = ("pname", "pargp", "parnme")
 
@@ -167,33 +180,44 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
     return UNMAPPED, None, None, None
 
 
-def _unmapped_reason(name: object, block: pd.DataFrame) -> str:
-    """Distinguish, in plain English, "no rule's columns are present" from
-    "columns are present but nothing landed in range" -- a group resolving
-    to ``unmapped`` is not itself un-traced, even though no single row
-    carries a note of its own."""
-    any_columns_present = any(
-        set(columns).issubset(block.columns) for _, columns in _RULE_COLUMNS
-    )
-    if not any_columns_present:
-        return f"group {name!r} carries none of the placement columns any rule recognises"
+def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
+    """One note if ``block`` carries any of ``UNRECOGNIZED_PLACEMENT_COLUMNS``
+    with at least one non-null value; ``None`` otherwise. This is the only
+    note an unmapped group ever gets -- a group carrying none of the rule
+    table's columns and none of these look-alikes is the ordinary case and
+    stays quiet, which is what keeps 777 unplaceable groups from becoming
+    777 lines of prose."""
+    present = [
+        column
+        for column in UNRECOGNIZED_PLACEMENT_COLUMNS
+        if column in block.columns and block[column].notna().any()
+    ]
+    if not present:
+        return None
+    columns_text = ", ".join(repr(column) for column in present)
     return (
-        f"group {name!r} carries placement columns but no row landed inside "
-        "the grid's layer/cell range"
+        f"group {name!r} carries {columns_text}, which look like placement data but "
+        "which the rule table does not read (the rule table is locked as written); "
+        "the data was seen and deliberately not used, and the group resolved unmapped"
     )
 
 
 def _summarize(groups: tuple[GroupResolution, ...]) -> str:
-    """The single sentence GRID-03 asks for -- said once, not repeated per
-    group."""
+    """The single sentence GRID-03 asks for -- built entirely from counts,
+    never from a list of group names, so it does not grow with however many
+    groups a real run happens to leave unplaceable."""
     if not groups:
         return "no parameter groups were present to place."
-    total = sum(g.total for g in groups)
-    mapped = sum(g.mapped for g in groups)
-    unplaced = sum(1 for g in groups if g.mapped == 0)
+
+    unplaced = tuple(g for g in groups if g.mapped == 0)
+    if not unplaced:
+        return f"every one of the {len(groups)} parameter group(s) was placed on the grid."
+
+    total_params = sum(g.total for g in groups)
+    unplaced_params = sum(g.total for g in unplaced)
     return (
-        f"{mapped} of {total} parameters were placed on the grid; "
-        f"{unplaced} of {len(groups)} group(s) could not be placed at all."
+        f"{len(unplaced)} of {len(groups)} parameter group(s) could not be placed on the "
+        f"grid, accounting for {unplaced_params} of {total_params} parameters."
     )
 
 
@@ -233,7 +257,9 @@ def resolve(
         total = len(block)
 
         if rule == UNMAPPED:
-            notes.append(f"{_unmapped_reason(name, block)}; resolved as {UNMAPPED!r}")
+            note = _unrecognized_column_note(name, block)
+            if note is not None:
+                notes.append(note)
             groups.append(GroupResolution(group=str(name), rule=UNMAPPED, mapped=0, total=total))
             continue
 
