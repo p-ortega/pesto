@@ -28,6 +28,7 @@ from pesto.model._parcells import (
     RULE_NAMES,
     UNMAPPED,
     UNRECOGNIZED_PLACEMENT_COLUMNS,
+    _summarize,
     resolve,
 )
 
@@ -646,3 +647,69 @@ def test_an_empty_parameter_table_with_no_pargp_column_is_refused_whatever_its_r
     result = resolve(par, shape)
 
     assert isinstance(result, ReadFailure)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a parameter with no group at all is counted, named and never
+# allowed to shrink the reported total.
+# ---------------------------------------------------------------------------
+
+
+def test_a_parameter_whose_pargp_is_null_gets_its_own_group_row_and_a_note():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", None], "idx0": [0, 0], "idx1": [1, 2]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert (
+        result.summary
+        == "1 of 2 parameter group(s) could not be placed on the grid, "
+        "accounting for 1 of 2 parameters."
+    )
+    no_group = _group(result, "(no pargp)")
+    assert no_group.total == 1
+    matching_notes = [n for n in result.notes if "(no pargp)" in n and "par:b" in n]
+    assert len(matching_notes) == 1
+    assert _placements(result)["par:b"] == (-1, -1)
+
+
+def test_a_table_whose_pargp_is_null_on_every_row_reports_every_parameter_as_unplaced():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    n = 785
+    par = _par_frame(
+        {"pargp": [None] * n, "idx0": [0] * n, "idx1": [0] * n},
+        parnme=[f"p{i}" for i in range(n)],
+    )
+
+    result = resolve(par, shape)
+
+    assert "785 of 785 parameters" in result.summary
+    assert "1 of 1 parameter group(s)" in result.summary
+    assert result.summary != "no parameter groups were present to place."
+
+
+def test_the_null_group_note_names_the_first_three_parameters_and_counts_the_rest():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": [None] * 5, "idx0": [0] * 5, "idx1": [0] * 5},
+        parnme=["par:a", "par:b", "par:c", "par:d", "par:e"],
+    )
+
+    result = resolve(par, shape)
+
+    matching_notes = [n for n in result.notes if "(no pargp)" in n]
+    assert len(matching_notes) == 1
+    note = matching_notes[0]
+    assert "'par:a'" in note
+    assert "'par:b'" in note
+    assert "'par:c'" in note
+    assert "2 more" in note
+
+
+def test_the_summary_counts_parameters_from_the_table_not_from_the_groups_it_tracked():
+    summary = _summarize((GroupResolution(group="g", rule=UNMAPPED, mapped=0, total=1),), 2)
+
+    assert "every one of the" not in summary
