@@ -1,4 +1,24 @@
-"""The ordered rule table that puts parameters on cells."""
+"""The ordered rule table that puts parameters on cells.
+
+This module is private because it is unavoidably MODFLOW-shaped:
+``i * ncol + j`` is structured-grid arithmetic, ``idx0``/``idx1``/``idx2``
+are ``PstFrom`` conventions, and a vertex grid having no rows or columns is
+a MODFLOW fact, not a general one. It lives inside the boundary GRID-05
+exists to hold, so nothing outside ``src/pesto/model/`` ever has to know
+any of this.
+
+Five rules are tried in order for every parameter group: ``kij``,
+``idx-triple``, ``idx-pair``, ``ij-name-layer``, ``ij-single-layer``. The
+first rule whose columns are present and that produces at least one
+in-range hit takes the whole group.
+
+Row positions used to write into the ``cell``/``layer`` arrays are integer
+positions into the parameter table, never index labels -- the table is
+indexed by parameter name, so treating that index as row numbers would put
+parameters on the wrong cells with no error at all. A parameter nothing
+matched is ``-1``, never ``0``, because ``0`` is a real cell and a stated
+absence beats a wrong answer that looks right.
+"""
 
 from __future__ import annotations
 
