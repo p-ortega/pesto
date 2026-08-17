@@ -46,6 +46,16 @@ RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer
 UNMAPPED = "unmapped"
 GROUP_COLUMN = "pargp"
 
+NO_GROUP = "(no pargp)"
+"""The ``GroupResolution.group`` label for parameters carrying no ``pargp``
+value at all. Parentheses because no real PEST group name has them, so this
+bucket's label cannot collide with a real group."""
+
+NULL_GROUP_NOTE_NAME_LIMIT = 3
+"""How many parameter names the null-group note spells out before it
+switches to a count -- keeps the note readable at the realistic scale of
+one stray row, and one line even at 785 null rows, with nothing dropped."""
+
 UNRECOGNIZED_PLACEMENT_COLUMNS = ("layer", "icpl", "node")
 """Column names that look like placement metadata -- each reads like a cell
 or layer index -- but that no rule in ``RULE_NAMES`` actually consults. A
@@ -204,19 +214,26 @@ def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
     )
 
 
-def _summarize(groups: tuple[GroupResolution, ...]) -> str:
+def _summarize(groups: tuple[GroupResolution, ...], total_params: int) -> str:
     """The single sentence GRID-03 asks for -- built entirely from counts,
     never from a list of group names, so it does not grow with however many
-    groups a real run happens to leave unplaceable."""
-    if not groups:
+    groups a real run happens to leave unplaceable.
+
+    ``total_params`` is the parameter count from the table itself
+    (``len(par)``), not derived from the groups this function was handed --
+    a total built from tracked groups shrinks silently whenever a group is
+    dropped, which is exactly how this sentence once claimed full success
+    while a real parameter sat untracked.
+    """
+    if not groups and total_params == 0:
         return "no parameter groups were present to place."
 
     unplaced = tuple(g for g in groups if g.mapped == 0)
-    if not unplaced:
+    untracked = total_params - sum(g.total for g in groups)
+    if not unplaced and untracked == 0:
         return f"every one of the {len(groups)} parameter group(s) was placed on the grid."
 
-    total_params = sum(g.total for g in groups)
-    unplaced_params = sum(g.total for g in unplaced)
+    unplaced_params = sum(g.total for g in unplaced) + untracked
     return (
         f"{len(unplaced)} of {len(groups)} parameter group(s) could not be placed on the "
         f"grid, accounting for {unplaced_params} of {total_params} parameters."
@@ -291,6 +308,28 @@ def resolve(
             )
         groups.append(GroupResolution(group=str(name), rule=rule, mapped=mapped, total=total))
 
+    # par.groupby(...) drops rows whose pargp is null (pandas' dropna=True
+    # default), so they never reach the loop above at all -- account for
+    # them here, after the sorted groups, which is what makes the bucket's
+    # position in `groups` and its note's position in `notes` deterministic.
+    # Their cell/layer are already -1 because nothing writes to them.
+    null_mask = par[GROUP_COLUMN].isna().to_numpy()
+    null_count = int(null_mask.sum())
+    if null_count:
+        null_names = [repr(value) for value in par.index[null_mask]]
+        shown = null_names[:NULL_GROUP_NOTE_NAME_LIMIT]
+        names_text = ", ".join(shown)
+        if len(null_names) > NULL_GROUP_NOTE_NAME_LIMIT:
+            names_text += f", and {len(null_names) - NULL_GROUP_NOTE_NAME_LIMIT} more"
+        notes.append(
+            f"group {NO_GROUP!r}: {null_count} parameter(s) carry no 'pargp' value at "
+            "all, so no rule could be tried for them; they are counted here and left "
+            f"at -1 -- {names_text}"
+        )
+        groups.append(
+            GroupResolution(group=NO_GROUP, rule=UNMAPPED, mapped=0, total=null_count)
+        )
+
     parnme = tuple(str(value) for value in par.index)
     groups_tuple = tuple(groups)
     return ParCells(
@@ -298,6 +337,6 @@ def resolve(
         layer=layer,
         parnme=parnme,
         groups=groups_tuple,
-        summary=_summarize(groups_tuple),
+        summary=_summarize(groups_tuple, len(par)),
         notes=tuple(notes),
     )
