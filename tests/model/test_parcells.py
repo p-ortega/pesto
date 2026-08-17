@@ -276,3 +276,135 @@ def test_all_five_rule_names_are_covered_by_this_module():
         "ij-name-layer",
         "ij-single-layer",
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a parameter never lands on a row it does not belong to.
+#
+# This is the regression test group for the one real bug 03-RESEARCH.md
+# found in the M0 reference: `block.index.to_numpy()` (or any label-based
+# lookup built from it) treated as if it were already integer row positions.
+# Every assertion below is built the same way -- a name-to-cell mapping, read
+# by zipping `ParCells.parnme` with `cell`/`layer` -- because an assertion
+# that reads a bare array position cannot catch a bug about positions.
+# ---------------------------------------------------------------------------
+
+
+def test_shuffled_parnme_index_places_each_parameter_on_its_own_row_by_name():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {
+            "pargp": ["g", "g", "g", "g"],
+            "idx0": [0, 1, 0, 1],
+            "idx1": [1, 2, 3, 4],
+        },
+        parnme=["par:d", "par:b", "par:a", "par:c"],
+    )
+
+    result = resolve(par, shape)
+
+    expected = {"par:d": (1, 0), "par:b": (2, 1), "par:a": (3, 0), "par:c": (4, 1)}
+    assert _placements(result) == expected
+
+
+def test_resolving_the_same_rows_in_a_different_order_gives_the_same_name_to_cell_mapping():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    rows = {
+        "pargp": ["g", "g", "g"],
+        "idx0": [0, 1, 0],
+        "idx1": [1, 2, 3],
+    }
+    names = ["par:a", "par:b", "par:c"]
+    par1 = _par_frame(rows, parnme=names)
+
+    reordered_rows = {k: [v[2], v[0], v[1]] for k, v in rows.items()}
+    par2 = _par_frame(reordered_rows, parnme=[names[2], names[0], names[1]])
+
+    result1 = resolve(par1, shape)
+    result2 = resolve(par2, shape)
+
+    assert _placements(result1) == _placements(result2)
+
+
+def test_a_rangeindex_offset_away_from_zero_is_still_not_treated_as_a_row_position():
+    """An index that happens to be integers is still not a row position --
+    a RangeIndex starting at 1000 must place exactly as a 0-based one
+    would."""
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {
+            "pargp": pd.Categorical(["g", "g", "g"]),
+            "idx0": [0, 1, 0],
+            "idx1": [1, 2, 3],
+        },
+        index=pd.RangeIndex(1000, 1003),
+    )
+
+    result = resolve(par, shape)
+
+    cell_by_label = dict(zip(par.index, zip(result.cell.tolist(), result.layer.tolist())))
+    assert cell_by_label[1000] == (1, 0)
+    assert cell_by_label[1001] == (2, 1)
+    assert cell_by_label[1002] == (3, 0)
+
+
+def test_a_duplicated_parnme_value_resolves_both_rows_correctly_without_raising():
+    """A real control file should not carry two parameters with the same
+    name, but a broken one can. Row-position lookup via
+    ``groupby(...).indices`` handles this naturally -- it is positional, not
+    label-based -- so both rows place, in order, with no double-write and
+    no exception."""
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {
+            "pargp": ["g", "g", "g"],
+            "idx0": [0, 1, 0],
+            "idx1": [1, 2, 3],
+        },
+        parnme=["par:dup", "par:b", "par:dup"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.cell.tolist() == [1, 2, 3]
+    assert result.layer.tolist() == [0, 1, 0]
+    assert result.parnme == ("par:dup", "par:b", "par:dup")
+
+
+def test_parcells_parnme_is_the_same_length_and_order_as_cell_and_layer():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 1], "idx1": [1, 2]},
+        parnme=["par:b", "par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert len(result.parnme) == len(result.cell) == len(result.layer) == 2
+    assert result.parnme == ("par:b", "par:a")
+
+
+def test_resolve_leaves_the_callers_dataframe_completely_untouched():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 1], "idx1": [1, 2]},
+        parnme=["par:b", "par:a"],
+    )
+    before = par.copy(deep=True)
+
+    resolve(par, shape)
+
+    pd.testing.assert_frame_equal(par, before)
+
+
+def test_a_group_whose_candidates_are_all_out_of_range_writes_nothing_leaving_minus_one():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [9, 9], "idx1": [99, 99]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.cell.tolist() == [-1, -1]
+    assert result.layer.tolist() == [-1, -1]

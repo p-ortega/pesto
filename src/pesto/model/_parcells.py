@@ -205,11 +205,14 @@ def resolve(
     """Place every parameter in ``par`` on a layer and cell, one group
     (``pargp``) at a time, trying the five rules in ``RULE_NAMES`` order.
 
-    Row positions are taken from ``par.index`` by lookup, never assumed to
-    already be integer positions -- ``par`` is indexed by ``parnme``, a
-    string, and writing into the positional ``cell``/``layer`` arrays with
-    anything else would place a parameter on the wrong row with no error at
-    all. ``par`` itself is only read here, never mutated or reindexed.
+    Row positions come from ``par.groupby("pargp", ...).indices``, a mapping
+    from group name to the integer positions that group occupies in ``par``
+    -- not from ``block.index`` or any other label-based lookup. ``par`` is
+    indexed by ``parnme``, a string; a label-based lookup keyed on that
+    index breaks silently the moment two parameters share a name, because
+    pandas then returns every matching row for each request rather than one
+    row per request, misaligning the write entirely. ``par`` itself is only
+    read here, never mutated or reindexed.
     """
     n = len(par)
     cell = np.full(n, -1, dtype=np.int32)
@@ -217,10 +220,15 @@ def resolve(
     notes: list[str] = []
     groups: list[GroupResolution] = []
     pattern = re.compile(layer_pattern, re.IGNORECASE)
-    row_position = pd.Series(np.arange(n), index=par.index)
 
-    for name, block in par.groupby("pargp", sort=True, observed=True):
-        positions = row_position.loc[block.index].to_numpy()
+    grouped = par.groupby("pargp", sort=True, observed=True)
+    for name, block in grouped:
+        # grouped.indices[name] gives integer row positions, computed by
+        # groupby itself -- a label-based lookup (e.g. block.index) would
+        # expand into more rows than the group has the moment two
+        # parameters share a parnme, since pandas returns every match per
+        # requested label rather than one row per request.
+        positions = grouped.indices[name]
         rule, candidate_cell, candidate_layer, valid = _resolve_group(block, shape, pattern)
         total = len(block)
 
