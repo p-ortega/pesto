@@ -22,6 +22,7 @@ import pandas as pd
 import numpy as np
 import pytest
 
+from pesto.ingest.failures import ReadFailure
 from pesto.model import GridShape, GroupResolution, ParCells
 from pesto.model._parcells import (
     RULE_NAMES,
@@ -603,3 +604,45 @@ def test_a_column_that_cannot_be_read_as_a_number_is_coerced_to_nan_not_fabricat
 
     result = resolve(par, shape)  # must not raise
     assert isinstance(result, ParCells)
+
+
+# ---------------------------------------------------------------------------
+# Task 1: a parameter table with no `pargp` column is refused by name,
+# never by a KeyError escaping the resolve()/locate_par() boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_a_parameter_table_with_no_pargp_column_is_refused_by_name_rather_than_raising():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {"idx0": [0], "idx1": [1]}, index=pd.Index(["par:a"], name="parnme")
+    )
+
+    result = resolve(par, shape)
+
+    assert isinstance(result, ReadFailure)
+
+
+def test_the_no_pargp_column_refusal_names_the_parameter_table_not_the_grid_file():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {"idx0": [0], "idx1": [1]}, index=pd.Index(["par:a"], name="parnme")
+    )
+
+    result = resolve(par, shape)
+
+    assert isinstance(result, ReadFailure)
+    assert "pargp" in result.reason
+    assert result.name == "parameter table"
+    assert result.path == ""
+
+
+def test_an_empty_parameter_table_with_no_pargp_column_is_refused_whatever_its_row_count():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {"idx0": [], "idx1": []}, index=pd.Index([], name="parnme")
+    )
+
+    result = resolve(par, shape)
+
+    assert isinstance(result, ReadFailure)
