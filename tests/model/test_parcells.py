@@ -22,11 +22,13 @@ import pandas as pd
 import numpy as np
 import pytest
 
+from pesto.ingest.failures import ReadFailure
 from pesto.model import GridShape, GroupResolution, ParCells
 from pesto.model._parcells import (
     RULE_NAMES,
     UNMAPPED,
     UNRECOGNIZED_PLACEMENT_COLUMNS,
+    _summarize,
     resolve,
 )
 
@@ -603,3 +605,183 @@ def test_a_column_that_cannot_be_read_as_a_number_is_coerced_to_nan_not_fabricat
 
     result = resolve(par, shape)  # must not raise
     assert isinstance(result, ParCells)
+
+
+# ---------------------------------------------------------------------------
+# Task 1: a parameter table with no `pargp` column is refused by name,
+# never by a KeyError escaping the resolve()/locate_par() boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_a_parameter_table_with_no_pargp_column_is_refused_by_name_rather_than_raising():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {"idx0": [0], "idx1": [1]}, index=pd.Index(["par:a"], name="parnme")
+    )
+
+    result = resolve(par, shape)
+
+    assert isinstance(result, ReadFailure)
+
+
+def test_the_no_pargp_column_refusal_names_the_parameter_table_not_the_grid_file():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {"idx0": [0], "idx1": [1]}, index=pd.Index(["par:a"], name="parnme")
+    )
+
+    result = resolve(par, shape)
+
+    assert isinstance(result, ReadFailure)
+    assert "pargp" in result.reason
+    assert result.name == "parameter table"
+    assert result.path == ""
+
+
+def test_an_empty_parameter_table_with_no_pargp_column_is_refused_whatever_its_row_count():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = pd.DataFrame(
+        {"idx0": [], "idx1": []}, index=pd.Index([], name="parnme")
+    )
+
+    result = resolve(par, shape)
+
+    assert isinstance(result, ReadFailure)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a parameter with no group at all is counted, named and never
+# allowed to shrink the reported total.
+# ---------------------------------------------------------------------------
+
+
+def test_a_parameter_whose_pargp_is_null_gets_its_own_group_row_and_a_note():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", None], "idx0": [0, 0], "idx1": [1, 2]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert (
+        result.summary
+        == "1 of 2 parameter group(s) could not be placed on the grid, "
+        "accounting for 1 of 2 parameters."
+    )
+    no_group = _group(result, "(no pargp)")
+    assert no_group.total == 1
+    matching_notes = [n for n in result.notes if "(no pargp)" in n and "par:b" in n]
+    assert len(matching_notes) == 1
+    assert _placements(result)["par:b"] == (-1, -1)
+
+
+def test_a_table_whose_pargp_is_null_on_every_row_reports_every_parameter_as_unplaced():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    n = 785
+    par = _par_frame(
+        {"pargp": [None] * n, "idx0": [0] * n, "idx1": [0] * n},
+        parnme=[f"p{i}" for i in range(n)],
+    )
+
+    result = resolve(par, shape)
+
+    assert "785 of 785 parameters" in result.summary
+    assert "1 of 1 parameter group(s)" in result.summary
+    assert result.summary != "no parameter groups were present to place."
+
+
+def test_the_null_group_note_names_the_first_three_parameters_and_counts_the_rest():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": [None] * 5, "idx0": [0] * 5, "idx1": [0] * 5},
+        parnme=["par:a", "par:b", "par:c", "par:d", "par:e"],
+    )
+
+    result = resolve(par, shape)
+
+    matching_notes = [n for n in result.notes if "(no pargp)" in n]
+    assert len(matching_notes) == 1
+    note = matching_notes[0]
+    assert "'par:a'" in note
+    assert "'par:b'" in note
+    assert "'par:c'" in note
+    assert "2 more" in note
+
+
+def test_the_summary_counts_parameters_from_the_table_not_from_the_groups_it_tracked():
+    summary = _summarize((GroupResolution(group="g", rule=UNMAPPED, mapped=0, total=1),), 2)
+
+    assert "every one of the" not in summary
+
+
+# ---------------------------------------------------------------------------
+# Task 3: a fractional placement value is refused and named, never
+# truncated toward zero.
+# ---------------------------------------------------------------------------
+
+
+def test_a_fractional_placement_value_is_refused_and_named_rather_than_truncated():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1.9]}, parnme=["par:a"]
+    )
+
+    result = resolve(par, shape)
+
+    assert _placements(result)["par:a"] == (-1, -1)
+    group = _group(result, "g")
+    assert group.mapped == 0
+    matching_notes = [n for n in result.notes if "g" in n and "'idx1'" in n]
+    assert len(matching_notes) == 1
+
+
+def test_a_fractional_i_that_multiplies_into_a_whole_cell_number_is_still_refused():
+    """``ncol = 2`` and ``i = 1.5``: ``i * ncol + j`` is ``1.5 * 2 + 0 == 3.0``,
+    a whole number that a check on the combined value alone would accept --
+    the case a per-column check is needed to catch."""
+    shape = GridShape(ncpl=20, nlay=2, nrow=5, ncol=2)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1.5], "idx2": [0]},
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert _placements(result)["par:a"] == (-1, -1)
+
+
+def test_a_whole_number_written_as_a_float_is_accepted():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [2.0]}, parnme=["par:a"]
+    )
+
+    result = resolve(par, shape)
+
+    assert _placements(result)["par:a"] == (2, 0)
+    group = _group(result, "g")
+    assert group.mapped == 1
+    assert not any("g" in n for n in result.notes)
+
+
+def test_a_rule_whose_only_hits_are_fractional_yields_to_the_next_rule_with_a_whole_one():
+    shape = GridShape(ncpl=20, nlay=3, nrow=4, ncol=5)
+    par = _par_frame(
+        {
+            "pargp": ["fallthrough"],
+            "k": [1.5],
+            "i": [1.5],
+            "j": [1.5],
+            "idx0": [1],
+            "idx1": [1],
+            "idx2": [2],
+        },
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    group = _group(result, "fallthrough")
+    assert group.rule == "idx-triple"
+    assert _placements(result)["par:a"] == (1 * 5 + 2, 1)
