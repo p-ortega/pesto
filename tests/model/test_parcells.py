@@ -27,6 +27,7 @@ from pesto.model import GridShape, GroupResolution, ParCells
 from pesto.model._parcells import (
     RULE_NAMES,
     UNMAPPED,
+    UNPLACED_REASONS,
     UNRECOGNIZED_PLACEMENT_COLUMNS,
     _summarize,
     resolve,
@@ -785,3 +786,110 @@ def test_a_rule_whose_only_hits_are_fractional_yields_to_the_next_rule_with_a_wh
     group = _group(result, "fallthrough")
     assert group.rule == "idx-triple"
     assert _placements(result)["par:a"] == (1 * 5 + 2, 1)
+
+
+# ---------------------------------------------------------------------------
+# 03-06 Task 1: a parameter's shortfall note names the reason that actually
+# applied -- an unreadable value, an overflowed cell number, or a genuine
+# grid-range miss -- instead of always blaming the grid's range. And the
+# fallback that lets a note be built at all must stay narrow: it must not
+# fire for a group whose values are simply absent, and it must not fire for
+# a group that is only out of range.
+# ---------------------------------------------------------------------------
+
+
+def test_a_group_whose_shortfall_is_an_unreadable_value_says_so_instead_of_blaming_the_grid_range():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 0], "idx1": [3, "garbage-not-a-number"]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 1 of 2 parameters; "
+        "1 carried a value that could not be read as a number",
+    )
+
+
+def test_a_single_parameter_whose_value_cannot_be_read_leaves_a_note_instead_of_silence():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": ["garbage-not-a-number"]},
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 0 of 1 parameters; "
+        "1 carried a value that could not be read as a number",
+    )
+    group = _group(result, "g")
+    assert group.rule == "idx-pair"
+    assert group.mapped == 0
+
+
+def test_a_genuinely_out_of_range_shortfall_still_reads_as_a_grid_range_miss():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 0], "idx1": [3, 99]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 1 of 2 parameters; "
+        "1 fell outside the grid's layer/cell range",
+    )
+
+
+def test_a_placement_value_too_large_to_turn_into_a_cell_number_is_named_as_too_large():
+    """Against the code before this task, this same frame yields
+    ``rule == 'unmapped'`` and ``notes == ()`` -- every per-column check
+    passes for ``1e308`` (it is readable, whole and present) and the value
+    only becomes unusable once ``i * ncol + j`` overflows to ``inf``, after
+    ``_numeric`` has already returned. This is the blocker this task
+    exists to close."""
+    shape = GridShape(ncpl=20, nlay=2, nrow=5, ncol=5)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1e308], "idx2": [0]},
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-triple' placed 0 of 1 parameters; "
+        "1 carried a value too large to turn into a cell number",
+    )
+    assert _group(result, "g").rule == "idx-triple"
+
+
+def test_a_group_that_is_only_out_of_range_still_reports_no_rule_and_no_note():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["g"], "idx0": [9], "idx1": [99]}, parnme=["par:a"])
+
+    result = resolve(par, shape)
+
+    assert _group(result, "g").rule == UNMAPPED
+    assert result.notes == ()
+
+
+def test_seven_hundred_and_seventy_seven_groups_with_no_placement_values_still_produce_no_notes():
+    n = 777
+    rows = {
+        "pargp": [f"ug{i}" for i in range(n)],
+        "idx0": [None] * n,
+        "idx1": [None] * n,
+    }
+    parnme = [f"p{i}" for i in range(n)]
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(rows, parnme=parnme)
+
+    result = resolve(par, shape)
+
+    assert len(result.groups) == 777
+    assert result.notes == ()

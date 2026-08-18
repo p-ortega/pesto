@@ -340,6 +340,30 @@ def test_locate_par_on_a_table_with_no_pargp_column_returns_a_read_failure_not_a
     assert result.name == "parameter table"
 
 
+def test_the_reason_a_parameter_could_not_be_placed_reaches_locate_par_unchanged(tmp_path):
+    """``locate_par`` returns ``resolve()``'s value directly (see
+    ``Mf6Adapter.locate_par``, unchanged by 03-06) -- so the reason a
+    parameter's value could not be read must survive that boundary exactly,
+    with no code change needed to carry it."""
+    from pesto.model._parcells import resolve
+    from pesto.model.mf6 import Mf6Adapter
+
+    grid_path = write_disv_grb(tmp_path / "t.disv.grb")
+    adapter = Mf6Adapter(grid_path)
+    shape = adapter.grid_shape()
+
+    par = pd.DataFrame(
+        {"pargp": pd.Categorical(["g"]), "idx0": [0], "idx1": ["garbage-not-a-number"]},
+        index=pd.Index(["par:a"], name="parnme"),
+    )
+
+    via_adapter = adapter.locate_par(par)
+    direct = resolve(par, shape)
+
+    assert via_adapter.notes == direct.notes
+    assert any("could not be read as a number" in note for note in via_adapter.notes)
+
+
 def test_a_grid_with_no_cells_names_the_path_it_could_not_read(tmp_path, monkeypatch):
     from pesto.model.mf6 import Mf6Adapter
 
