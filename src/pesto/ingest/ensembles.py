@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
@@ -87,6 +87,45 @@ class StoredEnsemble:
     __hash__ = None
 
 
+def write_par_reals(
+    real_names: Sequence[str], iteration: int, layout: CacheLayout
+) -> CacheFile | ReadFailure:
+    """Write the per-iteration realization index: the names exactly as read
+    from the source file, in file order -- no sorting, no case folding, no
+    whitespace stripping -- because a later comparison between iteration 0
+    and iteration N joins on these strings.
+
+    A name occurring more than once is kept, not deduplicated; a note names
+    it and how many times it appeared.
+    """
+    name = f"par_reals/{iteration}"
+    target = layout.par_reals(iteration)
+    try:
+        counts: dict[str, int] = {}
+        for real_name in real_names:
+            counts[real_name] = counts.get(real_name, 0) + 1
+        notes = [
+            f"realization name {real_name!r} appears {count} times in the source file"
+            for real_name, count in counts.items()
+            if count > 1
+        ]
+        payload = {
+            "cache_version": CACHE_VERSION,
+            "iteration": iteration,
+            "n_real": len(real_names),
+            "names": list(real_names),
+            "notes": notes,
+        }
+        written = write_atomic_text(target, json.dumps(payload, indent=2))
+        return CacheFile(path=str(target.relative_to(layout.root)), bytes=written)
+    except Exception as exc:
+        return ReadFailure(
+            name=name,
+            path=str(target),
+            reason=f"failed to write realization index for iteration {iteration}: {exc}",
+        )
+
+
 def write_par_ensemble(
     data: "EnsembleData",
     tables: "ControlTables",
@@ -96,14 +135,15 @@ def write_par_ensemble(
     cells: "ParCells | None" = None,
 ) -> WrittenArtifact | ReadFailure:
     """Write ``data`` into the cache as a two-block float32 file plus its
-    sidecar, names and permutation.
+    sidecar, names, permutation, cells and realization index.
 
     Every step after the permutation check works with the parameter's
     control-file position -- the identity that survives everything else
-    (hash-ordered files, a group split, a later cell resolution). ``cells``
-    is accepted here but only used once cell resolution exists (Task 2);
-    the derived cell/layer arrays it would add are companion data, never
-    the identity.
+    (hash-ordered files, a group split, a cell resolution). ``cells``' cell
+    and layer arrays, when given, are derived companion data written
+    alongside the map block for a reader's convenience; the parameter
+    names in control-file order remain the identity of everything in this
+    artifact, cells included.
     """
     name = f"par_ens/{iteration}"
     try:
@@ -200,6 +240,32 @@ def write_par_ensemble(
             parmap_path, lambda f: f.write(parmap_array.tobytes())
         )
 
+        cell_file_entry = None
+        layer_file_entry = None
+        cell_file_name: str | None = None
+        layer_file_name: str | None = None
+        if cells is not None and n_map > 0:
+            cell_map_order = np.asarray(cells.cell, dtype="<i4")[map_positions]
+            layer_map_order = np.asarray(cells.layer, dtype="<i4")[map_positions]
+            cell_path = layout.ens / f"par_{iteration}.cell.i32"
+            layer_path = layout.ens / f"par_{iteration}.layer.i32"
+            cell_bytes = write_atomic_bytes(
+                cell_path, lambda f: f.write(cell_map_order.tobytes())
+            )
+            layer_bytes = write_atomic_bytes(
+                layer_path, lambda f: f.write(layer_map_order.tobytes())
+            )
+            cell_file_entry = CacheFile(path=str(cell_path.relative_to(layout.root)), bytes=cell_bytes)
+            layer_file_entry = CacheFile(
+                path=str(layer_path.relative_to(layout.root)), bytes=layer_bytes
+            )
+            cell_file_name = cell_path.name
+            layer_file_name = layer_path.name
+
+        reals_result = write_par_reals(stored.real_names, iteration, layout)
+        if isinstance(reals_result, ReadFailure):
+            return reals_result
+
         sidecar_path = layout.ens / f"par_{iteration}.json"
         sidecar = {
             "cache_version": CACHE_VERSION,
@@ -221,8 +287,8 @@ def write_par_ensemble(
             ],
             "par_names_file": parnames_path.name,
             "block_to_control_file": parmap_path.name,
-            "cell_file": None,
-            "layer_file": None,
+            "cell_file": cell_file_name,
+            "layer_file": layer_file_name,
             "source": {
                 "path": str(stored.source_path),
                 "on_disk_format": stored.on_disk_format,
@@ -230,18 +296,21 @@ def write_par_ensemble(
             },
             "notes": list(stored.notes),
         }
-        import json
-
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
 
         root = layout.root
-        files = (
+        files = [
             CacheFile(path=str(payload_path.relative_to(root)), bytes=payload_bytes),
             CacheFile(path=str(sidecar_path.relative_to(root)), bytes=sidecar_bytes),
             CacheFile(path=str(parnames_path.relative_to(root)), bytes=parnames_bytes),
             CacheFile(path=str(parmap_path.relative_to(root)), bytes=parmap_bytes),
-        )
-        return WrittenArtifact(name=name, files=files, notes=stored.notes)
+            reals_result,
+        ]
+        if cell_file_entry is not None:
+            files.append(cell_file_entry)
+        if layer_file_entry is not None:
+            files.append(layer_file_entry)
+        return WrittenArtifact(name=name, files=tuple(files), notes=stored.notes)
     except Exception as exc:
         return ReadFailure(
             name=name,
