@@ -17,6 +17,8 @@ dtype.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 import numpy as np
@@ -27,6 +29,7 @@ from pesto.model import GridShape, GroupResolution, ParCells
 from pesto.model._parcells import (
     RULE_NAMES,
     UNMAPPED,
+    UNPLACED_REASONS,
     UNRECOGNIZED_PLACEMENT_COLUMNS,
     _summarize,
     resolve,
@@ -785,3 +788,237 @@ def test_a_rule_whose_only_hits_are_fractional_yields_to_the_next_rule_with_a_wh
     group = _group(result, "fallthrough")
     assert group.rule == "idx-triple"
     assert _placements(result)["par:a"] == (1 * 5 + 2, 1)
+
+
+# ---------------------------------------------------------------------------
+# 03-06 Task 1: a parameter's shortfall note names the reason that actually
+# applied -- an unreadable value, an overflowed cell number, or a genuine
+# grid-range miss -- instead of always blaming the grid's range. And the
+# fallback that lets a note be built at all must stay narrow: it must not
+# fire for a group whose values are simply absent, and it must not fire for
+# a group that is only out of range.
+# ---------------------------------------------------------------------------
+
+
+def test_a_group_whose_shortfall_is_an_unreadable_value_says_so_instead_of_blaming_the_grid_range():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 0], "idx1": [3, "garbage-not-a-number"]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 1 of 2 parameters; "
+        "1 carried a value that could not be read as a number",
+    )
+
+
+def test_a_single_parameter_whose_value_cannot_be_read_leaves_a_note_instead_of_silence():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": ["garbage-not-a-number"]},
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 0 of 1 parameters; "
+        "1 carried a value that could not be read as a number",
+    )
+    group = _group(result, "g")
+    assert group.rule == "idx-pair"
+    assert group.mapped == 0
+
+
+def test_a_genuinely_out_of_range_shortfall_still_reads_as_a_grid_range_miss():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 0], "idx1": [3, 99]},
+        parnme=["par:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 1 of 2 parameters; "
+        "1 fell outside the grid's layer/cell range",
+    )
+
+
+def test_a_placement_value_too_large_to_turn_into_a_cell_number_is_named_as_too_large():
+    """Against the code before this task, this same frame yields
+    ``rule == 'unmapped'`` and ``notes == ()`` -- every per-column check
+    passes for ``1e308`` (it is readable, whole and present) and the value
+    only becomes unusable once ``i * ncol + j`` overflows to ``inf``, after
+    ``_numeric`` has already returned. This is the blocker this task
+    exists to close."""
+    shape = GridShape(ncpl=20, nlay=2, nrow=5, ncol=5)
+    par = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1e308], "idx2": [0]},
+        parnme=["par:a"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-triple' placed 0 of 1 parameters; "
+        "1 carried a value too large to turn into a cell number",
+    )
+    assert _group(result, "g").rule == "idx-triple"
+
+
+def test_a_group_that_is_only_out_of_range_still_reports_no_rule_and_no_note():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["g"], "idx0": [9], "idx1": [99]}, parnme=["par:a"])
+
+    result = resolve(par, shape)
+
+    assert _group(result, "g").rule == UNMAPPED
+    assert result.notes == ()
+
+
+def test_seven_hundred_and_seventy_seven_groups_with_no_placement_values_still_produce_no_notes():
+    n = 777
+    rows = {
+        "pargp": [f"ug{i}" for i in range(n)],
+        "idx0": [None] * n,
+        "idx1": [None] * n,
+    }
+    parnme = [f"p{i}" for i in range(n)]
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(rows, parnme=parnme)
+
+    result = resolve(par, shape)
+
+    assert len(result.groups) == 777
+    assert result.notes == ()
+
+
+# ---------------------------------------------------------------------------
+# 03-06 Task 2: every remaining reason is named truthfully, and the counts
+# always add up to every parameter that was not placed.
+# ---------------------------------------------------------------------------
+
+
+def test_a_blank_placement_cell_is_named_as_carrying_no_value_not_as_unreadable():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 0], "idx1": [3, ""]},
+        parnme=["par:a", "par:b"],
+    )
+    expected = (
+        "group 'g': rule 'idx-pair' placed 1 of 2 parameters; 1 carried no value at all",
+    )
+
+    result = resolve(par, shape)
+    assert result.notes == expected
+
+    spaces = _par_frame(
+        {"pargp": ["g", "g"], "idx0": [0, 0], "idx1": [3, "   "]},
+        parnme=["par:a", "par:b"],
+    )
+    result_spaces = resolve(spaces, shape)
+    assert result_spaces.notes == expected
+
+
+def test_a_fractional_value_is_counted_under_its_own_reason_not_the_grid_range():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["g"], "idx0": [0], "idx1": [1.9]}, parnme=["par:a"])
+
+    result = resolve(par, shape)
+
+    assert len(result.notes) == 2
+    assert result.notes[0].endswith("given no cell rather than rounded down")
+    assert result.notes[1] == (
+        "group 'g': rule 'idx-pair' placed 0 of 1 parameters; "
+        "1 carried a value that is not a whole number"
+    )
+
+
+def test_several_reasons_in_one_group_are_each_named_with_their_own_count_in_one_note():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {
+            "pargp": ["g", "g", "g", "g"],
+            "idx0": [0, 0, 0, 0],
+            "idx1": [3, 99, "garbage-not-a-number", None],
+        },
+        parnme=["par:a", "par:b", "par:c", "par:d"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'g': rule 'idx-pair' placed 1 of 4 parameters; "
+        "1 fell outside the grid's layer/cell range, "
+        "1 carried a value that could not be read as a number and "
+        "1 carried no value at all",
+    )
+
+
+def test_a_parameter_whose_name_carries_no_layer_number_is_named_as_such():
+    shape = GridShape(ncpl=50, nlay=3, nrow=5, ncol=10)
+    par = _par_frame(
+        {"pargp": ["mixed", "mixed"], "i": [0, 1], "j": [0, 2]},
+        parnme=["par:layer1:a", "par:b"],
+    )
+
+    result = resolve(par, shape)
+
+    assert result.notes == (
+        "group 'mixed': rule 'ij-name-layer' placed 1 of 2 parameters; "
+        "1 carried no layer number in its name",
+    )
+
+
+def test_a_value_a_hair_under_two_is_not_a_whole_number_and_two_point_zero_still_places():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    whole = _par_frame({"pargp": ["g"], "idx0": [0], "idx1": [2.0]}, parnme=["par:a"])
+    fractional = _par_frame(
+        {"pargp": ["g"], "idx0": [0], "idx1": [1.9999999999999998]}, parnme=["par:a"]
+    )
+
+    whole_result = resolve(whole, shape)
+    fractional_result = resolve(fractional, shape)
+
+    assert _placements(whole_result)["par:a"] == (2, 0)
+    assert _placements(fractional_result)["par:a"] == (-1, -1)
+    assert fractional_result.notes[-1] == (
+        "group 'g': rule 'idx-pair' placed 0 of 1 parameters; "
+        "1 carried a value that is not a whole number"
+    )
+
+
+def test_the_reason_counts_in_a_note_add_up_to_every_parameter_that_was_not_placed():
+    shape = GridShape(ncpl=10, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {
+            "pargp": ["g", "g", "g", "g"],
+            "idx0": [0, 0, 0, 0],
+            "idx1": [3, 99, "garbage-not-a-number", None],
+        },
+        parnme=["par:a", "par:b", "par:c", "par:d"],
+    )
+
+    result = resolve(par, shape)
+
+    group = _group(result, "g")
+    note = next(n for n in result.notes if n.startswith("group 'g': rule"))
+    clause_text = note.split("; ", 1)[1]
+    counts = [int(token) for token in re.findall(r"\d+", clause_text)]
+    assert sum(counts) == group.total - group.mapped
+
+
+def test_the_unplaced_reasons_table_lists_seven_reasons_in_a_fixed_order():
+    assert tuple(key for key, _ in UNPLACED_REASONS) == (
+        "out_of_range",
+        "not_whole",
+        "unreadable",
+        "absent",
+        "no_layer_in_name",
+        "too_large",
+        "unknown",
+    )
