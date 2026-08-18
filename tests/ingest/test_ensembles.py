@@ -19,8 +19,16 @@ import pytest
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.control import ControlTables, read_control
-from pesto.ingest.ensembles import write_par_ensemble, write_par_reals
+from pesto.ingest.ensembles import (
+    StoredEnsemble,
+    load_stored,
+    read_map_row,
+    read_realization_field,
+    write_par_ensemble,
+    write_par_reals,
+)
 from pesto.ingest.ensfile import EnsembleData
+from pesto.ingest.failures import ReadFailure
 from pesto.ingest.runner import _resolve_cells, ingest_run
 from pesto.model import GroupResolution, ParCells
 
@@ -53,6 +61,37 @@ def _ensemble_data(values, real_names, entity_names, permutation, notes=()) -> E
         hash_ordered=False,
         notes=tuple(notes),
     )
+
+
+def _write_sample_ensemble(
+    tmp_path,
+    control_names=("par0", "par1", "par2"),
+    groups=("G1", "G1", "G2"),
+    mappable=frozenset({"G1"}),
+    real_names=("base", "34"),
+    values=None,
+    iteration=0,
+    cells=None,
+):
+    """Write a small ensemble through ``write_par_ensemble`` and return the
+    layout plus the source values, so a reader test proves itself against
+    the writer rather than a hand-written fixture."""
+    entity_names = tuple(control_names)
+    permutation = tuple(range(len(control_names)))
+    if values is None:
+        values = [
+            [float(10 * r + p) for p in range(len(control_names))] for r in range(len(real_names))
+        ]
+    values = np.asarray(values, dtype=np.float32)
+    data = _ensemble_data(values, real_names, entity_names, permutation)
+    tables = _control_tables(list(control_names), list(groups))
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    result = write_par_ensemble(
+        data, tables, mappable=mappable, iteration=iteration, layout=layout, cells=cells
+    )
+    assert isinstance(result, WrittenArtifact)
+    return layout, values
 
 
 def _fake_cells() -> ParCells:
@@ -248,3 +287,217 @@ def test_resolve_cells_against_a_real_run(pl253_run):
     control_groups = set(tables.par["pargp"].astype(str))
     for group in cells.placed_groups:
         assert group in control_groups
+
+
+# ---------------------------------------------------------------------------
+# load_stored: opening a written ensemble through its own sidecar
+# ---------------------------------------------------------------------------
+
+
+def test_load_stored_returns_what_the_writer_put_in_the_sidecar(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+
+    stored = load_stored(0, layout)
+
+    assert isinstance(stored, StoredEnsemble)
+    assert stored.n_real == 2
+    assert stored.n_par == 3
+    assert stored.real_names == ("base", "34")
+    assert stored.par_names == ("par0", "par1", "par2")
+    assert len(stored.blocks) == 2
+
+
+def test_load_stored_par_names_are_control_order_and_block_to_control_maps_back(tmp_path):
+    # par0 (G2, non-mappable), par1 and par2 (G1, mappable) -- control order
+    # and block order deliberately disagree here.
+    layout, _ = _write_sample_ensemble(
+        tmp_path, groups=("G2", "G1", "G1"), mappable=frozenset({"G1"})
+    )
+
+    stored = load_stored(0, layout)
+
+    assert stored.par_names == ("par0", "par1", "par2")
+    # Block order is [par1, par2, par0] (map block first); block_to_control
+    # names, for each block position, which control position it came from.
+    assert list(stored.block_to_control) == [1, 2, 0]
+
+
+def test_load_stored_cell_and_layer_are_none_without_cells(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+
+    stored = load_stored(0, layout)
+
+    assert stored.cell is None
+    assert stored.layer is None
+
+
+def test_load_stored_cell_and_layer_are_int32_arrays_with_cells(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells())
+
+    stored = load_stored(0, layout)
+
+    assert stored.cell is not None
+    assert stored.cell.dtype == np.dtype("int32")
+    assert stored.layer is not None
+    assert stored.layer.dtype == np.dtype("int32")
+
+
+def test_load_stored_missing_payload_file_is_a_read_failure(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    layout.par_ens(0).unlink()
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "par_0.f32" in result.reason
+
+
+def test_load_stored_missing_sidecar_is_a_read_failure(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    (layout.ens / "par_0.json").unlink()
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "par_0.json" in result.reason
+
+
+def test_load_stored_invalid_json_sidecar_is_a_read_failure(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    (layout.ens / "par_0.json").write_text("not valid json {")
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+
+
+def test_load_stored_null_sidecar_is_a_read_failure_not_an_attribute_error(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    (layout.ens / "par_0.json").write_text("null")
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+
+
+def test_load_stored_wrong_shape_sidecar_is_a_read_failure(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    (layout.ens / "par_0.json").write_text(json.dumps([1, 2, 3]))
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+
+
+def test_load_stored_different_cache_version_is_a_read_failure(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    sidecar_path = layout.ens / "par_0.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["cache_version"] = sidecar["cache_version"] + 1
+    sidecar_path.write_text(json.dumps(sidecar))
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "cache_version" in result.reason
+
+
+def test_load_stored_truncated_payload_is_a_read_failure_naming_the_size(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    payload_path = layout.par_ens(0)
+    original = payload_path.read_bytes()
+    payload_path.write_bytes(original[:-4])
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert payload_path.name in result.reason
+    assert "shorter" in result.reason
+
+
+def test_load_stored_oversized_payload_is_a_read_failure_naming_the_size(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    payload_path = layout.par_ens(0)
+    original = payload_path.read_bytes()
+    payload_path.write_bytes(original + b"\x00\x00\x00\x00")
+
+    result = load_stored(0, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "longer" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# read_realization_field and read_map_row
+# ---------------------------------------------------------------------------
+
+
+def test_read_realization_field_returns_control_order_values(tmp_path):
+    layout, values = _write_sample_ensemble(tmp_path)
+    stored = load_stored(0, layout)
+
+    field = read_realization_field(stored, "base")
+
+    assert field.dtype == np.float32
+    assert field.shape == (3,)
+    np.testing.assert_array_equal(field, values[0])
+
+
+def test_read_realization_field_accepts_an_int_index(tmp_path):
+    layout, values = _write_sample_ensemble(tmp_path)
+    stored = load_stored(0, layout)
+
+    field = read_realization_field(stored, 1)
+
+    np.testing.assert_array_equal(field, values[1])
+
+
+def test_realization_lookup_never_confuses_an_int_index_with_a_name(tmp_path):
+    layout, values = _write_sample_ensemble(tmp_path, real_names=("1", "0"))
+    stored = load_stored(0, layout)
+
+    # The string "1" is realization index 0; the int 1 is realization index 1.
+    by_name = read_realization_field(stored, "1")
+    by_index = read_realization_field(stored, 1)
+
+    np.testing.assert_array_equal(by_name, values[0])
+    np.testing.assert_array_equal(by_index, values[1])
+
+
+def test_read_map_row_returns_the_map_blocks_row_in_block_order(tmp_path):
+    layout, values = _write_sample_ensemble(tmp_path)
+    stored = load_stored(0, layout)
+
+    row = read_map_row(stored, "base")
+
+    assert row.dtype == np.float32
+    assert row.shape == (2,)  # par0, par1 are the mappable (G1) columns
+    np.testing.assert_array_equal(row, values[0, :2])
+
+
+def test_read_map_row_length_matches_cell_size_when_cells_present(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells())
+    stored = load_stored(0, layout)
+
+    row = read_map_row(stored, "base")
+
+    assert row.shape[0] == stored.cell.size
+
+
+def test_read_realization_field_unknown_name_names_the_name_looked_for(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    stored = load_stored(0, layout)
+
+    result = read_realization_field(stored, "Base")
+
+    assert isinstance(result, ReadFailure)
+    assert "Base" in result.reason
+
+
+def test_read_realization_field_unknown_int_index_is_a_read_failure(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    stored = load_stored(0, layout)
+
+    result = read_realization_field(stored, 99)
+
+    assert isinstance(result, ReadFailure)
