@@ -20,9 +20,12 @@ from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.control import ControlTables, read_control
 from pesto.ingest.ensembles import (
+    RealAlignment,
     StoredEnsemble,
+    align_realizations,
     load_stored,
     read_map_row,
+    read_par_across_reals,
     read_realization_field,
     write_par_ensemble,
     write_par_reals,
@@ -501,3 +504,106 @@ def test_read_realization_field_unknown_int_index_is_a_read_failure(tmp_path):
     result = read_realization_field(stored, 99)
 
     assert isinstance(result, ReadFailure)
+
+
+# ---------------------------------------------------------------------------
+# read_par_across_reals: one parameter, every realization
+# ---------------------------------------------------------------------------
+
+
+def test_read_par_across_reals_on_a_non_map_block_parameter_is_contiguous(tmp_path):
+    real_names = ("base", "34", "35")
+    layout, values = _write_sample_ensemble(tmp_path, real_names=real_names)
+    stored = load_stored(0, layout)
+
+    # par2 is the only non-mappable (G2) parameter.
+    field = read_par_across_reals(stored, "par2")
+
+    assert field.dtype == np.float32
+    assert field.shape == (3,)
+    np.testing.assert_array_equal(field, values[:, 2])
+
+
+def test_read_par_across_reals_on_a_map_block_parameter_is_strided_but_equal(tmp_path):
+    real_names = ("base", "34", "35")
+    layout, values = _write_sample_ensemble(tmp_path, real_names=real_names)
+    stored = load_stored(0, layout)
+
+    field = read_par_across_reals(stored, "par0")
+
+    np.testing.assert_array_equal(field, values[:, 0])
+
+
+def test_read_par_across_reals_every_parameter_round_trips(tmp_path):
+    real_names = ("base", "34", "35")
+    layout, values = _write_sample_ensemble(
+        tmp_path, groups=("G2", "G1", "G1"), mappable=frozenset({"G1"}), real_names=real_names
+    )
+    stored = load_stored(0, layout)
+
+    for control_pos, parname in enumerate(stored.par_names):
+        field = read_par_across_reals(stored, parname)
+        np.testing.assert_array_equal(field, values[:, control_pos])
+
+
+def test_read_par_across_reals_unknown_name_names_the_name_looked_for(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    stored = load_stored(0, layout)
+
+    result = read_par_across_reals(stored, "does-not-exist")
+
+    assert isinstance(result, ReadFailure)
+    assert "does-not-exist" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# align_realizations: joining two iterations by realization name
+# ---------------------------------------------------------------------------
+
+
+def test_align_realizations_common_names_in_first_sequences_order():
+    alignment = align_realizations(["base", "34", "35"], ["base", "35", "176"])
+
+    assert isinstance(alignment, RealAlignment)
+    assert alignment.names == ("base", "35")
+    assert alignment.index_a == (0, 2)
+    assert alignment.index_b == (0, 1)
+    assert alignment.only_a == ("34",)
+    assert alignment.only_b == ("176",)
+
+
+def test_align_realizations_no_overlap_is_empty_not_an_exception():
+    alignment = align_realizations(["a", "b"], ["c", "d"])
+
+    assert alignment.names == ()
+    assert alignment.index_a == ()
+    assert alignment.index_b == ()
+    assert alignment.only_a == ("a", "b")
+    assert alignment.only_b == ("c", "d")
+    assert len(alignment.notes) > 0
+    assert any("no realization name is shared" in n for n in alignment.notes)
+
+
+def test_align_realizations_a_repeated_name_joins_first_occurrence_and_notes_it():
+    alignment = align_realizations(["base", "34", "base"], ["base", "34"])
+
+    assert alignment.names == ("base", "34")
+    assert alignment.index_a == (0, 1)
+    assert alignment.index_b == (0, 1)
+    assert any("base" in n and "2" in n for n in alignment.notes)
+
+
+def test_align_realizations_matches_by_exact_string_equality_only():
+    alignment = align_realizations(["base"], ["Base"])
+
+    assert alignment.names == ()
+    assert alignment.only_a == ("base",)
+    assert alignment.only_b == ("Base",)
+
+
+def test_align_realizations_leading_whitespace_does_not_join():
+    alignment = align_realizations(["base"], [" base"])
+
+    assert alignment.names == ()
+    assert alignment.only_a == ("base",)
+    assert alignment.only_b == (" base",)
