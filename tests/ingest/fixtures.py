@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -212,6 +214,64 @@ def write_variable_major_csv_ensemble(
         for name, row in zip(entity_names, transposed):
             writer.writerow([name, *row.tolist()])
     return path
+
+
+# ---------------------------------------------------------------------------
+# A corrupt ensemble file, and workers that die instead of returning
+# ---------------------------------------------------------------------------
+
+
+def write_corrupt_ensemble(path: Path, kind: str) -> Path:
+    """Write an ensemble file malformed in one named way, for proving a bad
+    file costs its own artifact and nothing else (T-04-10).
+
+    ``kind`` is one of:
+    - ``"truncated_header"``: fewer than the twelve bytes the binary header needs
+    - ``"garbage"``: random bytes from this function's own seeded RNG, sized so
+      that whatever a reader makes of them as a header, no downstream array
+      allocation is enormous -- proven empirically against ``pyemu.Matrix.from_binary``,
+      which raises cleanly (``MemoryError``/``ValueError``) on every seed tried
+    - ``"header_lies"``: a valid twelve-byte header declaring a row and column
+      count the rest of the file (there is no rest) does not contain
+    - ``"empty"``: a zero-byte file
+    """
+    path = Path(path)
+    if kind == "truncated_header":
+        path.write_bytes(b"\x00\x00\x00\x00")
+    elif kind == "garbage":
+        rng = np.random.default_rng(0)
+        path.write_bytes(rng.integers(0, 256, size=64, dtype=np.uint8).tobytes())
+    elif kind == "header_lies":
+        # itemp1=5, itemp2=5 (ncol=nrow=5, the modern coo dialect since
+        # itemp1 > 0), icount=100 claimed non-zero entries -- and nothing
+        # after the header for pyemu.Matrix.from_binary to read them from.
+        header = np.array(
+            [(5, 5, 100)], dtype=[("itemp1", "<i4"), ("itemp2", "<i4"), ("icount", "<i4")]
+        )
+        path.write_bytes(header.tobytes())
+    elif kind == "empty":
+        path.write_bytes(b"")
+    else:
+        raise ValueError(
+            f"write_corrupt_ensemble: unknown kind {kind!r} -- expected "
+            f'"truncated_header", "garbage", "header_lies" or "empty"'
+        )
+    return path
+
+
+def crash_worker(*args) -> None:
+    """Stand in for a segfault in a C extension: exit the process hard,
+    without raising anything Python could catch. Module-level so it
+    pickles; takes and ignores its arguments so it can be substituted for a
+    real artifact worker in a job list."""
+    os._exit(139)
+
+
+def signal_worker(*args) -> None:
+    """Stand in for a worker killed by an external signal, distinct from
+    :func:`crash_worker`'s self-inflicted hard exit. Module-level so it
+    pickles; takes and ignores its arguments."""
+    os.kill(os.getpid(), signal.SIGKILL)
 
 
 # ---------------------------------------------------------------------------
