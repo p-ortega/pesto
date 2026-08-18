@@ -199,6 +199,26 @@ def write_par_ensemble(
         pargp = list(tables.par["pargp"])
         permutation = data.permutation  # control position -> file column index
 
+        n_real = data.values.shape[0]
+        if n_real == 0:
+            return ReadFailure(
+                name=name,
+                path=str(data.source_path),
+                reason=(
+                    f"{Path(data.source_path).name}: this ensemble holds zero "
+                    f"realizations -- nothing to write"
+                ),
+            )
+        if len(control_names) == 0:
+            return ReadFailure(
+                name=name,
+                path=str(data.source_path),
+                reason=(
+                    f"{Path(data.source_path).name}: the control file names zero "
+                    f"parameters -- nothing to write"
+                ),
+            )
+
         map_positions: list[int] = []
         nomap_positions: list[int] = []
         for control_pos, group in enumerate(pargp):
@@ -210,7 +230,6 @@ def write_par_ensemble(
         map_file_cols = [permutation[p] for p in map_positions]
         nomap_file_cols = [permutation[p] for p in nomap_positions]
 
-        n_real = data.values.shape[0]
         n_map = len(map_file_cols)
         n_nomap = len(nomap_file_cols)
 
