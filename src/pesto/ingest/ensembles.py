@@ -62,14 +62,17 @@ class StoredEnsemble:
 
     ``write_par_ensemble`` builds one of these to hold the values before
     they are serialised and never fills ``path``, ``iteration``,
-    ``n_real``, ``n_par``, ``block_to_control``, ``cell`` or ``layer`` --
-    those are what a reader needs and a writer already knows some other
-    way. ``load_stored`` fills all of them: ``block_to_control`` is the
-    block-position-to-control-position permutation `write_par_ensemble`
-    computed, ``cell``/``layer`` are the map block's companion arrays
-    (``None`` when the sidecar names none), and ``map_values``/
-    ``nomap_values`` become read-only ``numpy.memmap`` views rather than
-    materialised arrays.
+    ``n_real``, ``n_par``, ``block_to_control``, ``control_to_block``,
+    ``cell`` or ``layer`` -- those are what a reader needs and a writer
+    already knows some other way. ``load_stored`` fills all of them:
+    ``block_to_control`` is the block-position-to-control-position
+    permutation `write_par_ensemble` computed, ``control_to_block`` is
+    its inverse (built once here with ``numpy.argsort`` so
+    ``read_par_across_reals`` never recomputes it per call),
+    ``cell``/``layer`` are the map block's companion arrays (``None``
+    when the sidecar names none), and ``map_values``/``nomap_values``
+    become read-only ``numpy.memmap`` views rather than materialised
+    arrays.
 
     Compares like :class:`pesto.ingest.ensfile.EnsembleData`: array fields
     with ``numpy.array_equal``, everything else with ``==``. Unhashable,
@@ -90,6 +93,7 @@ class StoredEnsemble:
     n_real: int | None = None
     n_par: int | None = None
     block_to_control: np.ndarray | None = None
+    control_to_block: np.ndarray | None = None
     cell: np.ndarray | None = None
     layer: np.ndarray | None = None
 
@@ -111,6 +115,7 @@ class StoredEnsemble:
             and self.n_real == other.n_real
             and self.n_par == other.n_par
             and _optional_array_equal(self.block_to_control, other.block_to_control)
+            and _optional_array_equal(self.control_to_block, other.control_to_block)
             and _optional_array_equal(self.cell, other.cell)
             and _optional_array_equal(self.layer, other.layer)
         )
@@ -500,6 +505,7 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         n_real=n_real,
         n_par=n_par,
         block_to_control=block_to_control,
+        control_to_block=np.argsort(block_to_control),
         cell=cell,
         layer=layer,
     )
@@ -590,3 +596,112 @@ def read_map_row(stored: StoredEnsemble, realization: int | str) -> np.ndarray |
             path=str(stored.path),
             reason=f"failed to read map row for realization {realization!r}: {exc}",
         )
+
+
+def read_par_across_reals(stored: StoredEnsemble, parname: str) -> np.ndarray | ReadFailure:
+    """One named parameter, every realization.
+
+    Looks ``parname`` up in ``stored.par_names`` by exact string equality,
+    refusing with a ``ReadFailure`` when it is absent, then uses
+    ``stored.control_to_block`` to find which block position it landed
+    in. A non-map-block parameter is read contiguously -- ``n_real``
+    values at one stride-free slice -- because parameters have no time
+    dimension and the non-map block exists for exactly this access
+    pattern. A map-block parameter is read with a stride of ``n_map``
+    instead: the map block is realization-first so the map can read one
+    realization's whole row contiguously, and this is the price paid on
+    the other axis for that choice.
+    """
+    name = f"par_ens/{stored.iteration}"
+    try:
+        control_pos = stored.par_names.index(parname)
+    except ValueError:
+        return ReadFailure(
+            name=name,
+            path=str(stored.path),
+            reason=(
+                f"parameter {parname!r} is not among the "
+                f"{len(stored.par_names)} parameters recorded for this file"
+            ),
+        )
+    try:
+        block_pos = int(stored.control_to_block[control_pos])
+        n_map = stored.map_values.shape[1]
+        if block_pos < n_map:
+            values = stored.map_values[:, block_pos]  # strided
+        else:
+            values = stored.nomap_values[block_pos - n_map]  # contiguous
+        return np.asarray(values, dtype=np.float32)
+    except Exception as exc:
+        return ReadFailure(
+            name=name,
+            path=str(stored.path),
+            reason=f"failed to read parameter {parname!r} across realizations: {exc}",
+        )
+
+
+@dataclass(frozen=True)
+class RealAlignment:
+    """The join between two realization-name sequences, by name.
+
+    ``names`` holds the names present in both, in ``a``'s order;
+    ``index_a``/``index_b`` are the matching row indexes into each side.
+    ``only_a``/``only_b`` are the names present in one side only --
+    reported rather than dropped, because pestpp-ies removes failed
+    realizations from the working ensemble rather than writing NaN rows,
+    so iteration 0 and a later iteration routinely hold different sets.
+    """
+
+    names: tuple[str, ...]
+    index_a: tuple[int, ...]
+    index_b: tuple[int, ...]
+    only_a: tuple[str, ...]
+    only_b: tuple[str, ...]
+    notes: tuple[str, ...]
+
+
+def _first_occurrence_index(names: Sequence[str]) -> tuple[dict[str, int], list[str]]:
+    """First-seen index for each name, plus a note for every repeat."""
+    index: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for position, name in enumerate(names):
+        counts[name] = counts.get(name, 0) + 1
+        if name not in index:
+            index[name] = position
+    notes = [
+        f"realization name {name!r} appears {count} times; joined on its first occurrence"
+        for name, count in counts.items()
+        if count > 1
+    ]
+    return index, notes
+
+
+def align_realizations(a: Sequence[str], b: Sequence[str]) -> RealAlignment:
+    """Join two realization-name sequences by exact string equality.
+
+    Matching is never by position -- a name differing from another only
+    by case or surrounding whitespace simply does not join, and is
+    reported in ``only_a`` or ``only_b`` rather than silently dropped. No
+    overlap at all is a real answer about two iterations of a run, not an
+    error: it comes back as empty ``names``/``index_a``/``index_b`` and a
+    note saying so.
+    """
+    index_a, notes_a = _first_occurrence_index(a)
+    index_b, notes_b = _first_occurrence_index(b)
+
+    common = [name for name in index_a if name in index_b]
+    only_a = tuple(name for name in index_a if name not in index_b)
+    only_b = tuple(name for name in index_b if name not in index_a)
+
+    notes = notes_a + notes_b
+    if not common:
+        notes.append("no realization name is shared between the two sequences")
+
+    return RealAlignment(
+        names=tuple(common),
+        index_a=tuple(index_a[name] for name in common),
+        index_b=tuple(index_b[name] for name in common),
+        only_a=only_a,
+        only_b=only_b,
+        notes=tuple(notes),
+    )

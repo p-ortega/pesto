@@ -607,3 +607,27 @@ def test_align_realizations_leading_whitespace_does_not_join():
     assert alignment.names == ()
     assert alignment.only_a == ("base",)
     assert alignment.only_b == (" base",)
+
+
+@pytest.mark.slow
+def test_align_realizations_against_a_real_run_reports_dropped_realizations(hm_run, tmp_path):
+    from pesto.ingest.discover import discover
+
+    cache_root = tmp_path / "cache"
+    ingest_run(hm_run, cache_root=cache_root)
+
+    run = discover(hm_run)
+    numbered = sorted(k for k in run.par_ens if isinstance(k, int))
+    first_iter, last_iter = numbered[0], numbered[-1]
+
+    layout = CacheLayout(root=cache_root)
+    first = load_stored(first_iter, layout)
+    last = load_stored(last_iter, layout)
+    assert isinstance(first, StoredEnsemble)
+    assert isinstance(last, StoredEnsemble)
+
+    alignment = align_realizations(first.real_names, last.real_names)
+
+    last_names = set(last.real_names)
+    expected_only_a = {name for name in first.real_names if name not in last_names}
+    assert set(alignment.only_a) == expected_only_a
