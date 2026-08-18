@@ -156,6 +156,8 @@ class Manifest:
     cache_version: int
     run_dir: str
     artifacts: dict[str, Artifact] = field(default_factory=dict)
+    ingest_seconds: float | None = None
+    cache_bytes: int | None = None
 
     @classmethod
     def empty(cls, run_dir: str) -> "Manifest":
@@ -193,15 +195,41 @@ class Manifest:
     def mark_missing(self, name: str, reason: str) -> None:
         self.artifacts[name] = Artifact(name=name, state="missing", reason=reason, sources=[])
 
-    def is_stale(self, name: str) -> bool:
+    def is_stale(self, name: str, layout: "CacheLayout | None" = None) -> bool:
         """An artifact that was never ingested, or whose recorded state is
         anything other than ``ok``, reports stale. An ``ok`` artifact is
-        stale only when at least one of its recorded sources no longer
-        matches."""
+        stale when at least one of its recorded sources no longer matches,
+        or, when ``layout`` is given, when any file it recorded is missing
+        or on disk at a size other than the one recorded when it was
+        written (D-08). Deciding this opens no cache file: the size check
+        is one ``stat`` per file, never a read.
+
+        Not chosen, deliberately: an ``fsync`` per artifact, which buys a
+        stronger guarantee after a power cut at the cost of a forced flush
+        that on an eleven-gigabyte cache is the same order as writing it;
+        and saving the manifest only at the end, which would make any
+        interruption cost a full re-ingest. The size check costs one
+        ``stat`` per file and catches exactly the crash-mid-write case both
+        alternatives were aimed at.
+
+        ``layout`` defaults to ``None``, so every call written before this
+        check existed keeps its exact original behaviour.
+        """
         artifact = self.artifacts.get(name)
         if artifact is None or artifact.state != "ok":
             return True
-        return not all(source.matches(Path(self.run_dir)) for source in artifact.sources)
+        if not all(source.matches(Path(self.run_dir)) for source in artifact.sources):
+            return True
+        if layout is None:
+            return False
+        for cache_file in artifact.files:
+            try:
+                size = (layout.root / cache_file.path).stat().st_size
+            except OSError:
+                return True
+            if size != cache_file.bytes:
+                return True
+        return False
 
     def save(self, layout: CacheLayout) -> None:
         layout.ensure()
@@ -212,6 +240,8 @@ class Manifest:
                 "artifacts": {
                     name: asdict(artifact) for name, artifact in self.artifacts.items()
                 },
+                "ingest_seconds": self.ingest_seconds,
+                "cache_bytes": self.cache_bytes,
             },
             indent=2,
         )
@@ -274,8 +304,20 @@ class Manifest:
             # dict("ab") raises the former, [].get the latter.
             return cls(cache_version=CACHE_VERSION, run_dir="")
 
+        ingest_seconds = data.get("ingest_seconds")
+        if not isinstance(ingest_seconds, (int, float)) or isinstance(ingest_seconds, bool):
+            ingest_seconds = None
+        else:
+            ingest_seconds = float(ingest_seconds)
+
+        cache_bytes = data.get("cache_bytes")
+        if not isinstance(cache_bytes, int) or isinstance(cache_bytes, bool):
+            cache_bytes = None
+
         return cls(
             cache_version=CACHE_VERSION,
             run_dir=run_dir,
             artifacts=artifacts,
+            ingest_seconds=ingest_seconds,
+            cache_bytes=cache_bytes,
         )

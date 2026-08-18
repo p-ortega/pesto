@@ -10,9 +10,10 @@ from __future__ import annotations
 import builtins
 import json
 import os
+from pathlib import Path
 
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
-from pesto.cache.manifest import Manifest, SourceFingerprint
+from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -376,3 +377,107 @@ def test_a_torn_write_cannot_look_fresh(tmp_path):
 
     assert reloaded.artifacts == {}
     assert reloaded.is_stale("par_0") is True
+
+
+# ---------------------------------------------------------------------------
+# ingest_seconds / cache_bytes -- ingest facts the manifest carries, D-07
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_totals_default_to_none_and_round_trip_through_disk(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    manifest = Manifest.empty(str(tmp_path))
+    assert manifest.ingest_seconds is None
+    assert manifest.cache_bytes is None
+
+    manifest.ingest_seconds = 12.5
+    manifest.cache_bytes = 4096
+    manifest.save(layout)
+
+    reloaded = Manifest.load(layout)
+    assert reloaded.ingest_seconds == 12.5
+    assert reloaded.cache_bytes == 4096
+# ---------------------------------------------------------------------------
+# Task 2: a stat, not a read, decides whether anything needs doing
+# ---------------------------------------------------------------------------
+
+
+def _ok_manifest_with_one_cache_file(tmp_path, layout):
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"source content")
+    fp = SourceFingerprint.of(source)
+
+    output = layout.root / "par_0.out"
+    output.write_bytes(b"twelve bytes")
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [fp], files=[CacheFile(path="par_0.out", bytes=12)])
+    return manifest, output
+
+
+def test_is_stale_without_layout_ignores_a_missing_cache_file(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    manifest, output = _ok_manifest_with_one_cache_file(tmp_path, layout)
+
+    output.unlink()
+
+    # No layout given -- every call written before this check existed keeps
+    # its exact original behaviour: only the source is checked.
+    assert manifest.is_stale("par_0") is False
+
+
+def test_is_stale_with_layout_detects_a_missing_cache_file(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    manifest, output = _ok_manifest_with_one_cache_file(tmp_path, layout)
+
+    output.unlink()
+
+    assert manifest.is_stale("par_0", layout) is True
+
+
+def test_is_stale_with_layout_detects_a_truncated_cache_file(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    manifest, output = _ok_manifest_with_one_cache_file(tmp_path, layout)
+
+    output.write_bytes(b"eleven byte")  # 11 bytes -- one short of the recorded 12
+
+    assert manifest.is_stale("par_0", layout) is True
+
+
+def test_is_stale_with_layout_and_matching_files_is_fresh(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    manifest, _output = _ok_manifest_with_one_cache_file(tmp_path, layout)
+
+    assert manifest.is_stale("par_0", layout) is False
+
+
+def test_is_stale_with_layout_opens_no_cache_file(tmp_path, monkeypatch):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    manifest, _output = _ok_manifest_with_one_cache_file(tmp_path, layout)
+
+    opened_under_cache_root: list[Path] = []
+    real_open = builtins.open
+
+    def _recording_open(file, *args, **kwargs):
+        try:
+            path = Path(file)
+        except TypeError:
+            path = None
+        if path is not None and (path == layout.root or layout.root in path.parents):
+            opened_under_cache_root.append(path)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _recording_open)
+    try:
+        manifest.is_stale("par_0", layout)
+    finally:
+        monkeypatch.setattr(builtins, "open", real_open)
+
+    assert opened_under_cache_root == []
