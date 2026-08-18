@@ -156,6 +156,8 @@ class Manifest:
     cache_version: int
     run_dir: str
     artifacts: dict[str, Artifact] = field(default_factory=dict)
+    ingest_seconds: float | None = None
+    cache_bytes: int | None = None
 
     @classmethod
     def empty(cls, run_dir: str) -> "Manifest":
@@ -212,6 +214,8 @@ class Manifest:
                 "artifacts": {
                     name: asdict(artifact) for name, artifact in self.artifacts.items()
                 },
+                "ingest_seconds": self.ingest_seconds,
+                "cache_bytes": self.cache_bytes,
             },
             indent=2,
         )
@@ -274,8 +278,20 @@ class Manifest:
             # dict("ab") raises the former, [].get the latter.
             return cls(cache_version=CACHE_VERSION, run_dir="")
 
+        ingest_seconds = data.get("ingest_seconds")
+        if not isinstance(ingest_seconds, (int, float)) or isinstance(ingest_seconds, bool):
+            ingest_seconds = None
+        else:
+            ingest_seconds = float(ingest_seconds)
+
+        cache_bytes = data.get("cache_bytes")
+        if not isinstance(cache_bytes, int) or isinstance(cache_bytes, bool):
+            cache_bytes = None
+
         return cls(
             cache_version=CACHE_VERSION,
             run_dir=run_dir,
             artifacts=artifacts,
+            ingest_seconds=ingest_seconds,
+            cache_bytes=cache_bytes,
         )

@@ -376,3 +376,25 @@ def test_a_torn_write_cannot_look_fresh(tmp_path):
 
     assert reloaded.artifacts == {}
     assert reloaded.is_stale("par_0") is True
+
+
+# ---------------------------------------------------------------------------
+# ingest_seconds / cache_bytes -- ingest facts the manifest carries, D-07
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_totals_default_to_none_and_round_trip_through_disk(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    manifest = Manifest.empty(str(tmp_path))
+    assert manifest.ingest_seconds is None
+    assert manifest.cache_bytes is None
+
+    manifest.ingest_seconds = 12.5
+    manifest.cache_bytes = 4096
+    manifest.save(layout)
+
+    reloaded = Manifest.load(layout)
+    assert reloaded.ingest_seconds == 12.5
+    assert reloaded.cache_bytes == 4096
