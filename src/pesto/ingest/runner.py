@@ -8,8 +8,10 @@ every job still queued behind a worker that dies (T-04-01).
 
 from __future__ import annotations
 
+import signal
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Sequence
@@ -56,13 +58,57 @@ def _run_isolated(fn, *args):
     Returns ``(ok, result_or_exception)``. Catching bare ``Exception``
     around ``future.result()`` covers ``BrokenProcessPool`` too, raised
     when a worker dies without raising anything itself.
+
+    When the exception is a ``BrokenProcessPool``, the dead worker's exit
+    code is read off the pool's own ``Process`` objects and attached to the
+    exception as ``exitcode``, before the ``with`` block tears the pool
+    down -- ``concurrent.futures`` exposes no public API for it, and it is
+    the only way ``_reason_for`` can tell a worker killed by a signal (a
+    negative exit code) from one that died for any other reason.
     """
     with ProcessPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn, *args)
         try:
             return True, future.result()
         except Exception as exc:
+            if isinstance(exc, BrokenProcessPool):
+                for proc in pool._processes.values():
+                    if proc.exitcode is not None:
+                        exc.exitcode = proc.exitcode
+                        break
             return False, exc
+
+
+def _reason_for(artifact: str, source: str, exc: BaseException) -> str:
+    """Turn a caught exception from a dead or raising worker into one
+    sentence naming the artifact and the file, and then what happened --
+    never a bare ``repr(exc)``, which is what a scientist would otherwise
+    have to decode next to a red row in the ingest report.
+
+    Three distinguishable shapes: a ``BrokenProcessPool`` whose worker's
+    exit code is a negative number names the signal that killed it, because
+    that and a worker that simply ran out of memory are different facts to
+    someone reading a failed ingest; any other ``BrokenProcessPool`` says
+    the worker exited without returning a result; and any other exception
+    names its own message.
+    """
+    if isinstance(exc, BrokenProcessPool):
+        exitcode = getattr(exc, "exitcode", None)
+        if isinstance(exitcode, int) and exitcode < 0:
+            signum = -exitcode
+            try:
+                signame = f" ({signal.Signals(signum).name})"
+            except ValueError:
+                signame = ""
+            return (
+                f"{artifact}: the worker reading {source} was killed by signal "
+                f"{signum}{signame} before it returned a result"
+            )
+        return (
+            f"{artifact}: the worker reading {source} exited without returning "
+            f"a result, so the file could not be read"
+        )
+    return f"{artifact}: reading {source} failed -- {exc}"
 
 
 def _resolve_cells(pst_path: str, grid_path: str | None):
@@ -243,7 +289,10 @@ def ingest_run(
             reason = None
         else:
             written_bytes = 0
-            reason = result.reason if isinstance(result, ReadFailure) else str(result)
+            if isinstance(result, ReadFailure):
+                reason = result.reason
+            else:
+                reason = _reason_for(artifact_name, str(source), result)
             manifest.mark_failed(artifact_name, reason, sources=sources, seconds=seconds)
             manifest.save(layout)
             state = "failed"
