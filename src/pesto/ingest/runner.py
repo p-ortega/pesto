@@ -529,7 +529,9 @@ def ingest_run(
     own.
 
     An interruption leaves finished artifacts recorded: the manifest is
-    saved after every artifact, not once at the end.
+    saved after every artifact, not once at the end. An artifact that is
+    not stale -- its sources unchanged and its recorded cache files still
+    the size they were written at -- is skipped before any worker starts.
     """
     run = discover(run_dir)
     if cache_root is None:
@@ -538,6 +540,11 @@ def ingest_run(
         layout = CacheLayout(root=Path(cache_root))
     layout.ensure()
     manifest = Manifest.load(layout)
+    # A freshly loaded manifest's own run_dir may be stale or empty (a first
+    # ingest has no manifest.json to load run_dir from at all) -- is_stale
+    # resolves every recorded source against self.run_dir, so this call's
+    # own run_dir is the one fact that must always be current here.
+    manifest.run_dir = str(run_dir)
 
     if iterations is None:
         numbered = [k for k in run.par_ens if isinstance(k, int)]
@@ -606,8 +613,11 @@ def ingest_run(
         for output_path in output_paths:
             seen_paths[output_path] = artifact.name
 
-        if not _should_retry(manifest, artifact.name, run_dir):
-            existing = manifest.artifacts[artifact.name]
+        existing = manifest.artifacts.get(artifact.name)
+        declined_retry = not _should_retry(manifest, artifact.name, run_dir)
+        fresh = (not declined_retry) and (not manifest.is_stale(artifact.name, layout))
+        if declined_retry or fresh:
+            written_bytes = sum(f.bytes for f in existing.files) if existing is not None else 0
             if on_progress is not None:
                 on_progress(
                     Progress(
@@ -616,9 +626,9 @@ def ingest_run(
                         index=index,
                         total=total,
                         source_bytes=artifact.source_bytes,
-                        written_bytes=0,
+                        written_bytes=written_bytes,
                         seconds=0.0,
-                        reason=existing.reason,
+                        reason=existing.reason if existing is not None else None,
                     )
                 )
             continue
