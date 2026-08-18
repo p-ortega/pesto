@@ -8,8 +8,10 @@ every job still queued behind a worker that dies (T-04-01).
 
 from __future__ import annotations
 
+import signal
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Sequence
@@ -56,13 +58,57 @@ def _run_isolated(fn, *args):
     Returns ``(ok, result_or_exception)``. Catching bare ``Exception``
     around ``future.result()`` covers ``BrokenProcessPool`` too, raised
     when a worker dies without raising anything itself.
+
+    When the exception is a ``BrokenProcessPool``, the dead worker's exit
+    code is read off the pool's own ``Process`` objects and attached to the
+    exception as ``exitcode``, before the ``with`` block tears the pool
+    down -- ``concurrent.futures`` exposes no public API for it, and it is
+    the only way ``_reason_for`` can tell a worker killed by a signal (a
+    negative exit code) from one that died for any other reason.
     """
     with ProcessPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn, *args)
         try:
             return True, future.result()
         except Exception as exc:
+            if isinstance(exc, BrokenProcessPool):
+                for proc in pool._processes.values():
+                    if proc.exitcode is not None:
+                        exc.exitcode = proc.exitcode
+                        break
             return False, exc
+
+
+def _reason_for(artifact: str, source: str, exc: BaseException) -> str:
+    """Turn a caught exception from a dead or raising worker into one
+    sentence naming the artifact and the file, and then what happened --
+    never a bare ``repr(exc)``, which is what a scientist would otherwise
+    have to decode next to a red row in the ingest report.
+
+    Three distinguishable shapes: a ``BrokenProcessPool`` whose worker's
+    exit code is a negative number names the signal that killed it, because
+    that and a worker that simply ran out of memory are different facts to
+    someone reading a failed ingest; any other ``BrokenProcessPool`` says
+    the worker exited without returning a result; and any other exception
+    names its own message.
+    """
+    if isinstance(exc, BrokenProcessPool):
+        exitcode = getattr(exc, "exitcode", None)
+        if isinstance(exitcode, int) and exitcode < 0:
+            signum = -exitcode
+            try:
+                signame = f" ({signal.Signals(signum).name})"
+            except ValueError:
+                signame = ""
+            return (
+                f"{artifact}: the worker reading {source} was killed by signal "
+                f"{signum}{signame} before it returned a result"
+            )
+        return (
+            f"{artifact}: the worker reading {source} exited without returning "
+            f"a result, so the file could not be read"
+        )
+    return f"{artifact}: reading {source} failed -- {exc}"
 
 
 def _resolve_cells(pst_path: str, grid_path: str | None):
@@ -151,6 +197,27 @@ def _select_iterations(numbered: list[int]) -> list[int]:
     return [ordered[0], ordered[-1]]
 
 
+def _should_retry(manifest: Manifest, name: str, base: Path) -> bool:
+    """Should artifact ``name`` be read again on this ingest?
+
+    Decision (04-CONTEXT.md's Claude's Discretion item, resolved here): a
+    failed artifact stays failed until its source changes. Re-reading a
+    file that has not changed, only to fail on it in the same way, is time
+    a scientist spends waiting for an answer they already have. An artifact
+    in state ``"failed"`` whose recorded sources all still match ``base``
+    is declined a retry. Everything else -- an artifact not yet in the
+    manifest, one in any state other than ``"failed"``, a failed artifact
+    with a changed source, or a failed artifact with no recorded sources at
+    all -- is read again.
+    """
+    artifact = manifest.artifacts.get(name)
+    if artifact is None or artifact.state != "failed":
+        return True
+    if not artifact.sources:
+        return True
+    return not all(source.matches(base) for source in artifact.sources)
+
+
 def ingest_run(
     run_dir: Path,
     cache_root: Path | None = None,
@@ -202,10 +269,57 @@ def ingest_run(
         )
 
     total = len(selected)
+    seen_paths: dict[Path, str] = {}
     for index, iteration in enumerate(selected):
         source = run.par_ens[iteration]
         artifact_name = f"par_ens/{iteration}"
+        output_path = layout.par_ens(iteration)
         source_bytes = source.stat().st_size if source.exists() else 0
+
+        # A name collision would let one artifact silently overwrite
+        # another's file (T-04-12) -- refuse the second one by name rather
+        # than let that happen.
+        if output_path in seen_paths:
+            reason = (
+                f"{artifact_name} would write to {output_path}, the same output "
+                f"path {seen_paths[output_path]} already claims in this ingest -- "
+                f"refusing rather than letting one artifact silently overwrite "
+                f"the other"
+            )
+            manifest.mark_failed(artifact_name, reason, sources=[])
+            manifest.save(layout)
+            if on_progress is not None:
+                on_progress(
+                    Progress(
+                        artifact=artifact_name,
+                        state="failed",
+                        index=index,
+                        total=total,
+                        source_bytes=source_bytes,
+                        written_bytes=0,
+                        seconds=0.0,
+                        reason=reason,
+                    )
+                )
+            continue
+        seen_paths[output_path] = artifact_name
+
+        if not _should_retry(manifest, artifact_name, run_dir):
+            existing = manifest.artifacts[artifact_name]
+            if on_progress is not None:
+                on_progress(
+                    Progress(
+                        artifact=artifact_name,
+                        state="skipped",
+                        index=index,
+                        total=total,
+                        source_bytes=source_bytes,
+                        written_bytes=0,
+                        seconds=0.0,
+                        reason=existing.reason,
+                    )
+                )
+            continue
 
         if on_progress is not None:
             on_progress(
@@ -243,7 +357,10 @@ def ingest_run(
             reason = None
         else:
             written_bytes = 0
-            reason = result.reason if isinstance(result, ReadFailure) else str(result)
+            if isinstance(result, ReadFailure):
+                reason = result.reason
+            else:
+                reason = _reason_for(artifact_name, str(source), result)
             manifest.mark_failed(artifact_name, reason, sources=sources, seconds=seconds)
             manifest.save(layout)
             state = "failed"
