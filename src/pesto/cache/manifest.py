@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 
 ArtifactState = Literal["ok", "missing", "failed", "not_ingested"]
@@ -106,6 +105,27 @@ class SourceFingerprint:
         return digest == self.checksum
 
 
+@dataclass(frozen=True)
+class CacheFile:
+    """One finished file under the cache root. ``path`` is relative to the
+    cache root; ``bytes`` is the size the file had right after the rename
+    that published it."""
+
+    path: str
+    bytes: int
+
+
+@dataclass(frozen=True)
+class WrittenArtifact:
+    """What one cache writer produced on success: every file it wrote and
+    any notes worth carrying forward. This is the record every writer in
+    the ingest layer returns."""
+
+    name: str
+    files: tuple[CacheFile, ...]
+    notes: tuple[str, ...] = ()
+
+
 @dataclass
 class Artifact:
     """One independently readable piece of a run's cache.
@@ -118,36 +138,8 @@ class Artifact:
     state: ArtifactState
     reason: str | None = None
     sources: list[SourceFingerprint] = field(default_factory=list)
-
-
-def _write_atomic(target: Path, payload: str) -> None:
-    """Write ``payload`` to ``target`` so a concurrent reader never observes
-    a half-written file.
-
-    A temporary file is created in ``target``'s own directory -- keeping the
-    final swap on one filesystem -- flushed and fsynced, then swapped into
-    place with ``os.replace``, which is atomic on both POSIX and Windows. A
-    reader therefore always sees either the whole previous manifest or the
-    whole new one, never something in between. The temporary file is
-    removed in a ``finally`` if the replace did not happen, so a failed save
-    leaves no litter behind in the cache root.
-    """
-    directory = target.parent
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", dir=directory, prefix=".manifest-", suffix=".tmp", delete=False
-    )
-    tmp_path = Path(tmp.name)
-    replaced = False
-    try:
-        tmp.write(payload)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp.close()
-        os.replace(tmp_path, target)
-        replaced = True
-    finally:
-        if not replaced and tmp_path.exists():
-            tmp_path.unlink()
+    files: list[CacheFile] = field(default_factory=list)
+    seconds: float | None = None
 
 
 @dataclass
@@ -169,13 +161,34 @@ class Manifest:
     def empty(cls, run_dir: str) -> "Manifest":
         return cls(cache_version=CACHE_VERSION, run_dir=str(run_dir))
 
-    def mark_ok(self, name: str, sources: list[SourceFingerprint]) -> None:
+    def mark_ok(
+        self,
+        name: str,
+        sources: list[SourceFingerprint],
+        files: tuple[CacheFile, ...] = (),
+        seconds: float | None = None,
+    ) -> None:
         self.artifacts[name] = Artifact(
-            name=name, state="ok", reason=None, sources=list(sources)
+            name=name,
+            state="ok",
+            reason=None,
+            sources=list(sources),
+            files=list(files),
+            seconds=seconds,
         )
 
-    def mark_failed(self, name: str, reason: str) -> None:
-        self.artifacts[name] = Artifact(name=name, state="failed", reason=reason, sources=[])
+    def mark_failed(
+        self,
+        name: str,
+        reason: str,
+        sources: list[SourceFingerprint] = (),
+        seconds: float | None = None,
+    ) -> None:
+        # Recording sources on a failure is what lets a later plan decide
+        # whether a failed artifact is worth retrying.
+        self.artifacts[name] = Artifact(
+            name=name, state="failed", reason=reason, sources=list(sources), seconds=seconds
+        )
 
     def mark_missing(self, name: str, reason: str) -> None:
         self.artifacts[name] = Artifact(name=name, state="missing", reason=reason, sources=[])
@@ -202,7 +215,7 @@ class Manifest:
             },
             indent=2,
         )
-        _write_atomic(layout.manifest, payload)
+        write_atomic_text(layout.manifest, payload)
 
     @classmethod
     def load(cls, layout: CacheLayout) -> "Manifest":
@@ -248,6 +261,9 @@ class Manifest:
                 fields_copy = dict(artifact_data)
                 fields_copy["sources"] = [
                     SourceFingerprint(**s) for s in artifact_data.get("sources", [])
+                ]
+                fields_copy["files"] = [
+                    CacheFile(**f) for f in artifact_data.get("files", [])
                 ]
                 artifacts[name] = Artifact(**fields_copy)
         except (KeyError, TypeError, ValueError, AttributeError):
