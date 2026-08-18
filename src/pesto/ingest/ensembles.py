@@ -47,12 +47,29 @@ class Block:
     shape: tuple[int, int]
 
 
+def _optional_array_equal(a: np.ndarray | None, b: np.ndarray | None) -> bool:
+    if a is None or b is None:
+        return a is b
+    return np.array_equal(a, b)
+
+
 @dataclass(frozen=True, eq=False)
 class StoredEnsemble:
-    """One iteration's parameter ensemble as it was written: the two block
-    arrays that became the payload, alongside everything the sidecar
-    records. Held together so a caller does not have to re-parse the
-    sidecar JSON to see what was actually written.
+    """One iteration's parameter ensemble as it was written, or as
+    :func:`load_stored` read it back: the two block arrays, alongside
+    everything the sidecar records. Held together so a caller does not
+    have to re-parse the sidecar JSON to see what was actually written.
+
+    ``write_par_ensemble`` builds one of these to hold the values before
+    they are serialised and never fills ``path``, ``iteration``,
+    ``n_real``, ``n_par``, ``block_to_control``, ``cell`` or ``layer`` --
+    those are what a reader needs and a writer already knows some other
+    way. ``load_stored`` fills all of them: ``block_to_control`` is the
+    block-position-to-control-position permutation `write_par_ensemble`
+    computed, ``cell``/``layer`` are the map block's companion arrays
+    (``None`` when the sidecar names none), and ``map_values``/
+    ``nomap_values`` become read-only ``numpy.memmap`` views rather than
+    materialised arrays.
 
     Compares like :class:`pesto.ingest.ensfile.EnsembleData`: array fields
     with ``numpy.array_equal``, everything else with ``==``. Unhashable,
@@ -68,6 +85,13 @@ class StoredEnsemble:
     on_disk_format: str
     orientation: str
     notes: tuple[str, ...]
+    path: Path | None = None
+    iteration: int | None = None
+    n_real: int | None = None
+    n_par: int | None = None
+    block_to_control: np.ndarray | None = None
+    cell: np.ndarray | None = None
+    layer: np.ndarray | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, StoredEnsemble):
@@ -82,6 +106,13 @@ class StoredEnsemble:
             and self.on_disk_format == other.on_disk_format
             and self.orientation == other.orientation
             and self.notes == other.notes
+            and self.path == other.path
+            and self.iteration == other.iteration
+            and self.n_real == other.n_real
+            and self.n_par == other.n_par
+            and _optional_array_equal(self.block_to_control, other.block_to_control)
+            and _optional_array_equal(self.cell, other.cell)
+            and _optional_array_equal(self.layer, other.layer)
         )
 
     __hash__ = None
@@ -316,4 +347,246 @@ def write_par_ensemble(
             name=name,
             path=str(data.source_path),
             reason=f"failed to write ensemble artifact {name} from {Path(data.source_path).name}: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Reading a stored ensemble back through its own sidecar
+# ---------------------------------------------------------------------------
+
+
+def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFailure:
+    """Open the ensemble written for ``iteration`` through its own sidecar.
+
+    Trusts nothing about the payload beyond what the sidecar describes:
+    the same shape checks ``Manifest.load`` applies to the manifest --
+    catch ``OSError``/``json.JSONDecodeError``, check the parsed value is
+    a dict before reading a key, refuse a different ``cache_version`` --
+    apply here too, plus one check the manifest has no need for: the
+    payload's size on disk must equal the sum of the two blocks' byte
+    lengths (T-04-06), because a file that does not match its own
+    description is one this function cannot answer questions about.
+
+    The payload is memory-mapped, never read whole -- an 11 GB cache must
+    not be pulled into RAM to answer one realization's question.
+    """
+    name = f"par_ens/{iteration}"
+    payload_path = layout.par_ens(iteration)
+    sidecar_path = layout.ens / f"par_{iteration}.json"
+
+    try:
+        raw = sidecar_path.read_text()
+    except OSError as exc:
+        return ReadFailure(
+            name=name,
+            path=str(sidecar_path),
+            reason=f"could not read sidecar {sidecar_path.name}: {exc}",
+        )
+    try:
+        sidecar = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return ReadFailure(
+            name=name,
+            path=str(sidecar_path),
+            reason=f"sidecar {sidecar_path.name} is not valid JSON: {exc}",
+        )
+    if not isinstance(sidecar, dict):
+        return ReadFailure(
+            name=name,
+            path=str(sidecar_path),
+            reason=f"sidecar {sidecar_path.name} is not a JSON object (got {type(sidecar).__name__})",
+        )
+    if sidecar.get("cache_version") != CACHE_VERSION:
+        return ReadFailure(
+            name=name,
+            path=str(sidecar_path),
+            reason=(
+                f"sidecar {sidecar_path.name} was written at cache_version "
+                f"{sidecar.get('cache_version')!r}, this reader expects {CACHE_VERSION}"
+            ),
+        )
+
+    try:
+        raw_blocks = sidecar["blocks"]
+        if not isinstance(raw_blocks, list) or len(raw_blocks) != 2:
+            raise ValueError("blocks is not a two-entry list")
+        blocks = tuple(
+            Block(
+                name=b["name"],
+                layout=b["layout"],
+                offset_bytes=b["offset_bytes"],
+                n_par=b["n_par"],
+                shape=tuple(b["shape"]),
+            )
+            for b in raw_blocks
+        )
+        real_names = tuple(sidecar["real_names"])
+        n_real = int(sidecar["n_real"])
+        n_par = int(sidecar["n_par"])
+        parnames_file = sidecar["par_names_file"]
+        block_to_control_file = sidecar["block_to_control_file"]
+        cell_file = sidecar.get("cell_file")
+        layer_file = sidecar.get("layer_file")
+        source = sidecar.get("source", {})
+        notes = tuple(sidecar.get("notes", []))
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReadFailure(
+            name=name,
+            path=str(sidecar_path),
+            reason=f"sidecar {sidecar_path.name} is not shaped like a par ensemble sidecar: {exc}",
+        )
+
+    expected_bytes = sum(shape[0] * shape[1] * 4 for shape in (b.shape for b in blocks))
+    try:
+        actual_bytes = payload_path.stat().st_size
+    except OSError as exc:
+        return ReadFailure(
+            name=name,
+            path=str(payload_path),
+            reason=f"could not stat payload {payload_path.name}: {exc}",
+        )
+    if actual_bytes != expected_bytes:
+        direction = "shorter" if actual_bytes < expected_bytes else "longer"
+        return ReadFailure(
+            name=name,
+            path=str(payload_path),
+            reason=(
+                f"payload {payload_path.name} is {direction} than the sidecar describes "
+                f"({actual_bytes} bytes on disk, {expected_bytes} expected)"
+            ),
+        )
+
+    try:
+        par_names = tuple((layout.ens / parnames_file).read_text().splitlines())
+        block_to_control = np.fromfile(layout.ens / block_to_control_file, dtype="<i4")
+        cell = np.fromfile(layout.ens / cell_file, dtype="<i4") if cell_file else None
+        layer = np.fromfile(layout.ens / layer_file, dtype="<i4") if layer_file else None
+
+        map_block = next(b for b in blocks if b.name == "map")
+        nomap_block = next(b for b in blocks if b.name == "nomap")
+        map_values = np.memmap(
+            payload_path,
+            dtype="<f4",
+            mode="r",
+            offset=map_block.offset_bytes,
+            shape=map_block.shape,
+        )
+        nomap_values = np.memmap(
+            payload_path,
+            dtype="<f4",
+            mode="r",
+            offset=nomap_block.offset_bytes,
+            shape=nomap_block.shape,
+        )
+    except Exception as exc:
+        return ReadFailure(
+            name=name,
+            path=str(payload_path),
+            reason=f"failed to open ensemble artifact {name}: {exc}",
+        )
+
+    return StoredEnsemble(
+        blocks=blocks,
+        map_values=map_values,
+        nomap_values=nomap_values,
+        real_names=real_names,
+        par_names=par_names,
+        source_path=Path(source.get("path", "")),
+        on_disk_format=source.get("on_disk_format", ""),
+        orientation=source.get("orientation", ""),
+        notes=notes,
+        path=payload_path,
+        iteration=iteration,
+        n_real=n_real,
+        n_par=n_par,
+        block_to_control=block_to_control,
+        cell=cell,
+        layer=layer,
+    )
+
+
+def _resolve_realization(stored: StoredEnsemble, realization: int | str) -> int | ReadFailure:
+    """Turn a name or index into a row index into the map block.
+
+    An ``int`` is checked against the realization count; a ``str`` is
+    looked up in ``real_names`` by exact string equality -- never the
+    nearest row, and the two kinds are never confused with each other.
+    """
+    name = f"par_ens/{stored.iteration}"
+    if isinstance(realization, str):
+        try:
+            return stored.real_names.index(realization)
+        except ValueError:
+            return ReadFailure(
+                name=name,
+                path=str(stored.path),
+                reason=(
+                    f"realization {realization!r} is not among the "
+                    f"{len(stored.real_names)} realizations recorded for this file"
+                ),
+            )
+    if isinstance(realization, int):
+        if 0 <= realization < len(stored.real_names):
+            return realization
+        return ReadFailure(
+            name=name,
+            path=str(stored.path),
+            reason=(
+                f"realization index {realization} is out of range for "
+                f"{len(stored.real_names)} realizations"
+            ),
+        )
+    return ReadFailure(
+        name=name,
+        path=str(stored.path),
+        reason=f"realization must be an int index or a str name, got {type(realization).__name__}",
+    )
+
+
+def read_realization_field(
+    stored: StoredEnsemble, realization: int | str
+) -> np.ndarray | ReadFailure:
+    """One realization, every parameter, in control-file order.
+
+    Reads the map block's row and the non-map block's column for this
+    realization, concatenates them in block order, then scatters through
+    ``stored.block_to_control`` so the result lines up with
+    ``stored.par_names``.
+    """
+    row = _resolve_realization(stored, realization)
+    if isinstance(row, ReadFailure):
+        return row
+    try:
+        map_row = np.asarray(stored.map_values[row], dtype=np.float32)
+        nomap_row = np.asarray(stored.nomap_values[:, row], dtype=np.float32)
+        block_order_values = np.concatenate([map_row, nomap_row])
+        control_order = np.empty(len(stored.par_names), dtype=np.float32)
+        control_order[stored.block_to_control] = block_order_values
+        return control_order
+    except Exception as exc:
+        return ReadFailure(
+            name=f"par_ens/{stored.iteration}",
+            path=str(stored.path),
+            reason=f"failed to read realization {realization!r}: {exc}",
+        )
+
+
+def read_map_row(stored: StoredEnsemble, realization: int | str) -> np.ndarray | ReadFailure:
+    """The map block's row for this realization, in block order -- no
+    permutation applied.
+
+    This is the array ``stored.cell`` and ``stored.layer`` are aligned
+    with; a caller pairing it with ``stored.par_names`` instead would be
+    pairing two different orders.
+    """
+    row = _resolve_realization(stored, realization)
+    if isinstance(row, ReadFailure):
+        return row
+    try:
+        return np.asarray(stored.map_values[row], dtype=np.float32)
+    except Exception as exc:
+        return ReadFailure(
+            name=f"par_ens/{stored.iteration}",
+            path=str(stored.path),
+            reason=f"failed to read map row for realization {realization!r}: {exc}",
         )
