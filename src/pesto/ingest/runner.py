@@ -197,6 +197,27 @@ def _select_iterations(numbered: list[int]) -> list[int]:
     return [ordered[0], ordered[-1]]
 
 
+def _should_retry(manifest: Manifest, name: str, base: Path) -> bool:
+    """Should artifact ``name`` be read again on this ingest?
+
+    Decision (04-CONTEXT.md's Claude's Discretion item, resolved here): a
+    failed artifact stays failed until its source changes. Re-reading a
+    file that has not changed, only to fail on it in the same way, is time
+    a scientist spends waiting for an answer they already have. An artifact
+    in state ``"failed"`` whose recorded sources all still match ``base``
+    is declined a retry. Everything else -- an artifact not yet in the
+    manifest, one in any state other than ``"failed"``, a failed artifact
+    with a changed source, or a failed artifact with no recorded sources at
+    all -- is read again.
+    """
+    artifact = manifest.artifacts.get(name)
+    if artifact is None or artifact.state != "failed":
+        return True
+    if not artifact.sources:
+        return True
+    return not all(source.matches(base) for source in artifact.sources)
+
+
 def ingest_run(
     run_dir: Path,
     cache_root: Path | None = None,
@@ -248,10 +269,57 @@ def ingest_run(
         )
 
     total = len(selected)
+    seen_paths: dict[Path, str] = {}
     for index, iteration in enumerate(selected):
         source = run.par_ens[iteration]
         artifact_name = f"par_ens/{iteration}"
+        output_path = layout.par_ens(iteration)
         source_bytes = source.stat().st_size if source.exists() else 0
+
+        # A name collision would let one artifact silently overwrite
+        # another's file (T-04-12) -- refuse the second one by name rather
+        # than let that happen.
+        if output_path in seen_paths:
+            reason = (
+                f"{artifact_name} would write to {output_path}, the same output "
+                f"path {seen_paths[output_path]} already claims in this ingest -- "
+                f"refusing rather than letting one artifact silently overwrite "
+                f"the other"
+            )
+            manifest.mark_failed(artifact_name, reason, sources=[])
+            manifest.save(layout)
+            if on_progress is not None:
+                on_progress(
+                    Progress(
+                        artifact=artifact_name,
+                        state="failed",
+                        index=index,
+                        total=total,
+                        source_bytes=source_bytes,
+                        written_bytes=0,
+                        seconds=0.0,
+                        reason=reason,
+                    )
+                )
+            continue
+        seen_paths[output_path] = artifact_name
+
+        if not _should_retry(manifest, artifact_name, run_dir):
+            existing = manifest.artifacts[artifact_name]
+            if on_progress is not None:
+                on_progress(
+                    Progress(
+                        artifact=artifact_name,
+                        state="skipped",
+                        index=index,
+                        total=total,
+                        source_bytes=source_bytes,
+                        written_bytes=0,
+                        seconds=0.0,
+                        reason=existing.reason,
+                    )
+                )
+            continue
 
         if on_progress is not None:
             on_progress(
