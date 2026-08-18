@@ -35,7 +35,7 @@ from pesto.ingest.failures import ReadFailure
 from pesto.ingest.runner import _resolve_cells, ingest_run
 from pesto.model import GroupResolution, ParCells
 
-from .fixtures import make_run
+from .fixtures import make_run, sample_values
 
 
 def _control_tables(control_names: list[str], groups: list[str]) -> ControlTables:
@@ -631,3 +631,132 @@ def test_align_realizations_against_a_real_run_reports_dropped_realizations(hm_r
     last_names = set(last.real_names)
     expected_only_a = {name for name in first.real_names if name not in last_names}
     assert set(alignment.only_a) == expected_only_a
+
+
+def test_align_realizations_one_entry_index_against_many_returns_the_shared_name():
+    alignment = align_realizations(["base"], ["base", "34", "35"])
+
+    assert alignment.names == ("base",)
+    assert alignment.index_a == (0,)
+    assert alignment.index_b == (0,)
+    assert alignment.only_a == ()
+    assert alignment.only_b == ("34", "35")
+
+
+# ---------------------------------------------------------------------------
+# The round-trip invariant: write_par_ensemble then read back equals source
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "groups,mappable",
+    [
+        (("G1", "G1", "G1", "G1"), frozenset()),
+        (("G1", "G1", "G2", "G2"), frozenset({"G1"})),
+        (("G1", "G1", "G1", "G1"), frozenset({"G1"})),
+    ],
+    ids=["map-block-empty", "both-blocks-non-empty", "nomap-block-empty"],
+)
+def test_round_trip_holds_for_every_block_configuration(tmp_path, groups, mappable):
+    n_real, n_par = 5, 4
+    control_names = [f"par{i}" for i in range(n_par)]
+    real_names = [f"r{i}" for i in range(n_real)]
+    values = sample_values(n_real, n_par, seed=42)
+
+    data = _ensemble_data(values, real_names, control_names, tuple(range(n_par)))
+    tables = _control_tables(control_names, list(groups))
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_ensemble(data, tables, mappable=mappable, iteration=0, layout=layout)
+    assert isinstance(result, WrittenArtifact)
+
+    stored = load_stored(0, layout)
+    assert isinstance(stored, StoredEnsemble)
+
+    for r, real_name in enumerate(real_names):
+        field = read_realization_field(stored, real_name)
+        np.testing.assert_array_equal(field, values[r].astype(np.float32))
+
+    for p, parname in enumerate(control_names):
+        column = read_par_across_reals(stored, parname)
+        np.testing.assert_array_equal(column, values[:, p].astype(np.float32))
+
+
+def test_round_trip_holds_for_a_single_realization(tmp_path):
+    control_names = ["par0", "par1"]
+    real_names = ["only"]
+    values = sample_values(1, 2, seed=7)
+    data = _ensemble_data(values, real_names, control_names, (0, 1))
+    tables = _control_tables(control_names, ["G1", "G2"])
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
+    )
+    assert isinstance(result, WrittenArtifact)
+
+    payload = json.loads((layout.reals / "par_0.reals.json").read_text())
+    assert payload["names"] == ["only"]
+    assert payload["n_real"] == 1
+
+    stored = load_stored(0, layout)
+    field = read_realization_field(stored, "only")
+    np.testing.assert_array_equal(field, values[0].astype(np.float32))
+
+
+def test_round_trip_holds_for_a_single_parameter(tmp_path):
+    control_names = ["par0"]
+    real_names = ["r0", "r1", "r2"]
+    values = sample_values(3, 1, seed=11)
+    data = _ensemble_data(values, real_names, control_names, (0,))
+    tables = _control_tables(control_names, ["G1"])
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
+    )
+    assert isinstance(result, WrittenArtifact)
+
+    stored = load_stored(0, layout)
+    column = read_par_across_reals(stored, "par0")
+    np.testing.assert_array_equal(column, values[:, 0].astype(np.float32))
+
+
+# ---------------------------------------------------------------------------
+# Degenerate shapes: zero realizations, zero parameters
+# ---------------------------------------------------------------------------
+
+
+def test_write_par_ensemble_refuses_zero_realizations_and_writes_nothing(tmp_path):
+    control_names = ["par0", "par1"]
+    values = np.zeros((0, 2), dtype=np.float32)
+    data = _ensemble_data(values, [], control_names, (0, 1))
+    tables = _control_tables(control_names, ["G1", "G2"])
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
+    )
+
+    assert isinstance(result, ReadFailure)
+    assert "realization" in result.reason
+    assert not layout.par_ens(0).exists()
+
+
+def test_write_par_ensemble_refuses_zero_parameters_and_leaves_no_file(tmp_path):
+    control_names: list[str] = []
+    values = np.zeros((2, 0), dtype=np.float32)
+    data = _ensemble_data(values, ["r0", "r1"], control_names, ())
+    tables = _control_tables(control_names, [])
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_ensemble(data, tables, mappable=frozenset(), iteration=0, layout=layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "parameter" in result.reason
+    assert list(layout.ens.iterdir()) == []
