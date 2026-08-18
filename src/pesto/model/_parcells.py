@@ -301,9 +301,8 @@ def resolve(
             name="parameter table",
             path="",
             reason=(
-                "the parameter table carries no 'pargp' column -- every rule "
-                "is tried one parameter group at a time, so with no group "
-                "column there is nothing to try"
+                "the parameter table carries no 'pargp' column, so there are "
+                "no parameter groups to place"
             ),
         )
 
@@ -337,9 +336,9 @@ def resolve(
         if non_integral:
             columns_text = ", ".join(repr(column) for column in non_integral)
             notes.append(
-                f"group {name!r}: rule {rule!r} found non-integral value(s) in "
-                f"{columns_text}; those parameters were left at -1 rather than "
-                "truncated toward zero"
+                f"group {name!r}: column(s) {columns_text} hold values that are not "
+                "whole numbers, so those parameters were given no cell rather than "
+                "rounded down"
             )
 
         mapped_positions = positions[valid]
@@ -368,8 +367,8 @@ def resolve(
             names_text += f", and {len(null_names) - NULL_GROUP_NOTE_NAME_LIMIT} more"
         notes.append(
             f"group {NO_GROUP!r}: {null_count} parameter(s) carry no 'pargp' value at "
-            "all, so no rule could be tried for them; they are counted here and left "
-            f"at -1 -- {names_text}"
+            "all, so no rule could be tried for them; they are counted here and given "
+            f"no cell -- {names_text}"
         )
         groups.append(
             GroupResolution(group=NO_GROUP, rule=UNMAPPED, mapped=0, total=null_count)
