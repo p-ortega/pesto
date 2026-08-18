@@ -38,11 +38,23 @@ import re
 import numpy as np
 import pandas as pd
 
+from pesto.ingest.failures import ReadFailure
 from pesto.model import GridShape, GroupResolution, ParCells
 
 DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
 RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer")
 UNMAPPED = "unmapped"
+GROUP_COLUMN = "pargp"
+
+NO_GROUP = "(no pargp)"
+"""The ``GroupResolution.group`` label for parameters carrying no ``pargp``
+value at all. Parentheses because no real PEST group name has them, so this
+bucket's label cannot collide with a real group."""
+
+NULL_GROUP_NOTE_NAME_LIMIT = 3
+"""How many parameter names the null-group note spells out before it
+switches to a count -- keeps the note readable at the realistic scale of
+one stray row, and one line even at 785 null rows, with nothing dropped."""
 
 UNRECOGNIZED_PLACEMENT_COLUMNS = ("layer", "icpl", "node")
 """Column names that look like placement metadata -- each reads like a cell
@@ -57,20 +69,34 @@ carried any placement data at all."""
 _NAME_COLUMNS = ("pname", "pargp", "parnme")
 
 
-def _numeric(block: pd.DataFrame, column: str) -> np.ndarray:
+def _numeric(block: pd.DataFrame, column: str, non_integral: list[str]) -> np.ndarray:
     """``block[column]`` coerced to numeric; a value that cannot be read as
     a number becomes ``NaN`` rather than being fabricated into anything
-    else -- the same coerce-and-note idiom ``control.py`` uses, minus the
-    note, since an unreadable placement value is already covered by the
-    group's own "could not be placed" outcome."""
-    return pd.to_numeric(block[column], errors="coerce").to_numpy(dtype=np.float64)
+    else -- the same coerce-and-note idiom ``control.py`` uses, since an
+    unreadable placement value is already covered by the group's own
+    "could not be placed" outcome.
+
+    A value that does parse but is not a whole number is rejected the same
+    way and ``column`` is appended to ``non_integral`` -- folding it into
+    the existing ``NaN`` channel means ``_valid_mask``'s ``isfinite`` check
+    already refuses it, and nothing downstream needs to learn a new state.
+    """
+    values = pd.to_numeric(block[column], errors="coerce").to_numpy(dtype=np.float64)
+    fractional = np.isfinite(values) & (np.mod(values, 1) != 0)
+    if fractional.any():
+        non_integral.append(column)
+        values = np.where(fractional, np.nan, values)
+    return values
 
 
 def _valid_mask(cell: np.ndarray, layer: np.ndarray, shape: GridShape) -> np.ndarray:
     """A candidate row is accepted only when both its cell and its layer
-    are real numbers that land inside the grid -- the range check ported
-    unchanged from the M0 reference, which is what keeps an out-of-range
-    index at ``-1`` instead of wrapping onto a real cell."""
+    are real, whole numbers that land inside the grid -- the range check
+    ported unchanged from the M0 reference, which is what keeps an
+    out-of-range index at ``-1`` instead of wrapping onto a real cell. The
+    integral check catches any future candidate built without going
+    through ``_numeric`` -- e.g. a combined ``i * ncol + j`` value that
+    lands on a whole number even though ``i`` itself was fractional."""
     finite = np.isfinite(cell) & np.isfinite(layer)
     safe_cell = np.where(finite, cell, -1.0)
     safe_layer = np.where(finite, layer, -1.0)
@@ -80,33 +106,37 @@ def _valid_mask(cell: np.ndarray, layer: np.ndarray, shape: GridShape) -> np.nda
         & (safe_cell >= 0)
         & (safe_cell < shape.ncpl)
     )
-    return finite & in_range
+    integral = (np.mod(safe_cell, 1) == 0) & (np.mod(safe_layer, 1) == 0)
+    return finite & in_range & integral
 
 
 def _candidate_kij(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is None or not {"k", "i", "j"}.issubset(block.columns):
         return None
-    layer = _numeric(block, "k")
-    i = _numeric(block, "i")
-    j = _numeric(block, "j")
-    return i * shape.ncol + j, layer
+    non_integral: list[str] = []
+    layer = _numeric(block, "k", non_integral)
+    i = _numeric(block, "i", non_integral)
+    j = _numeric(block, "j", non_integral)
+    return i * shape.ncol + j, layer, tuple(non_integral)
 
 
 def _candidate_idx_triple(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is None or not {"idx0", "idx1", "idx2"}.issubset(block.columns):
         return None
-    layer = _numeric(block, "idx0")
-    i = _numeric(block, "idx1")
-    j = _numeric(block, "idx2")
-    return i * shape.ncol + j, layer
+    non_integral: list[str] = []
+    layer = _numeric(block, "idx0", non_integral)
+    i = _numeric(block, "idx1", non_integral)
+    j = _numeric(block, "idx2", non_integral)
+    return i * shape.ncol + j, layer, tuple(non_integral)
 
 
 def _candidate_idx_pair(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is not None or not {"idx0", "idx1"}.issubset(block.columns):
         return None
-    layer = _numeric(block, "idx0")
-    cell = _numeric(block, "idx1")
-    return cell, layer
+    non_integral: list[str] = []
+    layer = _numeric(block, "idx0", non_integral)
+    cell = _numeric(block, "idx1", non_integral)
+    return cell, layer, tuple(non_integral)
 
 
 def _layer_from_names(block: pd.DataFrame, pattern: re.Pattern[str]) -> np.ndarray | None:
@@ -144,25 +174,37 @@ def _candidate_ij_name_layer(block: pd.DataFrame, shape: GridShape, pattern: re.
     layer = _layer_from_names(block, pattern)
     if layer is None:
         return None
-    i = _numeric(block, "i")
-    j = _numeric(block, "j")
-    return i * shape.ncol + j, layer
+    non_integral: list[str] = []
+    i = _numeric(block, "i", non_integral)
+    j = _numeric(block, "j", non_integral)
+    return i * shape.ncol + j, layer, tuple(non_integral)
 
 
 def _candidate_ij_single_layer(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is None or shape.nlay != 1 or not {"i", "j"}.issubset(block.columns):
         return None
-    i = _numeric(block, "i")
-    j = _numeric(block, "j")
+    non_integral: list[str] = []
+    i = _numeric(block, "i", non_integral)
+    j = _numeric(block, "j", non_integral)
     layer = np.zeros(len(block))
-    return i * shape.ncol + j, layer
+    return i * shape.ncol + j, layer, tuple(non_integral)
 
 
 def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
     """Try each rule in ``RULE_NAMES`` order; the first one whose columns
     are present and that produces at least one in-range hit takes the
     whole group. Rows that rule still cannot place stay ``-1`` within it --
-    winning a group is not a promise that every row in it lands."""
+    winning a group is not a promise that every row in it lands.
+
+    A rule whose only hits are non-integral yields to the next rule the
+    same way an out-of-range candidate already does -- a later rule with a
+    real in-range, integral hit still wins the group over it. But when no
+    rule ever wins, the first rule whose columns were present and whose
+    only problem was a non-integral value is reported as the group's
+    resolution (with nothing mapped) rather than the group falling silent
+    to ``unmapped`` -- naming a rejected fractional value is the true
+    reason nothing placed; a rule that never saw the columns at all is
+    not."""
     candidates = (
         ("kij", _candidate_kij(block, shape)),
         ("idx-triple", _candidate_idx_triple(block, shape)),
@@ -170,14 +212,19 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
         ("ij-name-layer", _candidate_ij_name_layer(block, shape, pattern)),
         ("ij-single-layer", _candidate_ij_single_layer(block, shape)),
     )
+    fallback = None
     for rule, candidate in candidates:
         if candidate is None:
             continue
-        cell, layer = candidate
+        cell, layer, non_integral = candidate
         valid = _valid_mask(cell, layer, shape)
         if valid.any():
-            return rule, cell, layer, valid
-    return UNMAPPED, None, None, None
+            return rule, cell, layer, valid, non_integral
+        if non_integral and fallback is None:
+            fallback = (rule, cell, layer, valid, non_integral)
+    if fallback is not None:
+        return fallback
+    return UNMAPPED, None, None, None, ()
 
 
 def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
@@ -202,19 +249,26 @@ def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
     )
 
 
-def _summarize(groups: tuple[GroupResolution, ...]) -> str:
+def _summarize(groups: tuple[GroupResolution, ...], total_params: int) -> str:
     """The single sentence GRID-03 asks for -- built entirely from counts,
     never from a list of group names, so it does not grow with however many
-    groups a real run happens to leave unplaceable."""
-    if not groups:
+    groups a real run happens to leave unplaceable.
+
+    ``total_params`` is the parameter count from the table itself
+    (``len(par)``), not derived from the groups this function was handed --
+    a total built from tracked groups shrinks silently whenever a group is
+    dropped, which is exactly how this sentence once claimed full success
+    while a real parameter sat untracked.
+    """
+    if not groups and total_params == 0:
         return "no parameter groups were present to place."
 
     unplaced = tuple(g for g in groups if g.mapped == 0)
-    if not unplaced:
+    untracked = total_params - sum(g.total for g in groups)
+    if not unplaced and untracked == 0:
         return f"every one of the {len(groups)} parameter group(s) was placed on the grid."
 
-    total_params = sum(g.total for g in groups)
-    unplaced_params = sum(g.total for g in unplaced)
+    unplaced_params = sum(g.total for g in unplaced) + untracked
     return (
         f"{len(unplaced)} of {len(groups)} parameter group(s) could not be placed on the "
         f"grid, accounting for {unplaced_params} of {total_params} parameters."
@@ -225,7 +279,7 @@ def resolve(
     par: pd.DataFrame,
     shape: GridShape,
     layer_pattern: str = DEFAULT_LAYER_PATTERN,
-) -> ParCells:
+) -> ParCells | ReadFailure:
     """Place every parameter in ``par`` on a layer and cell, one group
     (``pargp``) at a time, trying the five rules in ``RULE_NAMES`` order.
 
@@ -237,7 +291,21 @@ def resolve(
     pandas then returns every matching row for each request rather than one
     row per request, misaligning the write entirely. ``par`` itself is only
     read here, never mutated or reindexed.
+
+    Returns a ``ReadFailure`` naming the parameter table, rather than
+    raising, when ``par`` carries no ``pargp`` column at all -- there is
+    nothing to group by, so every rule below is unreachable.
     """
+    if GROUP_COLUMN not in par.columns:
+        return ReadFailure(
+            name="parameter table",
+            path="",
+            reason=(
+                "the parameter table carries no 'pargp' column, so there are "
+                "no parameter groups to place"
+            ),
+        )
+
     n = len(par)
     cell = np.full(n, -1, dtype=np.int32)
     layer = np.full(n, -1, dtype=np.int32)
@@ -245,7 +313,7 @@ def resolve(
     groups: list[GroupResolution] = []
     pattern = re.compile(layer_pattern, re.IGNORECASE)
 
-    grouped = par.groupby("pargp", sort=True, observed=True)
+    grouped = par.groupby(GROUP_COLUMN, sort=True, observed=True)
     for name, block in grouped:
         # grouped.indices[name] gives integer row positions, computed by
         # groupby itself -- a label-based lookup (e.g. block.index) would
@@ -253,7 +321,9 @@ def resolve(
         # parameters share a parnme, since pandas returns every match per
         # requested label rather than one row per request.
         positions = grouped.indices[name]
-        rule, candidate_cell, candidate_layer, valid = _resolve_group(block, shape, pattern)
+        rule, candidate_cell, candidate_layer, valid, non_integral = _resolve_group(
+            block, shape, pattern
+        )
         total = len(block)
 
         if rule == UNMAPPED:
@@ -262,6 +332,14 @@ def resolve(
                 notes.append(note)
             groups.append(GroupResolution(group=str(name), rule=UNMAPPED, mapped=0, total=total))
             continue
+
+        if non_integral:
+            columns_text = ", ".join(repr(column) for column in non_integral)
+            notes.append(
+                f"group {name!r}: column(s) {columns_text} hold values that are not "
+                "whole numbers, so those parameters were given no cell rather than "
+                "rounded down"
+            )
 
         mapped_positions = positions[valid]
         cell[mapped_positions] = candidate_cell[valid].astype(np.int32)
@@ -274,6 +352,28 @@ def resolve(
             )
         groups.append(GroupResolution(group=str(name), rule=rule, mapped=mapped, total=total))
 
+    # par.groupby(...) drops rows whose pargp is null (pandas' dropna=True
+    # default), so they never reach the loop above at all -- account for
+    # them here, after the sorted groups, which is what makes the bucket's
+    # position in `groups` and its note's position in `notes` deterministic.
+    # Their cell/layer are already -1 because nothing writes to them.
+    null_mask = par[GROUP_COLUMN].isna().to_numpy()
+    null_count = int(null_mask.sum())
+    if null_count:
+        null_names = [repr(value) for value in par.index[null_mask]]
+        shown = null_names[:NULL_GROUP_NOTE_NAME_LIMIT]
+        names_text = ", ".join(shown)
+        if len(null_names) > NULL_GROUP_NOTE_NAME_LIMIT:
+            names_text += f", and {len(null_names) - NULL_GROUP_NOTE_NAME_LIMIT} more"
+        notes.append(
+            f"group {NO_GROUP!r}: {null_count} parameter(s) carry no 'pargp' value at "
+            "all, so no rule could be tried for them; they are counted here and given "
+            f"no cell -- {names_text}"
+        )
+        groups.append(
+            GroupResolution(group=NO_GROUP, rule=UNMAPPED, mapped=0, total=null_count)
+        )
+
     parnme = tuple(str(value) for value in par.index)
     groups_tuple = tuple(groups)
     return ParCells(
@@ -281,6 +381,6 @@ def resolve(
         layer=layer,
         parnme=parnme,
         groups=groups_tuple,
-        summary=_summarize(groups_tuple),
+        summary=_summarize(groups_tuple, len(par)),
         notes=tuple(notes),
     )
