@@ -486,3 +486,55 @@ def test_an_unreadable_grid_file_fails_only_the_grid_artifact(tmp_path):
         if name != "grid":
             assert artifact.state == "ok", (name, artifact.reason)
 
+# ---------------------------------------------------------------------------
+# Task 2: a stat, not a read, decides whether anything needs doing
+# ---------------------------------------------------------------------------
+
+
+def test_second_ingest_on_unchanged_directory_writes_nothing_and_skips_everything(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    mtimes_before = {
+        p: p.stat().st_mtime_ns
+        for p in cache_root.rglob("*")
+        if p.is_file() and p.name != "manifest.json"
+    }
+
+    rows: list[Progress] = []
+    manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    mtimes_after = {
+        p: p.stat().st_mtime_ns
+        for p in cache_root.rglob("*")
+        if p.is_file() and p.name != "manifest.json"
+    }
+    assert mtimes_before == mtimes_after
+    assert all(r.state == "skipped" for r in rows)
+    for name, artifact in manifest.artifacts.items():
+        if name != "grid":  # the synthetic fixture's grid always fails
+            assert artifact.state == "ok"
+
+
+def test_touching_one_iterations_ensemble_file_reingests_only_that_iteration(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    values = fixtures.sample_values(len(run.real_names), len(run.par_names), seed=77)
+    fixtures.write_jcb_ensemble(run.par_ens[1], values, run.real_names, run.par_names)
+
+    rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    touched = {r.artifact for r in rows if r.state != "skipped"}
+    assert touched == {"par_ens/1", "par_agg/1"}
+
+
