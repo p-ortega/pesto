@@ -19,6 +19,11 @@ from typing import TYPE_CHECKING, Sequence
 import numpy as np
 import pandas as pd
 
+from pesto.cache._atomic import write_atomic_bytes
+from pesto.cache.layout import CacheLayout
+from pesto.cache.manifest import CacheFile, WrittenArtifact
+from pesto.ingest.failures import ReadFailure
+
 if TYPE_CHECKING:
     from pesto.ingest.control import ControlTables
     from pesto.ingest.ensfile import EnsembleData
@@ -209,3 +214,227 @@ def align_to_control(
         out[:, control_pos] = data.values[:, idx]
 
     return out, control_names, notes
+
+
+# ---------------------------------------------------------------------------
+# Task 2: pestpp's own near-bound rule, and the table on disk
+# ---------------------------------------------------------------------------
+
+
+def _bound_label(col: int, names: Sequence[str] | None) -> str:
+    if names is not None:
+        return repr(names[col])
+    return f"column {col}"
+
+
+def at_bounds_fraction(
+    values: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    log_mask: np.ndarray,
+    names: Sequence[str] | None = None,
+    adjustable_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[str]]:
+    """The per-parameter fraction of realizations pestpp-ies's own rule
+    counts at or near a bound.
+
+    The rule is read out of ``ParChangeSummarizer::update`` in the
+    pestpp-ies source, not invented here: a value counts near the *upper*
+    bound when it exceeds ``upper - abs(upper) * 0.01``; a value counts
+    near the *lower* bound, checked only when it was not already counted
+    near the upper one, when it is below ``lower + abs(lower) * 0.01``.
+    This is a one-percent tolerance on each bound's own magnitude, upper
+    checked first, and the two tests are mutually exclusive per value.
+
+    ``ParChangeSummarizer::update`` iterates ``pe.get_var_names()`` --
+    pestpp-ies's *adjustable* parameters only, never the fixed or tied
+    ones a ``.par`` ensemble file still carries a column for. A fixed
+    parameter typically holds the same value in every realization, and
+    that value can legitimately sit near a bound without pestpp-ies ever
+    reporting it in ``case.N.pcs.csv``, because it was never a candidate
+    for adjustment in the first place -- confirmed empirically against a
+    real benchmark's own file (a "fixed"-only parameter group whose
+    members do sit at a bound, and whose ``pcs.csv`` row is genuinely
+    zero). ``adjustable_mask``, when given, is ``True`` for every
+    parameter pestpp-ies would actually adjust; every other column's
+    fraction is recorded as missing rather than a number that would not
+    reconcile with ``pcs.csv``.
+
+    The comparison happens in the numeric space ``partrans`` implies, to
+    match what pestpp-ies itself does internally: for every column
+    ``log_mask`` marks, both the value and its bounds are converted to
+    base-ten logarithms before the one-percent test, because the ensemble
+    files this function reads hold native units for every ``partrans``,
+    while pestpp's own near-bound comparison runs against the numeric
+    (log10, for a log-transformed parameter) space its solve is in. Where
+    a log-transformed parameter's lower or upper bound is not positive, the
+    logarithm is not defined and the rule cannot be applied: that
+    parameter's fraction comes back missing, with a note naming it and
+    saying the bound could not be put into log space -- a number produced
+    by silently applying the native-space rule instead would not be
+    reconcilable with the run it describes.
+
+    ``values`` is ``(n_real, n_par)``; ``lower``, ``upper`` and ``log_mask``
+    are each ``(n_par,)``. ``names`` labels each column in a note; when
+    omitted, the column's zero-based position stands in for a name.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    lower = np.asarray(lower, dtype=np.float64)
+    upper = np.asarray(upper, dtype=np.float64)
+    log_mask = np.asarray(log_mask, dtype=bool)
+
+    n_real, n_par = values.shape
+    notes: list[str] = []
+
+    valid_mask = ~np.isnan(values)
+    n_valid = valid_mask.sum(axis=0)
+
+    log_bound_invalid = log_mask & ~((lower > 0) & (upper > 0))
+    for col in np.nonzero(log_bound_invalid)[0]:
+        notes.append(
+            f"parameter {_bound_label(int(col), names)}: bound could not be converted to "
+            f"log space (lower={lower[col]!r}, upper={upper[col]!r}); at-bounds value is missing"
+        )
+
+    apply_log = log_mask & ~log_bound_invalid
+
+    lo = lower.copy()
+    hi = upper.copy()
+    log_cols = np.nonzero(apply_log)[0]
+    v = values
+    if log_cols.size:
+        v = values.copy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            v[:, log_cols] = np.log10(values[:, log_cols])
+            lo[log_cols] = np.log10(lower[log_cols])
+            hi[log_cols] = np.log10(upper[log_cols])
+
+    with np.errstate(invalid="ignore"):
+        near_upper = valid_mask & (v > (hi[np.newaxis, :] - np.abs(hi[np.newaxis, :]) * 0.01))
+        near_lower = (
+            valid_mask
+            & ~near_upper
+            & (v < (lo[np.newaxis, :] + np.abs(lo[np.newaxis, :]) * 0.01))
+        )
+
+    count_near = near_upper.sum(axis=0) + near_lower.sum(axis=0)
+
+    fraction = np.full(n_par, np.nan, dtype=np.float64)
+    has_valid = n_valid > 0
+    fraction[has_valid] = count_near[has_valid] / n_valid[has_valid]
+    fraction[log_bound_invalid] = np.nan
+
+    if adjustable_mask is not None:
+        adjustable_mask = np.asarray(adjustable_mask, dtype=bool)
+        not_adjustable = ~adjustable_mask
+        n_not_adjustable = int(np.count_nonzero(not_adjustable))
+        if n_not_adjustable:
+            fraction[not_adjustable] = np.nan
+            notes.append(
+                f"{n_not_adjustable} parameter(s) are fixed or tied, so pestpp-ies never "
+                f"adjusts them and its own near-bound rule never considers them either; "
+                f"their at-bounds value is recorded as missing"
+            )
+
+    return fraction, notes
+
+
+def write_par_agg(
+    data: "EnsembleData", tables: "ControlTables", iteration: int, layout: CacheLayout
+) -> WrittenArtifact | ReadFailure:
+    """Write ``agg/par_{iteration}.parquet``: one row per control-file
+    parameter, in control-file order, carrying ``parnme``, ``pargp``,
+    ``mean``, ``std``, ``min``, ``max``, the five quantiles, ``n_valid``
+    and ``at_bounds``.
+
+    Calls ``align_to_control``, ``summarise`` and ``at_bounds_fraction`` in
+    turn and carries every note the three of them produce into the
+    returned :class:`WrittenArtifact`. The table is written through
+    ``write_atomic_bytes``, handing the open temp file straight to
+    ``DataFrame.to_parquet`` -- a crash mid-write leaves the previous
+    finished file in place (or nothing, on the first write), never a
+    half-written table a later size check would call fresh. Any exception
+    anywhere in this function returns a :class:`ReadFailure` naming the
+    iteration and what was being attempted, rather than propagating.
+    """
+    name = f"par_agg/{iteration}"
+    target = layout.par_agg(iteration)
+    try:
+        par = tables.par
+        values, control_names, align_notes = align_to_control(data, tables)
+        summary_df, summary_notes = summarise(values, control_names)
+
+        notes: list[str] = list(align_notes) + list(summary_notes)
+
+        if "pargp" in par.columns:
+            pargp = par["pargp"].astype(str).tolist()
+        else:
+            pargp = [None] * len(control_names)
+            notes.append(
+                "control file has no 'pargp' column; pargp is recorded as missing for "
+                "every parameter"
+            )
+
+        if "parlbnd" in par.columns and "parubnd" in par.columns:
+            lower = par["parlbnd"].to_numpy(dtype=np.float64)
+            upper = par["parubnd"].to_numpy(dtype=np.float64)
+        else:
+            lower = np.full(len(control_names), np.nan)
+            upper = np.full(len(control_names), np.nan)
+            notes.append(
+                "control file is missing 'parlbnd' and/or 'parubnd'; at_bounds is recorded "
+                "as missing for every parameter"
+            )
+
+        if "partrans" in par.columns:
+            partrans_lower = [str(t).strip().lower() for t in par["partrans"]]
+            log_mask = np.array([t == "log" for t in partrans_lower], dtype=bool)
+            adjustable_mask = np.array(
+                [t not in ("fixed", "tied") for t in partrans_lower], dtype=bool
+            )
+        else:
+            log_mask = np.zeros(len(control_names), dtype=bool)
+            adjustable_mask = np.ones(len(control_names), dtype=bool)
+            notes.append(
+                "control file has no 'partrans' column; no parameter is treated as "
+                "log-transformed or as fixed/tied for the at-bounds test"
+            )
+
+        at_bounds, bounds_notes = at_bounds_fraction(
+            values, lower, upper, log_mask, names=control_names, adjustable_mask=adjustable_mask
+        )
+        notes.extend(bounds_notes)
+
+        df = summary_df.copy()
+        df.insert(1, "pargp", pargp)
+        df["at_bounds"] = at_bounds
+        column_order = [
+            "parnme",
+            "pargp",
+            "mean",
+            "std",
+            "min",
+            "max",
+            "q05",
+            "q25",
+            "q50",
+            "q75",
+            "q95",
+            "n_valid",
+            "at_bounds",
+        ]
+        df = df[column_order]
+
+        def _write_payload(fileobj) -> int:
+            df.to_parquet(fileobj, index=False)
+            return fileobj.tell()
+
+        written_bytes = write_atomic_bytes(target, _write_payload)
+        file_entry = CacheFile(path=str(target.relative_to(layout.root)), bytes=written_bytes)
+        return WrittenArtifact(name=name, files=(file_entry,), notes=tuple(notes))
+    except Exception as exc:
+        return ReadFailure(
+            name=name,
+            path=str(target),
+            reason=f"failed to write per-parameter summary for iteration {iteration}: {exc}",
+        )

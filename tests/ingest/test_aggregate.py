@@ -1,8 +1,12 @@
 """Proof that the per-parameter summary agrees with a modeller's own
-``numpy`` session -- the D-13 disagreement 04-CONTEXT.md exists to prevent.
+``numpy`` session, and that the at-bounds fraction agrees with pestpp-ies's
+own rule -- the two disagreements 04-CONTEXT.md D-13/D-12 exist to prevent.
 
-Every test builds its own control table and ensemble array in-process, so
-the suite is green on a fresh clone with no benchmark data present.
+Every synthetic test builds its own control table and ensemble array
+in-process, so the suite is green on a fresh clone with no benchmark data
+present. The one ``@pytest.mark.slow`` test at the bottom additionally
+checks pesto's own at-bounds figure against a real benchmark run's own
+``pcs.csv`` group counts.
 """
 
 from __future__ import annotations
@@ -11,10 +15,20 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from pesto.ingest.aggregate import PERCENTILES, align_to_control, summarise
+from pesto.cache.layout import CacheLayout
+from pesto.cache.manifest import CacheFile, WrittenArtifact
+from pesto.ingest.aggregate import (
+    PERCENTILES,
+    align_to_control,
+    at_bounds_fraction,
+    summarise,
+    write_par_agg,
+)
 from pesto.ingest.control import ControlTables
 from pesto.ingest.ensfile import EnsembleData
+from pesto.ingest.failures import ReadFailure
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -225,3 +239,210 @@ def test_rows_come_out_in_control_file_order_and_ties_keep_their_positions():
     assert list(df["parnme"]) == ["parB", "parA", "parC"]
     assert df.loc[df["parnme"] == "parB", "mean"].iloc[0] == 9.0
     assert df.loc[df["parnme"] == "parA", "mean"].iloc[0] == 9.0
+
+
+# ---------------------------------------------------------------------------
+# at_bounds_fraction: pestpp-ies's own one-percent, upper-first rule
+# ---------------------------------------------------------------------------
+
+
+def test_value_at_the_exact_tolerance_boundary_is_not_counted_but_one_step_above_is():
+    upper = 100.0
+    boundary = upper - 0.01 * abs(upper)
+    just_above = np.nextafter(boundary, np.inf)
+
+    values = np.array([[boundary], [just_above]], dtype=np.float64)
+    lower = np.array([0.0])
+    upper_arr = np.array([upper])
+    log_mask = np.array([False])
+
+    fraction, _ = at_bounds_fraction(values, lower, upper_arr, log_mask)
+
+    assert fraction[0] == pytest.approx(0.5)  # exactly one of the two rows counted
+
+
+def test_value_satisfying_both_the_upper_and_lower_test_counts_once_at_the_upper_bound():
+    lower = np.array([99.0])
+    upper = np.array([100.0])
+    log_mask = np.array([False])
+    # 99.5 is both > 100 - 1% (upper test) and < 99 + 1% (lower test).
+    values = np.array([[99.5]], dtype=np.float64)
+
+    fraction, _ = at_bounds_fraction(values, lower, upper, log_mask)
+
+    assert fraction[0] == pytest.approx(1.0)
+
+
+def test_log_transformed_parameter_uses_log_space_and_differs_from_native_space():
+    lower = np.array([1.0])
+    upper = np.array([1000.0])
+    values = np.array([[950.0]], dtype=np.float64)
+
+    frac_log, _ = at_bounds_fraction(values, lower, upper, np.array([True]))
+    frac_native, _ = at_bounds_fraction(values, lower, upper, np.array([False]))
+
+    assert frac_log[0] == pytest.approx(1.0)
+    assert frac_native[0] == pytest.approx(0.0)
+    assert frac_log[0] != frac_native[0]
+
+
+def test_log_transformed_parameter_with_a_zero_lower_bound_yields_a_missing_value_and_a_note():
+    lower = np.array([0.0])
+    upper = np.array([100.0])
+    values = np.array([[50.0]], dtype=np.float64)
+    names = ["par_log0"]
+
+    fraction, notes = at_bounds_fraction(values, lower, upper, np.array([True]), names=names)
+
+    assert np.isnan(fraction[0])
+    assert any("par_log0" in note for note in notes)
+
+
+def test_parameter_with_no_valid_realizations_yields_a_missing_at_bounds_value():
+    values = np.array([[np.nan], [np.nan]], dtype=np.float64)
+    lower = np.array([0.0])
+    upper = np.array([10.0])
+    log_mask = np.array([False])
+
+    fraction, _ = at_bounds_fraction(values, lower, upper, log_mask)
+
+    assert np.isnan(fraction[0])
+
+
+def test_a_fixed_parameter_sitting_at_a_bound_yields_a_missing_value_and_a_note():
+    """A fixed parameter can genuinely sit at a bound in every realization
+    without pestpp-ies ever reporting it in ``case.N.pcs.csv`` --
+    ``ParChangeSummarizer::update`` only iterates its adjustable
+    parameters. Discovered against a real benchmark's own file, where a
+    fixed-only parameter group sits at its bound in every realization but
+    the file's own count for that group is genuinely zero."""
+    lower = np.array([1.0])
+    upper = np.array([100.0])
+    log_mask = np.array([False])
+    values = np.array([[100.0], [100.0]], dtype=np.float64)  # every realization at the bound
+    adjustable_mask = np.array([False])  # fixed
+
+    fraction, notes = at_bounds_fraction(
+        values, lower, upper, log_mask, adjustable_mask=adjustable_mask
+    )
+
+    assert np.isnan(fraction[0])
+    assert any("fixed or tied" in note for note in notes)
+
+
+# ---------------------------------------------------------------------------
+# write_par_agg: the table on disk
+# ---------------------------------------------------------------------------
+
+
+def test_write_par_agg_writes_a_parquet_table_in_control_file_order(tmp_path):
+    names = ["par0", "par1", "par2"]
+    tables = _control_tables(names, ["G1", "G1", "G2"])
+    data = _ensemble_data(
+        values=[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        real_names=["r0", "r1"],
+        entity_names=names,
+    )
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+
+    assert isinstance(result, WrittenArtifact)
+    assert isinstance(result.files[0], CacheFile)
+    target = layout.par_agg(0)
+    assert target.exists()
+
+    df = pd.read_parquet(target)
+    assert list(df["parnme"]) == names
+    expected_columns = [
+        "parnme",
+        "pargp",
+        "mean",
+        "std",
+        "min",
+        "max",
+        "q05",
+        "q25",
+        "q50",
+        "q75",
+        "q95",
+        "n_valid",
+        "at_bounds",
+    ]
+    assert list(df.columns) == expected_columns
+
+
+def test_write_par_agg_returns_a_read_failure_and_leaves_no_temp_file_when_the_write_raises(
+    tmp_path, monkeypatch
+):
+    names = ["par0"]
+    tables = _control_tables(names, ["G1"])
+    data = _ensemble_data(values=[[1.0]], real_names=["r0"], entity_names=names)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    def _raise(self, *args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", _raise)
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+
+    assert isinstance(result, ReadFailure)
+    assert not layout.par_agg(0).exists()
+    assert list(layout.agg.glob(".ingest-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Slow: agreement with a real benchmark run's own pcs.csv
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_at_bounds_matches_a_real_benchmarks_pcs_csv_group_counts(pl253_run):
+    from pesto.ingest.control import read_control
+    from pesto.ingest.discover import discover
+    from pesto.ingest.ensfile import read_ensemble
+
+    layout = discover(pl253_run)
+    tables = read_control(layout.pst_path)
+    assert isinstance(tables, ControlTables)
+
+    par_ens_path = layout.par_ensemble(1)
+    assert par_ens_path is not None
+    data = read_ensemble(par_ens_path, tables)
+    assert isinstance(data, EnsembleData)
+
+    values, control_names, _ = align_to_control(data, tables)
+
+    lower = tables.par["parlbnd"].to_numpy(dtype=np.float64)
+    upper = tables.par["parubnd"].to_numpy(dtype=np.float64)
+    partrans_lower = [str(t).strip().lower() for t in tables.par["partrans"]]
+    log_mask = np.array([t == "log" for t in partrans_lower], dtype=bool)
+    adjustable_mask = np.array([t not in ("fixed", "tied") for t in partrans_lower], dtype=bool)
+
+    fraction, _ = at_bounds_fraction(
+        values, lower, upper, log_mask, names=control_names, adjustable_mask=adjustable_mask
+    )
+
+    n_valid = (~np.isnan(values)).sum(axis=0)
+    counts = np.zeros(len(fraction), dtype=np.int64)
+    countable = (n_valid > 0) & ~np.isnan(fraction)
+    counts[countable] = np.round(fraction[countable] * n_valid[countable]).astype(np.int64)
+
+    pargp = tables.par["pargp"].astype(str).to_numpy()
+    pesto_counts = pd.Series(counts, index=pargp).groupby(level=0).sum()
+
+    pcs = pd.read_csv(pl253_run / "pl253.1.pcs.csv")
+    pcs["expected"] = pcs["num_at_near_lbound"] + pcs["num_at_near_ubound"]
+
+    matched_groups = [g for g in pcs["group"] if g in pesto_counts.index]
+    assert matched_groups, "no group from pcs.csv matched any control-file group"
+
+    for group in matched_groups:
+        expected = int(pcs.loc[pcs["group"] == group, "expected"].iloc[0])
+        assert int(pesto_counts[group]) == expected, (
+            f"group {group}: pesto counted {int(pesto_counts[group])}, "
+            f"pcs.csv counted {expected}"
+        )
