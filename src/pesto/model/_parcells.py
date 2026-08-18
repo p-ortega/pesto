@@ -29,11 +29,20 @@ data stored under an unrecognised name is never silently dropped. An
 ordinary unmapped group carrying none of the rule table's columns gets no
 note at all: a real ``PstFrom``-built DISV run is typically 99% unmapped
 groups, and a note per group would turn "says so once" into a wall of text.
+
+A group that does place at least one parameter, but not all of them, gets a
+shortfall note naming each reason a parameter went unplaced, with its own
+count -- an unreadable value is never lumped in with one that was simply out
+of range. Naming a real cause never turns an ordinary unmapped group into a
+note: a value that is genuinely absent stays silent, which is what keeps the
+same 99%-unmapped DISV run from gaining hundreds of notes just because this
+module can now say more about the parameters that did win a rule.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -45,6 +54,23 @@ DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
 RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer")
 UNMAPPED = "unmapped"
 GROUP_COLUMN = "pargp"
+
+UNPLACED_REASONS: tuple[tuple[str, str], ...] = (
+    ("out_of_range", "fell outside the grid's layer/cell range"),
+    ("not_whole", "carried a value that is not a whole number"),
+    ("unreadable", "carried a value that could not be read as a number"),
+    ("absent", "carried no value at all"),
+    ("no_layer_in_name", "carried no layer number in its name"),
+    ("too_large", "carried a value too large to turn into a cell number"),
+    ("unknown", "could not be placed and pesto could not tell why"),
+)
+"""The locked wording of every reason a parameter can go unplaced, and the
+order its clauses appear in a shortfall note -- one place, so a reason
+cannot drift between the code that counts it and the sentence that says it.
+``unknown`` is a structural remainder: every known way a cell or layer can
+come out unusable is named by one of the six causes ahead of it, and this
+last one exists so a future producer of an unusable value cannot silently
+break the counts."""
 
 NO_GROUP = "(no pargp)"
 """The ``GroupResolution.group`` label for parameters carrying no ``pargp``
@@ -69,24 +95,77 @@ carried any placement data at all."""
 _NAME_COLUMNS = ("pname", "pargp", "parnme")
 
 
-def _numeric(block: pd.DataFrame, column: str, non_integral: list[str]) -> np.ndarray:
+@dataclass
+class _Rejections:
+    """Per-row record of why each row of one candidate was refused, filled
+    where the value is read -- by the time ``resolve()`` sees a ``NaN``
+    every cause looks identical, which is why the reason has to be recorded
+    here and not guessed later.
+
+    ``absent``, ``unreadable``, ``not_whole`` and ``no_layer_in_name`` are
+    filled inside ``_numeric``/``_layer_from_names`` as each column is read.
+    ``too_large`` is different: it is filled centrally in
+    ``_resolve_group``, because the value it describes -- an overflowed
+    combined cell number -- does not exist until after the candidate
+    arithmetic has run. ``columns_not_whole`` is the plain list of column
+    names plan 03-05 already threads, kept for the existing column note.
+    """
+
+    absent: np.ndarray
+    unreadable: np.ndarray
+    not_whole: np.ndarray
+    no_layer_in_name: np.ndarray
+    too_large: np.ndarray
+    columns_not_whole: list[str]
+
+    @classmethod
+    def blank(cls, n: int) -> "_Rejections":
+        return cls(
+            absent=np.zeros(n, dtype=bool),
+            unreadable=np.zeros(n, dtype=bool),
+            not_whole=np.zeros(n, dtype=bool),
+            no_layer_in_name=np.zeros(n, dtype=bool),
+            too_large=np.zeros(n, dtype=bool),
+            columns_not_whole=[],
+        )
+
+
+def _numeric(block: pd.DataFrame, column: str, rejections: _Rejections) -> np.ndarray:
     """``block[column]`` coerced to numeric; a value that cannot be read as
     a number becomes ``NaN`` rather than being fabricated into anything
-    else -- the same coerce-and-note idiom ``control.py`` uses, since an
-    unreadable placement value is already covered by the group's own
-    "could not be placed" outcome.
+    else -- the same coerce-and-note idiom ``control.py`` uses.
 
-    A value that does parse but is not a whole number is rejected the same
-    way and ``column`` is appended to ``non_integral`` -- folding it into
-    the existing ``NaN`` channel means ``_valid_mask``'s ``isfinite`` check
-    already refuses it, and nothing downstream needs to learn a new state.
+    Records, into ``rejections``, which of this column's rows were absent
+    (empty or missing), unreadable (present but not a number) or not a
+    whole number -- a reason per row, not only a column name, so a later
+    note can say which cause applied instead of guessing from a shared
+    ``NaN``. ``absent`` and ``unreadable`` are computed on the coerced
+    values *before* fractional values are folded into ``NaN``, so a
+    fractional value is never also counted unreadable.
     """
-    values = pd.to_numeric(block[column], errors="coerce").to_numpy(dtype=np.float64)
+    series = block[column]
+    values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64)
+    absent = (series.isna() | series.astype(str).str.strip().eq("")).to_numpy()
+    unreadable = ~np.isfinite(values) & ~absent
+    rejections.absent |= absent
+    rejections.unreadable |= unreadable
     fractional = np.isfinite(values) & (np.mod(values, 1) != 0)
     if fractional.any():
-        non_integral.append(column)
+        rejections.columns_not_whole.append(column)
+        rejections.not_whole |= fractional
         values = np.where(fractional, np.nan, values)
     return values
+
+
+def _combine_cell(i: np.ndarray, ncol: int, j: np.ndarray) -> np.ndarray:
+    """The one place ``i * ncol + j`` is computed. A huge ``i`` can overflow
+    this to ``inf`` (measured: ``1e308 * 5`` is ``inf``), which numpy warns
+    about by default. That overflow is detected on the very next line, in
+    ``_resolve_group``, and named in the shortfall note -- so the warning is
+    a duplicate of a handled case here, and only here; nowhere else in this
+    module suppresses an error state."""
+    with np.errstate(over="ignore"):
+        return i * ncol + j
 
 
 def _valid_mask(cell: np.ndarray, layer: np.ndarray, shape: GridShape) -> np.ndarray:
@@ -113,33 +192,35 @@ def _valid_mask(cell: np.ndarray, layer: np.ndarray, shape: GridShape) -> np.nda
 def _candidate_kij(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is None or not {"k", "i", "j"}.issubset(block.columns):
         return None
-    non_integral: list[str] = []
-    layer = _numeric(block, "k", non_integral)
-    i = _numeric(block, "i", non_integral)
-    j = _numeric(block, "j", non_integral)
-    return i * shape.ncol + j, layer, tuple(non_integral)
+    rejections = _Rejections.blank(len(block))
+    layer = _numeric(block, "k", rejections)
+    i = _numeric(block, "i", rejections)
+    j = _numeric(block, "j", rejections)
+    return _combine_cell(i, shape.ncol, j), layer, rejections
 
 
 def _candidate_idx_triple(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is None or not {"idx0", "idx1", "idx2"}.issubset(block.columns):
         return None
-    non_integral: list[str] = []
-    layer = _numeric(block, "idx0", non_integral)
-    i = _numeric(block, "idx1", non_integral)
-    j = _numeric(block, "idx2", non_integral)
-    return i * shape.ncol + j, layer, tuple(non_integral)
+    rejections = _Rejections.blank(len(block))
+    layer = _numeric(block, "idx0", rejections)
+    i = _numeric(block, "idx1", rejections)
+    j = _numeric(block, "idx2", rejections)
+    return _combine_cell(i, shape.ncol, j), layer, rejections
 
 
 def _candidate_idx_pair(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is not None or not {"idx0", "idx1"}.issubset(block.columns):
         return None
-    non_integral: list[str] = []
-    layer = _numeric(block, "idx0", non_integral)
-    cell = _numeric(block, "idx1", non_integral)
-    return cell, layer, tuple(non_integral)
+    rejections = _Rejections.blank(len(block))
+    layer = _numeric(block, "idx0", rejections)
+    cell = _numeric(block, "idx1", rejections)
+    return cell, layer, rejections
 
 
-def _layer_from_names(block: pd.DataFrame, pattern: re.Pattern[str]) -> np.ndarray | None:
+def _layer_from_names(
+    block: pd.DataFrame, pattern: re.Pattern[str], rejections: _Rejections
+) -> np.ndarray | None:
     """Search ``pname``, ``pargp`` and ``parnme`` in that order for a layer
     number -- matching the locked rule table's "layer parsed from ``pname``
     or ``pargp``" wording (03-RESEARCH.md Pattern 4) plus the M0 reference's
@@ -151,6 +232,13 @@ def _layer_from_names(block: pd.DataFrame, pattern: re.Pattern[str]) -> np.ndarr
     though the name is right there on every row. The ``parnme`` case here
     reaches into ``block.index`` instead, when that index is named
     ``parnme``, so the rule can do what the table actually says.
+
+    Once a name column is found that matches at least one row, a row in
+    that same column whose extracted number came back missing is marked
+    into ``rejections.no_layer_in_name`` -- its name carried no layer
+    number, a different fact from its ``i``/``j`` columns being empty.
+    Returns ``None``, marking nothing, when no name column matches any row
+    at all -- that is the rule declining, not a parameter failing.
     """
     for column in _NAME_COLUMNS:
         if column in block.columns:
@@ -162,6 +250,7 @@ def _layer_from_names(block: pd.DataFrame, pattern: re.Pattern[str]) -> np.ndarr
         found = values.str.extract(pattern, expand=False)
         if found.notna().any():
             numbers = pd.to_numeric(found, errors="coerce")
+            rejections.no_layer_in_name |= numbers.isna().to_numpy()
             # Names are conventionally one-based; layer indices are
             # zero-based.
             return (numbers - 1).to_numpy(dtype=np.float64)
@@ -171,23 +260,23 @@ def _layer_from_names(block: pd.DataFrame, pattern: re.Pattern[str]) -> np.ndarr
 def _candidate_ij_name_layer(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
     if shape.ncol is None or not {"i", "j"}.issubset(block.columns):
         return None
-    layer = _layer_from_names(block, pattern)
+    rejections = _Rejections.blank(len(block))
+    layer = _layer_from_names(block, pattern, rejections)
     if layer is None:
         return None
-    non_integral: list[str] = []
-    i = _numeric(block, "i", non_integral)
-    j = _numeric(block, "j", non_integral)
-    return i * shape.ncol + j, layer, tuple(non_integral)
+    i = _numeric(block, "i", rejections)
+    j = _numeric(block, "j", rejections)
+    return _combine_cell(i, shape.ncol, j), layer, rejections
 
 
 def _candidate_ij_single_layer(block: pd.DataFrame, shape: GridShape):
     if shape.ncol is None or shape.nlay != 1 or not {"i", "j"}.issubset(block.columns):
         return None
-    non_integral: list[str] = []
-    i = _numeric(block, "i", non_integral)
-    j = _numeric(block, "j", non_integral)
+    rejections = _Rejections.blank(len(block))
+    i = _numeric(block, "i", rejections)
+    j = _numeric(block, "j", rejections)
     layer = np.zeros(len(block))
-    return i * shape.ncol + j, layer, tuple(non_integral)
+    return _combine_cell(i, shape.ncol, j), layer, rejections
 
 
 def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
@@ -196,15 +285,25 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
     whole group. Rows that rule still cannot place stay ``-1`` within it --
     winning a group is not a promise that every row in it lands.
 
-    A rule whose only hits are non-integral yields to the next rule the
-    same way an out-of-range candidate already does -- a later rule with a
-    real in-range, integral hit still wins the group over it. But when no
-    rule ever wins, the first rule whose columns were present and whose
-    only problem was a non-integral value is reported as the group's
-    resolution (with nothing mapped) rather than the group falling silent
-    to ``unmapped`` -- naming a rejected fractional value is the true
-    reason nothing placed; a rule that never saw the columns at all is
-    not."""
+    A rule whose only hits are non-integral, unreadable or too large yields
+    to the next rule the same way an out-of-range candidate already does --
+    a later rule with a real in-range, integral hit still wins the group
+    over it. But when no rule ever wins, the fallback reports the first
+    rule whose columns were present and that hit one of three triggers:
+    ``columns_not_whole`` is non-empty, an ``unreadable`` value was found,
+    or a ``too_large`` (overflowed) cell or layer was found. It does
+    *not* fire for ``absent`` alone, and it does *not* fire for a group
+    that is only out of range -- an out-of-range value is a real value
+    that was really compared, so its ``GroupResolution`` row is already a
+    complete record of it, and firing the fallback there would turn the
+    measured 777-unplaceable-group real run into 777 notes.
+
+    ``too_large`` is filled here, not inside ``_numeric``, because the
+    value it describes -- ``cell``/``layer`` non-finite even though every
+    source column read cleanly -- does not exist until after a candidate's
+    arithmetic has run; a gate that inspected only the per-column masks
+    could never see it.
+    """
     candidates = (
         ("kij", _candidate_kij(block, shape)),
         ("idx-triple", _candidate_idx_triple(block, shape)),
@@ -216,15 +315,26 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
     for rule, candidate in candidates:
         if candidate is None:
             continue
-        cell, layer, non_integral = candidate
+        cell, layer, rejections = candidate
+        rejections.too_large = (~np.isfinite(cell) | ~np.isfinite(layer)) & ~(
+            rejections.absent
+            | rejections.unreadable
+            | rejections.not_whole
+            | rejections.no_layer_in_name
+        )
         valid = _valid_mask(cell, layer, shape)
         if valid.any():
-            return rule, cell, layer, valid, non_integral
-        if non_integral and fallback is None:
-            fallback = (rule, cell, layer, valid, non_integral)
+            return rule, cell, layer, valid, rejections
+        fires_fallback = (
+            bool(rejections.columns_not_whole)
+            or rejections.unreadable.any()
+            or rejections.too_large.any()
+        )
+        if fires_fallback and fallback is None:
+            fallback = (rule, cell, layer, valid, rejections)
     if fallback is not None:
         return fallback
-    return UNMAPPED, None, None, None, ()
+    return UNMAPPED, None, None, None, _Rejections.blank(0)
 
 
 def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
@@ -247,6 +357,65 @@ def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
         "which the rule table does not read (the rule table is locked as written); "
         "the data was seen and deliberately not used, and the group resolved unmapped"
     )
+
+
+def _classify_unplaced(
+    cell: np.ndarray, layer: np.ndarray, valid: np.ndarray, rejections: _Rejections
+) -> list[tuple[str, int]]:
+    """Turn one group's candidate arrays and rejection masks into an
+    ordered list of ``(reason key, count)`` pairs, in ``UNPLACED_REASONS``
+    order, omitting zero counts.
+
+    Every unplaced row is assigned to exactly one reason: the first one in
+    ``UNPLACED_REASONS`` order whose mask is true for it. ``out_of_range``
+    is worked out here as ``unplaced & isfinite(cell) & isfinite(layer)`` --
+    a row whose numbers are real and whole but that the range test rejected
+    is the only kind of row that clause may count. Whatever is left over
+    after every named mask has had first claim goes to ``unknown``, built
+    as the remainder rather than its own mask -- that is what guarantees
+    the counts always sum to ``(~valid).sum()`` without a separate
+    assertion.
+    """
+    unplaced = ~valid
+    masks = {
+        "out_of_range": unplaced & np.isfinite(cell) & np.isfinite(layer),
+        "not_whole": rejections.not_whole,
+        "unreadable": rejections.unreadable,
+        "absent": rejections.absent,
+        "no_layer_in_name": rejections.no_layer_in_name,
+        "too_large": rejections.too_large,
+    }
+    counts: list[tuple[str, int]] = []
+    assigned = np.zeros(len(unplaced), dtype=bool)
+    for key, _ in UNPLACED_REASONS:
+        if key == "unknown":
+            continue
+        mask = masks[key] & unplaced & ~assigned
+        count = int(mask.sum())
+        if count:
+            counts.append((key, count))
+        assigned |= mask
+    remainder = int((unplaced & ~assigned).sum())
+    if remainder:
+        counts.append(("unknown", remainder))
+    return counts
+
+
+def _shortfall_note(
+    name: object, rule: str, mapped: int, total: int, counts: list[tuple[str, int]]
+) -> str:
+    """Build the one shortfall sentence from a group name, the rule that
+    won it, the placement counts, and the reasons the rest went unplaced.
+    Names counts and causes only -- it must never interpolate the offending
+    value itself, since that value came from a user's control file and a
+    later view renders this text."""
+    phrase_by_key = dict(UNPLACED_REASONS)
+    clauses = [f"{count} {phrase_by_key[key]}" for key, count in counts]
+    if len(clauses) > 1:
+        body = ", ".join(clauses[:-1]) + " and " + clauses[-1]
+    else:
+        body = clauses[0]
+    return f"group {name!r}: rule {rule!r} placed {mapped} of {total} parameters; {body}"
 
 
 def _summarize(groups: tuple[GroupResolution, ...], total_params: int) -> str:
@@ -321,7 +490,7 @@ def resolve(
         # parameters share a parnme, since pandas returns every match per
         # requested label rather than one row per request.
         positions = grouped.indices[name]
-        rule, candidate_cell, candidate_layer, valid, non_integral = _resolve_group(
+        rule, candidate_cell, candidate_layer, valid, rejections = _resolve_group(
             block, shape, pattern
         )
         total = len(block)
@@ -333,8 +502,8 @@ def resolve(
             groups.append(GroupResolution(group=str(name), rule=UNMAPPED, mapped=0, total=total))
             continue
 
-        if non_integral:
-            columns_text = ", ".join(repr(column) for column in non_integral)
+        if rejections.columns_not_whole:
+            columns_text = ", ".join(repr(column) for column in rejections.columns_not_whole)
             notes.append(
                 f"group {name!r}: column(s) {columns_text} hold values that are not "
                 "whole numbers, so those parameters were given no cell rather than "
@@ -346,10 +515,8 @@ def resolve(
         layer[mapped_positions] = candidate_layer[valid].astype(np.int32)
         mapped = int(valid.sum())
         if mapped < total:
-            notes.append(
-                f"group {name!r}: rule {rule!r} placed {mapped} of {total} parameters; "
-                "the rest fell outside the grid's layer/cell range"
-            )
+            counts = _classify_unplaced(candidate_cell, candidate_layer, valid, rejections)
+            notes.append(_shortfall_note(name, rule, mapped, total, counts))
         groups.append(GroupResolution(group=str(name), rule=rule, mapped=mapped, total=total))
 
     # par.groupby(...) drops rows whose pargp is null (pandas' dropna=True
