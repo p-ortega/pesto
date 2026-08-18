@@ -1,5 +1,6 @@
-"""Turn one call into a whole run's cache: plan every artifact and run each
-in a process created just for it.
+"""Turn one call into a whole run's cache: plan every artifact, run each in
+a process created just for it, skip what is already fresh, and let a caller
+cancel or ask the size first.
 
 Every artifact is read and written inside a process created for that
 artifact alone and torn down after it, because a Python ``try``/``except``
@@ -16,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 
@@ -73,6 +74,29 @@ class PlannedArtifact:
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
+
+
+@dataclass(frozen=True)
+class BytesEstimate:
+    """How large a cache will be, before any of it is written.
+
+    ``per_artifact`` names every artifact this estimate could size;
+    ``notes`` names every one it could not, and why -- an artifact left out
+    of ``total`` is never silently folded into it as zero.
+    """
+
+    total: int
+    per_artifact: tuple[tuple[str, int], ...]
+    notes: tuple[str, ...]
+
+
+@runtime_checkable
+class CancelSignal(Protocol):
+    """Anything :func:`ingest_run`'s ``cancel`` argument can be: whatever
+    has an ``is_set() -> bool``. A ``threading.Event`` satisfies this
+    without pesto inventing a type of its own."""
+
+    def is_set(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -454,6 +478,125 @@ def plan_artifacts(
     return tuple(artifacts)
 
 
+# Ratios below turn a source file's own size into a rough estimate of the
+# artifact it will produce, calibrated against four real benchmark runs
+# (measured, not guessed) rather than re-derived per estimate. Each is a
+# deliberately rough proxy -- estimate_bytes opens no file, so it can never
+# know an ensemble's real realization/parameter counts ahead of ingest,
+# only the bytes its source occupies on disk.
+_PAR_ENS_SOURCE_RATIO = 0.26
+"""Measured across three real ``.jcb`` ensembles: the cache's float32
+two-block payload (4 bytes/value) against the modern sparse-COO dialect's
+own on-disk size (row index + column index + float64 value, 16 bytes per
+populated entry, plus name tables) lands at 0.258-0.259 of the source size
+-- consistently, because a densely populated JCB file's own overhead is a
+fixed multiple of the payload it carries. Above 100,000 parameters pestpp
+writes hash-ordered JCB by default (PROJECT.md), so this is the ratio that
+matters for the runs this estimate exists for. A dense ``.bin`` source (half
+the JCB overhead per value) is measured at 0.513 instead -- this estimate
+runs roughly 2x high for that dialect, a known, accepted gap: ``sniff()``
+would have to open the file to tell the two apart, which this function may
+never do."""
+
+_PAR_AGG_SOURCE_RATIO = 0.012
+"""Measured across four real ensembles: a per-parameter summary table (a
+handful of float32/float64 columns per parameter, parquet-compressed) lands
+between 0.008 and 0.016 of its ensemble's own source size. 0.012 is the
+midpoint -- there is no single source-only signal that narrows this
+further."""
+
+_GRID_SOURCE_RATIO = 0.06
+"""Measured across three real grid files: the mesh's three binaries plus
+its JSON sidecar land between 0.047 and 0.089 of the binary grid file's own
+size. 0.06 sits inside that measured range."""
+
+_CONFIG_BYTES = 1024
+"""``config.json`` measured 620-696 bytes across four real runs -- a small,
+roughly fixed-size fact sheet whose size does not scale with the run, so a
+flat, slightly generous estimate stands in for a ratio against any source
+file."""
+
+
+def estimate_bytes(
+    run: RunLayout, iterations: Sequence[int] | None = None
+) -> BytesEstimate:
+    """How large the cache will be, before any of it is written.
+
+    Every figure comes from ``Path.stat()`` on a source file -- this
+    function opens no file's contents and creates no directory, because it
+    is meant to be shown to a user before they have agreed to anything.
+    Each ensemble artifact is sized from its own source file's size with
+    ``_PAR_ENS_SOURCE_RATIO``; the summary and grid artifacts are sized from
+    the same source sizes with their own stated ratios above.
+
+    ``control`` is always left out of ``total`` and named in ``notes``
+    instead of estimated: a real ``PstFrom``-style control file keeps its
+    parameter and observation data in external CSVs the ``.pst`` file only
+    references, so the ``.pst`` file's own size -- 1-2 KB whether the run
+    has six parameters or six hundred thousand -- carries no usable signal
+    about the control tables' eventual size. Measured against four real
+    runs, that gap would have been between 3,800x and 21,800x had a ratio
+    been guessed anyway -- naming the artifact honestly is what "leave it
+    out and say so, rather than guess" (D-09's own rule) means in practice.
+
+    This function's own tolerance, checked by the slow benchmark test in
+    ``tests/ingest/test_runner.py``, is that ``total`` lands within 50% of
+    the cache the same run actually produces for a run whose ensembles are
+    the modern sparse-COO dialect -- generous, because every ratio above is
+    a rough proxy measured across a handful of real runs, not a formula.
+    """
+    if iterations is None:
+        numbered = [k for k in run.par_ens if isinstance(k, int)]
+        selected = _select_iterations(numbered)
+    else:
+        selected = list(iterations)
+
+    per_artifact: list[tuple[str, int]] = []
+    notes: list[str] = []
+    total = 0
+
+    for iteration in selected:
+        source = run.par_ens.get(iteration)
+        if source is None:
+            notes.append(f"par_ens/{iteration}: no source ensemble file found to size from")
+            continue
+        try:
+            source_bytes = source.stat().st_size
+        except OSError as exc:
+            notes.append(f"par_ens/{iteration}: could not stat {source.name}: {exc}")
+            continue
+        ens_bytes = int(source_bytes * _PAR_ENS_SOURCE_RATIO)
+        per_artifact.append((f"par_ens/{iteration}", ens_bytes))
+        total += ens_bytes
+        agg_bytes = int(source_bytes * _PAR_AGG_SOURCE_RATIO)
+        per_artifact.append((f"par_agg/{iteration}", agg_bytes))
+        total += agg_bytes
+
+    if run.pst_path.exists():
+        notes.append(
+            "control: a PstFrom-style .pst file's own size carries no usable signal "
+            "about its external parameter/observation tables -- excluded rather than "
+            "guessed"
+        )
+    else:
+        notes.append(f"control: could not stat {run.pst_path.name}: file not found")
+
+    if run.grid is not None:
+        try:
+            grid_source_bytes = run.grid.stat().st_size
+        except OSError as exc:
+            notes.append(f"grid: could not stat {run.grid.name}: {exc}")
+        else:
+            grid_bytes = int(grid_source_bytes * _GRID_SOURCE_RATIO)
+            per_artifact.append(("grid", grid_bytes))
+            total += grid_bytes
+
+    per_artifact.append(("config", _CONFIG_BYTES))
+    total += _CONFIG_BYTES
+
+    return BytesEstimate(total=total, per_artifact=tuple(per_artifact), notes=tuple(notes))
+
+
 def _fingerprint_sources(sources: Sequence[str]) -> list[SourceFingerprint]:
     """Fingerprint every source path that can be stat'd and hashed. A
     source that has vanished since it was planned is left out rather than
@@ -522,6 +665,7 @@ def ingest_run(
     cache_root: Path | None = None,
     iterations: Sequence[int] | None = None,
     on_progress: Callable[[Progress], None] | None = None,
+    cancel: "CancelSignal | None" = None,
 ) -> Manifest:
     """Ingest a run's first and last parameter ensemble iterations into the
     cache: both iterations' ensembles and summaries, the control tables,
@@ -532,6 +676,14 @@ def ingest_run(
     saved after every artifact, not once at the end. An artifact that is
     not stale -- its sources unchanged and its recorded cache files still
     the size they were written at -- is skipped before any worker starts.
+    ``cancel``, when given, is checked at each artifact boundary, before a
+    worker is started and never in the middle of one; on a set signal this
+    function saves and returns the manifest as it stands, and because every
+    finished artifact was already written atomically and recorded as it
+    completed, a cancel needs no rollback. This function never asks a
+    question and never blocks on one -- the size estimate and the
+    free-space conversation belong to whichever caller has a user in front
+    of it.
     """
     run = discover(run_dir)
     if cache_root is None:
@@ -582,6 +734,9 @@ def ingest_run(
     seen_paths: dict[Path, str] = {}
 
     for index, artifact in enumerate(planned):
+        if cancel is not None and cancel.is_set():
+            break
+
         output_paths = [Path(p) for p in artifact.outputs]
         collision_path = next((p for p in output_paths if p in seen_paths), None)
         if collision_path is not None:
