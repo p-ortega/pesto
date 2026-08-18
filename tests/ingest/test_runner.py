@@ -4,20 +4,41 @@ never tested (RESEARCH.md Pitfall 1) -- and every way a worker can fail
 produces a sentence naming the artifact and what happened.
 
 Also covers the retry rule for a failed artifact (a failed artifact stays
-failed until its source changes) and the guard against two artifacts ever
-writing to the same output path.
+failed until its source changes), the guard against two artifacts ever
+writing to the same output path, the whole-run artifact plan
+(``plan_artifacts``), skipping what is already fresh, the pre-ingest size
+estimate (``estimate_bytes``), and the cancel signal.
 """
 
 from __future__ import annotations
 
+import builtins
 import json
 import multiprocessing
+import threading
 
 import numpy as np
+import pandas as pd
+import pytest
 
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
-from pesto.ingest.runner import Progress, _reason_for, _run_isolated, _should_retry, ingest_run
+from pesto.cache.runconfig import load_config
+from pesto.ingest.discover import discover
+from pesto.ingest.ensembles import load_stored
+from pesto.ingest.failures import ReadFailure
+from pesto.ingest.runner import (
+    BytesEstimate,
+    PlannedArtifact,
+    Progress,
+    _reason_for,
+    _run_isolated,
+    _should_retry,
+    estimate_bytes,
+    ingest_run,
+    plan_artifacts,
+)
+from pesto.ingest.tables import load_control_tables
 
 from . import fixtures
 from .fixtures import make_run, write_corrupt_ensemble
@@ -153,14 +174,20 @@ def test_ingest_run_with_every_ensemble_file_corrupt_has_no_ok_artifacts(tmp_pat
 
     manifest = ingest_run(run_dir, cache_root=cache_root)
 
-    par_states = {
+    # Only the two artifact kinds that read the corrupted ensemble files
+    # are affected -- control, grid and config depend on other sources and
+    # are free to succeed.
+    ensemble_dependent = {
         name: artifact.state
         for name, artifact in manifest.artifacts.items()
-        if name.startswith("par_ens/")
+        if name.startswith("par_ens/") or name.startswith("par_agg/")
     }
-    assert par_states == {"par_ens/0": "failed", "par_ens/1": "failed"}
-    for artifact in manifest.artifacts.values():
-        assert artifact.state != "ok"
+    assert ensemble_dependent == {
+        "par_ens/0": "failed",
+        "par_ens/1": "failed",
+        "par_agg/0": "failed",
+        "par_agg/1": "failed",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +316,370 @@ def test_progress_row_order_is_identical_across_two_runs(tmp_path):
     second_rows: list[Progress] = []
     ingest_run(run_dir, cache_root=cache_root, on_progress=second_rows.append)
 
-    first_names = [r.artifact for r in first_rows]
-    second_names = [r.artifact for r in second_rows]
-    assert first_names == second_names
+    # The synthetic fixture's grid file is a placeholder flopy cannot parse,
+    # so "grid" fails on the first run and is a declined retry (unchanged
+    # source) on the second -- one "skipped" row instead of a "started" and
+    # a "failed" row. The row *count* legitimately differs for that
+    # artifact; the *sequence of distinct artifacts* must not.
+    def _distinct_in_order(rows: list[Progress]) -> list[str]:
+        seen: list[str] = []
+        for row in rows:
+            if not seen or seen[-1] != row.artifact:
+                seen.append(row.artifact)
+        return seen
+
+    assert _distinct_in_order(first_rows) == _distinct_in_order(second_rows)
+
+
+# ---------------------------------------------------------------------------
+# Task 1: the whole list of artifacts, each in its own process
+# ---------------------------------------------------------------------------
+
+
+def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    first = plan_artifacts(run, layout)
+    second = plan_artifacts(run, layout)
+
+    names = [a.name for a in first]
+    assert names == [
+        "par_ens/0",
+        "par_agg/0",
+        "par_ens/1",
+        "par_agg/1",
+        "control",
+        "grid",
+        "config",
+    ]
+    assert [a.name for a in second] == names
+
+
+def test_plan_artifacts_collapses_the_degenerate_noptmax_case(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, noptmax=0, iterations=(0,))
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = plan_artifacts(run, layout)
+
+    par_ens_names = [a.name for a in planned if a.kind == "par_ens"]
+    par_agg_names = [a.name for a in planned if a.kind == "par_agg"]
+    assert par_ens_names == ["par_ens/0"]
+    assert par_agg_names == ["par_agg/0"]
+
+
+def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = {a.name: a for a in plan_artifacts(run, layout)}
+
+    assert set(planned["par_ens/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert set(planned["par_agg/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert planned["control"].sources == (str(run.pst_path),)
+    assert planned["grid"].sources == (str(run.grid),)
+    assert set(planned["config"].sources) == {str(run.pst_path), str(run.grid)}
+
+
+def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    run_result = make_run(run_dir, iterations=(0,))
+    run_result.grid_path.unlink()
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = plan_artifacts(run, layout)
+
+    names = [a.name for a in planned]
+    assert "grid" not in names
+    config = next(a for a in planned if a.name == "config")
+    assert config.sources == (str(run.pst_path),)
+
+
+def test_ingest_run_writes_every_artifact_kind_and_each_reads_back_through_its_own_reader(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    # The synthetic fixture's grid file is a placeholder, not a real .grb --
+    # flopy cannot parse it, so "grid" is the one artifact expected to fail
+    # here. Every other kind is independent of the grid file and must
+    # succeed.
+    for name, artifact in manifest.artifacts.items():
+        if name == "grid":
+            continue
+        assert artifact.state == "ok", (name, artifact.reason)
+    assert manifest.artifacts["grid"].state == "failed"
+
+    layout = CacheLayout(root=cache_root)
+
+    stored0 = load_stored(0, layout)
+    assert not isinstance(stored0, ReadFailure)
+    assert stored0.par_names == tuple(run.par_names)
+
+    stored1 = load_stored(1, layout)
+    assert not isinstance(stored1, ReadFailure)
+
+    control = load_control_tables(layout)
+    assert not isinstance(control, ReadFailure)
+    assert list(control.par["parnme"]) == run.par_names
+
+    config = load_config(layout)
+    assert config.n_par == len(run.par_names)
+    assert config.n_real == len(run.real_names)
+
+    agg0 = pd.read_parquet(layout.par_agg(0))
+    assert len(agg0) == len(run.par_names)
+    agg1 = pd.read_parquet(layout.par_agg(1))
+    assert len(agg1) == len(run.par_names)
+
+
+def test_manifest_cache_bytes_equals_the_summed_size_of_every_recorded_file(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    expected = sum(f.bytes for a in manifest.artifacts.values() for f in a.files)
+    assert manifest.cache_bytes == expected
+    assert manifest.cache_bytes > 0
+    assert manifest.ingest_seconds is not None
+    assert manifest.ingest_seconds >= 0.0
+
+
+def test_config_json_never_carries_ingest_seconds_or_cache_bytes(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    payload = json.loads((cache_root / "config.json").read_text())
+    assert "ingest_seconds" not in payload
+    assert "cache_bytes" not in payload
+
+
+def test_an_unreadable_grid_file_fails_only_the_grid_artifact(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run_result = make_run(run_dir, iterations=(0, 1))
+    run_result.grid_path.write_bytes(b"still not a real grid file, just different bytes")
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["grid"].state == "failed"
+    assert manifest.artifacts["grid"].reason
+    for name, artifact in manifest.artifacts.items():
+        if name != "grid":
+            assert artifact.state == "ok", (name, artifact.reason)
+
+# ---------------------------------------------------------------------------
+# Task 2: a stat, not a read, decides whether anything needs doing
+# ---------------------------------------------------------------------------
+
+
+def test_second_ingest_on_unchanged_directory_writes_nothing_and_skips_everything(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    mtimes_before = {
+        p: p.stat().st_mtime_ns
+        for p in cache_root.rglob("*")
+        if p.is_file() and p.name != "manifest.json"
+    }
+
+    rows: list[Progress] = []
+    manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    mtimes_after = {
+        p: p.stat().st_mtime_ns
+        for p in cache_root.rglob("*")
+        if p.is_file() and p.name != "manifest.json"
+    }
+    assert mtimes_before == mtimes_after
+    assert all(r.state == "skipped" for r in rows)
+    for name, artifact in manifest.artifacts.items():
+        if name != "grid":  # the synthetic fixture's grid always fails
+            assert artifact.state == "ok"
+
+
+def test_touching_one_iterations_ensemble_file_reingests_only_that_iteration(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    values = fixtures.sample_values(len(run.real_names), len(run.par_names), seed=77)
+    fixtures.write_jcb_ensemble(run.par_ens[1], values, run.real_names, run.par_names)
+
+    rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    touched = {r.artifact for r in rows if r.state != "skipped"}
+    assert touched == {"par_ens/1", "par_agg/1"}
+
+
+
+# ---------------------------------------------------------------------------
+# Task 3: backing out, and knowing the size before agreeing to it
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_bytes_sizes_every_artifact_without_opening_a_source_file(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    run = discover(run_dir)
+
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def _recording_open(file, *args, **kwargs):
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _recording_open)
+    try:
+        estimate = estimate_bytes(run)
+    finally:
+        monkeypatch.setattr(builtins, "open", real_open)
+
+    assert opened == []
+    assert isinstance(estimate, BytesEstimate)
+    assert estimate.total > 0
+    names = {name for name, _ in estimate.per_artifact}
+    # "control" is deliberately never sized -- a PstFrom-style .pst file's
+    # own size carries no signal about its external tables -- so it is
+    # named in notes instead of appearing in per_artifact.
+    assert names == {"par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "grid", "config"}
+    assert any("control" in note for note in estimate.notes)
+
+
+def test_estimate_bytes_never_writes_or_creates_the_cache_root(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    run = discover(run_dir)
+    cache_root = tmp_path / "cache"
+
+    estimate_bytes(run)
+
+    assert not cache_root.exists()
+
+
+def test_a_signal_set_after_the_first_ok_artifact_leaves_the_rest_untouched(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    cancel = threading.Event()
+
+    def _cancel_after_first_ok(row: Progress) -> None:
+        if row.state == "ok":
+            cancel.set()
+
+    manifest = ingest_run(
+        run_dir, cache_root=cache_root, on_progress=_cancel_after_first_ok, cancel=cancel
+    )
+
+    ok_names = [name for name, a in manifest.artifacts.items() if a.state == "ok"]
+    assert len(ok_names) == 1
+    first_ok = ok_names[0]
+
+    second_rows: list[Progress] = []
+    second_manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=second_rows.append)
+
+    for name, artifact in second_manifest.artifacts.items():
+        if name != "grid":
+            assert artifact.state == "ok", (name, artifact.reason)
+
+    redone = [r.artifact for r in second_rows if r.state != "skipped"]
+    assert first_ok not in redone
+
+
+def test_a_signal_set_before_the_first_artifact_writes_nothing(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    cancel = threading.Event()
+    cancel.set()
+
+    manifest = ingest_run(run_dir, cache_root=cache_root, cancel=cancel)
+
+    assert manifest.artifacts == {}
+    written_files = [
+        p for p in cache_root.rglob("*") if p.is_file() and p.name != "manifest.json"
+    ]
+    assert written_files == []
+
+
+def test_ingest_run_never_prompts_for_input(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    def _raising_input(*args, **kwargs):
+        raise AssertionError("ingest_run must never prompt for input")
+
+    monkeypatch.setattr(builtins, "input", _raising_input)
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+
+@pytest.mark.slow
+def test_a_whole_benchmark_run_ingests_end_to_end_with_the_run_directory_unchanged(
+    hm_run, tmp_path
+):
+    cache_root = tmp_path / "cache"
+
+    before = {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in hm_run.rglob("*") if p.is_file()}
+
+    manifest = ingest_run(hm_run, cache_root=cache_root)
+
+    after = {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in hm_run.rglob("*") if p.is_file()}
+    assert before == after
+
+    for name, artifact in manifest.artifacts.items():
+        assert artifact.state == "ok", (name, artifact.reason)
+
+
+@pytest.mark.slow
+def test_estimate_bytes_is_within_tolerance_of_a_real_ingest(hm_run, tmp_path):
+    cache_root = tmp_path / "cache"
+    run = discover(hm_run)
+
+    estimate = estimate_bytes(run)
+    manifest = ingest_run(hm_run, cache_root=cache_root)
+
+    actual = sum(f.bytes for a in manifest.artifacts.values() for f in a.files)
+    tolerance = 0.5
+    assert abs(estimate.total - actual) <= tolerance * actual
