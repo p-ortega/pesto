@@ -13,14 +13,15 @@ the shape of a distribution the mean cannot.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 import pandas as pd
 
-from pesto.cache._atomic import write_atomic_bytes
-from pesto.cache.layout import CacheLayout
+from pesto.cache._atomic import write_atomic_bytes, write_atomic_text
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
 
@@ -192,6 +193,18 @@ def align_to_control(
     handle: it gets a column of NaN and a note naming it, never a shorter
     table -- a table that quietly loses a row is indistinguishable from a
     run that never had that parameter.
+
+    Identity is exact string equality, byte for byte -- the same discipline
+    ``align_realizations`` applies to realization names and is tested for,
+    because a match that folds case or whitespace can join two genuinely
+    different parameters and nothing in the table afterwards can tell. A
+    control-file name that differs from an ensemble entity name only in
+    letter case or surrounding whitespace does not join: it falls into the
+    same missing-value branch as a genuinely absent parameter, but its note
+    also names the ensemble entity it nearly matched and says the two were
+    not joined because the strings are not equal -- so a caller can tell an
+    upstream spelling mistake from a parameter the run genuinely does not
+    have.
     """
     control_names = tuple(str(n) for n in tables.par["parnme"])
     n_real = data.values.shape[0]
@@ -201,15 +214,31 @@ def align_to_control(
 
     entity_index: dict[str, int] = {}
     for idx, name in enumerate(data.entity_names):
-        entity_index.setdefault(name.strip().lower(), idx)
+        entity_index.setdefault(name, idx)
+
+    # Consulted only for a name the exact lookup above did not find, so a
+    # near match never joins -- it only ever names what was nearly, and
+    # deliberately not, matched.
+    folded_index: dict[str, str] = {}
+    for name in data.entity_names:
+        folded_index.setdefault(name.strip().lower(), name)
 
     for control_pos, name in enumerate(control_names):
-        idx = entity_index.get(name.strip().lower())
+        idx = entity_index.get(name)
         if idx is None:
-            notes.append(
-                f"parameter {name!r} is present in the control file but absent from the "
-                f"ensemble; recorded as a row of missing values"
-            )
+            near_match = folded_index.get(name.strip().lower())
+            if near_match is not None:
+                notes.append(
+                    f"parameter {name!r} is present in the control file but absent from the "
+                    f"ensemble; recorded as a row of missing values -- the ensemble holds "
+                    f"{near_match!r}, which matches only after folding case and whitespace, "
+                    f"so the two were not joined"
+                )
+            else:
+                notes.append(
+                    f"parameter {name!r} is present in the control file but absent from the "
+                    f"ensemble; recorded as a row of missing values"
+                )
             continue
         out[:, control_pos] = data.values[:, idx]
 
@@ -356,6 +385,12 @@ def write_par_agg(
     half-written table a later size check would call fresh. Any exception
     anywhere in this function returns a :class:`ReadFailure` naming the
     iteration and what was being attempted, rather than propagating.
+
+    Writes ``agg/par_{iteration}.notes.json`` beside the table, after it,
+    holding every note in full -- the manifest carries only a bounded copy
+    of these notes (``MANIFEST_NOTE_CAP``), so a caller who finds the "N
+    further notes" note there knows this file is where the rest of them
+    are.
     """
     name = f"par_agg/{iteration}"
     target = layout.par_agg(iteration)
@@ -431,7 +466,22 @@ def write_par_agg(
 
         written_bytes = write_atomic_bytes(target, _write_payload)
         file_entry = CacheFile(path=str(target.relative_to(layout.root)), bytes=written_bytes)
-        return WrittenArtifact(name=name, files=(file_entry,), notes=tuple(notes))
+
+        # Written after the table, never before: a reader must never find a
+        # sidecar naming a file that is not there yet (write_mesh's rule).
+        notes_target = layout.par_agg_notes(iteration)
+        notes_payload = {
+            "cache_version": CACHE_VERSION,
+            "iteration": iteration,
+            "n_par": len(control_names),
+            "notes": notes,
+        }
+        notes_bytes = write_atomic_text(notes_target, json.dumps(notes_payload, indent=2))
+        notes_entry = CacheFile(
+            path=str(notes_target.relative_to(layout.root)), bytes=notes_bytes
+        )
+
+        return WrittenArtifact(name=name, files=(file_entry, notes_entry), notes=tuple(notes))
     except Exception as exc:
         return ReadFailure(
             name=name,
