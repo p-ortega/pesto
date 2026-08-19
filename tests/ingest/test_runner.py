@@ -672,6 +672,113 @@ def test_a_whole_benchmark_run_ingests_end_to_end_with_the_run_directory_unchang
         assert artifact.state == "ok", (name, artifact.reason)
 
 
+# ---------------------------------------------------------------------------
+# Task 1 (04-08): a writer's notes reach the manifest and the progress row
+# ---------------------------------------------------------------------------
+#
+# A control file genuinely lacking a core column (pargp, parlbnd, ...) is
+# not reachable end to end through write_control_file: pyemu.Pst fabricates
+# a default for every core column even when the external CSV omits it
+# (confirmed directly -- see test_control.py's own note on the same limit
+# for _note_missing_core_columns). The two triggers below are genuinely
+# reachable end to end and exercise the same wiring: an all-NaN parameter
+# column reaches summarise()'s own note, and a leading-space column header
+# reaches read_control's normalisation note, which write_control and
+# build_config both carry into their own notes.
+
+
+def _write_all_nan_parameter(run, iteration: int, par_index: int = 0) -> None:
+    """Overwrite one iteration's ensemble file so every realization of one
+    named parameter is NaN, reaching ``summarise``'s own
+    no-valid-realizations note end to end."""
+    values = fixtures.sample_values(len(run.real_names), len(run.par_names), seed=iteration)
+    values[:, par_index] = np.nan
+    fixtures.write_jcb_ensemble(run.par_ens[iteration], values, run.real_names, run.par_names)
+
+
+def _rename_par_column_with_leading_space(run_dir, column: str, case: str = "case") -> None:
+    """Rewrite only the header line of the external parameter-data CSV so
+    ``column`` is preceded by a space -- every data row is left untouched.
+    ``read_control``'s own normalisation strips it back and notes doing so."""
+    par_data_path = run_dir / f"{case}.par_data.csv"
+    text = par_data_path.read_text()
+    header, *rest = text.splitlines(keepends=True)
+    fields = header.rstrip("\n").split(",")
+    fields = [f" {column}" if f == column else f for f in fields]
+    new_header = ",".join(fields) + "\n"
+    par_data_path.write_text(new_header + "".join(rest))
+
+
+def test_a_note_summarise_produced_is_readable_from_the_manifest_with_no_sidecar_opened(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    _write_all_nan_parameter(run, 0)
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    reloaded = Manifest.load(CacheLayout(root=cache_root))
+    notes = reloaded.artifacts["par_agg/0"].notes
+    assert any("par0" in note and "no valid realizations" in note for note in notes)
+
+
+def test_control_and_config_entries_carry_the_notes_their_own_writer_produced(tmp_path):
+    # "grid" always fails against this fixture's placeholder .grb (flopy
+    # cannot parse it), so it never reaches an "ok" state with notes to
+    # check here -- control and config are the two other writers this
+    # single scenario reaches, proving the fix general rather than
+    # par_agg-only.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+    _rename_par_column_with_leading_space(run_dir, "zone")
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    reloaded = Manifest.load(CacheLayout(root=cache_root))
+    for name in ("control", "config"):
+        notes = reloaded.artifacts[name].notes
+        assert any("zone" in note and "stripped" in note for note in notes), (name, notes)
+
+
+def test_the_ok_progress_row_carries_the_same_notes_the_manifest_records(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    _write_all_nan_parameter(run, 0)
+
+    rows: list[Progress] = []
+    manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    ok_row = next(r for r in rows if r.artifact == "par_agg/0" and r.state == "ok")
+    assert ok_row.notes == manifest.artifacts["par_agg/0"].notes
+    assert ok_row.notes != ()
+
+
+def test_a_second_ingests_skipped_row_carries_the_same_notes_as_the_first_oks_row(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    _write_all_nan_parameter(run, 0)
+
+    first_rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=first_rows.append)
+    first_ok = next(r for r in first_rows if r.artifact == "par_agg/0" and r.state == "ok")
+
+    second_rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=second_rows.append)
+    second_skip = next(r for r in second_rows if r.artifact == "par_agg/0" and r.state == "skipped")
+
+    assert second_skip.notes == first_ok.notes
+    assert first_ok.notes != ()
+
+
 @pytest.mark.slow
 def test_estimate_bytes_is_within_tolerance_of_a_real_ingest(hm_run, tmp_path):
     cache_root = tmp_path / "cache"

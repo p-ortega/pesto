@@ -321,7 +321,7 @@ def write_config(config: RunConfig, layout: CacheLayout) -> WrittenArtifact | Re
         }
         written = write_atomic_text(target, json.dumps(payload, indent=2))
         cache_file = CacheFile(path=str(target.relative_to(layout.root)), bytes=written)
-        return WrittenArtifact(name=name, files=(cache_file,))
+        return WrittenArtifact(name=name, files=(cache_file,), notes=tuple(config.notes))
     except Exception as exc:
         return ReadFailure(
             name=name,
