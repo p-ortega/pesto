@@ -55,6 +55,7 @@ class Progress:
     written_bytes: int
     seconds: float
     reason: str | None = None
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -784,6 +785,7 @@ def ingest_run(
                         written_bytes=written_bytes,
                         seconds=0.0,
                         reason=existing.reason if existing is not None else None,
+                        notes=existing.notes if existing is not None else (),
                     )
                 )
             continue
@@ -819,9 +821,13 @@ def ingest_run(
 
         sources = _fingerprint_sources(artifact.sources)
 
+        notes: tuple[str, ...] = ()
         if ok and isinstance(result, WrittenArtifact):
             written_bytes = sum(f.bytes for f in result.files)
-            manifest.mark_ok(artifact.name, sources, files=result.files, seconds=seconds)
+            notes = result.notes
+            manifest.mark_ok(
+                artifact.name, sources, files=result.files, seconds=seconds, notes=notes
+            )
             manifest.save(layout)
             state = "ok"
             reason = None
@@ -848,6 +854,7 @@ def ingest_run(
                     written_bytes=written_bytes,
                     seconds=seconds,
                     reason=reason,
+                    notes=notes,
                 )
             )
 
