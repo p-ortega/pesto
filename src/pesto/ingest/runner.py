@@ -598,18 +598,31 @@ def estimate_bytes(
     return BytesEstimate(total=total, per_artifact=tuple(per_artifact), notes=tuple(notes))
 
 
-def _fingerprint_sources(sources: Sequence[str]) -> list[SourceFingerprint]:
-    """Fingerprint every source path that can be stat'd and hashed. A
-    source that has vanished since it was planned is left out rather than
-    raised -- the artifact's own read will report that failure with a
-    reason naming the file."""
+def _fingerprint_sources(
+    sources: Sequence[str],
+) -> tuple[list[SourceFingerprint], tuple[str, ...]]:
+    """Fingerprint every source path this artifact depends on, reporting
+    which ones could not be fingerprinted rather than silently returning a
+    shorter list.
+
+    Recording fewer sources than an artifact depends on is worse than
+    failing it: ``is_stale`` only ever checks the sources actually
+    recorded, so a source dropped here can never again make the artifact
+    stale, and a different file appearing at that path later with
+    different content would be invisible -- ``manifest.py``'s own rule is
+    that freshness is a claim that must be provable. This function still
+    never raises: the second element names one sentence per source that
+    could not be fingerprinted, naming the path and what went wrong, and
+    the caller decides what that costs the artifact.
+    """
     fingerprints: list[SourceFingerprint] = []
+    missing: list[str] = []
     for raw in sources:
         try:
             fingerprints.append(SourceFingerprint.of(Path(raw)))
-        except OSError:
-            continue
-    return fingerprints
+        except OSError as exc:
+            missing.append(f"{Path(raw).name} could not be fingerprinted: {exc}")
+    return fingerprints, tuple(missing)
 
 
 def _dispatch(
@@ -819,10 +832,10 @@ def ingest_run(
         ok, result = _run_isolated(worker_fn, *worker_args)
         seconds = time.perf_counter() - start
 
-        sources = _fingerprint_sources(artifact.sources)
+        sources, unfingerprinted = _fingerprint_sources(artifact.sources)
 
         notes: tuple[str, ...] = ()
-        if ok and isinstance(result, WrittenArtifact):
+        if ok and isinstance(result, WrittenArtifact) and not unfingerprinted:
             written_bytes = sum(f.bytes for f in result.files)
             notes = result.notes
             manifest.mark_ok(
@@ -831,6 +844,23 @@ def ingest_run(
             manifest.save(layout)
             state = "ok"
             reason = None
+        elif ok and isinstance(result, WrittenArtifact):
+            # The worker succeeded and its cache files are complete and
+            # correct, but a source it depends on could no longer be
+            # fingerprinted afterwards -- this ingest cannot prove the
+            # artifact fresh, so it is failed by name rather than recorded
+            # ok against a source list that has quietly shrunk. The files
+            # the worker wrote are not deleted: they are good, and a later
+            # successful run overwrites them.
+            written_bytes = 0
+            reason = (
+                f"{artifact.name}: the worker read its source and returned a result, "
+                f"but {'; '.join(unfingerprinted)}, so this ingest cannot prove the "
+                f"artifact fresh"
+            )
+            manifest.mark_failed(artifact.name, reason, sources=sources, seconds=seconds)
+            manifest.save(layout)
+            state = "failed"
         else:
             written_bytes = 0
             if isinstance(result, ReadFailure):
@@ -839,6 +869,8 @@ def ingest_run(
                 reason = _reason_for(
                     artifact.name, artifact.sources[0] if artifact.sources else "", result
                 )
+            if unfingerprinted:
+                reason = f"{reason}; also, {'; '.join(unfingerprinted)}"
             manifest.mark_failed(artifact.name, reason, sources=sources, seconds=seconds)
             manifest.save(layout)
             state = "failed"

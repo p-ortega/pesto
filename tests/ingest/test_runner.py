@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 
 from pesto.cache.layout import CacheLayout
-from pesto.cache.manifest import Manifest
+from pesto.cache.manifest import Manifest, SourceFingerprint
 from pesto.cache.runconfig import load_config
 from pesto.ingest.discover import discover
 from pesto.ingest.ensembles import load_stored
@@ -653,6 +653,131 @@ def test_ingest_run_never_prompts_for_input(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "input", _raising_input)
 
     ingest_run(run_dir, cache_root=cache_root)
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (04-08): a vanished source fails its artifact, not a shorter list
+# ---------------------------------------------------------------------------
+
+
+def _make_vanishing_of(vanished_path: str):
+    """A stand-in for ``SourceFingerprint.of`` that raises ``OSError`` for
+    exactly one path -- as if that source vanished or became unreadable
+    between the worker's read and the parent's fingerprinting -- and
+    behaves exactly as the real function does for every other path."""
+    real_of = SourceFingerprint.of
+
+    def _raising_of(path):
+        if str(path) == vanished_path:
+            raise OSError("simulated vanished source")
+        return real_of(path)
+
+    return _raising_of
+
+
+def test_a_source_that_vanishes_after_a_successful_read_fails_that_artifact_by_name(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_ens/0"].state == "failed"
+    assert run.par_ens[0].name in manifest.artifacts["par_ens/0"].reason
+    assert manifest.artifacts["control"].state == "ok"
+    assert manifest.artifacts["config"].state == "ok"
+
+
+def test_the_failed_artifacts_recorded_sources_hold_exactly_what_could_be_fingerprinted(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    artifact = manifest.artifacts["par_ens/0"]
+    assert artifact.state == "failed"
+    # par_ens/0 depends on the vanished ensemble file and the (still
+    # fingerprintable) control file -- only the latter survives.
+    assert len(artifact.sources) == 1
+    assert artifact.sources[0].path == run.pst_path.name
+
+
+def test_the_cache_file_the_worker_wrote_is_still_present_after_the_fingerprint_failure(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_ens/0"].state == "failed"
+    layout = CacheLayout(root=cache_root)
+    assert layout.par_ens(0).exists()
+
+
+def test_the_run_directory_is_unchanged_by_the_fingerprint_failure_case(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    before = {
+        p: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.rglob("*") if p.is_file()
+    }
+    ingest_run(run_dir, cache_root=cache_root)
+    after = {
+        p: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.rglob("*") if p.is_file()
+    }
+
+    assert before == after
+
+
+def test_a_whole_run_ingest_with_every_source_present_records_two_sources_and_fails_nothing_new(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    rows: list[Progress] = []
+    manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    for name, artifact in manifest.artifacts.items():
+        if name.startswith("par_ens/") or name.startswith("par_agg/"):
+            assert len(artifact.sources) == 2, (name, artifact.sources)
+        if name != "grid":  # the synthetic fixture's grid always fails
+            assert artifact.state == "ok", (name, artifact.reason)
+
+    # "grid" is the one pre-existing failure this fixture always produces;
+    # the fingerprinting change introduces no failure beyond it.
+    unexpected_failures = [r for r in rows if r.state == "failed" and r.artifact != "grid"]
+    assert unexpected_failures == []
 
 
 @pytest.mark.slow
