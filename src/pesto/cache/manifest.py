@@ -21,12 +21,19 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 
 ArtifactState = Literal["ok", "missing", "failed", "not_ingested"]
+
+MANIFEST_NOTE_CAP = 50
+"""The most notes one artifact entry carries in manifest.json.
+``align_to_control`` appends one note per control-file parameter the
+ensemble does not hold, so an uncapped field turns the manifest into a
+file the size of the control file for a run where the two disagree, and
+every later ``Manifest.load`` has to parse it."""
 
 
 def _digest_of(path: Path) -> str:
@@ -131,7 +138,11 @@ class Artifact:
     """One independently readable piece of a run's cache.
 
     Keeping the failure reason is what lets a later phase report a failure
-    by artifact name and cause instead of a silent absence.
+    by artifact name and cause instead of a silent absence. ``notes`` is
+    the writer's own trace of what it repaired, dropped or could not
+    state -- a note that only lived inside a writer's private sidecar was
+    a note the caller had to know to go looking for, and the manifest is
+    the record that describes what an ingest did.
     """
 
     name: str
@@ -140,6 +151,45 @@ class Artifact:
     sources: list[SourceFingerprint] = field(default_factory=list)
     files: list[CacheFile] = field(default_factory=list)
     seconds: float | None = None
+    notes: tuple[str, ...] = ()
+
+
+def _capped_notes(notes: Sequence[str]) -> tuple[str, ...]:
+    """Apply ``MANIFEST_NOTE_CAP`` to one artifact's notes.
+
+    At or under the cap every note is returned unchanged. Over the cap,
+    the first ``MANIFEST_NOTE_CAP`` are kept and one final note is
+    appended stating how many further notes exist and that the artifact's
+    own recorded files hold them -- the count is the trace that separates
+    a bounded record from a silent truncation.
+    """
+    notes = list(notes)
+    if len(notes) <= MANIFEST_NOTE_CAP:
+        return tuple(notes)
+    remaining = len(notes) - MANIFEST_NOTE_CAP
+    kept = notes[:MANIFEST_NOTE_CAP]
+    kept.append(
+        f"{remaining} further note(s) were produced for this artifact and are "
+        f"recorded in the artifact's own files, not repeated here"
+    )
+    return tuple(kept)
+
+
+def _notes_from(raw: object) -> tuple[str, ...]:
+    """Read one artifact's notes back off disk.
+
+    A missing or empty value returns no notes, so a manifest written
+    before this field existed loads with every artifact intact. Anything
+    else that is not a list of strings raises ``TypeError``, which
+    ``Manifest.load``'s own handler treats exactly as a fingerprint
+    missing its checksum -- the whole manifest resolves to empty rather
+    than reporting a partially populated one.
+    """
+    if not raw:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(n, str) for n in raw):
+        raise TypeError("notes must be a list of strings")
+    return tuple(raw)
 
 
 @dataclass
@@ -169,6 +219,7 @@ class Manifest:
         sources: list[SourceFingerprint],
         files: tuple[CacheFile, ...] = (),
         seconds: float | None = None,
+        notes: Sequence[str] = (),
     ) -> None:
         self.artifacts[name] = Artifact(
             name=name,
@@ -177,6 +228,7 @@ class Manifest:
             sources=list(sources),
             files=list(files),
             seconds=seconds,
+            notes=_capped_notes(notes),
         )
 
     def mark_failed(
@@ -295,6 +347,7 @@ class Manifest:
                 fields_copy["files"] = [
                     CacheFile(**f) for f in artifact_data.get("files", [])
                 ]
+                fields_copy["notes"] = _notes_from(artifact_data.get("notes", []))
                 artifacts[name] = Artifact(**fields_copy)
         except (KeyError, TypeError, ValueError, AttributeError):
             # A malformed or outdated entry (e.g. a fingerprint missing the

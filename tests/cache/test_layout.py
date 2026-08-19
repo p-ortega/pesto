@@ -152,6 +152,7 @@ def test_layout_exposes_named_directories_and_per_iteration_files(tmp_path):
     assert layout.par_ens(3).name == "par_3.f32"
     assert layout.par_reals(3).name == "par_3.reals.json"
     assert layout.par_agg(0).name == "par_0.parquet"
+    assert layout.par_agg_notes(0).name == "par_0.notes.json"
 
 
 def test_ensure_is_idempotent(tmp_path):

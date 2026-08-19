@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 
 from pesto.cache.layout import CacheLayout
-from pesto.cache.manifest import Manifest
+from pesto.cache.manifest import Manifest, SourceFingerprint
 from pesto.cache.runconfig import load_config
 from pesto.ingest.discover import discover
 from pesto.ingest.ensembles import load_stored
@@ -655,6 +655,131 @@ def test_ingest_run_never_prompts_for_input(tmp_path, monkeypatch):
     ingest_run(run_dir, cache_root=cache_root)
 
 
+# ---------------------------------------------------------------------------
+# Task 3 (04-08): a vanished source fails its artifact, not a shorter list
+# ---------------------------------------------------------------------------
+
+
+def _make_vanishing_of(vanished_path: str):
+    """A stand-in for ``SourceFingerprint.of`` that raises ``OSError`` for
+    exactly one path -- as if that source vanished or became unreadable
+    between the worker's read and the parent's fingerprinting -- and
+    behaves exactly as the real function does for every other path."""
+    real_of = SourceFingerprint.of
+
+    def _raising_of(path):
+        if str(path) == vanished_path:
+            raise OSError("simulated vanished source")
+        return real_of(path)
+
+    return _raising_of
+
+
+def test_a_source_that_vanishes_after_a_successful_read_fails_that_artifact_by_name(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_ens/0"].state == "failed"
+    assert run.par_ens[0].name in manifest.artifacts["par_ens/0"].reason
+    assert manifest.artifacts["control"].state == "ok"
+    assert manifest.artifacts["config"].state == "ok"
+
+
+def test_the_failed_artifacts_recorded_sources_hold_exactly_what_could_be_fingerprinted(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    artifact = manifest.artifacts["par_ens/0"]
+    assert artifact.state == "failed"
+    # par_ens/0 depends on the vanished ensemble file and the (still
+    # fingerprintable) control file -- only the latter survives.
+    assert len(artifact.sources) == 1
+    assert artifact.sources[0].path == run.pst_path.name
+
+
+def test_the_cache_file_the_worker_wrote_is_still_present_after_the_fingerprint_failure(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_ens/0"].state == "failed"
+    layout = CacheLayout(root=cache_root)
+    assert layout.par_ens(0).exists()
+
+
+def test_the_run_directory_is_unchanged_by_the_fingerprint_failure_case(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+
+    monkeypatch.setattr(
+        SourceFingerprint, "of", staticmethod(_make_vanishing_of(str(run.par_ens[0])))
+    )
+
+    before = {
+        p: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.rglob("*") if p.is_file()
+    }
+    ingest_run(run_dir, cache_root=cache_root)
+    after = {
+        p: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.rglob("*") if p.is_file()
+    }
+
+    assert before == after
+
+
+def test_a_whole_run_ingest_with_every_source_present_records_two_sources_and_fails_nothing_new(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+
+    rows: list[Progress] = []
+    manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    for name, artifact in manifest.artifacts.items():
+        if name.startswith("par_ens/") or name.startswith("par_agg/"):
+            assert len(artifact.sources) == 2, (name, artifact.sources)
+        if name != "grid":  # the synthetic fixture's grid always fails
+            assert artifact.state == "ok", (name, artifact.reason)
+
+    # "grid" is the one pre-existing failure this fixture always produces;
+    # the fingerprinting change introduces no failure beyond it.
+    unexpected_failures = [r for r in rows if r.state == "failed" and r.artifact != "grid"]
+    assert unexpected_failures == []
+
+
 @pytest.mark.slow
 def test_a_whole_benchmark_run_ingests_end_to_end_with_the_run_directory_unchanged(
     hm_run, tmp_path
@@ -670,6 +795,113 @@ def test_a_whole_benchmark_run_ingests_end_to_end_with_the_run_directory_unchang
 
     for name, artifact in manifest.artifacts.items():
         assert artifact.state == "ok", (name, artifact.reason)
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (04-08): a writer's notes reach the manifest and the progress row
+# ---------------------------------------------------------------------------
+#
+# A control file genuinely lacking a core column (pargp, parlbnd, ...) is
+# not reachable end to end through write_control_file: pyemu.Pst fabricates
+# a default for every core column even when the external CSV omits it
+# (confirmed directly -- see test_control.py's own note on the same limit
+# for _note_missing_core_columns). The two triggers below are genuinely
+# reachable end to end and exercise the same wiring: an all-NaN parameter
+# column reaches summarise()'s own note, and a leading-space column header
+# reaches read_control's normalisation note, which write_control and
+# build_config both carry into their own notes.
+
+
+def _write_all_nan_parameter(run, iteration: int, par_index: int = 0) -> None:
+    """Overwrite one iteration's ensemble file so every realization of one
+    named parameter is NaN, reaching ``summarise``'s own
+    no-valid-realizations note end to end."""
+    values = fixtures.sample_values(len(run.real_names), len(run.par_names), seed=iteration)
+    values[:, par_index] = np.nan
+    fixtures.write_jcb_ensemble(run.par_ens[iteration], values, run.real_names, run.par_names)
+
+
+def _rename_par_column_with_leading_space(run_dir, column: str, case: str = "case") -> None:
+    """Rewrite only the header line of the external parameter-data CSV so
+    ``column`` is preceded by a space -- every data row is left untouched.
+    ``read_control``'s own normalisation strips it back and notes doing so."""
+    par_data_path = run_dir / f"{case}.par_data.csv"
+    text = par_data_path.read_text()
+    header, *rest = text.splitlines(keepends=True)
+    fields = header.rstrip("\n").split(",")
+    fields = [f" {column}" if f == column else f for f in fields]
+    new_header = ",".join(fields) + "\n"
+    par_data_path.write_text(new_header + "".join(rest))
+
+
+def test_a_note_summarise_produced_is_readable_from_the_manifest_with_no_sidecar_opened(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    _write_all_nan_parameter(run, 0)
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    reloaded = Manifest.load(CacheLayout(root=cache_root))
+    notes = reloaded.artifacts["par_agg/0"].notes
+    assert any("par0" in note and "no valid realizations" in note for note in notes)
+
+
+def test_control_and_config_entries_carry_the_notes_their_own_writer_produced(tmp_path):
+    # "grid" always fails against this fixture's placeholder .grb (flopy
+    # cannot parse it), so it never reaches an "ok" state with notes to
+    # check here -- control and config are the two other writers this
+    # single scenario reaches, proving the fix general rather than
+    # par_agg-only.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0, 1))
+    _rename_par_column_with_leading_space(run_dir, "zone")
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    reloaded = Manifest.load(CacheLayout(root=cache_root))
+    for name in ("control", "config"):
+        notes = reloaded.artifacts[name].notes
+        assert any("zone" in note and "stripped" in note for note in notes), (name, notes)
+
+
+def test_the_ok_progress_row_carries_the_same_notes_the_manifest_records(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    _write_all_nan_parameter(run, 0)
+
+    rows: list[Progress] = []
+    manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    ok_row = next(r for r in rows if r.artifact == "par_agg/0" and r.state == "ok")
+    assert ok_row.notes == manifest.artifacts["par_agg/0"].notes
+    assert ok_row.notes != ()
+
+
+def test_a_second_ingests_skipped_row_carries_the_same_notes_as_the_first_oks_row(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    _write_all_nan_parameter(run, 0)
+
+    first_rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=first_rows.append)
+    first_ok = next(r for r in first_rows if r.artifact == "par_agg/0" and r.state == "ok")
+
+    second_rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=second_rows.append)
+    second_skip = next(r for r in second_rows if r.artifact == "par_agg/0" and r.state == "skipped")
+
+    assert second_skip.notes == first_ok.notes
+    assert first_ok.notes != ()
 
 
 @pytest.mark.slow

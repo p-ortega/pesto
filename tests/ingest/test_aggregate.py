@@ -11,14 +11,16 @@ checks pesto's own at-bounds figure against a real benchmark run's own
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from pesto.cache.layout import CacheLayout
-from pesto.cache.manifest import CacheFile, WrittenArtifact
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
+from pesto.cache.manifest import CacheFile, Manifest, WrittenArtifact
 from pesto.ingest.aggregate import (
     PERCENTILES,
     align_to_control,
@@ -242,6 +244,63 @@ def test_rows_come_out_in_control_file_order_and_ties_keep_their_positions():
 
 
 # ---------------------------------------------------------------------------
+# align_to_control: identity is exact string equality, never a folded match
+# ---------------------------------------------------------------------------
+
+
+def test_a_name_differing_only_in_letter_case_does_not_join_and_names_the_near_match():
+    tables = _control_tables(["ParA", "par1"], ["G1", "G1"])
+    data = _ensemble_data(
+        values=[[1.0, 2.0]],
+        real_names=["r0"],
+        entity_names=["para", "par1"],  # "para" differs from "ParA" only in case
+    )
+
+    values, control_names, notes = align_to_control(data, tables)
+
+    assert control_names == ("ParA", "par1")
+    assert values.shape == (1, 2)
+    assert np.isnan(values[:, 0]).all()
+    assert np.array_equal(values[:, 1], np.array([2.0], dtype=np.float32))
+    assert any("'ParA'" in note and "'para'" in note for note in notes)
+
+    df, _ = summarise(values, control_names)
+    assert len(df) == 2
+    assert list(df["parnme"]) == ["ParA", "par1"]
+
+
+def test_a_name_differing_only_in_leading_whitespace_does_not_join_and_names_the_near_match():
+    tables = _control_tables([" par0", "par1"], ["G1", "G1"])
+    data = _ensemble_data(
+        values=[[1.0, 2.0]],
+        real_names=["r0"],
+        entity_names=["par0", "par1"],
+    )
+
+    values, control_names, notes = align_to_control(data, tables)
+
+    assert control_names == (" par0", "par1")
+    assert np.isnan(values[:, 0]).all()
+    assert np.array_equal(values[:, 1], np.array([2.0], dtype=np.float32))
+    assert any("par0" in note for note in notes)
+
+
+def test_a_genuinely_absent_parameter_gets_no_near_match_wording():
+    tables = _control_tables(["par0", "par1"], ["G1", "G1"])
+    data = _ensemble_data(
+        values=[[1.0]],
+        real_names=["r0"],
+        entity_names=["par0"],  # par1 has no counterpart under any spelling
+    )
+
+    _values, _control_names, notes = align_to_control(data, tables)
+
+    par1_notes = [n for n in notes if "par1" in n]
+    assert len(par1_notes) == 1
+    assert "matches only after folding" not in par1_notes[0]
+
+
+# ---------------------------------------------------------------------------
 # at_bounds_fraction: pestpp-ies's own one-percent, upper-first rule
 # ---------------------------------------------------------------------------
 
@@ -392,6 +451,107 @@ def test_write_par_agg_returns_a_read_failure_and_leaves_no_temp_file_when_the_w
     assert isinstance(result, ReadFailure)
     assert not layout.par_agg(0).exists()
     assert list(layout.agg.glob(".ingest-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# write_par_agg: the notes sidecar beside the table
+# ---------------------------------------------------------------------------
+
+
+def test_write_par_agg_writes_a_notes_sidecar_holding_every_note_in_full(tmp_path):
+    names = ["par0", "par1"]
+    tables = _control_tables(names, ["G1", "G1"])
+    tables = replace(tables, par=tables.par.drop(columns=["pargp"]))
+    data = _ensemble_data(values=[[1.0, 2.0]], real_names=["r0"], entity_names=names)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+
+    assert isinstance(result, WrittenArtifact)
+    assert any("pargp" in note for note in result.notes)
+    assert len(result.files) == 2
+
+    notes_path = layout.par_agg_notes(0)
+    assert notes_path.exists()
+    payload = json.loads(notes_path.read_text())
+    assert payload["cache_version"] == CACHE_VERSION
+    assert payload["iteration"] == 0
+    assert payload["n_par"] == 2
+    assert payload["notes"] == list(result.notes)
+
+
+def test_write_par_agg_with_no_notes_still_writes_an_empty_notes_sidecar(tmp_path):
+    names = ["par0", "par1", "par2"]
+    tables = _control_tables(names, ["G1", "G1", "G2"])
+    data = _ensemble_data(
+        values=[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        real_names=["r0", "r1"],
+        entity_names=names,
+    )
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+
+    assert result.notes == ()
+    payload = json.loads(layout.par_agg_notes(0).read_text())
+    assert payload["notes"] == []
+
+
+def test_write_par_agg_returns_two_cache_files_each_existing_at_its_recorded_size(tmp_path):
+    names = ["par0", "par1"]
+    tables = _control_tables(names, ["G1", "G1"])
+    data = _ensemble_data(values=[[1.0, 2.0]], real_names=["r0"], entity_names=names)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+
+    assert len(result.files) == 2
+    for cache_file in result.files:
+        path = layout.root / cache_file.path
+        assert path.exists()
+        assert path.stat().st_size == cache_file.bytes
+
+
+def test_write_par_agg_returns_a_read_failure_when_the_sidecar_write_raises(tmp_path, monkeypatch):
+    names = ["par0"]
+    tables = _control_tables(names, ["G1"])
+    data = _ensemble_data(values=[[1.0]], real_names=["r0"], entity_names=names)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    import pesto.ingest.aggregate as aggregate_module
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("sidecar write boom")
+
+    monkeypatch.setattr(aggregate_module, "write_atomic_text", _raise)
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+
+    assert isinstance(result, ReadFailure)
+    assert list(layout.agg.glob(".ingest-*")) == []
+
+
+def test_the_notes_sidecar_is_recorded_so_truncating_it_makes_the_artifact_read_stale(tmp_path):
+    names = ["par0", "par1"]
+    tables = _control_tables(names, ["G1", "G1"])
+    data = _ensemble_data(values=[[1.0, 2.0]], real_names=["r0"], entity_names=names)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    result = write_par_agg(data, tables, iteration=0, layout=layout)
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_agg/0", [], files=result.files, notes=result.notes)
+
+    assert manifest.is_stale("par_agg/0", layout) is False
+
+    notes_path = layout.par_agg_notes(0)
+    notes_path.write_bytes(notes_path.read_bytes()[:5])
+
+    assert manifest.is_stale("par_agg/0", layout) is True
 
 
 # ---------------------------------------------------------------------------
