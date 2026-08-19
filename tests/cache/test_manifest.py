@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
-from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint
+from pesto.cache.manifest import MANIFEST_NOTE_CAP, CacheFile, Manifest, SourceFingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +332,12 @@ def test_loading_valid_json_of_the_wrong_shape_gives_an_empty_one(tmp_path):
         % CACHE_VERSION,
         '{"cache_version": %r, "run_dir": "/run", "artifacts": {"par_0": "ab"}}'
         % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": '
+        '{"par_0": {"name": "par_0", "state": "ok", "notes": "not a list"}}}' % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": '
+        '{"par_0": {"name": "par_0", "state": "ok", "notes": 17}}}' % CACHE_VERSION,
+        '{"cache_version": %r, "run_dir": "/run", "artifacts": '
+        '{"par_0": {"name": "par_0", "state": "ok", "notes": ["fine", 3]}}}' % CACHE_VERSION,
     ]
 
     for shape in shapes:
@@ -399,6 +405,82 @@ def test_ingest_totals_default_to_none_and_round_trip_through_disk(tmp_path):
     reloaded = Manifest.load(layout)
     assert reloaded.ingest_seconds == 12.5
     assert reloaded.cache_bytes == 4096
+
+
+# ---------------------------------------------------------------------------
+# Task 1: a writer's notes reach the manifest, and read back off disk
+# ---------------------------------------------------------------------------
+
+
+def test_mark_ok_records_notes(tmp_path):
+    manifest = Manifest.empty(str(tmp_path))
+
+    manifest.mark_ok("par_agg/0", [], notes=["parameter 'par3' has no valid realizations"])
+
+    assert manifest.artifacts["par_agg/0"].notes == (
+        "parameter 'par3' has no valid realizations",
+    )
+
+
+def test_mark_ok_with_no_notes_records_an_empty_tuple(tmp_path):
+    manifest = Manifest.empty(str(tmp_path))
+
+    manifest.mark_ok("control", [])
+
+    assert manifest.artifacts["control"].notes == ()
+
+
+def test_notes_round_trip_through_disk(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_agg/0", [], notes=["control file has no 'pargp' column"])
+    manifest.save(layout)
+
+    reloaded = Manifest.load(layout)
+
+    assert reloaded.artifacts["par_agg/0"].notes == ("control file has no 'pargp' column",)
+    assert isinstance(reloaded.artifacts["par_agg/0"].notes, tuple)
+
+
+def test_a_manifest_with_no_notes_key_loads_with_every_artifact_intact(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    payload = {
+        "cache_version": CACHE_VERSION,
+        "run_dir": "/run",
+        "artifacts": {
+            "control": {
+                "name": "control",
+                "state": "ok",
+                "reason": None,
+                "sources": [],
+                "files": [],
+                "seconds": 1.0,
+            }
+        },
+        "ingest_seconds": None,
+        "cache_bytes": None,
+    }
+    layout.manifest.write_text(json.dumps(payload))
+
+    reloaded = Manifest.load(layout)
+
+    assert reloaded.artifacts["control"].state == "ok"
+    assert reloaded.artifacts["control"].notes == ()
+
+
+def test_mark_ok_given_200_notes_caps_at_the_limit(tmp_path):
+    manifest = Manifest.empty(str(tmp_path))
+    notes = [f"note {i}" for i in range(200)]
+
+    manifest.mark_ok("par_agg/0", [], notes=notes)
+
+    recorded = manifest.artifacts["par_agg/0"].notes
+    assert len(recorded) == MANIFEST_NOTE_CAP + 1
+    assert "150" in recorded[-1]
 # ---------------------------------------------------------------------------
 # Task 2: a stat, not a read, decides whether anything needs doing
 # ---------------------------------------------------------------------------

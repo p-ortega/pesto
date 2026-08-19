@@ -141,6 +141,9 @@ class CacheLayout:
     def par_agg(self, iteration: int) -> Path:
         return self.agg / f"par_{iteration}.parquet"
 
+    def par_agg_notes(self, iteration: int) -> Path:
+        return self.agg / f"par_{iteration}.notes.json"
+
 
 def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
     """Resolve this run's cache root, ensure a git-tracked run directory
