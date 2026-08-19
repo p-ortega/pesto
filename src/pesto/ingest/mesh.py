@@ -144,10 +144,13 @@ def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
     """Read the grid mesh back from ``layout.grid``.
 
     ``mesh.json`` is validated the defensive way ``Manifest.load``
-    validates the manifest, then each binary is read with
-    ``numpy.fromfile`` at the dtype and count the JSON declares, refusing
-    with a ``ReadFailure`` naming the file whose size does not match the
-    count it was declared to hold.
+    validates the manifest -- including a ``cache_version`` check before any
+    other field is read, so per D-08 a version bump is a hard reset, same as
+    ``Manifest.load``, ``load_config`` and ``load_stored`` -- then each
+    binary is read with ``numpy.fromfile`` at the dtype and count the JSON
+    declares, refusing with a ``ReadFailure`` naming the file whose size
+    does not match the count it was declared to hold. The version check
+    runs before any binary is read, so a mismatch costs no file reads.
     """
     from pesto.model import MeshBuffers
 
@@ -166,6 +169,16 @@ def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
             name=name,
             path=str(mesh_json_path),
             reason=f"{mesh_json_path.name} is not a JSON object",
+        )
+
+    if raw.get("cache_version") != CACHE_VERSION:
+        return ReadFailure(
+            name=name,
+            path=str(mesh_json_path),
+            reason=(
+                f"{mesh_json_path.name} was written at cache_version "
+                f"{raw.get('cache_version')!r}, this reader expects {CACHE_VERSION}"
+            ),
         )
 
     try:

@@ -99,9 +99,14 @@ def write_control(tables: ControlTables, layout: CacheLayout) -> WrittenArtifact
 def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
     """Read the control tables back from ``layout.control``.
 
-    An absent file, an unreadable one, a parquet file pyarrow refuses, and
-    a ``notes.json`` of the wrong shape each resolve to a ``ReadFailure``
-    naming the file -- never an exception.
+    An absent file, an unreadable one, a parquet file pyarrow refuses, a
+    ``notes.json`` of the wrong shape, and a ``notes.json`` written at a
+    different ``cache_version`` each resolve to a ``ReadFailure`` naming the
+    file -- never an exception. Per D-08 a ``CACHE_VERSION`` bump is a hard
+    reset like ``Manifest.load``, ``load_config`` and ``load_stored`` already
+    apply: a schema change that reuses a key name with a different meaning
+    would slip past the shape checks alone, so the version is checked before
+    any field is believed.
     """
     par_path = layout.control / "par.parquet"
     obs_path = layout.control / "obs.parquet"
@@ -135,6 +140,16 @@ def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
             name="control",
             path=str(notes_path),
             reason=f"{notes_path.name} is not a JSON object",
+        )
+
+    if raw.get("cache_version") != CACHE_VERSION:
+        return ReadFailure(
+            name="control",
+            path=str(notes_path),
+            reason=(
+                f"{notes_path.name} was written at cache_version "
+                f"{raw.get('cache_version')!r}, this reader expects {CACHE_VERSION}"
+            ),
         )
 
     try:

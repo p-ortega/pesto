@@ -13,7 +13,7 @@ import json
 
 import pandas as pd
 
-from pesto.cache.layout import CacheLayout
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import WrittenArtifact
 from pesto.ingest.control import ControlTables, read_control
 from pesto.ingest.failures import ReadFailure
@@ -152,6 +152,43 @@ def test_load_control_tables_on_an_unreadable_notes_json_returns_a_read_failure(
 
     assert isinstance(result, ReadFailure)
     assert "notes.json" in result.reason
+
+
+def test_load_control_tables_on_notes_json_at_a_different_version_returns_a_read_failure(
+    tmp_path,
+):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+    notes_path = layout.control / "notes.json"
+
+    payload = json.loads(notes_path.read_text())
+    payload["cache_version"] = CACHE_VERSION + 1
+    notes_path.write_text(json.dumps(payload))
+
+    result = load_control_tables(layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "notes.json" in result.reason
+    assert str(CACHE_VERSION + 1) in result.reason
+    assert str(CACHE_VERSION) in result.reason
+
+
+def test_load_control_tables_on_notes_json_with_no_cache_version_key_returns_a_read_failure(
+    tmp_path,
+):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+    notes_path = layout.control / "notes.json"
+
+    payload = json.loads(notes_path.read_text())
+    del payload["cache_version"]
+    notes_path.write_text(json.dumps(payload))
+
+    result = load_control_tables(layout)
+
+    assert isinstance(result, ReadFailure)
 
 
 def test_write_control_round_trips_through_load_control_tables(tmp_path):

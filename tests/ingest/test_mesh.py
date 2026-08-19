@@ -13,7 +13,7 @@ import json
 import numpy as np
 import pytest
 
-from pesto.cache.layout import CacheLayout
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import WrittenArtifact
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import load_mesh, write_grid_from_adapter, write_mesh
@@ -118,6 +118,44 @@ def test_load_mesh_returns_an_equal_mesh_buffers_with_the_contracted_dtypes(tmp_
     assert loaded.nlay == mesh.nlay
     assert loaded.bounds == mesh.bounds
     assert loaded.crs == mesh.crs
+
+
+def test_load_mesh_on_mesh_json_at_a_different_version_returns_a_read_failure_naming_the_mismatch_not_the_missing_binary(
+    tmp_path,
+):
+    mesh = _mesh()
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    write_mesh(mesh, _shape(), layout)
+    mesh_json_path = layout.grid / "mesh.json"
+
+    payload = json.loads(mesh_json_path.read_text())
+    payload["cache_version"] = CACHE_VERSION + 1
+    mesh_json_path.write_text(json.dumps(payload))
+    (layout.grid / "positions.f32").unlink()
+
+    result = load_mesh(layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "mesh.json" in result.reason
+    assert str(CACHE_VERSION + 1) in result.reason
+    assert str(CACHE_VERSION) in result.reason
+
+
+def test_load_mesh_on_mesh_json_with_no_cache_version_key_returns_a_read_failure(tmp_path):
+    mesh = _mesh()
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    write_mesh(mesh, _shape(), layout)
+    mesh_json_path = layout.grid / "mesh.json"
+
+    payload = json.loads(mesh_json_path.read_text())
+    del payload["cache_version"]
+    mesh_json_path.write_text(json.dumps(payload))
+
+    result = load_mesh(layout)
+
+    assert isinstance(result, ReadFailure)
 
 
 def test_write_grid_from_adapter_with_no_adapter_returns_none_and_writes_nothing(tmp_path):
