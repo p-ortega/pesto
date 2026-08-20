@@ -3,9 +3,14 @@ against a real FastAPI app the same way tests/test_launch.py already does."""
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -16,6 +21,7 @@ from pesto.api.static import mount_static
 BASE_URL = "http://127.0.0.1"
 
 _ASSET_SRC_RE = re.compile(r'src="(/[^"]+\.js)"')
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_fallback_page_served_when_no_static_dir(monkeypatch, tmp_path: Path) -> None:
@@ -73,3 +79,44 @@ def test_api_routes_still_require_a_token_once_the_bundle_is_public() -> None:
     app, _token = create_app()
     response = TestClient(app, base_url=BASE_URL).get("/api/health")
     assert response.status_code == 401
+
+
+@pytest.mark.slow
+def test_a_wheel_built_from_an_sdist_carries_the_compiled_frontend(tmp_path: Path) -> None:
+    """The failure mode research Pitfall 3 documents: a wheel built directly
+    from the source tree can succeed by force-including a directory that
+    happens to already be on disk, while the same build from a *previously
+    produced sdist* has nothing on disk yet and must actually run the hook."""
+    env = dict(os.environ)
+    env["PESTO_BUILD_FRONTEND"] = "1"
+
+    subprocess.run(
+        ["uv", "build", "--sdist", "-o", str(tmp_path)],
+        cwd=_REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sdists = list(tmp_path.glob("*.tar.gz"))
+    assert len(sdists) == 1, sdists
+    sdist_path = sdists[0]
+
+    with tarfile.open(sdist_path) as tar:
+        names = tar.getnames()
+    assert any(name.endswith("frontend/package.json") for name in names)
+    assert not any("src/pesto/static" in name for name in names)
+
+    subprocess.run(
+        ["uv", "build", "--wheel", str(sdist_path), "-o", str(tmp_path)],
+        cwd=_REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheels = list(tmp_path.glob("*.whl"))
+    assert len(wheels) == 1, wheels
+
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        assert "pesto/static/index.html" in wheel.namelist()
