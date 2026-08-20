@@ -6,6 +6,7 @@
     "build": "vite build",
     "dev": "vite dev",
     "test": "vitest run",
+    "test:visual": "playwright test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
