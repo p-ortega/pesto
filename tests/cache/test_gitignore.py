@@ -4,12 +4,17 @@ opening a run directory from the command line end to end.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 import time
 
+import pytest
+
 from pesto.cache.gitignore import ensure_gitignored
+
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def test_a_git_repository_gets_the_ignore_line(tmp_path):
@@ -21,6 +26,29 @@ def test_a_git_repository_gets_the_ignore_line(tmp_path):
 
     lines = (run / ".gitignore").read_text().splitlines()
     assert ".pesto/" in lines
+
+
+def test_a_successful_write_reports_no_failure(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / ".git").mkdir()
+
+    assert ensure_gitignored(run) is None
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+def test_a_read_only_run_directory_does_not_raise_and_reports_why(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / ".git").mkdir()
+    run.chmod(0o555)
+    try:
+        reason = ensure_gitignored(run)
+    finally:
+        run.chmod(0o755)
+
+    assert reason is not None
+    assert not (run / ".gitignore").exists()
 
 
 def test_a_worktree_pointer_file_counts_as_a_repository(tmp_path):
