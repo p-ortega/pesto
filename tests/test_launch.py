@@ -229,16 +229,20 @@ def test_no_referrer_policy_on_every_response():
     assert bad_host.headers.get("referrer-policy") == "no-referrer"
 
 
-def test_every_registered_route_refuses_a_tokenless_request():
+def test_every_registered_api_route_refuses_a_tokenless_request():
+    # Only /api is gated. The page shell and its bundle are deliberately public,
+    # because a browser cannot put a token on a subresource request.
     app, _token = create_app()
     client = _client(app)
 
     routes = [
         route
         for route in app.routes
-        if hasattr(route, "path") and hasattr(route, "methods")
+        if hasattr(route, "path")
+        and hasattr(route, "methods")
+        and route.path.startswith("/api")
     ]
-    assert routes, "route table is empty -- this invariant must not pass vacuously"
+    assert routes, "no /api routes found -- this invariant must not pass vacuously"
 
     checked_paths = set()
     for route in routes:
