@@ -235,7 +235,7 @@ class Manifest:
         self,
         name: str,
         reason: str,
-        sources: list[SourceFingerprint] = (),
+        sources: Sequence[SourceFingerprint] = (),
         seconds: float | None = None,
     ) -> None:
         # Recording sources on a failure is what lets a later plan decide
