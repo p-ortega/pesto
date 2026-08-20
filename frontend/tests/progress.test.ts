@@ -329,6 +329,25 @@ describe('mountProgress', () => {
     expect(textOf(failedRow)).toContain('crashed reading iteration 3')
   })
 
+  it('renders every per-artifact note from the stream', async () => {
+    const text =
+      progressFrame({
+        artifact: 'par_ens/head',
+        state: 'ok',
+        notes: ['3 NaN values repaired in realization 12', 'group obs2 excluded'],
+      }) + doneFrame()
+    const { stub } = buildFetchStub({ streamText: text })
+    vi.stubGlobal('fetch', stub)
+
+    mountProgress(root, { onFinished: () => undefined })
+    await settle()
+
+    const items = collectAll(root).filter((el) => el.tagName === 'LI')
+    const row = items.find((el) => textOf(el).includes('par_ens/head'))!
+    expect(textOf(row)).toContain('3 NaN values repaired in realization 12')
+    expect(textOf(row)).toContain('group obs2 excluded')
+  })
+
   it('renders a skipped row distinctly from an ok row for the same artifact name', async () => {
     const okText = progressFrame({ artifact: 'grid', state: 'ok' }) + doneFrame()
     const { stub: okStub } = buildFetchStub({ streamText: okText })

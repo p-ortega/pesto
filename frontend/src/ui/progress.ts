@@ -153,6 +153,7 @@ interface ProgressRow {
   writtenBytes: number
   seconds: number
   reason: string | null
+  notes: string[]
 }
 
 function toProgressRow(raw: unknown): ProgressRow {
@@ -163,6 +164,7 @@ function toProgressRow(raw: unknown): ProgressRow {
     written_bytes: number
     seconds: number
     reason: string | null
+    notes?: string[]
   }
   return {
     artifact: row.artifact,
@@ -171,6 +173,7 @@ function toProgressRow(raw: unknown): ProgressRow {
     writtenBytes: row.written_bytes,
     seconds: row.seconds,
     reason: row.reason,
+    notes: row.notes ?? [],
   }
 }
 
@@ -182,6 +185,7 @@ interface RowElements {
   writtenEl: HTMLElement
   durationEl: HTMLElement
   reasonEl: HTMLElement
+  notesEl: HTMLElement
 }
 
 // The four states a progress row can be in, each with its own icon, word
@@ -204,6 +208,7 @@ function createRowSkeleton(name: string): RowElements {
   const writtenEl = document.createElement('span')
   const durationEl = document.createElement('span')
   const reasonEl = document.createElement('span')
+  const notesEl = document.createElement('ul')
 
   item.appendChild(iconEl)
   item.appendChild(nameEl)
@@ -212,8 +217,9 @@ function createRowSkeleton(name: string): RowElements {
   item.appendChild(writtenEl)
   item.appendChild(durationEl)
   item.appendChild(reasonEl)
+  item.appendChild(notesEl)
 
-  return { item, iconEl, wordEl, sourceEl, writtenEl, durationEl, reasonEl }
+  return { item, iconEl, wordEl, sourceEl, writtenEl, durationEl, reasonEl, notesEl }
 }
 
 // A `started` row does not yet know its written size or its duration --
@@ -234,6 +240,13 @@ function applyRowState(elements: RowElements, row: ProgressRow): void {
   elements.durationEl.textContent = known ? formatSeconds(row.seconds) : '—'
 
   elements.reasonEl.textContent = row.state === 'failed' && row.reason ? row.reason : ''
+
+  elements.notesEl.textContent = ''
+  for (const note of row.notes) {
+    const item = document.createElement('li')
+    item.textContent = note
+    elements.notesEl.appendChild(item)
+  }
 }
 
 function upsertRow(
