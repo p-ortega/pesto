@@ -11,7 +11,9 @@ import json
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.routing import Mount
 
+from pesto.api import static as static_module
 from pesto.api.app import create_app
 from pesto.api.problem import problem, problem_from_failure, redact_paths
 from pesto.ingest.failures import ReadFailure
@@ -31,6 +33,11 @@ def _add_test_routes(app):
     @app.get("/api/_test/boom")
     async def _boom():
         raise HTTPException(404, "no such realization")
+
+    # When a frontend has been built, create_app has already mounted the static
+    # catch-all at "/", which would shadow anything registered after it. The sort
+    # is stable, so this only moves mounts to the end.
+    app.router.routes.sort(key=lambda route: isinstance(route, Mount))
 
 
 def test_a_validation_failure_returns_422_problem_json():
@@ -127,3 +134,21 @@ def test_no_problem_response_carries_the_session_token():
 def test_problem_builder_sets_referrer_policy_no_referrer():
     response = problem(400, "t")
     assert response.headers["Referrer-Policy"] == "no-referrer"
+
+
+def test_an_unmatched_path_stays_problem_json_behind_the_static_mount(monkeypatch, tmp_path):
+    """With a frontend built, a catch-all StaticFiles mount sits at "/" and answers
+    every path no route claimed. Its 404 must still come back as problem+json, or
+    the one-error-shape promise holds only until someone mistypes a URL."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<!doctype html><title>pesto</title>")
+    monkeypatch.setattr(static_module, "STATIC_DIR", static_dir)
+
+    app, token = create_app()
+    client = _client(app)
+
+    for path in ["/api/does-not-exist", "/api/run/nope", "/totally-unknown"]:
+        response = client.get(path, headers={"x-pesto-token": token})
+        assert response.status_code == 404, path
+        assert response.headers["content-type"] == "application/problem+json", path
