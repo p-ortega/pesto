@@ -198,36 +198,17 @@ def test_two_launches_do_not_share_a_token():
     assert client_b.get("/api/health", params={"token": token_a}).status_code == 401
 
 
-def test_a_query_param_token_is_handed_off_to_a_cookie():
+def test_a_query_param_token_never_yields_a_cookie():
     app, token = create_app()
     response = _client(app).get("/api/health", params={"token": token})
     assert response.status_code == 200
-    set_cookie = response.headers.get("set-cookie", "")
-    assert "pesto_token=" in set_cookie
-    assert "httponly" in set_cookie.lower()
-    assert "samesite=strict" in set_cookie.lower()
-    assert "path=/" in set_cookie.lower()
-
-
-def test_a_cookie_alone_authenticates_a_later_request():
-    app, token = create_app()
-    client = _client(app)
-    first = client.get("/api/health", params={"token": token})
-    assert first.status_code == 200
-
-    # The client's cookie jar now carries the handed-off cookie; a follow-up
-    # request with no query token and no header authenticates via the cookie.
-    second = client.get("/api/health")
-    assert second.status_code == 200
-
-
-def test_a_bad_cookie_is_refused():
-    app, _token = create_app()
-    client = _client(app)
-    client.cookies.set("pesto_token", "definitely-wrong")
-    response = client.get("/api/health")
-    assert response.status_code == 401
     assert "set-cookie" not in response.headers
+
+
+def test_a_header_token_alone_authenticates():
+    app, token = create_app()
+    response = _client(app).get("/api/health", headers={"x-pesto-token": token})
+    assert response.status_code == 200
 
 
 def test_no_referrer_policy_on_every_response():
