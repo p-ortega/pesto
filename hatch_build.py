@@ -1,8 +1,8 @@
 """Env-gated hatchling build hook: runs the Vite build at release time only.
 
-Disabled by default (``enable-by-default = false`` in pyproject.toml), so
-``uv sync``, an editable install and ``uv run pytest`` never invoke npm.
-A release build sets ``PESTO_BUILD_FRONTEND=1`` to opt in.
+Hatchling calls this hook on every build, but it returns immediately unless
+``PESTO_BUILD_FRONTEND=1`` is set, so ``uv sync``, an editable install and
+``uv run pytest`` never invoke npm. A release build sets the variable to opt in.
 """
 
 from __future__ import annotations
