@@ -12,14 +12,19 @@ flaky.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from pesto.api.app import create_app
 from pesto.api.blob import blob_response, cache_headers, cache_tag
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CacheFile, Manifest
+from pesto.ingest.control import ControlTables
+from pesto.ingest.ensembles import write_par_reals
+from pesto.ingest.tables import write_control
 from pesto.ingest.mesh import write_mesh
 from pesto.model import GridShape, fan_polygons
 
@@ -194,3 +199,50 @@ def test_a_failed_grid_artifact_has_no_tag_and_the_route_is_not_stored(tmp_path)
     assert client.get("/api/run/grid/mesh").json()["tag"] is None
     response = client.get("/api/run/grid/mesh/positions")
     assert response.headers["cache-control"] == "no-store"
+
+
+# ---------------------------------------------------------------------------
+# The Arrow routes are the other half of the contract: named-column tables are
+# small and cheap to rebuild, so they are never stored. Plan 05-05 asked for
+# this coverage but could not write it -- tables.py was still a stub in its
+# worktree. Added after both plans merged.
+# ---------------------------------------------------------------------------
+
+
+def _control_tables():
+    par = pd.DataFrame({"parnme": ["p1", "p2"], "pargp": ["g1", "g1"], "parval1": [1.0, 2.0]})
+    obs = pd.DataFrame({"obsnme": ["o1"], "obgnme": ["og1"], "weight": [1.0]})
+    return ControlTables(
+        par=par,
+        obs=obs,
+        par_groups=("g1",),
+        obs_groups=("og1",),
+        source_path=Path("/fake/x.pst"),
+        notes=(),
+        ambiguities=(),
+    )
+
+
+def _client_with_control_tables(tmp_path):
+    layout = CacheLayout(root=tmp_path)
+    layout.ensure()
+    write_control(_control_tables(), layout)
+    write_par_reals(["r1", "r2"], 0, layout)
+    app, token = create_app()
+    app.state.cache_root = str(tmp_path)
+    client = _client(app)
+    client.headers["x-pesto-token"] = token
+    return client
+
+
+def test_the_arrow_table_routes_are_never_stored(tmp_path):
+    client = _client_with_control_tables(tmp_path)
+
+    for path, params in [
+        ("/api/run/meta", {"kind": "par"}),
+        ("/api/run/meta", {"kind": "obs"}),
+        ("/api/run/reals", {"iteration": 0}),
+    ]:
+        response = client.get(path, params=params)
+        assert response.status_code == 200, (path, params)
+        assert response.headers["cache-control"] == "no-store", (path, params)
