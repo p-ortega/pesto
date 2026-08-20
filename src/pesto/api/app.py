@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from pesto import __version__
 from pesto.api import fs, grid, ingest, runs, tables, values
+from pesto.api.problem import install_problem_handlers
 from pesto.api.security import install_security, mint_token
 from pesto.api.static import mount_static
 
@@ -28,6 +29,7 @@ def create_app() -> tuple[FastAPI, str]:
     app.state.fs_ids = {}
 
     install_security(app, token)
+    install_problem_handlers(app)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
