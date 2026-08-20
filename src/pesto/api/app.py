@@ -1,8 +1,12 @@
 """FastAPI app factory: mints the session token, installs the gate, and
 registers every route this app serves.
 
-There is no unauthenticated route. ``/api/health`` requires the session
-token like every other route -- there is no carve-out, per D-01 as written.
+Every ``/api/*`` route requires the session token -- there is no carve-out,
+per D-01 as written. The compiled frontend bundle is the one exception
+(security.py explains why); the auto-generated docs routes (``/docs``,
+``/redoc``, ``/openapi.json``) are disabled outright rather than folded into
+that exception, so the boundary stays exactly "the bundle is public, the API
+is not."
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from pesto.api.static import mount_static
 
 
 def create_app() -> tuple[FastAPI, str]:
-    app = FastAPI(title="pesto", version=__version__)
+    app = FastAPI(title="pesto", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 
     token = mint_token()
     app.state.session_token = token

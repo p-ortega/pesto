@@ -27,6 +27,17 @@ through a bookmark, browser history, or a proxy access log the way a URL
 token can. `Referrer-Policy: no-referrer` is set on every response, success
 and refusal alike, so a token that does travel in a URL cannot ride a
 `Referer` header to a third-party origin.
+
+Only `/api/*` requires the token. The compiled bundle -- `index.html` and its
+built JS/CSS -- is a static asset with no run data in it, and a browser
+fetches a `<script type="module">`'s subresource with no query string and no
+way to attach a custom header, so gating it would make the boot script that
+is supposed to read and strip the token unable to load at all. The Host
+check still runs first for every request, static or not; only the token
+check is scoped to `/api/*`. FastAPI's own `/docs`, `/redoc` and
+`/openapi.json` are disabled entirely in `create_app()` rather than folded
+into this exemption, so "everything outside `/api/*` is public on loopback"
+stays a fact about the compiled bundle only, not about the API's shape.
 """
 
 from __future__ import annotations
@@ -86,10 +97,10 @@ def install_security(app: FastAPI, token: str) -> None:
         if _hostname_only(host) not in LOCAL_HOSTNAMES:
             return _problem_response(400, "invalid host")
 
-        supplied = _supplied_token(request)
-
-        if not hmac.compare_digest(supplied, token):
-            return _problem_response(401, "invalid or missing token")
+        if request.url.path.startswith("/api/"):
+            supplied = _supplied_token(request)
+            if not hmac.compare_digest(supplied, token):
+                return _problem_response(401, "invalid or missing token")
 
         response: Response = await call_next(request)
         response.headers["Referrer-Policy"] = _REFERRER_POLICY
