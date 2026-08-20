@@ -540,6 +540,48 @@ def test_cancel_with_nothing_running_returns_409():
     assert response.headers["content-type"] == "application/problem+json"
 
 
+def test_ingest_run_raising_ends_the_stream_with_a_failure_frame(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=())
+    cache_root = tmp_path / "cache"
+
+    def failing(run_dir, cache_root, iterations, on_progress, cancel):
+        if on_progress is not None:
+            on_progress(_row("control", "started", 0, 1))
+        raise RuntimeError("the run directory vanished mid-ingest")
+
+    with mock.patch.object(runner_module, "ingest_run", failing):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            start = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+            assert start.status_code == 202
+            with client.stream("GET", "/api/run/ingest/events", headers={"x-pesto-token": token}) as response:
+                text = "".join(response.iter_text())
+
+    assert "event: error" in text
+    assert "the run directory vanished mid-ingest" in text
+
+
+def test_a_start_after_a_failed_ingest_is_accepted_not_permanently_refused(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=())
+    cache_root = tmp_path / "cache"
+
+    def failing(run_dir, cache_root, iterations, on_progress, cancel):
+        raise RuntimeError("boom")
+
+    with mock.patch.object(runner_module, "ingest_run", failing):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            first = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+            assert first.status_code == 202
+            _drain_events(client, token)
+
+            fake = _scripted_ingest(["control"], sleep=0.02)
+            with mock.patch.object(runner_module, "ingest_run", fake):
+                second = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+                assert second.status_code == 202
+                _drain_events(client, token)
+
+
 # --- one real ingest, driven end to end through the routes -----------------
 
 

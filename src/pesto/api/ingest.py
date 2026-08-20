@@ -30,7 +30,7 @@ from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 from starlette.responses import StreamingResponse as _EventStreamResponse
 
-from pesto.api.problem import problem
+from pesto.api.problem import problem, redact_paths
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 
@@ -44,7 +44,10 @@ class _IngestState:
     feeds, every row produced so far in order, and the manifest once the
     background task has one. A start request finds this record already
     present and not done, and refuses a second ingest rather than letting a
-    process run two at once."""
+    process run two at once. ``error`` is set instead of ``manifest`` when
+    ``ingest_run`` itself raises -- either way ``done`` becomes true, so a
+    later start is never refused because of a run that failed rather than
+    finished."""
 
     cancel: threading.Event
     queue: "asyncio.Queue[Any]"
@@ -52,6 +55,7 @@ class _IngestState:
     done: bool = False
     manifest: Manifest | None = None
     task: "asyncio.Task[None] | None" = None
+    error: BaseException | None = None
 
 
 def _resolve(request: Request):
@@ -210,12 +214,16 @@ async def start_ingest(request: Request) -> JSONResponse:
     async def run_in_background() -> None:
         from pesto.ingest.runner import ingest_run
 
-        state.manifest = await asyncio.to_thread(
-            ingest_run, run_path, layout.root, None, on_progress, state.cancel
-        )
-        state.done = True
-        await state.queue.put(None)
-        if _invalidate_enscache is not None:
+        try:
+            state.manifest = await asyncio.to_thread(
+                ingest_run, run_path, layout.root, None, on_progress, state.cancel
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the stream, not swallowed
+            state.error = exc
+        finally:
+            state.done = True
+            await state.queue.put(None)
+        if state.error is None and _invalidate_enscache is not None:
             _invalidate_enscache(request.app.state, str(layout.root))
 
     state.task = asyncio.create_task(run_in_background())
@@ -231,6 +239,11 @@ def _progress_frame(row: Any) -> str:
 def _done_frame(manifest: Manifest) -> str:
     final = {name: {"state": a.state, "reason": a.reason} for name, a in manifest.artifacts.items()}
     return f"event: done\ndata: {json.dumps(final)}\n\n"
+
+
+def _error_frame(exc: BaseException) -> str:
+    body = {"type": "about:blank", "title": "ingest failed", "status": 500, "detail": redact_paths(str(exc))}
+    return f"event: error\ndata: {json.dumps(body)}\n\n"
 
 
 @router.get("/events")
@@ -257,7 +270,9 @@ async def stream_ingest_events(request: Request):
             if row is None:
                 break
             yield _progress_frame(row)
-        if state.manifest is not None:
+        if state.error is not None:
+            yield _error_frame(state.error)
+        elif state.manifest is not None:
             yield _done_frame(state.manifest)
 
     return _EventStreamResponse(
