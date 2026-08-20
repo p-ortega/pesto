@@ -109,6 +109,36 @@ class _RealNamesOnly:
     real_names: tuple[str, ...]
 
 
+def _exit_code_of(pool: ProcessPoolExecutor) -> int | None:
+    """The first dead worker's exit code this pool still holds, or ``None``
+    for every way that cannot be answered.
+
+    ``concurrent.futures`` exposes no public API for a dead worker's exit
+    code, and it is the only way ``_reason_for`` can tell a worker killed by
+    a signal from one that died for any other reason -- two different facts
+    to a scientist reading a failed ingest -- so the private ``_processes``
+    attribute stays. This function contains both ways reading it can go
+    wrong. The process mapping is copied into a ``list`` before iterating,
+    so a dict the executor's own management thread is concurrently mutating
+    while tearing the broken pool down cannot raise mid-iteration. And the
+    whole body is wrapped in a bare ``except``, because this call runs
+    inside ``_run_isolated``'s own ``except`` handler, where a second
+    exception has nothing left to catch it -- an ``AttributeError`` from a
+    future CPython renaming or removing ``_processes`` would otherwise
+    propagate out of ``_run_isolated``, out of ``ingest_run``'s loop, and
+    end the whole ingest. Returning ``None`` costs a less specific reason
+    string in ``_reason_for``; raising would cost every artifact that had
+    not run yet.
+    """
+    try:
+        for proc in list(pool._processes.values()):
+            if proc.exitcode is not None:
+                return proc.exitcode
+        return None
+    except Exception:
+        return None
+
+
 def _run_isolated(fn, *args):
     """Run ``fn(*args)`` in a process created for this one call and torn
     down after it, so a hard crash in a C extension cannot reach any other
@@ -119,11 +149,13 @@ def _run_isolated(fn, *args):
     when a worker dies without raising anything itself.
 
     When the exception is a ``BrokenProcessPool``, the dead worker's exit
-    code is read off the pool's own ``Process`` objects and attached to the
+    code is read through :func:`_exit_code_of` and attached to the
     exception as ``exitcode``, before the ``with`` block tears the pool
-    down -- ``concurrent.futures`` exposes no public API for it, and it is
-    the only way ``_reason_for`` can tell a worker killed by a signal (a
-    negative exit code) from one that died for any other reason.
+    down. The call is wrapped a second time here, on top of
+    ``_exit_code_of``'s own containment: this is the one place in the
+    whole ingest where a second failure has nothing left to catch it, so
+    the guard belongs at both the callee and the call site rather than
+    trusting either alone.
     """
     with ProcessPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn, *args)
@@ -131,10 +163,10 @@ def _run_isolated(fn, *args):
             return True, future.result()
         except Exception as exc:
             if isinstance(exc, BrokenProcessPool):
-                for proc in pool._processes.values():
-                    if proc.exitcode is not None:
-                        exc.exitcode = proc.exitcode
-                        break
+                try:
+                    exc.exitcode = _exit_code_of(pool)
+                except Exception:
+                    exc.exitcode = None
             return False, exc
 
 
@@ -494,10 +526,19 @@ populated entry, plus name tables) lands at 0.258-0.259 of the source size
 fixed multiple of the payload it carries. Above 100,000 parameters pestpp
 writes hash-ordered JCB by default (PROJECT.md), so this is the ratio that
 matters for the runs this estimate exists for. A dense ``.bin`` source (half
-the JCB overhead per value) is measured at 0.513 instead -- this estimate
-runs roughly 2x high for that dialect, a known, accepted gap: ``sniff()``
-would have to open the file to tell the two apart, which this function may
-never do."""
+the JCB overhead per value) is measured at 0.513 instead -- applying this
+constant to a dense source's size yields roughly *half* the cache that
+source actually produces, so the estimate under-states for that dialect,
+it does not over-state. Because 0.26/0.513 is about 0.51, a dense-format
+run sits almost exactly on the ±50% tolerance ``estimate_bytes`` states for
+itself, and on the optimistic side of it: a scientist could be shown
+roughly half the disk the ingest will actually need. That is the dangerous
+direction, because this is the one figure in this phase shown to someone
+before they agree to the ingest -- an under-estimate costs them a run that
+runs out of disk partway through, where an over-estimate would only have
+cost a few idle gigabytes. ``sniff()`` would have to open the file to tell
+the two dialects apart, which this function may never do; see
+``_DENSE_BIN_NOTE`` for how ``estimate_bytes`` names this gap instead."""
 
 _PAR_AGG_SOURCE_RATIO = 0.012
 """Measured across four real ensembles: a per-parameter summary table (a
@@ -516,6 +557,16 @@ _CONFIG_BYTES = 1024
 roughly fixed-size fact sheet whose size does not scale with the run, so a
 flat, slightly generous estimate stands in for a ratio against any source
 file."""
+
+_DENSE_BIN_NOTE = (
+    "par_ens/par_agg: these figures assume the sparse-COO .jcb dialect -- a dense "
+    ".bin ensemble produces roughly twice the cache this estimate reports, so the "
+    "total is a floor for that dialect, not a midpoint"
+)
+"""Appended to ``estimate_bytes``' ``notes`` once, whenever at least one
+ensemble artifact was sized -- named from this constant, not derived from
+any file, so adding it costs no read. See ``_PAR_ENS_SOURCE_RATIO`` for the
+arithmetic and why the optimistic direction is the one that matters here."""
 
 
 def estimate_bytes(
@@ -545,6 +596,11 @@ def estimate_bytes(
     the cache the same run actually produces for a run whose ensembles are
     the modern sparse-COO dialect -- generous, because every ratio above is
     a rough proxy measured across a handful of real runs, not a formula.
+    That tolerance is stated for the sparse-COO dialect specifically: for
+    every call that sizes at least one ensemble artifact, ``notes`` also
+    gains ``_DENSE_BIN_NOTE``, added from the constant rather than read from
+    any file, naming a dense ``.bin`` source as a dialect this estimate
+    cannot size reliably and the direction it errs in.
     """
     if iterations is None:
         numbered = [k for k in run.par_ens if isinstance(k, int)]
@@ -555,6 +611,7 @@ def estimate_bytes(
     per_artifact: list[tuple[str, int]] = []
     notes: list[str] = []
     total = 0
+    sized_an_ensemble = False
 
     for iteration in selected:
         source = run.par_ens.get(iteration)
@@ -566,12 +623,16 @@ def estimate_bytes(
         except OSError as exc:
             notes.append(f"par_ens/{iteration}: could not stat {source.name}: {exc}")
             continue
+        sized_an_ensemble = True
         ens_bytes = int(source_bytes * _PAR_ENS_SOURCE_RATIO)
         per_artifact.append((f"par_ens/{iteration}", ens_bytes))
         total += ens_bytes
         agg_bytes = int(source_bytes * _PAR_AGG_SOURCE_RATIO)
         per_artifact.append((f"par_agg/{iteration}", agg_bytes))
         total += agg_bytes
+
+    if sized_an_ensemble:
+        notes.append(_DENSE_BIN_NOTE)
 
     if run.pst_path.exists():
         notes.append(

@@ -162,6 +162,49 @@ def write_par_reals(
         )
 
 
+def _remove_written(
+    files: Sequence[CacheFile], layout: CacheLayout
+) -> tuple[int, tuple[str, ...]]:
+    """Undo a partly written artifact: remove every file in ``files`` that
+    this same call already put on disk, and report what happened.
+
+    This is the only code in pesto that deletes a file, so the guard below
+    is not defensive padding. Every path handed to this function came from
+    a ``CacheLayout`` accessor inside the very call that is now cleaning up
+    after itself, so the check should never fire -- which is exactly why it
+    must be there: if a future change ever hands this function a path
+    composed some other way, the failure mode is a deleted file belonging
+    to someone else. A source file is never a candidate for the same
+    reason: nothing under the run directory is ever recorded as a
+    ``CacheFile``, so nothing under the run directory can ever reach this
+    function's unlink.
+
+    Each path is resolved against the resolved cache root and proved to sit
+    under it with ``Path.is_relative_to`` before anything is unlinked; a
+    path that fails that check is left on disk and named in the returned
+    notes instead of removed. A path that is already gone counts as removed
+    and raises nothing. An ``OSError`` on one file does not stop the rest --
+    it is named in the notes too. Returns the count removed and one
+    sentence per path that could not be removed.
+    """
+    root = layout.root.resolve()
+    removed = 0
+    notes: list[str] = []
+    for cache_file in files:
+        resolved = (layout.root / cache_file.path).resolve()
+        if not resolved.is_relative_to(root):
+            notes.append(f"{resolved} is not under the cache root {root} -- left in place")
+            continue
+        try:
+            resolved.unlink()
+            removed += 1
+        except FileNotFoundError:
+            removed += 1
+        except OSError as exc:
+            notes.append(f"could not remove {resolved}: {exc}")
+    return removed, tuple(notes)
+
+
 def write_par_ensemble(
     data: "EnsembleData",
     tables: "ControlTables",
@@ -180,9 +223,27 @@ def write_par_ensemble(
     alongside the map block for a reader's convenience; the parameter
     names in control-file order remain the identity of everything in this
     artifact, cells included.
+
+    Atomic as a whole, not just per file: this function tracks every file
+    it publishes as it goes, and when it cannot finish -- ``write_par_reals``
+    failing partway, most realistically a disk filling up mid-ensemble, or
+    any other exception -- it removes what it had already written through
+    :func:`_remove_written` before returning the failure, rather than
+    leaving disk on the cache root that ``manifest.cache_bytes`` no longer
+    accounts for. The alternative the review also offers -- recording the
+    orphaned files in the manifest's failed-artifact entry -- would keep
+    ``cache_bytes`` honest but leave a partial artifact on disk that
+    nothing points at and that ``is_stale`` would have to reason about
+    specially; removing them keeps the invariant simple instead -- a
+    ``par_ens`` artifact either finished or left nothing -- at the cost of
+    re-writing bytes that were going to be re-written on the retry anyway.
+    The cleanup call is wrapped so a failure inside it can never replace
+    the ``ReadFailure`` the caller actually needs to see: the disk that
+    filled up, not the tidying afterwards.
     """
     name = f"par_ens/{iteration}"
     try:
+        written: list[CacheFile] = []
         if data.permutation is None:
             return ReadFailure(
                 name=name,
@@ -276,17 +337,25 @@ def write_par_ensemble(
         payload_path = layout.par_ens(iteration)
 
         def _write_payload(fileobj) -> int:
-            written = fileobj.write(stored.map_values.tobytes())
-            written += fileobj.write(stored.nomap_values.tobytes())
-            return written
+            payload_written = fileobj.write(stored.map_values.tobytes())
+            payload_written += fileobj.write(stored.nomap_values.tobytes())
+            return payload_written
 
         payload_bytes = write_atomic_bytes(payload_path, _write_payload)
+        payload_entry = CacheFile(
+            path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes
+        )
+        written.append(payload_entry)
 
         parnames_path = layout.ens / f"par_{iteration}.parnames.txt"
         parnames_text = "".join(f"{n}\n" for n in stored.par_names)
         parnames_bytes = write_atomic_bytes(
             parnames_path, lambda f: f.write(parnames_text.encode("utf-8"))
         )
+        parnames_entry = CacheFile(
+            path=str(parnames_path.relative_to(layout.root)), bytes=parnames_bytes
+        )
+        written.append(parnames_entry)
 
         parmap_path = layout.ens / f"par_{iteration}.parmap.i32"
         block_order = map_positions + nomap_positions
@@ -294,6 +363,10 @@ def write_par_ensemble(
         parmap_bytes = write_atomic_bytes(
             parmap_path, lambda f: f.write(parmap_array.tobytes())
         )
+        parmap_entry = CacheFile(
+            path=str(parmap_path.relative_to(layout.root)), bytes=parmap_bytes
+        )
+        written.append(parmap_entry)
 
         cell_file_entry = None
         layer_file_entry = None
@@ -314,12 +387,24 @@ def write_par_ensemble(
             layer_file_entry = CacheFile(
                 path=str(layer_path.relative_to(layout.root)), bytes=layer_bytes
             )
+            written.append(cell_file_entry)
+            written.append(layer_file_entry)
             cell_file_name = cell_path.name
             layer_file_name = layer_path.name
 
         reals_result = write_par_reals(stored.real_names, iteration, layout)
         if isinstance(reals_result, ReadFailure):
-            return reals_result
+            try:
+                removed, cleanup_notes = _remove_written(written, layout)
+            except Exception:
+                removed, cleanup_notes = 0, ()
+            reason = (
+                f"{reals_result.reason} -- cleaned up {removed} file(s) already "
+                f"written for this artifact"
+            )
+            if cleanup_notes:
+                reason += f"; could not remove: {'; '.join(cleanup_notes)}"
+            return ReadFailure(name=reals_result.name, path=reals_result.path, reason=reason)
 
         sidecar_path = layout.ens / f"par_{iteration}.json"
         sidecar = {
@@ -355,10 +440,10 @@ def write_par_ensemble(
 
         root = layout.root
         files = [
-            CacheFile(path=str(payload_path.relative_to(root)), bytes=payload_bytes),
+            payload_entry,
             CacheFile(path=str(sidecar_path.relative_to(root)), bytes=sidecar_bytes),
-            CacheFile(path=str(parnames_path.relative_to(root)), bytes=parnames_bytes),
-            CacheFile(path=str(parmap_path.relative_to(root)), bytes=parmap_bytes),
+            parnames_entry,
+            parmap_entry,
             reals_result,
         ]
         if cell_file_entry is not None:
@@ -367,11 +452,18 @@ def write_par_ensemble(
             files.append(layer_file_entry)
         return WrittenArtifact(name=name, files=tuple(files), notes=stored.notes)
     except Exception as exc:
-        return ReadFailure(
-            name=name,
-            path=str(data.source_path),
-            reason=f"failed to write ensemble artifact {name} from {Path(data.source_path).name}: {exc}",
+        try:
+            removed, cleanup_notes = _remove_written(written, layout)
+        except Exception:
+            removed, cleanup_notes = 0, ()
+        reason = (
+            f"failed to write ensemble artifact {name} from "
+            f"{Path(data.source_path).name}: {exc} -- cleaned up {removed} file(s) "
+            f"already written for this artifact"
         )
+        if cleanup_notes:
+            reason += f"; could not remove: {'; '.join(cleanup_notes)}"
+        return ReadFailure(name=name, path=str(data.source_path), reason=reason)
 
 
 # ---------------------------------------------------------------------------

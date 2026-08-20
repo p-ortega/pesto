@@ -197,6 +197,23 @@ def test_failed_artifact_records_a_reason_and_stays_stale(tmp_path):
     assert manifest.is_stale("par_2") is True
 
 
+def test_mark_failed_accepts_a_tuple_a_list_or_no_sources_and_always_records_a_list(tmp_path):
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"content")
+    fp = SourceFingerprint.of(source)
+
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_failed("par_a", "reason a", sources=(fp,))
+    manifest.mark_failed("par_b", "reason b", sources=[fp])
+    manifest.mark_failed("par_c", "reason c")
+
+    for name in ("par_a", "par_b", "par_c"):
+        assert isinstance(manifest.artifacts[name].sources, list)
+    assert manifest.artifacts["par_a"].sources == [fp]
+    assert manifest.artifacts["par_b"].sources == [fp]
+    assert manifest.artifacts["par_c"].sources == []
+
+
 def test_missing_artifact_records_a_reason_and_stays_stale(tmp_path):
     manifest = Manifest.empty(str(tmp_path))
 
