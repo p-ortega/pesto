@@ -19,12 +19,14 @@ has a documented port-handling defect (Kludex/starlette #1997/#1998), and
 pesto's own port changes every launch, so a fixed allowlist is the wrong
 shape regardless.
 
-The URL token authenticates the first request only (D-03, following the
-Jupyter model): once a request is authenticated purely by the query
-parameter, the response hands the caller a `pesto_token` cookie, and that
-cookie carries the session afterwards. `Referrer-Policy: no-referrer` is set
-on every response, success and refusal alike, so a token that did travel in
-a URL cannot ride a `Referer` header to a third-party origin.
+D-08: the URL token authenticates the boot request only. The frontend reads
+it once, strips it from the address bar with `history.replaceState`, and
+sends it as the `X-Pesto-Token` header on every request after that. There is
+no cookie handoff -- a token that only ever rides a header cannot leak
+through a bookmark, browser history, or a proxy access log the way a URL
+token can. `Referrer-Policy: no-referrer` is set on every response, success
+and refusal alike, so a token that does travel in a URL cannot ride a
+`Referer` header to a third-party origin.
 """
 
 from __future__ import annotations
@@ -33,13 +35,14 @@ import hmac
 import secrets
 
 from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
+
+from pesto.api.problem import problem
 
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 TOKEN_QUERY_PARAM = "token"
 TOKEN_HEADER = "x-pesto-token"
-TOKEN_COOKIE = "pesto_token"
 
 _REFERRER_POLICY = "no-referrer"
 
@@ -63,24 +66,15 @@ def _hostname_only(host_header: str) -> str:
 
 
 def _supplied_token(request: Request) -> str:
-    """Read the caller's token from the fixed source order: query, header, cookie."""
+    """Read the caller's token from the fixed source order: query, then header."""
     query_token = request.query_params.get(TOKEN_QUERY_PARAM)
     if query_token:
         return query_token
-    header_token = request.headers.get(TOKEN_HEADER)
-    if header_token:
-        return header_token
-    return request.cookies.get(TOKEN_COOKIE, "")
+    return request.headers.get(TOKEN_HEADER, "")
 
 
-def _problem_response(status_code: int, title: str) -> JSONResponse:
-    response = JSONResponse(
-        {"type": "about:blank", "title": title, "status": status_code},
-        status_code=status_code,
-        media_type="application/problem+json",
-    )
-    response.headers["Referrer-Policy"] = _REFERRER_POLICY
-    return response
+def _problem_response(status_code: int, title: str) -> Response:
+    return problem(status_code, title)
 
 
 def install_security(app: FastAPI, token: str) -> None:
@@ -92,28 +86,11 @@ def install_security(app: FastAPI, token: str) -> None:
         if _hostname_only(host) not in LOCAL_HOSTNAMES:
             return _problem_response(400, "invalid host")
 
-        query_token = request.query_params.get(TOKEN_QUERY_PARAM)
-        header_token = request.headers.get(TOKEN_HEADER)
-        cookie_token = request.cookies.get(TOKEN_COOKIE, "")
-        supplied = query_token or header_token or cookie_token
+        supplied = _supplied_token(request)
 
         if not hmac.compare_digest(supplied, token):
             return _problem_response(401, "invalid or missing token")
 
         response: Response = await call_next(request)
         response.headers["Referrer-Policy"] = _REFERRER_POLICY
-
-        # Only the very first, query-authenticated request gets a cookie
-        # handoff -- a request already carrying a header or cookie token
-        # needs no new one.
-        if query_token and not header_token and not cookie_token:
-            response.set_cookie(
-                TOKEN_COOKIE,
-                token,
-                httponly=True,
-                samesite="strict",
-                path="/",
-                secure=False,
-            )
-
         return response
