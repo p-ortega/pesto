@@ -10,12 +10,14 @@ realization index is written in file order with duplicates kept and noted.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import pesto.ingest.ensembles as ensembles_module
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.control import ControlTables, read_control
@@ -760,3 +762,147 @@ def test_write_par_ensemble_refuses_zero_parameters_and_leaves_no_file(tmp_path)
     assert isinstance(result, ReadFailure)
     assert "parameter" in result.reason
     assert list(layout.ens.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a partly written ensemble leaves nothing the manifest does not
+# account for
+# ---------------------------------------------------------------------------
+
+
+def _sample_ensemble_with_cells(tmp_path):
+    """A small ensemble with cells, so both blocks and the cell/layer files
+    are all exercised together by the cleanup and happy-path tests below."""
+    control_names = ["par0", "par1", "par2"]
+    entity_names = ("par0", "par1", "par2")
+    permutation = (0, 1, 2)
+    values = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    data = _ensemble_data(values, ("r0", "r1"), entity_names, permutation)
+    tables = _control_tables(control_names, ["G1", "G1", "G2"])
+    cells = _fake_cells()
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    return data, tables, cells, layout
+
+
+def _fail_reals(reason: str):
+    def _fake_write_par_reals(real_names, iteration, layout):
+        return ReadFailure(name=f"par_reals/{iteration}", path="n/a", reason=reason)
+
+    return _fake_write_par_reals
+
+
+def test_a_write_par_reals_failure_removes_every_file_already_written_and_names_the_count(
+    tmp_path, monkeypatch
+):
+    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    monkeypatch.setattr(ensembles_module, "write_par_reals", _fail_reals("disk full"))
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+    )
+
+    assert isinstance(result, ReadFailure)
+    assert "disk full" in result.reason
+    assert "cleaned up 5 file(s)" in result.reason
+    assert not layout.par_ens(0).exists()
+    assert not (layout.ens / "par_0.parnames.txt").exists()
+    assert not (layout.ens / "par_0.parmap.i32").exists()
+    assert not (layout.ens / "par_0.cell.i32").exists()
+    assert not (layout.ens / "par_0.layer.i32").exists()
+
+
+def test_a_cleanup_error_never_replaces_the_original_read_failure(tmp_path, monkeypatch):
+    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    monkeypatch.setattr(ensembles_module, "write_par_reals", _fail_reals("disk full"))
+
+    def _raise(*args, **kwargs):
+        raise OSError("cleanup itself failed")
+
+    monkeypatch.setattr(ensembles_module, "_remove_written", _raise)
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+    )
+
+    assert isinstance(result, ReadFailure)
+    assert "disk full" in result.reason
+
+
+def test_remove_written_leaves_a_path_outside_the_cache_root_and_names_it(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not touch")
+    escaping = CacheFile(path="../outside.txt", bytes=len("do not touch"))
+
+    removed, notes = ensembles_module._remove_written([escaping], layout)
+
+    assert removed == 0
+    assert outside.exists()
+    assert any("outside.txt" in note for note in notes)
+
+
+def test_remove_written_treats_an_already_deleted_file_as_removed(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    ghost = CacheFile(path="ens/ghost.bin", bytes=0)
+
+    removed, notes = ensembles_module._remove_written([ghost], layout)
+
+    assert removed == 1
+    assert notes == ()
+
+
+def test_a_successful_write_par_ensemble_is_unchanged_by_the_cleanup_machinery(tmp_path):
+    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+    )
+
+    assert isinstance(result, WrittenArtifact)
+    root = layout.root
+    expected_order = [
+        str(layout.par_ens(0).relative_to(root)),
+        str((layout.ens / "par_0.json").relative_to(root)),
+        str((layout.ens / "par_0.parnames.txt").relative_to(root)),
+        str((layout.ens / "par_0.parmap.i32").relative_to(root)),
+        str((layout.reals / "par_0.reals.json").relative_to(root)),
+        str((layout.ens / "par_0.cell.i32").relative_to(root)),
+        str((layout.ens / "par_0.layer.i32").relative_to(root)),
+    ]
+    assert [f.path for f in result.files] == expected_order
+    for cache_file in result.files:
+        assert (root / cache_file.path).stat().st_size == cache_file.bytes
+
+
+def test_cleanup_never_unlinks_a_path_under_the_source_run_directory(tmp_path, monkeypatch):
+    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    source_dir = tmp_path / "run"
+    source_dir.mkdir()
+    source_file = source_dir / "case.0.par.jcb"
+    source_file.write_bytes(b"source bytes -- must never be touched")
+    data = replace(data, source_path=source_file)
+    monkeypatch.setattr(ensembles_module, "write_par_reals", _fail_reals("disk full"))
+
+    unlinked: list[Path] = []
+    real_unlink = Path.unlink
+
+    def _recording_unlink(self, *args, **kwargs):
+        unlinked.append(Path(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _recording_unlink)
+
+    result = write_par_ensemble(
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+    )
+
+    assert isinstance(result, ReadFailure)
+    assert unlinked
+    for path in unlinked:
+        assert source_dir not in path.parents
+        assert path != source_file
+    assert source_file.exists()
+    assert source_file.read_bytes() == b"source bytes -- must never be touched"
