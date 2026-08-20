@@ -101,6 +101,43 @@ def test_redact_paths_leaves_a_bare_file_name_alone():
     assert redact_paths(text) == text
 
 
+def test_redact_paths_reduces_a_posix_path_with_a_space_in_a_middle_segment():
+    text = "[Errno 13] Permission denied: '/Users/John Smith/pesto-run/config.json'"
+    assert redact_paths(text) == "[Errno 13] Permission denied: 'config.json'"
+
+
+def test_redact_paths_reduces_a_posix_path_with_a_space_in_the_final_directory():
+    text = "could not read /Volumes/Field Data/escondida run/case.pst: nope"
+    assert redact_paths(text) == "could not read case.pst: nope"
+
+
+def test_redact_paths_reduces_a_windows_path_with_a_space():
+    text = r"could not read C:\Users\John Smith\run\case.pst: nope"
+    assert redact_paths(text) == "could not read case.pst: nope"
+
+
+def test_redact_paths_leaves_trailing_prose_intact_after_a_spaceless_path():
+    text = "reading /a/b/c.pst failed badly"
+    assert redact_paths(text) == "reading c.pst failed badly"
+
+
+def test_redact_paths_leaves_a_url_alone():
+    text = "see http://host/a/b for details"
+    assert redact_paths(text) == text
+
+
+def test_problem_from_failure_redacts_a_path_with_a_space_via_the_known_path():
+    failure = ReadFailure(
+        name="config",
+        path="/Users/John Smith/run/x.pst",
+        reason="could not read /Users/John Smith/run/x.pst: No such file",
+    )
+    response = problem_from_failure(502, failure)
+    body = json.loads(response.body)
+    assert body["detail"] == "could not read x.pst: No such file"
+    assert "John Smith" not in body["detail"]
+
+
 def test_the_security_middlewares_400_and_401_refusals_carry_the_problem_media_type():
     app, token = create_app()
     client = _client(app)
