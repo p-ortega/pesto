@@ -62,6 +62,11 @@ def test_the_boot_script_a_real_browser_fetches_needs_no_token() -> None:
     can set no custom header, so the compiled bundle must be reachable with
     neither -- otherwise the code that reads and strips the token can never
     run in the first place."""
+    if not (static_module.STATIC_DIR / "index.html").exists():
+        pytest.skip(
+            "no compiled frontend on disk; build it with "
+            "'npm --prefix frontend run build' to exercise this"
+        )
     app, _token = create_app()
     client = TestClient(app, base_url=BASE_URL)
 
