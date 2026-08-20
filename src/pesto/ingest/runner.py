@@ -526,10 +526,19 @@ populated entry, plus name tables) lands at 0.258-0.259 of the source size
 fixed multiple of the payload it carries. Above 100,000 parameters pestpp
 writes hash-ordered JCB by default (PROJECT.md), so this is the ratio that
 matters for the runs this estimate exists for. A dense ``.bin`` source (half
-the JCB overhead per value) is measured at 0.513 instead -- this estimate
-runs roughly 2x high for that dialect, a known, accepted gap: ``sniff()``
-would have to open the file to tell the two apart, which this function may
-never do."""
+the JCB overhead per value) is measured at 0.513 instead -- applying this
+constant to a dense source's size yields roughly *half* the cache that
+source actually produces, so the estimate under-states for that dialect,
+it does not over-state. Because 0.26/0.513 is about 0.51, a dense-format
+run sits almost exactly on the ±50% tolerance ``estimate_bytes`` states for
+itself, and on the optimistic side of it: a scientist could be shown
+roughly half the disk the ingest will actually need. That is the dangerous
+direction, because this is the one figure in this phase shown to someone
+before they agree to the ingest -- an under-estimate costs them a run that
+runs out of disk partway through, where an over-estimate would only have
+cost a few idle gigabytes. ``sniff()`` would have to open the file to tell
+the two dialects apart, which this function may never do; see
+``_DENSE_BIN_NOTE`` for how ``estimate_bytes`` names this gap instead."""
 
 _PAR_AGG_SOURCE_RATIO = 0.012
 """Measured across four real ensembles: a per-parameter summary table (a
@@ -548,6 +557,16 @@ _CONFIG_BYTES = 1024
 roughly fixed-size fact sheet whose size does not scale with the run, so a
 flat, slightly generous estimate stands in for a ratio against any source
 file."""
+
+_DENSE_BIN_NOTE = (
+    "par_ens/par_agg: these figures assume the sparse-COO .jcb dialect -- a dense "
+    ".bin ensemble produces roughly twice the cache this estimate reports, so the "
+    "total is a floor for that dialect, not a midpoint"
+)
+"""Appended to ``estimate_bytes``' ``notes`` once, whenever at least one
+ensemble artifact was sized -- named from this constant, not derived from
+any file, so adding it costs no read. See ``_PAR_ENS_SOURCE_RATIO`` for the
+arithmetic and why the optimistic direction is the one that matters here."""
 
 
 def estimate_bytes(
@@ -577,6 +596,11 @@ def estimate_bytes(
     the cache the same run actually produces for a run whose ensembles are
     the modern sparse-COO dialect -- generous, because every ratio above is
     a rough proxy measured across a handful of real runs, not a formula.
+    That tolerance is stated for the sparse-COO dialect specifically: for
+    every call that sizes at least one ensemble artifact, ``notes`` also
+    gains ``_DENSE_BIN_NOTE``, added from the constant rather than read from
+    any file, naming a dense ``.bin`` source as a dialect this estimate
+    cannot size reliably and the direction it errs in.
     """
     if iterations is None:
         numbered = [k for k in run.par_ens if isinstance(k, int)]
@@ -587,6 +611,7 @@ def estimate_bytes(
     per_artifact: list[tuple[str, int]] = []
     notes: list[str] = []
     total = 0
+    sized_an_ensemble = False
 
     for iteration in selected:
         source = run.par_ens.get(iteration)
@@ -598,12 +623,16 @@ def estimate_bytes(
         except OSError as exc:
             notes.append(f"par_ens/{iteration}: could not stat {source.name}: {exc}")
             continue
+        sized_an_ensemble = True
         ens_bytes = int(source_bytes * _PAR_ENS_SOURCE_RATIO)
         per_artifact.append((f"par_ens/{iteration}", ens_bytes))
         total += ens_bytes
         agg_bytes = int(source_bytes * _PAR_AGG_SOURCE_RATIO)
         per_artifact.append((f"par_agg/{iteration}", agg_bytes))
         total += agg_bytes
+
+    if sized_an_ensemble:
+        notes.append(_DENSE_BIN_NOTE)
 
     if run.pst_path.exists():
         notes.append(
