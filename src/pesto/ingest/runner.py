@@ -109,6 +109,36 @@ class _RealNamesOnly:
     real_names: tuple[str, ...]
 
 
+def _exit_code_of(pool: ProcessPoolExecutor) -> int | None:
+    """The first dead worker's exit code this pool still holds, or ``None``
+    for every way that cannot be answered.
+
+    ``concurrent.futures`` exposes no public API for a dead worker's exit
+    code, and it is the only way ``_reason_for`` can tell a worker killed by
+    a signal from one that died for any other reason -- two different facts
+    to a scientist reading a failed ingest -- so the private ``_processes``
+    attribute stays. This function contains both ways reading it can go
+    wrong. The process mapping is copied into a ``list`` before iterating,
+    so a dict the executor's own management thread is concurrently mutating
+    while tearing the broken pool down cannot raise mid-iteration. And the
+    whole body is wrapped in a bare ``except``, because this call runs
+    inside ``_run_isolated``'s own ``except`` handler, where a second
+    exception has nothing left to catch it -- an ``AttributeError`` from a
+    future CPython renaming or removing ``_processes`` would otherwise
+    propagate out of ``_run_isolated``, out of ``ingest_run``'s loop, and
+    end the whole ingest. Returning ``None`` costs a less specific reason
+    string in ``_reason_for``; raising would cost every artifact that had
+    not run yet.
+    """
+    try:
+        for proc in list(pool._processes.values()):
+            if proc.exitcode is not None:
+                return proc.exitcode
+        return None
+    except Exception:
+        return None
+
+
 def _run_isolated(fn, *args):
     """Run ``fn(*args)`` in a process created for this one call and torn
     down after it, so a hard crash in a C extension cannot reach any other
@@ -119,11 +149,13 @@ def _run_isolated(fn, *args):
     when a worker dies without raising anything itself.
 
     When the exception is a ``BrokenProcessPool``, the dead worker's exit
-    code is read off the pool's own ``Process`` objects and attached to the
+    code is read through :func:`_exit_code_of` and attached to the
     exception as ``exitcode``, before the ``with`` block tears the pool
-    down -- ``concurrent.futures`` exposes no public API for it, and it is
-    the only way ``_reason_for`` can tell a worker killed by a signal (a
-    negative exit code) from one that died for any other reason.
+    down. The call is wrapped a second time here, on top of
+    ``_exit_code_of``'s own containment: this is the one place in the
+    whole ingest where a second failure has nothing left to catch it, so
+    the guard belongs at both the callee and the call site rather than
+    trusting either alone.
     """
     with ProcessPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn, *args)
@@ -131,10 +163,10 @@ def _run_isolated(fn, *args):
             return True, future.result()
         except Exception as exc:
             if isinstance(exc, BrokenProcessPool):
-                for proc in pool._processes.values():
-                    if proc.exitcode is not None:
-                        exc.exitcode = proc.exitcode
-                        break
+                try:
+                    exc.exitcode = _exit_code_of(pool)
+                except Exception:
+                    exc.exitcode = None
             return False, exc
 
 
