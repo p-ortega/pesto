@@ -32,12 +32,22 @@ if TYPE_CHECKING:
 _REFERRER_POLICY = "no-referrer"
 
 # A POSIX path: not preceded by a word char, dot or colon (so a URL's
-# "http://host/path" is left alone), at least one directory segment, then a
-# final segment -- "/etc/passwd" and deeper, never a bare "/x".
-_POSIX_PATH_RE = re.compile(r"(?<![\w.:])/(?:[^\s/:]+/)+[^\s/:]+")
+# "http://host/path" is left alone -- and neither is the second "/" of that
+# same "://", which a colon-only check misses). A directory segment may
+# hold a space (a real mount or run name often does, e.g. "/Volumes/Field
+# Data"), but only when it is followed by another "/" -- so a run of spaced
+# words continues matching only as long as the text keeps looking like more
+# path, and ordinary trailing prose ("... failed badly") never does. The
+# final segment stays space-free, exactly as before, which is what stops
+# the match at the real end of the path rather than running into prose.
+_POSIX_PATH_RE = re.compile(r"(?<![\w.:])(?<!:/)/(?:[^/:\n]+/)+[^\s/:]+")
 # A Windows path: a drive letter, then one or more backslash- or
-# slash-separated segments.
-_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:[\\/](?:[^\s\\/:]+[\\/])*[^\s\\/:]+")
+# slash-separated segments, spaces allowed the same way as the POSIX form.
+_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:[\\/](?:[^\\/:\n]+[\\/])*[^\s\\/:]+")
+
+
+def _basename(path: str) -> str:
+    return re.split(r"[\\/]", path)[-1]
 
 
 def redact_paths(text: str) -> str:
@@ -47,11 +57,11 @@ def redact_paths(text: str) -> str:
     (``C:\\`` or ``C:/``-rooted) forms. A bare file name is left alone.
     """
 
-    def _basename(match: re.Match[str]) -> str:
-        return re.split(r"[\\/]", match.group(0))[-1]
+    def _sub(match: re.Match[str]) -> str:
+        return _basename(match.group(0))
 
-    text = _WINDOWS_PATH_RE.sub(_basename, text)
-    return _POSIX_PATH_RE.sub(_basename, text)
+    text = _WINDOWS_PATH_RE.sub(_sub, text)
+    return _POSIX_PATH_RE.sub(_sub, text)
 
 
 def problem(
@@ -79,7 +89,13 @@ def problem(
 
 
 def problem_from_failure(status_code: int, failure: "ReadFailure") -> JSONResponse:
-    return problem(status_code, "read failure", artifact=failure.name, detail=failure.reason)
+    # The exact path is known here, so it is replaced outright rather than
+    # left to the regex backstop above -- a real path with a space in it is
+    # exactly what that regex cannot always find on its own.
+    reason = failure.reason
+    if failure.path:
+        reason = reason.replace(failure.path, _basename(failure.path))
+    return problem(status_code, "read failure", artifact=failure.name, detail=reason)
 
 
 def _rejected_fields(exc: RequestValidationError) -> str | None:
