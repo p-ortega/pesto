@@ -126,10 +126,10 @@ async def get_run_reals(request: Request, iteration: int) -> Response:
     if raw.get("cache_version") != CACHE_VERSION:
         return problem(
             502,
-            f"{target.name} was written at a different cache version",
+            "realization index was written at a different cache version",
             artifact=artifact,
             detail=(
-                f"recorded cache_version {raw.get('cache_version')!r}, "
+                f"{target.name} was written at cache_version {raw.get('cache_version')!r}, "
                 f"this reader expects {CACHE_VERSION}"
             ),
         )
