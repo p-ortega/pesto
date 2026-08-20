@@ -215,6 +215,8 @@ async def open_directory(request: Request, body: _OpenBody) -> JSONResponse:
         layout = for_run(path)
     except NotADirectoryError:
         return problem(409, "that folder is not a directory pesto can open")
+    except PermissionError as exc:
+        return problem(403, "that folder cannot be opened", detail=str(exc))
 
     layout.ensure()
     request.app.state.initial_run_dir = str(path.resolve())

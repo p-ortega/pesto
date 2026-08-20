@@ -80,6 +80,10 @@ class CacheLayout:
     """
 
     root: Path
+    # Set by `for_run` when the run directory is a git repository whose
+    # `.gitignore` could not be written -- carried here so a caller can
+    # report it rather than the failure disappearing once `for_run` returns.
+    gitignore_note: str | None = None
 
     @property
     def manifest(self) -> Path:
@@ -149,7 +153,9 @@ def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
     """Resolve this run's cache root, ensure a git-tracked run directory
     ignores it, and hand back a usable layout. Cache creation and the
     gitignore line happen together so no caller has to remember to pair
-    them."""
+    them. A run directory that refuses that write (read-only archive media)
+    still opens -- the refusal comes back on `CacheLayout.gitignore_note`,
+    never as a raised exception."""
     root = resolve_cache_root(Path(run_dir), override)
-    ensure_gitignored(Path(run_dir))
-    return CacheLayout(root=root)
+    gitignore_note = ensure_gitignored(Path(run_dir))
+    return CacheLayout(root=root, gitignore_note=gitignore_note)

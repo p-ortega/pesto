@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from pesto.api import fs as fs_module
 from pesto.api.app import create_app
 from pesto.api.fs import is_run_directory
 from pesto.api.prefs import read_last_run, write_last_run
@@ -374,6 +375,73 @@ def test_list_and_open_leave_the_listed_directory_untouched(
 
     assert after_mtime == before_mtime
     assert after_entries == before_entries
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+def test_opening_a_read_only_git_run_directory_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Plan 05-10's own read-only test never exercises this path -- its
+    # synthetic run has no `.git`, so `ensure_gitignored` returns before
+    # ever touching the filesystem. This one is a real git repository, so
+    # the write is actually attempted and actually refused.
+    run_dir = tmp_path / "a_run"
+    run_dir.mkdir()
+    (run_dir / ".git").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    client, token = _home_app(tmp_path, monkeypatch)
+    home_id = _home_id(client, token)
+    run_id = _id_for(client, token, home_id, "a_run")
+
+    run_dir.chmod(0o555)
+    try:
+        response = _post(client, token, "/api/fs/open", {"id": run_id})
+    finally:
+        run_dir.chmod(0o755)
+
+    assert response.status_code == 200
+    assert response.json() == {"is_run": False, "case": None}
+    assert not (run_dir / ".gitignore").exists()
+
+
+def test_opening_a_writable_git_run_directory_still_appends_the_gitignore_line_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "a_run"
+    run_dir.mkdir()
+    (run_dir / ".git").mkdir()
+    client, token = _home_app(tmp_path, monkeypatch)
+    home_id = _home_id(client, token)
+    run_id = _id_for(client, token, home_id, "a_run")
+
+    first = _post(client, token, "/api/fs/open", {"id": run_id})
+    second = _post(client, token, "/api/fs/open", {"id": run_id})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    lines = (run_dir / ".gitignore").read_text().splitlines()
+    assert lines.count(".pesto/") == 1
+
+
+def test_open_answers_problem_json_when_for_run_raises_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "a_run"
+    run_dir.mkdir()
+    client, token = _home_app(tmp_path, monkeypatch)
+    home_id = _home_id(client, token)
+    run_id = _id_for(client, token, home_id, "a_run")
+
+    def _raise(*_args, **_kwargs):
+        raise PermissionError("simulated: could not resolve the cache root")
+
+    monkeypatch.setattr(fs_module, "for_run", _raise)
+
+    response = _post(client, token, "/api/fs/open", {"id": run_id})
+
+    assert response.status_code == 403
+    assert response.headers["content-type"] == "application/problem+json"
 
 
 # --- Last-opened-directory memory ------------------------------------------

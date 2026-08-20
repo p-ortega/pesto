@@ -8,11 +8,14 @@ the field (RESEARCH.md Pitfall 2).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from pesto.cache.layout import CACHE_VERSION, CacheLayout, for_run, resolve_cache_root
+
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def test_cache_sits_beside_the_run_when_writable(tmp_path):
@@ -172,6 +175,33 @@ def test_for_run_makes_a_usable_layout(tmp_path):
     layout.ensure()
 
     assert layout.root == run / ".pesto"
+    assert layout.ens.is_dir()
+
+
+def test_for_run_reports_no_gitignore_note_on_a_plain_directory(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+
+    layout = for_run(run)
+
+    assert layout.gitignore_note is None
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+def test_for_run_on_a_read_only_git_run_directory_succeeds_and_carries_the_note(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / ".git").mkdir()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    run.chmod(0o555)
+    try:
+        layout = for_run(run)
+    finally:
+        run.chmod(0o755)
+
+    assert layout.gitignore_note is not None
+    assert not (run / ".gitignore").exists()
+    layout.ensure()
     assert layout.ens.is_dir()
 
 
