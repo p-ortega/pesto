@@ -7,7 +7,7 @@
 // boot (D-08), and putting state back into it would be the first step
 // toward putting the token back too.
 
-import { readTokenOnce } from './auth/token'
+import { forgetToken, hasToken, readTokenOnce } from './auth/token'
 import { apiGet, ApiError, ingestState, type IngestState } from './data/client'
 import { renderNotice } from './ui/chrome'
 import { mountPicker } from './ui/dir-picker'
@@ -60,6 +60,28 @@ function renderBootFailure(error: unknown): void {
 
 function isNoRunOpen(error: unknown): boolean {
   return error instanceof ApiError && error.problem.status === 409
+}
+
+function isTokenRejected(error: unknown): boolean {
+  return error instanceof ApiError && error.problem.status === 401
+}
+
+// The token is stripped from the address bar at boot, so a tab that has lost
+// it cannot get it back on its own. Say that plainly instead of showing the
+// server's "invalid or missing token", which reads like a fault rather than
+// an expired session and leaves the user with nothing to do.
+function renderSessionEnded(): void {
+  clearTeardown()
+  const root = getRoot()
+  root.textContent = ''
+  const panel = document.createElement('div')
+  root.appendChild(panel)
+  renderNotice(panel, {
+    title: 'This session has ended',
+    detail:
+      'The link that opened pesto works once. Relaunch pesto from the terminal to start a new session.',
+    tone: 'warning',
+  })
 }
 
 // A run can be open with nothing ingested for it yet -- the config
@@ -154,10 +176,22 @@ async function boot(): Promise<void> {
   readTokenOnce()
   initTheme()
 
+  // A reload recovers the token from sessionStorage; nothing there means this
+  // tab never had one, or pesto has been relaunched since.
+  if (!hasToken()) {
+    renderSessionEnded()
+    return
+  }
+
   let config: RunConfig | null = null
   try {
     config = (await apiGet('/api/run/config')) as RunConfig
   } catch (error) {
+    if (isTokenRejected(error)) {
+      forgetToken()
+      renderSessionEnded()
+      return
+    }
     if (isNoRunOpen(error)) {
       showPicker()
       return
@@ -166,7 +200,16 @@ async function boot(): Promise<void> {
     // loadConfig's note above. Fall through with no config in hand.
   }
 
-  await routeByFreshness(config)
+  try {
+    await routeByFreshness(config)
+  } catch (error) {
+    if (isTokenRejected(error)) {
+      forgetToken()
+      renderSessionEnded()
+      return
+    }
+    renderBootFailure(error)
+  }
 }
 
 void boot()

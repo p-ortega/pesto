@@ -38,6 +38,7 @@ const ESTIMATE_BODY = {
 }
 
 const NO_RUN_OPEN = { type: 'about:blank', title: 'no run is open', status: 409 }
+const BAD_TOKEN = { type: 'about:blank', title: 'invalid or missing token', status: 401 }
 
 type FetchHandler = (init?: RequestInit) => { status: number; body?: unknown; stream?: Uint8Array[] }
 
@@ -123,10 +124,18 @@ async function bootMain(): Promise<void> {
   await import('../src/main')
 }
 
+// A real session always arrives with a token in the URL, which token.ts reads
+// once and strips. Routing tests need that to have happened, or boot stops at
+// the session-ended screen before any routing decision is made.
+function seedSession(): void {
+  history.replaceState(null, '', '?token=test-token')
+}
+
 const encoder = new TextEncoder()
 
 describe('the screen router', () => {
   beforeEach(() => {
+    seedSession()
     try {
       localStorage.clear()
     } catch {
@@ -324,5 +333,54 @@ describe('the screen router', () => {
       expect(screenHasText('par_agg/head')).toBe(true)
       expect(screenHasText('the aggregation step crashed reading iteration 3')).toBe(true)
     })
+  })
+})
+
+describe('a session that can no longer authenticate', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    )
+    try {
+      sessionStorage.clear()
+    } catch {
+      // Storage is optional; token.ts falls back to a page-lifetime token.
+    }
+    history.replaceState(null, '', '?')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('says the session ended rather than showing a raw token error', async () => {
+    stubFetch({ 'GET /api/run/config': () => ({ status: 401, body: BAD_TOKEN }) })
+    await bootMain()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const text = document.body.innerText || document.body.textContent || ''
+    expect(text).toMatch(/session/i)
+    expect(text).toMatch(/relaunch|restart|pesto again/i)
+  })
+
+  it('forgets a rejected token so a reload does not offer it again', async () => {
+    try {
+      sessionStorage.setItem('pesto.token', 'stale')
+    } catch {
+      return
+    }
+    stubFetch({ 'GET /api/run/config': () => ({ status: 401, body: BAD_TOKEN }) })
+    await bootMain()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(sessionStorage.getItem('pesto.token')).toBeNull()
   })
 })
