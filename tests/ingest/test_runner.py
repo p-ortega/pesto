@@ -27,6 +27,7 @@ from pesto.cache.runconfig import load_config
 from pesto.ingest.discover import discover
 from pesto.ingest.ensembles import load_stored
 from pesto.ingest.failures import ReadFailure
+import pesto.ingest.runner as runner_module
 from pesto.ingest.runner import (
     BytesEstimate,
     PlannedArtifact,
@@ -152,6 +153,58 @@ def test_run_isolated_pool_does_not_outlive_the_call():
     assert ok is True
     assert result == "x"
     assert multiprocessing.active_children() == []
+
+
+def _raise_attribute_error(pool):
+    raise AttributeError("_processes was renamed in a future CPython")
+
+
+def _raise_runtime_error(pool):
+    raise RuntimeError("dictionary changed size during iteration")
+
+
+def _assert_only_par_ens_0_and_grid_are_not_ok(manifest):
+    """``grid`` fails for every synthetic fixture (its file is a placeholder
+    flopy cannot parse) -- excluded here the same way the other whole-run
+    tests in this file exclude it."""
+    for name, artifact in manifest.artifacts.items():
+        if name in ("par_ens/0", "grid"):
+            continue
+        assert artifact.state == "ok", (name, artifact.reason)
+
+
+def test_exit_code_lookup_raising_attributeerror_fails_only_its_own_artifact(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0,))
+
+    monkeypatch.setattr(runner_module, "_write_par_ens", fixtures.crash_worker)
+    monkeypatch.setattr(runner_module, "_exit_code_of", _raise_attribute_error)
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_ens/0"].state == "failed"
+    assert "exited without returning" in manifest.artifacts["par_ens/0"].reason
+    _assert_only_par_ens_0_and_grid_are_not_ok(manifest)
+
+
+def test_exit_code_lookup_raising_runtimeerror_fails_only_its_own_artifact(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    make_run(run_dir, iterations=(0,))
+
+    monkeypatch.setattr(runner_module, "_write_par_ens", fixtures.crash_worker)
+    monkeypatch.setattr(runner_module, "_exit_code_of", _raise_runtime_error)
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_ens/0"].state == "failed"
+    assert "exited without returning" in manifest.artifacts["par_ens/0"].reason
+    _assert_only_par_ens_0_and_grid_are_not_ok(manifest)
 
 
 def test_every_corrupt_ensemble_kind_fails_to_read(tmp_path):
@@ -590,6 +643,69 @@ def test_estimate_bytes_never_writes_or_creates_the_cache_root(tmp_path):
     estimate_bytes(run)
 
     assert not cache_root.exists()
+
+
+def test_estimate_bytes_notes_the_dense_bin_dialect_when_an_ensemble_is_sized(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0,))
+    run = discover(run_dir)
+
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def _recording_open(file, *args, **kwargs):
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _recording_open)
+    try:
+        estimate = estimate_bytes(run)
+    finally:
+        monkeypatch.setattr(builtins, "open", real_open)
+
+    assert opened == []
+    assert any("dense" in note for note in estimate.notes)
+    assert any("control" in note for note in estimate.notes)
+
+
+def test_estimate_bytes_with_no_ensemble_artifact_does_not_add_the_dense_note(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0,))
+    run = discover(run_dir)
+
+    estimate = estimate_bytes(run, iterations=[])
+
+    assert not any("dense" in note for note in estimate.notes)
+
+
+def test_estimate_bytes_total_matches_the_ratio_arithmetic(tmp_path):
+    from pesto.ingest.runner import (
+        _CONFIG_BYTES,
+        _GRID_SOURCE_RATIO,
+        _PAR_AGG_SOURCE_RATIO,
+        _PAR_ENS_SOURCE_RATIO,
+    )
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    run = discover(run_dir)
+
+    estimate = estimate_bytes(run)
+
+    expected = _CONFIG_BYTES
+    for iteration in (0, 1):
+        source_bytes = run.par_ens[iteration].stat().st_size
+        expected += int(source_bytes * _PAR_ENS_SOURCE_RATIO)
+        expected += int(source_bytes * _PAR_AGG_SOURCE_RATIO)
+    if run.grid is not None:
+        expected += int(run.grid.stat().st_size * _GRID_SOURCE_RATIO)
+
+    assert estimate.total == expected
 
 
 def test_a_signal_set_after_the_first_ok_artifact_leaves_the_rest_untouched(tmp_path):
