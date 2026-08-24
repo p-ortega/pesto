@@ -230,6 +230,19 @@ function restoredStat(value: string | undefined, realNamesOk: boolean): Selectio
   return realNamesOk ? 'value' : 'mean'
 }
 
+// WINDOWS.md #11: the view-state wire (prefs.py's _VIEW_STATE_DEFAULTS,
+// ViewStateWire in client.ts) has a field for the limits MODE but none at
+// all for a manual PAIR -- the numbers a manual choice needs were never
+// saved. A restored 'manual' mode is therefore never trustworthy on its
+// own: trusting it draws a fabricated range (committed.manualLimits stays
+// null, so deriveAndDraw falls to [0, 1]; a later control interaction can
+// even compute [0, 0] from the empty number inputs) and presents it as the
+// pair the user actually chose. Falling back to robust here, with a notice
+// naming why, is the honest version of "we don't actually know this."
+function restoredLimitsMode(mode: ViewState['limitsMode']): 'robust' | 'minmax' {
+  return mode === 'manual' ? 'robust' : mode
+}
+
 /**
  * The map screen: header, blocked-capability notices, the canvas panel and
  * the status bar, then the load-and-draw sequence -- mesh, the D-05 join,
@@ -1138,6 +1151,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const drawnPartrans = partransForGroup(joined, drawnGroup)
     const inferredScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     const initialScale: ValueScale = wasVisitedBefore ? restoredView!.scale : inferredScale
+    if (wasVisitedBefore && restoredView!.limitsMode === 'manual') {
+      addNotice(mapNotice, {
+        title: 'Manual limits could not be restored',
+        detail:
+          "This run was left with manual colour limits, but the saved state has no record of the numbers used -- showing the robust 2-98% range instead.",
+        tone: 'info',
+      })
+    }
     committed = {
       iteration,
       layer: 0,
@@ -1147,7 +1168,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       reverseColormap: wasVisitedBefore ? restoredView!.reverse : false,
       scale: initialScale,
       scaleInferred: !wasVisitedBefore,
-      limitsMode: wasVisitedBefore ? restoredView!.limitsMode : 'robust',
+      limitsMode: wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust',
       manualLimits: null,
     }
 
