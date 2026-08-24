@@ -146,24 +146,56 @@ function renderBlockedCapabilities(container: HTMLElement, state: IngestState): 
   }
 }
 
+// WINDOWS.md #10: getComputedStyle hands `--hairline` back as the 8-digit
+// hex #ffffff1a, not the rgba() form it was authored in -- Chromium
+// normalises a custom property carrying a <color> token this way. The old
+// code only handled 6-digit hex and rgba(), and treated an 8-digit hex as a
+// plain integer: Number.parseInt('ffffff1a', 16) is past 2^31, so `| 0`-style
+// bitwise arithmetic on it overflows to a negative int32 and turns a faint
+// white into bright yellow (rgb(255, 255, 26)). This parses 3/4/6/8-digit
+// hex and rgb()/rgba() by pulling the channel digits straight out of the
+// string, never through a bitwise op on a value that can exceed 2^31, and
+// always drops the alpha channel -- the caller wants an opaque line colour.
+// A token in a form this cannot read throws rather than falling back to
+// black, which would be indistinguishable from a real black token
+// (CLAUDE.md's rule against dropping something without a trace).
+export function parseColorToken(value: string): [number, number, number] {
+  const trimmed = value.trim()
+
+  const hex = trimmed.match(/^#([0-9a-fA-F]{3,8})$/)
+  if (hex) {
+    const digits = hex[1]
+    if (digits.length === 3 || digits.length === 4) {
+      const [r, g, b] = digits
+        .slice(0, 3)
+        .split('')
+        .map((c) => Number.parseInt(c + c, 16))
+      return [r / 255, g / 255, b / 255]
+    }
+    if (digits.length === 6 || digits.length === 8) {
+      const r = Number.parseInt(digits.slice(0, 2), 16)
+      const g = Number.parseInt(digits.slice(2, 4), 16)
+      const b = Number.parseInt(digits.slice(4, 6), 16)
+      return [r / 255, g / 255, b / 255]
+    }
+  }
+
+  const rgb = trimmed.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/)
+  if (rgb) {
+    return [Number(rgb[1]) / 255, Number(rgb[2]) / 255, Number(rgb[3]) / 255]
+  }
+
+  throw new Error(`unrecognised colour token value: "${value}"`)
+}
+
 // Reads a resolved CSS custom property the same way for the canvas clear
-// colour and the hairline outline -- a hex token (`--page-plane`) or an
-// rgba() token (`--hairline`), converted to the 0-1 floats WebGL2 wants.
-// No colour value is written here; every number comes from the token.
+// colour, the hairline outline, the contested stripe/fill and the accent
+// ring -- whatever form getComputedStyle hands back, parsed by
+// parseColorToken. No colour value is written here; every number comes
+// from the token.
 function readColorToken(name: string): [number, number, number] {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-
-  if (value.startsWith('#')) {
-    const n = Number.parseInt(value.slice(1), 16)
-    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
-  }
-
-  const match = value.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/)
-  if (match) {
-    return [Number(match[1]) / 255, Number(match[2]) / 255, Number(match[3]) / 255]
-  }
-
-  return [0, 0, 0]
+  return parseColorToken(value)
 }
 
 // D-07: a group is drawable when at least one of its identified block rows
