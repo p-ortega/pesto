@@ -77,7 +77,10 @@ export function renderSelectionControls(el: HTMLElement, opts: SelectionControls
     option.textContent = stat
     statSelect.appendChild(option)
   }
-  statSelect.value = 'value'
+  // 'value' would only ever fail to load when no realization can be named,
+  // so a run with no recorded names defaults to an aggregate statistic
+  // instead -- matching the initial fetch views/map.ts issues.
+  statSelect.value = opts.realNames.ok ? 'value' : 'mean'
   statLabel.appendChild(statSelect)
 
   // Realization: positions are the names fetchRealNames returned, in the
