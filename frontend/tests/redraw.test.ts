@@ -50,7 +50,12 @@ const CONFIG: RunConfig = {
   case: 'test_run',
   n_par: null,
   n_real: null,
+  base_realization: null,
+  n_iterations: null,
+  noptmax: null,
   first_iteration: 0,
+  projection: null,
+  projection_known: false,
   noise: { has_noise: null, decided_by: '', evidence: [], notes: [] },
 }
 

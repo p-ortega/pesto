@@ -67,6 +67,15 @@ export async function apiPost(route: string, body: unknown): Promise<unknown> {
   return handleResponse(response)
 }
 
+export async function apiPut(route: string, body: unknown): Promise<unknown> {
+  const response = await fetch(route, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return handleResponse(response)
+}
+
 export interface BytesResult {
   buffer: ArrayBuffer
   meta: Record<string, unknown> | null
@@ -302,4 +311,65 @@ export async function ingestStart(): Promise<void> {
 
 export async function ingestCancel(): Promise<void> {
   await apiPost('/api/run/ingest/cancel', {})
+}
+
+// D-11: the per-run view state GET/PUT /api/run/view (src/pesto/api/runs.py)
+// keeps server-side -- the divider position and the colour/scale/group
+// choices, so a reopened run comes back as the user left it. The route's
+// own Pydantic model already applies every default; a caller that has not
+// yet read the current state should call readViewState first rather than
+// PUT a partial object, since the server always writes the whole document.
+export interface ViewState {
+  divider: number
+  colormap: string
+  reverse: boolean
+  scale: 'linear' | 'log10'
+  limitsMode: 'robust' | 'minmax' | 'manual'
+  group: string | null
+  stat: string
+}
+
+interface ViewStateWire {
+  divider: number
+  colormap: string
+  reverse: boolean
+  scale: 'linear' | 'log10'
+  limits_mode: 'robust' | 'minmax' | 'manual'
+  group: string | null
+  stat: string
+}
+
+function toViewState(raw: unknown): ViewState {
+  const wire = raw as ViewStateWire
+  return {
+    divider: wire.divider,
+    colormap: wire.colormap,
+    reverse: wire.reverse,
+    scale: wire.scale,
+    limitsMode: wire.limits_mode,
+    group: wire.group,
+    stat: wire.stat,
+  }
+}
+
+function toViewStateWire(state: ViewState): ViewStateWire {
+  return {
+    divider: state.divider,
+    colormap: state.colormap,
+    reverse: state.reverse,
+    scale: state.scale,
+    limits_mode: state.limitsMode,
+    group: state.group,
+    stat: state.stat,
+  }
+}
+
+export async function readViewState(): Promise<ViewState> {
+  const raw = await apiGet('/api/run/view')
+  return toViewState(raw)
+}
+
+export async function writeViewState(state: ViewState): Promise<ViewState> {
+  const raw = await apiPut('/api/run/view', toViewStateWire(state))
+  return toViewState(raw)
 }
