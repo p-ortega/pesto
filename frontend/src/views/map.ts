@@ -3,13 +3,15 @@
 // realization's field into a WebGL2 drawing. This replaces placeholder.ts
 // as the screen every flow in this phase ends at.
 
-import type { GridValuesQuery, IngestState, MeshInfo } from '../data/client'
-import { gridCells, gridMesh, gridMeshBuffer, gridValues, runReals } from '../data/client'
+import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo } from '../data/client'
+import { gridCells, gridMesh, gridMeshBuffer, gridValues } from '../data/client'
 import { fetchParIdentities, fetchParmap, joinBlockToIdentity, type ParIdentity } from '../data/parmap'
+import { fetchRealNames } from '../data/reals'
 import { Camera } from '../gl/camera'
 import { scaleLimits } from '../gl/colormap'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
+import { renderSelectionControls, type Selection } from '../ui/controls'
 import {
   renderHeader,
   renderNotice,
@@ -170,13 +172,60 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let ctx: GlContext | null = null
   let layer: MeshLayer | null = null
   let statusExtra: Record<string, string | number | null> = {}
+  let meshBytes: number | null = null
+
+  // The full block-order field for the selection currently committed to the
+  // canvas -- kept so a layer change can re-filter it locally without a
+  // fetch. `committed` is that selection; `pending` is a newer one whose
+  // fetch has not landed yet, shown in the status bar while `fullField`
+  // still holds the last one that did.
+  let fullField: Float32Array | null = null
+  let committed: Selection = { iteration: 0, layer: 0, stat: 'value', realization: null }
+  let pending: Selection | null = null
+  let statusError: string | null = null
+  let requestToken = 0
+  let rafScheduled = false
+
+  // Loaded once at mount and constant afterwards -- this plan carries no
+  // iteration selector, so a redraw only ever needs the layer to change.
+  let mesh: MeshInfo | null = null
+  let joined: Array<ParIdentity | null> = []
+  let cellArray: Int32Array = new Int32Array(0)
+  let layerArray: Int32Array = new Int32Array(0)
+  let drawnGroup: string | null = null
+
+  function selectionLabel(selection: Selection): string {
+    return selection.stat === 'value' ? (selection.realization ?? '—') : selection.stat
+  }
+
+  // A hand-built status-bar field rather than a renderStatusBar entry --
+  // that helper has no notion of per-field ink, and this is the one field
+  // that must turn warning-coloured on a failed fetch (D-14) without
+  // touching chrome.ts, which this plan does not modify.
+  function appendSelectionField(): void {
+    const label = statusError ?? selectionLabel(pending ?? committed)
+    const field = document.createElement('span')
+    const labelEl = document.createElement('span')
+    labelEl.textContent = 'Selection'
+    field.appendChild(labelEl)
+    const valueEl = document.createElement('span')
+    valueEl.classList.add('tabular-nums')
+    valueEl.textContent = label
+    if (statusError) {
+      valueEl.style.color = 'var(--status-warning)'
+    }
+    field.appendChild(valueEl)
+    statusBar.appendChild(field)
+  }
 
   function paintStatusBar(): void {
     renderStatusBar(statusBar, {
       'Ingest time': opts.state.ingestSeconds === null ? null : formatSeconds(opts.state.ingestSeconds),
       'Cache size': opts.state.cacheBytes === null ? null : formatBytes(opts.state.cacheBytes),
+      'Mesh size': meshBytes === null ? null : formatBytes(meshBytes),
       ...statusExtra,
     })
+    appendSelectionField()
   }
 
   function clearCanvas(): void {
@@ -229,6 +278,104 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     paintStatusBar()
   })
 
+  // Reprojects a full block-order field into grid-cell order, filtered to
+  // one layer and the drawn group. A block row's index is its position in
+  // the ensemble file, not a grid cell id -- the block-order `cell`
+  // companion array is the only thing that says which physical cell each
+  // row belongs to. Two block rows landing on the same cell (a contested
+  // cell, D-06) overwrite here rather than blend; the contested mark
+  // itself is out of this plan's scope.
+  function computePerCell(field: Float32Array, layerIndex: number): Float32Array {
+    const nCells = mesh?.nCells ?? 0
+    const perCell = new Float32Array(nCells).fill(Number.NaN)
+    for (let i = 0; i < field.length; i++) {
+      const identity = joined[i]
+      const onLayer = layerArray[i] === layerIndex
+      const inDrawnGroup = identity !== null && identity.pargp === drawnGroup
+      if (!onLayer || !inDrawnGroup) continue
+      const cellId = cellArray[i]
+      if (cellId >= 0 && cellId < nCells) {
+        perCell[cellId] = field[i]
+      }
+    }
+    return perCell
+  }
+
+  // A layer change never fetches -- the client already holds the whole
+  // field, so this re-filters it locally against the layer companion array
+  // and draws. Never touches the legend's limits: the one-scale-per-run
+  // rule (D-01) means only a landed fetch may change them.
+  function applyLayer(): void {
+    if (!fullField || !layer) return
+    layer.setValues(computePerCell(fullField, committed.layer))
+    redraw()
+    canvas.setAttribute('data-drawn', 'true')
+  }
+
+  // D-13: a realization, statistic or iteration change is coalesced to the
+  // next animation frame, so a drag through several positions issues one
+  // fetch, for the last selection, rather than one per step.
+  function scheduleFetch(next: Selection): void {
+    pending = next
+    statusError = null
+    paintStatusBar()
+    if (rafScheduled) return
+    rafScheduled = true
+    requestAnimationFrame(() => {
+      rafScheduled = false
+      const toFetch = pending
+      if (toFetch) void performFetch(toFetch)
+    })
+  }
+
+  async function performFetch(selection: Selection): Promise<void> {
+    // Guards the response against a newer request that started before this
+    // one landed -- a superseded answer is dropped silently, never drawn.
+    const token = ++requestToken
+    const query: GridValuesQuery =
+      selection.stat === 'value'
+        ? { iteration: selection.iteration, realization: selection.realization ?? undefined }
+        : { iteration: selection.iteration, stat: selection.stat }
+
+    let field: Float32Array
+    try {
+      field = await gridValues(query)
+    } catch (error) {
+      if (token !== requestToken) return
+      const status = error instanceof ApiError ? error.problem.status : 'unknown'
+      statusError = `${selectionLabel(selection)} — couldn't load (${status})`
+      pending = null
+      paintStatusBar()
+      return
+    }
+    if (token !== requestToken) return
+
+    // D-01: limits come from the full array the moment it lands, before
+    // any layer filter -- one scale for the whole run, computed only here,
+    // never on the layer-change path.
+    const limits = scaleLimits(field, 0.02)
+    fullField = field
+    layer?.setLimits(limits)
+    committed = selection
+    pending = null
+    statusError = null
+    applyLayer()
+    paintStatusBar()
+  }
+
+  function handleSelectionChange(next: Selection): void {
+    const needsFetch =
+      next.stat !== committed.stat ||
+      next.realization !== committed.realization ||
+      next.iteration !== committed.iteration
+    if (needsFetch) {
+      scheduleFetch(next)
+      return
+    }
+    committed = { ...committed, layer: next.layer }
+    applyLayer()
+  }
+
   clearCanvas()
 
   void loadAndDraw(ctx)
@@ -236,7 +383,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   async function loadAndDraw(gl: GlContext): Promise<void> {
     const iteration = opts.config?.first_iteration ?? 0
 
-    let mesh: MeshInfo
     let positions: Float32Array
     let cellIndexBuf: Float32Array
     let indices: Uint32Array
@@ -249,6 +395,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       renderNotice(mapNotice, { title: 'The grid could not be read', detail: describeError(error), tone: 'serious' })
       return
     }
+    meshBytes = positions.byteLength + cellIndexBuf.byteLength + indices.byteLength
 
     let parmap: Int32Array
     let identities: ParIdentity[]
@@ -263,10 +410,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       })
       return
     }
-    const joined = joinBlockToIdentity(parmap, identities)
+    joined = joinBlockToIdentity(parmap, identities)
 
-    let cellArray: Int32Array
-    let layerArray: Int32Array
     try {
       cellArray = await gridCells('cell', iteration)
       layerArray = await gridCells('layer', iteration)
@@ -279,7 +424,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       return
     }
 
-    const drawnGroup = pickFirstGroup(joined)
+    drawnGroup = pickFirstGroup(joined)
     if (drawnGroup === null) {
       renderNotice(mapNotice, {
         title: 'No parameter group can be drawn',
@@ -289,71 +434,12 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       return
     }
 
-    let realizations: string[]
-    try {
-      realizations = await runReals(iteration)
-    } catch (error) {
-      renderNotice(mapNotice, {
-        title: 'No realizations were recorded',
-        detail: describeError(error),
-        tone: 'serious',
-      })
-      return
-    }
-    const realization = realizations[0]
-    if (realization === undefined) {
-      renderNotice(mapNotice, { title: 'No realizations were recorded', tone: 'info' })
-      return
-    }
-
-    let field: Float32Array
-    try {
-      const query: GridValuesQuery = { iteration, realization }
-      field = await gridValues(query)
-    } catch (error) {
-      renderNotice(mapNotice, { title: 'The field could not be read', detail: describeError(error), tone: 'serious' })
-      return
-    }
-
-    if (field.length === 0) {
-      renderNotice(mapNotice, {
-        title: 'This realization has no values',
-        detail: 'The server returned an empty field, so there is nothing to draw.',
-        tone: 'info',
-      })
-      return
-    }
-
-    // D-01: limits are computed over the whole field before any layer or
-    // group filter, so one scale covers the whole run and a later layer
-    // change is a comparison rather than a re-normalisation.
-    const limits = scaleLimits(field, 0.02)
-
-    // Reproject from block order into grid-cell order: a block row's index
-    // is its position in the ensemble file, not a grid cell id -- the
-    // block-order `cell` companion array is the only thing that says which
-    // physical cell each row belongs to. Skipping this step would upload
-    // block row i's value to grid cell i, which is only ever right by
-    // coincidence. Two block rows landing on the same cell (a contested
-    // cell, D-06) overwrite here rather than blend -- that decision, and
-    // the contested mark itself, belong to a later plan; this tracer never
-    // invents an averaged value.
-    const perCell = new Float32Array(mesh.nCells).fill(Number.NaN)
-    for (let i = 0; i < field.length; i++) {
-      const identity = joined[i]
-      const onLayerZero = layerArray[i] === 0
-      const inDrawnGroup = identity !== null && identity.pargp === drawnGroup
-      if (!onLayerZero || !inDrawnGroup) continue
-      const cellId = cellArray[i]
-      if (cellId >= 0 && cellId < mesh.nCells) {
-        perCell[cellId] = field[i]
-      }
-    }
+    const realNames = await fetchRealNames(iteration)
 
     // Outside the model (MAP-07): a grid cell never referenced by any
     // block row of any group, at any layer -- distinct from a cell that IS
-    // in the model but not in the drawn group/layer, which perCell already
-    // leaves as NaN above and the fill shader discards.
+    // in the model but not in the drawn group/layer, which computePerCell
+    // already leaves as NaN and the fill shader discards.
     const inactiveMask = new Uint8Array(mesh.nCells).fill(1)
     for (let i = 0; i < cellArray.length; i++) {
       const cellId = cellArray[i]
@@ -366,8 +452,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
     const meshData: MeshData = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
     layer = new MeshLayer(gl.gl, meshData)
-    layer.setValues(perCell)
-    layer.setLimits(limits)
     layer.setColormap('viridis')
     layer.setInactive(inactiveMask)
     layer.setHairlineColor(readColorToken('--hairline'))
@@ -376,7 +460,22 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     camera.fit(mesh.bounds)
     layer.setMatrix(camera.matrix())
 
-    redraw()
-    canvas.setAttribute('data-drawn', 'true')
+    // A run whose realization names were never recorded can still show an
+    // aggregate statistic, which needs no realization name -- 'value'
+    // would only ever fail to load, so it is not offered as the default.
+    const initialStat = realNames.ok ? 'value' : 'mean'
+    const initialRealization = realNames.ok ? (realNames.names[0] ?? null) : null
+    committed = { iteration, layer: 0, stat: initialStat, realization: initialRealization }
+
+    const controlsEl = document.createElement('div')
+    panel.appendChild(controlsEl)
+    renderSelectionControls(controlsEl, {
+      nlay: mesh.nlay,
+      iteration,
+      realNames,
+      onSelectionChange: handleSelectionChange,
+    })
+
+    await performFetch(committed)
   }
 }
