@@ -136,8 +136,26 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(bodyText).toMatch(/1 cells contested/)
     expect(bodyText).toMatch(/3 cells no value/)
     await expect(page.locator('[role="separator"][aria-label="Resize panel"]')).toBeAttached()
+    await expect(page.locator('button', { hasText: 'Fit to extent' })).toBeAttached()
 
     await expect(page.locator('canvas')).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
+  })
+
+  // Plan 05.1-08/D-16: the synthetic run's mesh already carries no CRS
+  // (tests/fixtures/synthetic_run.py passes crs=None), so the no-CRS
+  // designed state is already reachable through this same fixture --
+  // informational, never a warning (visual contract §9).
+  test('a run with no CRS reads as a normal, informational state -- never a warning', async ({ page }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    const notice = page.locator('[data-testid="map-notices"]')
+    await expect(notice).toContainText('No coordinate system')
+    await expect(notice).toContainText('Note')
+    await expect(notice).not.toContainText('Warning')
+    await expect(notice).not.toContainText('Critical')
+
+    await expect(notice).toHaveScreenshot('mesh-no-crs-notice.png')
   })
 
   // The synthetic run's six cells lay out in a row, each 128 screen px
