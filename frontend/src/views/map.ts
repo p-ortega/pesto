@@ -27,6 +27,7 @@ import {
   renderHeader,
   renderNotice,
   renderStatusBar,
+  type ChipsInput,
   type NoticeTone,
   type RenderNoticeOptions,
 } from '../ui/chrome'
@@ -43,7 +44,12 @@ export interface RunConfig {
   case: string
   n_par: number | null
   n_real: number | null
+  base_realization: boolean | null
+  n_iterations: number | null
+  noptmax: number | null
   first_iteration: number | null
+  projection: string | null
+  projection_known: boolean
   noise: NoiseFact
 }
 
@@ -390,10 +396,38 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     updateReadout()
   }
 
+  // D-12/MAP-10: the chips capability, not the config object, decides
+  // whether the failure chip replaces the row -- the config artifact can
+  // fail even when `opts.config` itself came back non-null from an earlier
+  // read, and `opts.config` can be null for reasons that are not a chip
+  // failure at all (no run open yet). No chip row at all until one of the
+  // two is actually known.
+  function chipsInput(): ChipsInput | null {
+    const chipsCap = opts.state.capabilities.chips
+    if (!chipsCap.available) {
+      const blocked = chipsCap.blockedBy[0]
+      return blocked ? { config: null, failure: { artifact: blocked.artifact, reason: blocked.reason } } : null
+    }
+    if (!opts.config) return null
+    return {
+      failure: null,
+      config: {
+        n_par: opts.config.n_par,
+        n_real: opts.config.n_real,
+        base_realization: opts.config.base_realization,
+        n_iterations: opts.config.n_iterations,
+        noptmax: opts.config.noptmax,
+        projection: opts.config.projection,
+        has_noise: opts.config.noise.has_noise,
+      },
+    }
+  }
+
   function paintHeader(): void {
     renderHeader(header, {
       title: opts.config?.case ?? 'This run',
       themeChoice: currentTheme(),
+      chips: chipsInput(),
       onThemeChange: (choice: ThemeChoice) => {
         setTheme(choice)
         paintHeader()
