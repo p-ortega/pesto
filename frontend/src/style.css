@@ -209,6 +209,19 @@ body {
   gap: var(--space-sm);
 }
 
+/* WINDOWS.md #13: a notice's icon, tone word, title and detail are four
+   adjacent spans in `renderNotice` -- the same run-together shape as
+   `.legend-figures`, but the Spacing Scale names this one specifically
+   ("xs: icon-to-label gaps inside a chip or notice"), so it gets its own
+   token rather than borrowing sm. Same mechanism (a real flex gap), the
+   token the spec actually calls for. */
+.notice-parts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs);
+}
+
 .truncate {
   overflow: hidden;
   text-overflow: ellipsis;

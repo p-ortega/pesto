@@ -111,6 +111,19 @@ export function renderSelectionControls(
 ): SelectionControlsHandle {
   el.textContent = ''
   el.classList.add('floating')
+  // WINDOWS.md #13's sweep: the fit button, each label and the two
+  // manual-limit inputs are inline-level elements with no separation of
+  // their own -- a flex row that wraps, with a real gap on both axes,
+  // keeps the same shrink-to-fit packing (and roughly the same panel
+  // height) the browser's own default inline wrapping already gave this
+  // panel, but now with a real gap between every pair instead of nothing.
+  // A plain flex COLUMN was tried first and rejected: it puts one control
+  // per line unconditionally, which more than quadruples the panel's
+  // height and, on this app's fixed 800x480 canvas, covers cells that used
+  // to be visible underneath it.
+  el.style.display = 'flex'
+  el.style.flexWrap = 'wrap'
+  el.style.gap = 'var(--space-sm)'
 
   // Fit to extent (D-15/MAP-11): a real button, the one button-shaped
   // primary action on this map surface, calling the same fit(bounds) the
