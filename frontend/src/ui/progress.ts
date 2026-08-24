@@ -200,14 +200,21 @@ const ROW_STYLE: Record<string, { icon: string; word: string; colorVar: string }
 
 function createRowSkeleton(name: string): RowElements {
   const item = document.createElement('li')
+  item.style.display = 'flex'
+  item.style.gap = 'var(--space-sm)'
+  item.style.borderBottom = '1px solid var(--hairline)'
   const iconEl = document.createElement('span')
   const nameEl = document.createElement('span')
   nameEl.textContent = name
   const wordEl = document.createElement('span')
   const sourceEl = document.createElement('span')
+  sourceEl.classList.add('tabular-nums')
   const writtenEl = document.createElement('span')
+  writtenEl.classList.add('tabular-nums')
   const durationEl = document.createElement('span')
+  durationEl.classList.add('tabular-nums')
   const reasonEl = document.createElement('span')
+  reasonEl.classList.add('wrap-note')
   const notesEl = document.createElement('ul')
 
   item.appendChild(iconEl)
@@ -245,6 +252,7 @@ function applyRowState(elements: RowElements, row: ProgressRow): void {
   for (const note of row.notes) {
     const item = document.createElement('li')
     item.textContent = note
+    item.classList.add('wrap-note')
     elements.notesEl.appendChild(item)
   }
 }
@@ -315,8 +323,10 @@ export interface MountProgressOptions {
  */
 export function mountProgress(root: HTMLElement, opts: MountProgressOptions): () => void {
   root.textContent = ''
+  root.classList.add('page')
 
   const headerRow = document.createElement('div')
+  headerRow.classList.add('header')
   const headerEl = document.createElement('div')
   const cancelButton = document.createElement('button')
   cancelButton.textContent = 'Cancel'
@@ -324,12 +334,17 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
   headerRow.appendChild(cancelButton)
 
   const noticeArea = document.createElement('div')
+  const rowsPanel = document.createElement('div')
+  rowsPanel.classList.add('surface')
   const rowsList = document.createElement('ul')
+  rowsList.classList.add('scroll-pane')
   const statusBar = document.createElement('div')
+  statusBar.classList.add('status-bar')
 
   root.appendChild(headerRow)
   root.appendChild(noticeArea)
-  root.appendChild(rowsList)
+  root.appendChild(rowsPanel)
+  rowsPanel.appendChild(rowsList)
   root.appendChild(statusBar)
 
   function paintHeader(): void {
