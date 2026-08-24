@@ -9,43 +9,60 @@ import { describe, expect, it } from 'vitest'
 import { parseColorToken } from '../src/views/map'
 
 describe('parseColorToken', () => {
-  it('reads an 8-digit hex token as its RGB triple, ignoring alpha', () => {
+  // WINDOWS.md #12: the orchestrator's prior instruction to drop the alpha
+  // channel was wrong -- --hairline is authored at 10% opacity on purpose,
+  // and dropping it draws the outline at full strength. This is the test
+  // that would have caught that bad instruction.
+  it('reports the alpha channel of an 8-digit hex token instead of discarding it', () => {
+    const [, , , a] = parseColorToken('#ffffff1a')
+    expect(a).toBeCloseTo(26 / 255, 5)
+    expect(a).toBeCloseTo(0.102, 3)
+  })
+
+  it('reads an 8-digit hex token as its RGBA quadruple, no longer discarding alpha', () => {
     // The exact dark-theme --hairline serialisation measured in a real
     // browser. Must come back near-white, never the old yellow result.
-    expect(parseColorToken('#ffffff1a')).toEqual([1, 1, 1])
+    expect(parseColorToken('#ffffff1a')).toEqual([1, 1, 1, 26 / 255])
   })
 
   it('reads the light-theme 8-digit hex hairline the same way', () => {
-    const [r, g, b] = parseColorToken('#0b0b0b1a')
+    const [r, g, b, a] = parseColorToken('#0b0b0b1a')
     expect(r).toBeCloseTo(11 / 255, 5)
     expect(g).toBeCloseTo(11 / 255, 5)
     expect(b).toBeCloseTo(11 / 255, 5)
+    expect(a).toBeCloseTo(26 / 255, 5)
   })
 
-  it('reads a plain 6-digit hex token', () => {
-    const [r, g, b] = parseColorToken('#2a78d6')
+  it('reads a plain 6-digit hex token as fully opaque', () => {
+    const [r, g, b, a] = parseColorToken('#2a78d6')
     expect(r).toBeCloseTo(0x2a / 255, 5)
     expect(g).toBeCloseTo(0x78 / 255, 5)
     expect(b).toBeCloseTo(0xd6 / 255, 5)
+    expect(a).toBe(1)
   })
 
-  it('reads a 3-digit shorthand hex token', () => {
-    expect(parseColorToken('#fff')).toEqual([1, 1, 1])
+  it('reads a 3-digit shorthand hex token as fully opaque', () => {
+    expect(parseColorToken('#fff')).toEqual([1, 1, 1, 1])
   })
 
-  it('reads a 4-digit shorthand hex token, ignoring the alpha digit', () => {
-    expect(parseColorToken('#fff8')).toEqual([1, 1, 1])
+  it('reads a 4-digit shorthand hex token, carrying its alpha digit', () => {
+    // '8' repeated is '88' = 136, not the '0.1'-ish fraction a human might
+    // guess -- this is what the shorthand form's own doubling rule gives.
+    const [r, g, b, a] = parseColorToken('#fff8')
+    expect([r, g, b]).toEqual([1, 1, 1])
+    expect(a).toBeCloseTo(136 / 255, 5)
   })
 
-  it('reads an rgb() token', () => {
-    const [r, g, b] = parseColorToken('rgb(42, 120, 214)')
+  it('reads an rgb() token as fully opaque', () => {
+    const [r, g, b, a] = parseColorToken('rgb(42, 120, 214)')
     expect(r).toBeCloseTo(42 / 255, 5)
     expect(g).toBeCloseTo(120 / 255, 5)
     expect(b).toBeCloseTo(214 / 255, 5)
+    expect(a).toBe(1)
   })
 
-  it('reads an rgba() token, ignoring the alpha channel', () => {
-    expect(parseColorToken('rgba(255, 255, 255, 0.1)')).toEqual([1, 1, 1])
+  it('reads an rgba() token, carrying the alpha channel', () => {
+    expect(parseColorToken('rgba(255, 255, 255, 0.1)')).toEqual([1, 1, 1, 0.1])
   })
 
   it('never returns int32-overflowed channels for a value past 2^31 when parsed as a bare hex integer', () => {
@@ -67,6 +84,6 @@ describe('parseColorToken', () => {
     // loaded. That is a distinct case from a browser handing back a
     // resolved value this code cannot read, which is the actual defect
     // this file exists to catch, so only that case throws.
-    expect(parseColorToken('')).toEqual([0, 0, 0])
+    expect(parseColorToken('')).toEqual([0, 0, 0, 1])
   })
 })
