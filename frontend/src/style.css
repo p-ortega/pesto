@@ -158,9 +158,46 @@ body {
   width: 8px;
 }
 
+/* A floating panel's own look: a surface backdrop and a hairline border,
+   same convention as every other panel, so its text never sits directly on
+   the page plane. Positioning is a separate concern -- see the four
+   .floating-* role classes below. */
 .floating {
-  position: absolute;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
   padding: var(--space-sm);
+}
+
+/* D-09/visual contract §6: the map area is the positioning context every
+   floating overlay's offset is measured from, so a control panel floats
+   over the map itself rather than the whole page. */
+.map-area {
+  position: relative;
+}
+
+/* The controls and the group picker share this one top-left cluster,
+   stacked with the standard gap, rather than each carrying its own
+   absolute offset -- the picker isn't in the visual contract's diagram,
+   so it rides along with the controls it belongs next to. */
+.floating-top-left {
+  position: absolute;
+  top: var(--space-md);
+  left: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.floating-bottom-left {
+  position: absolute;
+  bottom: var(--space-md);
+  left: var(--space-md);
+}
+
+.floating-bottom-right {
+  position: absolute;
+  bottom: var(--space-md);
+  right: var(--space-md);
 }
 
 .truncate {
