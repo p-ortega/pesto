@@ -266,6 +266,12 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const mapArea = document.createElement('div')
   const dividerEl = document.createElement('div')
   const paramsPanelHost = document.createElement('div')
+  // The positioning context for the four floating overlays is the canvas's
+  // own box, not the whole of mapArea -- mapArea also holds mapNotice below
+  // the canvas, and anchoring "bottom" to mapArea's bottom would pull the
+  // legend and readout down over that notice text instead of the map.
+  const mapCanvasArea = document.createElement('div')
+  mapCanvasArea.classList.add('map-area')
   const canvas = document.createElement('canvas')
   canvas.width = 800
   canvas.height = 480
@@ -273,14 +279,24 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   canvas.setAttribute('aria-label', 'Model grid map: drag to pan, scroll to zoom, arrow keys pan, + and - zoom, Home fits to extent')
   const mapNotice = document.createElement('div')
   mapNotice.setAttribute('data-testid', 'map-notices')
+  // Visual contract §6: controls top-left, legend bottom-left, readout
+  // bottom-right. The group picker isn't in that diagram -- it rides in
+  // the same top-left cluster as the controls, stacked under them, since
+  // it's a selection control too and has no other place the contract names.
+  const topLeftEl = document.createElement('div')
+  topLeftEl.classList.add('floating-top-left')
   const legendEl = document.createElement('div')
+  legendEl.classList.add('floating-bottom-left')
   const pickerEl = document.createElement('div')
   const readoutEl = document.createElement('div')
-  mapArea.appendChild(canvas)
+  readoutEl.classList.add('floating-bottom-right')
+  topLeftEl.appendChild(pickerEl)
+  mapCanvasArea.appendChild(topLeftEl)
+  mapCanvasArea.appendChild(canvas)
+  mapCanvasArea.appendChild(legendEl)
+  mapCanvasArea.appendChild(readoutEl)
+  mapArea.appendChild(mapCanvasArea)
   mapArea.appendChild(mapNotice)
-  mapArea.appendChild(legendEl)
-  mapArea.appendChild(pickerEl)
-  mapArea.appendChild(readoutEl)
   panel.appendChild(mapArea)
   panel.appendChild(dividerEl)
   panel.appendChild(paramsPanelHost)
@@ -1103,8 +1119,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       manualLimits: null,
     }
 
+    // Placed before pickerEl, not appended at the end: the controls come
+    // first in the top-left cluster, both visually (flex column) and in
+    // tab order, with the group picker stacked under them.
     const controlsEl = document.createElement('div')
-    mapArea.appendChild(controlsEl)
+    topLeftEl.insertBefore(controlsEl, pickerEl)
     controlsHandle = renderSelectionControls(controlsEl, {
       nlay: mesh.nlay,
       iteration,

@@ -141,6 +141,73 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('canvas')).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
   })
 
+  // Regression for WINDOWS.md #3: the four overlays used to all resolve to
+  // the same computed corner (auto/auto offsets with no positioning context
+  // on the map area) and sit on top of each other. This reads real
+  // getBoundingClientRect() geometry -- a check that only checking for
+  // `.floating`'s presence would not have caught, since every overlay
+  // already carried that class before the fix.
+  test('the controls, group picker, legend and readout sit in four distinct corners and never overlap', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    const geometry = await page.evaluate(() => {
+      function rectOf(el: Element | null): DOMRect | null {
+        return el ? el.getBoundingClientRect() : null
+      }
+      const canvas = document.querySelector('canvas')
+      const topLeft = document.querySelector('.floating-top-left')
+      const bottomLeft = document.querySelector('.floating-bottom-left')
+      const bottomRight = document.querySelector('.floating-bottom-right')
+      const topLeftChildren = topLeft ? Array.from(topLeft.children) : []
+      return {
+        canvas: rectOf(canvas)?.toJSON() ?? null,
+        topLeft: rectOf(topLeft)?.toJSON() ?? null,
+        bottomLeft: rectOf(bottomLeft)?.toJSON() ?? null,
+        bottomRight: rectOf(bottomRight)?.toJSON() ?? null,
+        controls: rectOf(topLeftChildren[0] ?? null)?.toJSON() ?? null,
+        picker: rectOf(topLeftChildren[1] ?? null)?.toJSON() ?? null,
+      }
+    })
+
+    const { canvas, topLeft, bottomLeft, bottomRight, controls, picker } = geometry
+    expect(canvas).not.toBeNull()
+    expect(topLeft).not.toBeNull()
+    expect(bottomLeft).not.toBeNull()
+    expect(bottomRight).not.toBeNull()
+    expect(controls).not.toBeNull()
+    expect(picker).not.toBeNull()
+
+    // Each cluster anchors to its own named corner of the canvas, not to a
+    // shared default position.
+    expect(topLeft!.top).toBeLessThan(canvas!.top + canvas!.height / 2)
+    expect(topLeft!.left).toBeLessThan(canvas!.left + canvas!.width / 2)
+    expect(bottomLeft!.bottom).toBeGreaterThan(canvas!.top + canvas!.height / 2)
+    expect(bottomLeft!.left).toBeLessThan(canvas!.left + canvas!.width / 2)
+    expect(bottomRight!.bottom).toBeGreaterThan(canvas!.top + canvas!.height / 2)
+    expect(bottomRight!.right).toBeGreaterThan(canvas!.left + canvas!.width / 2)
+
+    // The three clusters carry three distinct corners -- no two share the
+    // same computed top-left origin, which is exactly what the bug did.
+    expect(`${topLeft!.top},${topLeft!.left}`).not.toBe(`${bottomLeft!.top},${bottomLeft!.left}`)
+    expect(`${bottomLeft!.top},${bottomLeft!.left}`).not.toBe(`${bottomRight!.top},${bottomRight!.left}`)
+    expect(`${topLeft!.top},${topLeft!.left}`).not.toBe(`${bottomRight!.top},${bottomRight!.left}`)
+
+    // The group picker rides under the controls, in DOM order and on
+    // screen, not stacked on top of them.
+    expect(picker!.top).toBeGreaterThanOrEqual(controls!.bottom)
+
+    // No two of the three corner clusters overlap each other's box.
+    function overlaps(a: DOMRect, b: DOMRect): boolean {
+      return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+    }
+    expect(overlaps(topLeft!, bottomLeft!)).toBe(false)
+    expect(overlaps(bottomLeft!, bottomRight!)).toBe(false)
+    expect(overlaps(topLeft!, bottomRight!)).toBe(false)
+  })
+
   // Plan 05.1-08/D-16: the synthetic run's mesh already carries no CRS
   // (tests/fixtures/synthetic_run.py passes crs=None), so the no-CRS
   // designed state is already reachable through this same fixture --
