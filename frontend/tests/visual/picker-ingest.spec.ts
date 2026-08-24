@@ -156,10 +156,9 @@ test.describe('the picker and ingest flow, in a real browser against a real pest
     await expect(page.locator('li').first()).toBeVisible({ timeout: 60_000 })
     await expect(page.getByText(/Done|Failed|Already fresh/).first()).toBeVisible({ timeout: INGEST_WAIT_MS })
 
-    await expect(page.getByText('The map is not built yet')).toBeVisible({ timeout: INGEST_WAIT_MS })
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: INGEST_WAIT_MS })
 
     const bodyText = (await page.textContent('body')) ?? ''
-    expect(bodyText).toMatch(/5\.1/)
     expect(bodyText).toMatch(/Ingest time[\d.]/)
     expect(bodyText).toMatch(/Cache size[\d.]/)
     expect(bodyText).not.toMatch(ABSOLUTE_PATH_PATTERN)
@@ -171,11 +170,11 @@ test.describe('the picker and ingest flow, in a real browser against a real pest
 
     const start = Date.now()
     await page.goto(pestoUrl)
-    await expect(page.getByText('The map is not built yet')).toBeVisible()
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible()
     const elapsedMs = Date.now() - start
     // Phase 6 measures the 1.5s warm-open budget on its own methodology;
     // this is a starting figure from a real browser, not that measurement.
-    console.log(`[visual] warm-open navigation-to-placeholder: ${elapsedMs}ms`)
+    console.log(`[visual] warm-open navigation-to-map: ${elapsedMs}ms`)
 
     await expect(page.getByRole('button', { name: 'Agree and ingest' })).toHaveCount(0)
     await expect(page.locator('li')).toHaveCount(0)
