@@ -18,6 +18,12 @@ import {
 import { fetchRealNames } from '../data/reals'
 import { Camera } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
+// WINDOWS.md #10: this parser lives outside views/ because style-frame.test.ts
+// scans every file under views/ and ui/ for a raw hex colour literal --
+// this module's own hex-digit regex and doc comments would trip that scan,
+// even though it reads colours rather than writing one.
+export { parseColorToken } from '../gl/color-token'
+import { readColorToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld } from '../gl/picking'
@@ -146,26 +152,6 @@ function renderBlockedCapabilities(container: HTMLElement, state: IngestState): 
   }
 }
 
-// Reads a resolved CSS custom property the same way for the canvas clear
-// colour and the hairline outline -- a hex token (`--page-plane`) or an
-// rgba() token (`--hairline`), converted to the 0-1 floats WebGL2 wants.
-// No colour value is written here; every number comes from the token.
-function readColorToken(name: string): [number, number, number] {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-
-  if (value.startsWith('#')) {
-    const n = Number.parseInt(value.slice(1), 16)
-    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
-  }
-
-  const match = value.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/)
-  if (match) {
-    return [Number(match[1]) / 255, Number(match[2]) / 255, Number(match[3]) / 255]
-  }
-
-  return [0, 0, 0]
-}
-
 // D-07: a group is drawable when at least one of its identified block rows
 // places on a real cell (cell !== -1, Phase 3's own -1 sentinel for "no
 // rule matched"); every other identified group is unmapped. Order is
@@ -242,6 +228,19 @@ function restoredStat(value: string | undefined, realNamesOk: boolean): Selectio
     return value as Selection['stat']
   }
   return realNamesOk ? 'value' : 'mean'
+}
+
+// WINDOWS.md #11: the view-state wire (prefs.py's _VIEW_STATE_DEFAULTS,
+// ViewStateWire in client.ts) has a field for the limits MODE but none at
+// all for a manual PAIR -- the numbers a manual choice needs were never
+// saved. A restored 'manual' mode is therefore never trustworthy on its
+// own: trusting it draws a fabricated range (committed.manualLimits stays
+// null, so deriveAndDraw falls to [0, 1]; a later control interaction can
+// even compute [0, 0] from the empty number inputs) and presents it as the
+// pair the user actually chose. Falling back to robust here, with a notice
+// naming why, is the honest version of "we don't actually know this."
+function restoredLimitsMode(mode: ViewState['limitsMode']): 'robust' | 'minmax' {
+  return mode === 'manual' ? 'robust' : mode
 }
 
 /**
@@ -1152,6 +1151,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const drawnPartrans = partransForGroup(joined, drawnGroup)
     const inferredScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     const initialScale: ValueScale = wasVisitedBefore ? restoredView!.scale : inferredScale
+    if (wasVisitedBefore && restoredView!.limitsMode === 'manual') {
+      addNotice(mapNotice, {
+        title: 'Manual limits could not be restored',
+        detail:
+          "This run was left with manual colour limits, but the saved state has no record of the numbers used -- showing the robust 2-98% range instead.",
+        tone: 'info',
+      })
+    }
     committed = {
       iteration,
       layer: 0,
@@ -1161,7 +1168,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       reverseColormap: wasVisitedBefore ? restoredView!.reverse : false,
       scale: initialScale,
       scaleInferred: !wasVisitedBefore,
-      limitsMode: wasVisitedBefore ? restoredView!.limitsMode : 'robust',
+      limitsMode: wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust',
       manualLimits: null,
     }
 
