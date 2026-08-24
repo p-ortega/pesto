@@ -351,7 +351,10 @@ describe('mountPicker', () => {
     await settle()
     const callsAtChildLevel = fetchStub.mock.calls.length
 
-    const list = root.children.find((el) => el.tagName === 'UL')!
+    // Plan 05.1-01's retrofit nests the list inside a `.surface` panel, so
+    // a direct-child lookup no longer finds it -- the recursive walker
+    // already used elsewhere in this file does.
+    const list = collectAll(root).find((el) => el.tagName === 'UL')!
     list.dispatchEvent(new FakeEvent('keydown', { key: 'Escape' }))
     await settle()
 
