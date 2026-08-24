@@ -353,7 +353,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // D-01: limits come from the full array the moment it lands, before
     // any layer filter -- one scale for the whole run, computed only here,
     // never on the layer-change path.
-    const limits = scaleLimits(field, 0.02)
+    const limits = scaleLimits(field, 'robust')
     fullField = field
     layer?.setLimits(limits)
     committed = selection
