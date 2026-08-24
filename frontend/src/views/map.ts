@@ -18,8 +18,11 @@ import { Camera } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, LimitsMemory, type ValueScale } from '../gl/colormap'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
+import { pickAtWorld } from '../gl/picking'
 import { renderSelectionControls, type Selection, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend } from '../ui/legend'
+import { renderGroupPicker, type GroupPickerState, type UnmappedGroup } from '../ui/group-picker'
+import { renderReadout, type ReadoutPick } from '../ui/readout'
 import {
   renderHeader,
   renderNotice,
@@ -136,15 +139,40 @@ function readColorToken(name: string): [number, number, number] {
   return [0, 0, 0]
 }
 
-// The first group, in block order, that has at least one identified block
-// row -- the drawn group for this tracer, since no group picker exists
-// yet. Returns null when every row is unidentifiable (D-05's join found
-// nothing), which the caller renders as a designed state.
-function pickFirstGroup(joined: Array<ParIdentity | null>): string | null {
-  for (const identity of joined) {
-    if (identity !== null) return identity.pargp
+// D-07: a group is drawable when at least one of its identified block rows
+// places on a real cell (cell !== -1, Phase 3's own -1 sentinel for "no
+// rule matched"); every other identified group is unmapped. Order is
+// first-seen in block order, matching the control file's own ordering.
+// The recorded placement note (ParCells.notes) is not exposed by any
+// route today, so every unmapped entry carries `note: null` and falls
+// back to the "no placement rule matched" copy -- a real gap, not a
+// silent guess (see this plan's Known Stubs).
+function computeGroupPlacement(
+  joined: Array<ParIdentity | null>,
+  cells: Int32Array,
+): { drawable: string[]; unmapped: UnmappedGroup[] } {
+  const order: string[] = []
+  const seen = new Set<string>()
+  const placed = new Set<string>()
+  for (let i = 0; i < joined.length; i++) {
+    const identity = joined[i]
+    if (identity === null) continue
+    if (!seen.has(identity.pargp)) {
+      seen.add(identity.pargp)
+      order.push(identity.pargp)
+    }
+    if (cells[i] >= 0) placed.add(identity.pargp)
   }
-  return null
+  const drawable: string[] = []
+  const unmapped: UnmappedGroup[] = []
+  for (const group of order) {
+    if (placed.has(group)) {
+      drawable.push(group)
+    } else {
+      unmapped.push({ group, note: null })
+    }
+  }
+  return { drawable, unmapped }
 }
 
 // The drawn group's own partrans, read straight from the D-05 join --
@@ -179,9 +207,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   canvas.tabIndex = 0
   const mapNotice = document.createElement('div')
   const legendEl = document.createElement('div')
+  const pickerEl = document.createElement('div')
+  const readoutEl = document.createElement('div')
   panel.appendChild(canvas)
   panel.appendChild(mapNotice)
   panel.appendChild(legendEl)
+  panel.appendChild(pickerEl)
+  panel.appendChild(readoutEl)
   const statusBar = document.createElement('div')
   statusBar.classList.add('status-bar')
 
@@ -194,6 +226,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let layer: MeshLayer | null = null
   let statusExtra: Record<string, string | number | null> = {}
   let meshBytes: number | null = null
+  // Set once the mesh and camera are loaded (loadAndDraw) -- the click
+  // handler is wired from mount, so both are nullable until then.
+  let camera: Camera | null = null
+  let meshGeom: MeshData | null = null
+  let selectedCellId: number | null = null
 
   // The raw block-order field for the selection currently committed to the
   // canvas, as fetched -- never transformed, so a scale change can derive
@@ -297,6 +334,62 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer?.setAccentColor(readColorToken('--accent'))
   }
 
+  // Resolves synchronously from currentClasses/rawFullField -- the client
+  // already holds the field and the D-05 join, so there is no fetch and no
+  // loading state here (D-08).
+  function updateReadout(): void {
+    const group = drawnGroup ?? ''
+    const field = rawFullField ?? new Float32Array(0)
+    const classification = selectedCellId !== null ? currentClasses[selectedCellId] : undefined
+    const pick: ReadoutPick =
+      selectedCellId !== null && classification
+        ? {
+            kind: 'cell',
+            cellId: selectedCellId,
+            layer: committed.layer,
+            selectionLabel: selectionLabel(committed),
+            classification,
+          }
+        : { kind: 'none' }
+    renderReadout(readoutEl, { pick, group, joined, field })
+  }
+
+  // camera.screenToWorld then pickAtWorld on a canvas click -- both are
+  // null until loadAndDraw lands, so a click before then is a no-op.
+  function handleCanvasClick(event: MouseEvent): void {
+    if (!camera || !meshGeom) return
+    const rect = canvas.getBoundingClientRect()
+    const x = ((event.clientX - rect.left) / rect.width) * canvas.width
+    const y = ((event.clientY - rect.top) / rect.height) * canvas.height
+    const [wx, wy] = camera.screenToWorld(x, y)
+    selectedCellId = pickAtWorld(meshGeom, wx, wy)
+    layer?.setSelected(selectedCellId)
+    redraw()
+    updateReadout()
+  }
+  canvas.addEventListener('click', handleCanvasClick)
+
+  function paintPicker(state: GroupPickerState): void {
+    renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange })
+  }
+
+  // A group change re-runs classifyCells (via applyLayer, which reads
+  // drawnGroup), re-derives the scale default from the new group's
+  // partrans, clears the per-statistic limits memory, and redraws -- no
+  // fetch, since the client already holds the whole field. The selection
+  // is cleared: the previous readout described a cell in the old group.
+  function handleGroupChange(group: string): void {
+    drawnGroup = group
+    const drawnPartrans = partransForGroup(joined, group)
+    const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
+    committed = { ...committed, scale: newScale, scaleInferred: true }
+    limitsMemory.clear()
+    selectedCellId = null
+    layer?.setSelected(null)
+    deriveAndDraw()
+    updateReadout()
+  }
+
   function paintHeader(): void {
     renderHeader(header, {
       title: opts.config?.case ?? 'This run',
@@ -316,6 +409,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
   renderBlockedCapabilities(noticeArea, opts.state)
   paintStatusBar()
+  paintPicker({ kind: 'loading' })
+  updateReadout()
 
   try {
     ctx = createContext(canvas)
@@ -378,6 +473,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer.setValues(perCell)
     redraw()
     canvas.setAttribute('data-drawn', 'true')
+    // A layer/group change can move the selected cell into a different
+    // class (valued -> contested, say) -- the readout re-derives from
+    // whatever currentClasses now says, never a stale copy.
+    updateReadout()
     return { contested, noValue }
   }
 
@@ -521,6 +620,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       indices = (await gridMeshBuffer('indices')) as Uint32Array
     } catch (error) {
       renderNotice(mapNotice, { title: 'The grid could not be read', detail: describeError(error), tone: 'serious' })
+      paintPicker({ kind: 'failed' })
       return
     }
     meshBytes = positions.byteLength + cellIndexBuf.byteLength + indices.byteLength
@@ -536,6 +636,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         detail: describeError(error),
         tone: 'serious',
       })
+      paintPicker({ kind: 'failed' })
       return
     }
     joined = joinBlockToIdentity(parmap, identities)
@@ -549,18 +650,24 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         detail: describeError(error),
         tone: 'serious',
       })
+      paintPicker({ kind: 'failed' })
       return
     }
 
-    drawnGroup = pickFirstGroup(joined)
-    if (drawnGroup === null) {
+    // D-07: only groups that place on at least one cell are offered; the
+    // rest are counted and named behind the picker's own disclosure.
+    const { drawable, unmapped } = computeGroupPlacement(joined, cellArray)
+    if (drawable.length === 0) {
       renderNotice(mapNotice, {
         title: 'No parameter group can be drawn',
         detail: 'Every parameter in this run is unmapped, so there is no field to colour the grid with.',
         tone: 'info',
       })
+      paintPicker({ kind: 'none-drawable', unmapped })
       return
     }
+    drawnGroup = drawable[0]
+    paintPicker({ kind: 'ready', drawable, unmapped, selected: drawnGroup })
 
     const realNames = await fetchRealNames(iteration)
 
@@ -578,14 +685,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
     mapNotice.textContent = ''
 
-    const meshData: MeshData = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
-    layer = new MeshLayer(gl.gl, meshData)
+    meshGeom = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
+    layer = new MeshLayer(gl.gl, meshGeom)
     layer.setColormap('viridis')
     layer.setInactive(inactiveMask)
     layer.setHairlineColor(readColorToken('--hairline'))
     applyThemeColors()
 
-    const camera = new Camera(canvas.width, canvas.height)
+    camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)
     layer.setMatrix(camera.matrix())
 

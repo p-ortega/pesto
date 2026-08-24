@@ -36,7 +36,6 @@ vi.mock('../src/gl/mesh-layer', () => ({
       draw: vi.fn(),
       reupload: vi.fn(),
       dispose: vi.fn(),
-      pickAtWorld: vi.fn(),
     })
   }),
 }))
