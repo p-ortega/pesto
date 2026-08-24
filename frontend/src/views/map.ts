@@ -8,10 +8,11 @@ import { gridCells, gridMesh, gridMeshBuffer, gridValues } from '../data/client'
 import { fetchParIdentities, fetchParmap, joinBlockToIdentity, type ParIdentity } from '../data/parmap'
 import { fetchRealNames } from '../data/reals'
 import { Camera } from '../gl/camera'
-import { scaleLimits } from '../gl/colormap'
+import { applyScale, logIsUsable, scaleLimits, LimitsMemory, type ValueScale } from '../gl/colormap'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
-import { renderSelectionControls, type Selection } from '../ui/controls'
+import { renderSelectionControls, type Selection, type SelectionControlsHandle } from '../ui/controls'
+import { renderLegend } from '../ui/legend'
 import {
   renderHeader,
   renderNotice,
@@ -139,6 +140,17 @@ function pickFirstGroup(joined: Array<ParIdentity | null>): string | null {
   return null
 }
 
+// The drawn group's own partrans, read straight from the D-05 join --
+// never a positional guess. A group with no identified row (never reached
+// while drawnGroup itself came from this same join) returns null, which
+// the scale default treats as linear.
+function partransForGroup(joined: Array<ParIdentity | null>, group: string): string | null {
+  for (const identity of joined) {
+    if (identity !== null && identity.pargp === group) return identity.partrans
+  }
+  return null
+}
+
 /**
  * The map screen: header, blocked-capability notices, the canvas panel and
  * the status bar, then the load-and-draw sequence -- mesh, the D-05 join,
@@ -159,8 +171,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   canvas.height = 480
   canvas.tabIndex = 0
   const mapNotice = document.createElement('div')
+  const legendEl = document.createElement('div')
   panel.appendChild(canvas)
   panel.appendChild(mapNotice)
+  panel.appendChild(legendEl)
   const statusBar = document.createElement('div')
   statusBar.classList.add('status-bar')
 
@@ -174,17 +188,39 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let statusExtra: Record<string, string | number | null> = {}
   let meshBytes: number | null = null
 
-  // The full block-order field for the selection currently committed to the
-  // canvas -- kept so a layer change can re-filter it locally without a
-  // fetch. `committed` is that selection; `pending` is a newer one whose
-  // fetch has not landed yet, shown in the status bar while `fullField`
-  // still holds the last one that did.
+  // The raw block-order field for the selection currently committed to the
+  // canvas, as fetched -- never transformed, so a scale change can derive
+  // from it without a fetch. `committed` is that selection; `pending` is a
+  // newer one whose fetch has not landed yet, shown in the status bar
+  // while the canvas keeps drawing the last field that did.
+  let rawFullField: Float32Array | null = null
+  let rawFieldNonPositiveCount = 0
+  // The applyScale-transformed field actually reprojected and drawn --
+  // cached against the scale it was computed for, since a pure layer
+  // change never needs to redo an O(n) transform of the whole field.
+  let scaledField: Float32Array | null = null
+  let scaledFieldScale: ValueScale | null = null
+  // A field currently reprojected per cell for the drawn layer -- kept so
+  // applyLayer has something to filter without recomputing the transform.
   let fullField: Float32Array | null = null
-  let committed: Selection = { iteration: 0, layer: 0, stat: 'value', realization: null }
+  let committed: Selection = {
+    iteration: 0,
+    layer: 0,
+    stat: 'value',
+    realization: null,
+    colormap: 'viridis',
+    reverseColormap: false,
+    scale: 'linear',
+    scaleInferred: true,
+    limitsMode: 'robust',
+    manualLimits: null,
+  }
   let pending: Selection | null = null
   let statusError: string | null = null
   let requestToken = 0
   let rafScheduled = false
+  const limitsMemory = new LimitsMemory()
+  let controlsHandle: SelectionControlsHandle | null = null
 
   // Loaded once at mount and constant afterwards -- this plan carries no
   // iteration selector, so a redraw only ever needs the layer to change.
@@ -192,6 +228,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let joined: Array<ParIdentity | null> = []
   let cellArray: Int32Array = new Int32Array(0)
   let layerArray: Int32Array = new Int32Array(0)
+  let inactiveMask: Uint8Array = new Uint8Array(0)
   let drawnGroup: string | null = null
 
   function selectionLabel(selection: Selection): string {
@@ -279,15 +316,21 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   })
 
   // Reprojects a full block-order field into grid-cell order, filtered to
-  // one layer and the drawn group. A block row's index is its position in
-  // the ensemble file, not a grid cell id -- the block-order `cell`
-  // companion array is the only thing that says which physical cell each
-  // row belongs to. Two block rows landing on the same cell (a contested
-  // cell, D-06) overwrite here rather than blend; the contested mark
-  // itself is out of this plan's scope.
-  function computePerCell(field: Float32Array, layerIndex: number): Float32Array {
+  // one layer and the drawn group, and counts what D-06/D-04's legend
+  // reports: cells two or more block rows land on (contested, overwritten
+  // here rather than blended -- the real stripe mark is out of this
+  // plan's scope, WINDOWS.md #2), and cells in the model and the drawn
+  // group that no block row lands on at all (no value). A block row's
+  // index is its position in the ensemble file, not a grid cell id -- the
+  // block-order `cell` companion array is the only thing that says which
+  // physical cell each row belongs to.
+  function computePerCell(
+    field: Float32Array,
+    layerIndex: number,
+  ): { perCell: Float32Array; contested: number; noValue: number } {
     const nCells = mesh?.nCells ?? 0
     const perCell = new Float32Array(nCells).fill(Number.NaN)
+    const writeCount = new Int32Array(nCells)
     for (let i = 0; i < field.length; i++) {
       const identity = joined[i]
       const onLayer = layerArray[i] === layerIndex
@@ -296,20 +339,88 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       const cellId = cellArray[i]
       if (cellId >= 0 && cellId < nCells) {
         perCell[cellId] = field[i]
+        writeCount[cellId] += 1
       }
     }
-    return perCell
+    let contested = 0
+    let noValue = 0
+    for (let c = 0; c < nCells; c++) {
+      if (inactiveMask[c]) continue
+      if (writeCount[c] === 0) noValue += 1
+      else if (writeCount[c] >= 2) contested += 1
+    }
+    return { perCell, contested, noValue }
   }
 
   // A layer change never fetches -- the client already holds the whole
   // field, so this re-filters it locally against the layer companion array
   // and draws. Never touches the legend's limits: the one-scale-per-run
   // rule (D-01) means only a landed fetch may change them.
-  function applyLayer(): void {
-    if (!fullField || !layer) return
-    layer.setValues(computePerCell(fullField, committed.layer))
+  function applyLayer(): { contested: number; noValue: number } {
+    if (!fullField || !layer) return { contested: 0, noValue: 0 }
+    const { perCell, contested, noValue } = computePerCell(fullField, committed.layer)
+    layer.setValues(perCell)
     redraw()
     canvas.setAttribute('data-drawn', 'true')
+    return { contested, noValue }
+  }
+
+  // Recomputes the drawn scale, limits and colormap from the raw held
+  // field and redraws -- never a fetch. Runs after every selection change
+  // that isn't a stat/realization/iteration change, and once when a fetch
+  // lands. D-02: robust/minmax limits are remembered per statistic (and
+  // per effective scale and mode, so switching either never reuses a
+  // pair computed in a different domain); manual limits are the caller's
+  // own pair and are never cached.
+  function deriveAndDraw(): void {
+    if (!rawFullField || !layer) {
+      renderLegend(legendEl, null)
+      return
+    }
+
+    controlsHandle?.setLogUsability(rawFieldNonPositiveCount)
+
+    // D-03: log10 is refused, with the count named, when the field holds
+    // non-positive values -- the hairline stays the only mark meaning
+    // "outside the model."
+    const effectiveScale: ValueScale =
+      committed.scale === 'log10' && rawFieldNonPositiveCount > 0 ? 'linear' : committed.scale
+    if (effectiveScale !== committed.scale) {
+      committed = { ...committed, scale: effectiveScale }
+    }
+
+    if (scaledFieldScale !== effectiveScale) {
+      scaledField = applyScale(rawFullField, effectiveScale)
+      scaledFieldScale = effectiveScale
+    }
+    const scaled = scaledField!
+
+    let limits: [number, number]
+    if (committed.limitsMode === 'manual') {
+      limits = committed.manualLimits ?? [0, 1]
+    } else {
+      const key = `${effectiveScale}:${committed.limitsMode}:${committed.stat}`
+      const cached = limitsMemory.get(key)
+      limits = cached ?? scaleLimits(scaled, committed.limitsMode)
+      if (!cached) limitsMemory.set(key, limits)
+    }
+
+    fullField = scaled
+    layer.setColormap(committed.colormap, committed.reverseColormap)
+    layer.setLimits(limits)
+    const { contested, noValue } = applyLayer()
+
+    renderLegend(legendEl, {
+      colormap: committed.colormap,
+      reverse: committed.reverseColormap,
+      limits,
+      scale: effectiveScale,
+      scaleInferred: committed.scaleInferred,
+      limitsMode: committed.limitsMode,
+      group: drawnGroup ?? '',
+      contested,
+      noValue,
+    })
   }
 
   // D-13: a realization, statistic or iteration change is coalesced to the
@@ -350,16 +461,17 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     if (token !== requestToken) return
 
-    // D-01: limits come from the full array the moment it lands, before
-    // any layer filter -- one scale for the whole run, computed only here,
-    // never on the layer-change path.
-    const limits = scaleLimits(field, 0.02)
-    fullField = field
-    layer?.setLimits(limits)
+    // D-01: the raw field lands here, before any scale, layer or group
+    // filter -- one scale for the whole run, derived only from this array,
+    // never from an already-filtered subset.
+    rawFullField = field
+    rawFieldNonPositiveCount = logIsUsable(field)
+    scaledField = null
+    scaledFieldScale = null
     committed = selection
     pending = null
     statusError = null
-    applyLayer()
+    deriveAndDraw()
     paintStatusBar()
   }
 
@@ -372,8 +484,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       scheduleFetch(next)
       return
     }
-    committed = { ...committed, layer: next.layer }
-    applyLayer()
+    committed = next
+    deriveAndDraw()
   }
 
   clearCanvas()
@@ -440,7 +552,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // block row of any group, at any layer -- distinct from a cell that IS
     // in the model but not in the drawn group/layer, which computePerCell
     // already leaves as NaN and the fill shader discards.
-    const inactiveMask = new Uint8Array(mesh.nCells).fill(1)
+    inactiveMask = new Uint8Array(mesh.nCells).fill(1)
     for (let i = 0; i < cellArray.length; i++) {
       const cellId = cellArray[i]
       if (cellId >= 0 && cellId < mesh.nCells) {
@@ -465,14 +577,31 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // would only ever fail to load, so it is not offered as the default.
     const initialStat = realNames.ok ? 'value' : 'mean'
     const initialRealization = realNames.ok ? (realNames.names[0] ?? null) : null
-    committed = { iteration, layer: 0, stat: initialStat, realization: initialRealization }
+    // D-03: the scale defaults from the drawn group's own partrans, read
+    // through the D-05 join -- matched case-insensitively after trimming,
+    // and linear for anything this code has never seen.
+    const drawnPartrans = partransForGroup(joined, drawnGroup)
+    const initialScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
+    committed = {
+      iteration,
+      layer: 0,
+      stat: initialStat,
+      realization: initialRealization,
+      colormap: 'viridis',
+      reverseColormap: false,
+      scale: initialScale,
+      scaleInferred: true,
+      limitsMode: 'robust',
+      manualLimits: null,
+    }
 
     const controlsEl = document.createElement('div')
     panel.appendChild(controlsEl)
-    renderSelectionControls(controlsEl, {
+    controlsHandle = renderSelectionControls(controlsEl, {
       nlay: mesh.nlay,
       iteration,
       realNames,
+      partrans: drawnPartrans,
       onSelectionChange: handleSelectionChange,
     })
 
