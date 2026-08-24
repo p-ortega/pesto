@@ -1,19 +1,50 @@
-// The layer, realization and statistic controls: three keyboard-reachable
-// form elements that name their own current value and tell
-// onSelectionChange what changed. This module computes nothing, fetches
-// nothing and draws nothing -- the view (views/map.ts) owns the redraw
-// discipline that reacts to the selection this file reports.
+// The layer, realization, statistic, colour and scale controls: a set of
+// keyboard-reachable form elements that name their own current value and
+// tell onSelectionChange what changed. This module computes nothing,
+// fetches nothing and draws nothing -- the view (views/map.ts) owns the
+// redraw discipline that reacts to the selection this file reports.
 
 import type { RealNamesResult } from '../data/reals'
+import { STOPS, type ColormapName, type LimitsMode, type ValueScale } from '../gl/colormap'
 
 export const STATISTICS = ['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'] as const
 export type Statistic = (typeof STATISTICS)[number]
+
+// The nine ramp names, in the order the picker lists them. A plain literal
+// array rather than `Object.keys(STOPS)` so the names are typed and
+// spelled out once, matching STOPS's own keys.
+const COLORMAP_NAMES: readonly ColormapName[] = [
+  'viridis',
+  'magma',
+  'cividis',
+  'greys',
+  'RdBu',
+  'coolwarm',
+  'BrBG',
+  'turbo',
+  'jet',
+]
+
+// jet's three lightness reversals invent boundaries the data does not
+// have (visual contract §4) -- flagged in the picker, not removed, since
+// existing reports use it and clients ask for it.
+const JET_REASON = 'A ramp whose lightness reverses three times invents boundaries that are not in the data.'
+
+const LOG_WARNING_ID = 'scale-log10-warning'
 
 export interface Selection {
   iteration: number
   layer: number
   stat: Statistic
   realization: string | null
+  colormap: ColormapName
+  reverseColormap: boolean
+  scale: ValueScale
+  /** True until the user explicitly changes the scale control -- the
+   *  legend states "inferred from partrans" only while this holds. */
+  scaleInferred: boolean
+  limitsMode: LimitsMode
+  manualLimits: [number, number] | null
 }
 
 export interface SelectionControlsOptions {
@@ -25,20 +56,43 @@ export interface SelectionControlsOptions {
   /** Already resolved by `fetchRealNames` -- this module reads it, it does
    * not fetch it. */
   realNames: RealNamesResult
+  /** The drawn group's own `partrans`, straight from the control file --
+   * matched case-insensitively after trimming; anything unrecognised
+   * defaults to linear, never a crash and never a guess. */
+  partrans: string | null
   onSelectionChange: (selection: Selection) => void
+}
+
+export interface SelectionControlsHandle {
+  /** Called by the view every time a new field lands, so the scale
+   *  control's log availability reflects the field actually on screen
+   *  (D-03). `count` is the number of finite, zero-or-negative cells. */
+  setLogUsability(count: number): void
 }
 
 function isStatistic(value: string): value is Statistic {
   return (STATISTICS as readonly string[]).includes(value)
 }
 
+function isColormap(value: string): value is ColormapName {
+  return (COLORMAP_NAMES as readonly string[]).includes(value)
+}
+
+function defaultScale(partrans: string | null): ValueScale {
+  return partrans !== null && partrans.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
+}
+
 /**
- * Builds the layer slider, the statistic select and the realization slider
- * into a `.floating` panel. Every control is a real `<input>`/`<select>`
- * with an `aria-label`, so each is keyboard reachable by construction; no
- * `tabindex` above zero is ever set here.
+ * Builds the layer slider, the statistic select, the realization slider,
+ * the colormap picker with its reverse switch, and the scale/limits
+ * controls, into a `.floating` panel. Every control is a real
+ * `<input>`/`<select>` with an `aria-label`, so each is keyboard reachable
+ * by construction; no `tabindex` above zero is ever set here.
  */
-export function renderSelectionControls(el: HTMLElement, opts: SelectionControlsOptions): void {
+export function renderSelectionControls(
+  el: HTMLElement,
+  opts: SelectionControlsOptions,
+): SelectionControlsHandle {
   el.textContent = ''
   el.classList.add('floating')
 
@@ -123,14 +177,134 @@ export function renderSelectionControls(el: HTMLElement, opts: SelectionControls
       "so a realization can't be named."
   }
 
+  // Colormap: the nine names colormap.ts's STOPS declares. jet is offered,
+  // not removed, but flagged -- the reason lives in its option title.
+  const colormapLabel = document.createElement('label')
+  colormapLabel.classList.add('label')
+  colormapLabel.textContent = 'Colormap'
+  const colormapSelect = document.createElement('select')
+  colormapSelect.setAttribute('aria-label', 'Colormap')
+  for (const name of COLORMAP_NAMES) {
+    const option = document.createElement('option')
+    option.setAttribute('value', name)
+    if (name === 'jet') {
+      option.textContent = 'jet ⚠'
+      option.title = JET_REASON
+    } else {
+      option.textContent = name
+    }
+    colormapSelect.appendChild(option)
+  }
+  // No diverging quantity is servable at M0 (every statistic the cache
+  // holds is a magnitude, not a signed difference), so viridis is the
+  // default whatever is being shown -- the visual contract's own table
+  // agrees for a field and for spread ("matches the field").
+  colormapSelect.value = 'viridis'
+  colormapLabel.appendChild(colormapSelect)
+
+  // Reverse: applies to whichever ramp is chosen, a plain on/off switch
+  // rather than a reversed duplicate of every ramp in the list.
+  const reverseLabel = document.createElement('label')
+  reverseLabel.classList.add('label')
+  const reverseInput = document.createElement('input')
+  reverseInput.type = 'checkbox'
+  reverseInput.setAttribute('aria-label', 'Reverse colormap')
+  reverseLabel.textContent = 'Reverse'
+  reverseLabel.appendChild(reverseInput)
+
+  // Scale: defaulted from the drawn group's own partrans, matched
+  // case-insensitively after trimming; anything this code has never seen
+  // is treated as linear by a named default, never a crash and never a
+  // guess (D-03).
+  const scaleLabel = document.createElement('label')
+  scaleLabel.classList.add('label')
+  scaleLabel.textContent = 'Value scale'
+  const scaleSelect = document.createElement('select')
+  scaleSelect.setAttribute('aria-label', 'Value scale')
+  const linearOption = document.createElement('option')
+  linearOption.setAttribute('value', 'linear')
+  linearOption.textContent = 'Linear'
+  const log10Option = document.createElement('option')
+  log10Option.setAttribute('value', 'log10')
+  log10Option.textContent = 'Log₁₀'
+  scaleSelect.appendChild(linearOption)
+  scaleSelect.appendChild(log10Option)
+  let scaleTouchedByUser = false
+  scaleSelect.value = defaultScale(opts.partrans)
+  scaleLabel.appendChild(scaleSelect)
+
+  // The log10-unavailable line: hidden until setLogUsability reports a
+  // non-zero count. UI-SPEC's exact copy, warning ink, no icon.
+  const logWarningLine = document.createElement('div')
+  logWarningLine.classList.add('label')
+  logWarningLine.id = LOG_WARNING_ID
+  logWarningLine.style.color = 'var(--status-warning)'
+  logWarningLine.style.display = 'none'
+  scaleLabel.appendChild(logWarningLine)
+
+  // Limits mode: robust 2-98% by default, with min-max and manual as the
+  // two alternatives. The manual pair is two number inputs, revealed only
+  // in manual mode.
+  const limitsLabel = document.createElement('label')
+  limitsLabel.classList.add('label')
+  limitsLabel.textContent = 'Limits'
+  const limitsSelect = document.createElement('select')
+  limitsSelect.setAttribute('aria-label', 'Limits')
+  const LIMITS_OPTIONS: Array<[LimitsMode, string]> = [
+    ['robust', 'Robust 2-98%'],
+    ['minmax', 'Min-max'],
+    ['manual', 'Manual'],
+  ]
+  for (const [value, label] of LIMITS_OPTIONS) {
+    const option = document.createElement('option')
+    option.setAttribute('value', value)
+    option.textContent = label
+    limitsSelect.appendChild(option)
+  }
+  limitsSelect.value = 'robust'
+  limitsLabel.appendChild(limitsSelect)
+
+  const manualLower = document.createElement('input')
+  manualLower.type = 'number'
+  manualLower.setAttribute('aria-label', 'Lower limit')
+  manualLower.style.display = 'none'
+  const manualUpper = document.createElement('input')
+  manualUpper.type = 'number'
+  manualUpper.setAttribute('aria-label', 'Upper limit')
+  manualUpper.style.display = 'none'
+
+  function updateManualVisibility(): void {
+    const isManual = limitsSelect.value === 'manual'
+    manualLower.style.display = isManual ? '' : 'none'
+    manualUpper.style.display = isManual ? '' : 'none'
+  }
+  updateManualVisibility()
+
+  function currentManualLimits(): [number, number] | null {
+    if (limitsSelect.value !== 'manual') return null
+    const lower = Number(manualLower.value)
+    const upper = Number(manualUpper.value)
+    return [Number.isFinite(lower) ? lower : 0, Number.isFinite(upper) ? upper : 1]
+  }
+
   function currentSelection(): Selection {
     const stat = isStatistic(statSelect.value) ? statSelect.value : 'value'
     const realization = stat === 'value' ? (realNames[Number(realInput.value)] ?? null) : null
+    const colormap = isColormap(colormapSelect.value) ? colormapSelect.value : 'viridis'
+    const scale: ValueScale = scaleSelect.value === 'log10' ? 'log10' : 'linear'
+    const limitsMode: LimitsMode =
+      limitsSelect.value === 'minmax' ? 'minmax' : limitsSelect.value === 'manual' ? 'manual' : 'robust'
     return {
       iteration: opts.iteration,
       layer: Number(layerInput.value),
       stat,
       realization,
+      colormap,
+      reverseColormap: reverseInput.checked,
+      scale,
+      scaleInferred: !scaleTouchedByUser,
+      limitsMode,
+      manualLimits: currentManualLimits(),
     }
   }
 
@@ -151,10 +325,59 @@ export function renderSelectionControls(el: HTMLElement, opts: SelectionControls
     opts.onSelectionChange(currentSelection())
   })
 
+  colormapSelect.addEventListener('change', () => {
+    opts.onSelectionChange(currentSelection())
+  })
+
+  reverseInput.addEventListener('change', () => {
+    opts.onSelectionChange(currentSelection())
+  })
+
+  scaleSelect.addEventListener('change', () => {
+    scaleTouchedByUser = true
+    opts.onSelectionChange(currentSelection())
+  })
+
+  limitsSelect.addEventListener('change', () => {
+    updateManualVisibility()
+    opts.onSelectionChange(currentSelection())
+  })
+
+  manualLower.addEventListener('input', () => {
+    opts.onSelectionChange(currentSelection())
+  })
+
+  manualUpper.addEventListener('input', () => {
+    opts.onSelectionChange(currentSelection())
+  })
+
   el.appendChild(layerLabel)
   el.appendChild(statLabel)
   el.appendChild(realLabel)
   if (warningLine) {
     el.appendChild(warningLine)
+  }
+  el.appendChild(colormapLabel)
+  el.appendChild(reverseLabel)
+  el.appendChild(scaleLabel)
+  el.appendChild(limitsLabel)
+  el.appendChild(manualLower)
+  el.appendChild(manualUpper)
+
+  return {
+    setLogUsability(count: number): void {
+      log10Option.disabled = count > 0
+      if (count > 0) {
+        if (scaleSelect.value === 'log10') {
+          scaleSelect.value = 'linear'
+        }
+        logWarningLine.textContent = `Log₁₀ unavailable — ${count} cells are zero or negative. Showing linear.`
+        logWarningLine.style.display = ''
+        scaleSelect.setAttribute('aria-describedby', LOG_WARNING_ID)
+      } else {
+        logWarningLine.style.display = 'none'
+        scaleSelect.removeAttribute('aria-describedby')
+      }
+    },
   }
 }

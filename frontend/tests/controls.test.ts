@@ -6,13 +6,14 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import type { RealNamesResult } from '../src/data/reals'
+import { STOPS, type ColormapName } from '../src/gl/colormap'
 import { renderSelectionControls, STATISTICS } from '../src/ui/controls'
 
-function mount(realNames: RealNamesResult, nlay = 3) {
+function mount(realNames: RealNamesResult, nlay = 3, partrans: string | null = null) {
   const el = document.createElement('div')
   const onSelectionChange = vi.fn()
-  renderSelectionControls(el, { nlay, iteration: 0, realNames, onSelectionChange })
-  return { el, onSelectionChange }
+  const handle = renderSelectionControls(el, { nlay, iteration: 0, realNames, partrans, onSelectionChange })
+  return { el, onSelectionChange, handle }
 }
 
 const THREE_NAMES: RealNamesResult = { ok: true, names: ['base', 'r001', 'r002'] }
@@ -94,6 +95,12 @@ describe('renderSelectionControls', () => {
       layer: 2,
       stat: 'value',
       realization: 'base',
+      colormap: 'viridis',
+      reverseColormap: false,
+      scale: 'linear',
+      scaleInferred: true,
+      limitsMode: 'robust',
+      manualLimits: null,
     })
   })
 
@@ -110,5 +117,60 @@ describe('renderSelectionControls', () => {
     statSelect.value = 'value'
     statSelect.dispatchEvent(new Event('change'))
     expect(realSlider.disabled).toBe(false)
+  })
+
+  it('lists exactly the nine ramp names, with jet flagged and its reason stated', () => {
+    const { el } = mount(THREE_NAMES)
+    const select = el.querySelector('select[aria-label="Colormap"]') as HTMLSelectElement
+    const values = Array.from(select.options).map((option) => option.value)
+    expect(values).toEqual(Object.keys(STOPS))
+
+    const jetOption = Array.from(select.options).find((option) => option.value === 'jet')!
+    expect(jetOption.title.length).toBeGreaterThan(0)
+    expect(jetOption.textContent).not.toBe('jet')
+  })
+
+  it('the reverse switch is an accessible checkbox that emits reverseColormap when toggled', () => {
+    const { el, onSelectionChange } = mount(THREE_NAMES)
+    const checkbox = el.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement
+    expect(checkbox.type).toBe('checkbox')
+
+    checkbox.checked = true
+    checkbox.dispatchEvent(new Event('change'))
+
+    expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ reverseColormap: true }))
+  })
+
+  it('defaults the scale to log10 when partrans is log in any casing, and to linear otherwise', () => {
+    const scaleValue = (partrans: string | null) => {
+      const { el } = mount(THREE_NAMES, 3, partrans)
+      return (el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement).value
+    }
+
+    expect(scaleValue('LOG')).toBe('log10')
+    expect(scaleValue(' Log ')).toBe('log10')
+    expect(scaleValue('none')).toBe('linear')
+    expect(scaleValue('fixed')).toBe('linear')
+    expect(scaleValue('some-unrecognised-value')).toBe('linear')
+    expect(scaleValue(null)).toBe('linear')
+  })
+
+  it('disables log10 with the named count, aria-describedby and a forced linear value when the field forbids it', () => {
+    const { el, handle } = mount(THREE_NAMES, 3, 'log')
+    const select = el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement
+    expect(select.value).toBe('log10')
+
+    handle.setLogUsability(3)
+
+    const logOption = Array.from(select.options).find((option) => option.value === 'log10')!
+    expect(logOption.disabled).toBe(true)
+    expect(select.value).toBe('linear')
+    expect(select.getAttribute('aria-describedby')).toBeTruthy()
+    const warningEl = el.querySelector(`#${select.getAttribute('aria-describedby')}`)
+    expect(warningEl?.textContent).toBe('Log₁₀ unavailable — 3 cells are zero or negative. Showing linear.')
+
+    handle.setLogUsability(0)
+    expect(logOption.disabled).toBe(false)
+    expect(select.getAttribute('aria-describedby')).toBeNull()
   })
 })
