@@ -60,6 +60,13 @@ export interface SelectionControlsOptions {
    * matched case-insensitively after trimming; anything unrecognised
    * defaults to linear, never a crash and never a guess. */
   partrans: string | null
+  /** The already-committed colormap, reverse, scale and limits state to
+   *  show at construction -- a restored view state, say -- instead of the
+   *  fresh-run defaults (viridis, not reversed, robust limits, scale from
+   *  `partrans`). Omitted, this control still falls back to exactly those
+   *  defaults, so every existing caller keeps its old behaviour (WINDOWS.md
+   *  #8: the checkbox used to never learn what the view already knew). */
+  initial?: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>
   onSelectionChange: (selection: Selection) => void
   /** MAP-11/D-15: the one button-shaped primary action this map surface
    *  has. Calls the same `camera.fit(bounds)` the `Home` key triggers. */
@@ -71,6 +78,12 @@ export interface SelectionControlsHandle {
    *  control's log availability reflects the field actually on screen
    *  (D-03). `count` is the number of finite, zero-or-negative cells. */
   setLogUsability(count: number): void
+  /** Pushes a colormap/reverse/scale/limits state into the displayed
+   *  controls without emitting onSelectionChange -- for the view to call
+   *  whenever it changes one of these fields on the control's behalf (a
+   *  group change re-inferring the scale, say), so the control the user
+   *  sees never disagrees with what is actually drawn (WINDOWS.md #5, #8). */
+  sync(selection: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>): void
 }
 
 function isStatistic(value: string): value is Statistic {
@@ -211,8 +224,10 @@ export function renderSelectionControls(
   // No diverging quantity is servable at M0 (every statistic the cache
   // holds is a magnitude, not a signed difference), so viridis is the
   // default whatever is being shown -- the visual contract's own table
-  // agrees for a field and for spread ("matches the field").
-  colormapSelect.value = 'viridis'
+  // agrees for a field and for spread ("matches the field") -- unless
+  // `opts.initial` names an already-committed colormap (a restored view
+  // state), which wins over that fresh-run default.
+  colormapSelect.value = opts.initial ? opts.initial.colormap : 'viridis'
   colormapLabel.appendChild(colormapSelect)
 
   // Reverse: applies to whichever ramp is chosen, a plain on/off switch
@@ -222,6 +237,7 @@ export function renderSelectionControls(
   const reverseInput = document.createElement('input')
   reverseInput.type = 'checkbox'
   reverseInput.setAttribute('aria-label', 'Reverse colormap')
+  reverseInput.checked = opts.initial?.reverseColormap ?? false
   reverseLabel.textContent = 'Reverse'
   reverseLabel.appendChild(reverseInput)
 
@@ -242,8 +258,12 @@ export function renderSelectionControls(
   log10Option.textContent = 'Log₁₀'
   scaleSelect.appendChild(linearOption)
   scaleSelect.appendChild(log10Option)
-  let scaleTouchedByUser = false
-  scaleSelect.value = defaultScale(opts.partrans)
+  // A restored, explicitly-chosen scale (scaleInferred: false) means the
+  // user already touched this control in an earlier session -- the legend
+  // must not then claim it as "inferred from partrans" on the next change
+  // this control itself emits.
+  let scaleTouchedByUser = opts.initial ? !opts.initial.scaleInferred : false
+  scaleSelect.value = opts.initial ? opts.initial.scale : defaultScale(opts.partrans)
   scaleLabel.appendChild(scaleSelect)
 
   // The log10-unavailable line: hidden until setLogUsability reports a
@@ -274,16 +294,18 @@ export function renderSelectionControls(
     option.textContent = label
     limitsSelect.appendChild(option)
   }
-  limitsSelect.value = 'robust'
+  limitsSelect.value = opts.initial ? opts.initial.limitsMode : 'robust'
   limitsLabel.appendChild(limitsSelect)
 
   const manualLower = document.createElement('input')
   manualLower.type = 'number'
   manualLower.setAttribute('aria-label', 'Lower limit')
   manualLower.style.display = 'none'
+  if (opts.initial?.manualLimits) manualLower.value = String(opts.initial.manualLimits[0])
   const manualUpper = document.createElement('input')
   manualUpper.type = 'number'
   manualUpper.setAttribute('aria-label', 'Upper limit')
+  if (opts.initial?.manualLimits) manualUpper.value = String(opts.initial.manualLimits[1])
   manualUpper.style.display = 'none'
 
   function updateManualVisibility(): void {
@@ -391,6 +413,18 @@ export function renderSelectionControls(
       } else {
         logWarningLine.style.display = 'none'
         scaleSelect.removeAttribute('aria-describedby')
+      }
+    },
+    sync(selection): void {
+      colormapSelect.value = selection.colormap
+      reverseInput.checked = selection.reverseColormap
+      scaleSelect.value = selection.scale
+      scaleTouchedByUser = !selection.scaleInferred
+      limitsSelect.value = selection.limitsMode
+      updateManualVisibility()
+      if (selection.manualLimits) {
+        manualLower.value = String(selection.manualLimits[0])
+        manualUpper.value = String(selection.manualLimits[1])
       }
     },
   }

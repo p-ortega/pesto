@@ -200,6 +200,15 @@ body {
   right: var(--space-md);
 }
 
+/* Two figures sitting side by side with no label between them (the
+   legend's end values, and its contested/no-value counts) -- the same
+   run-together bug plan 01 fixed on the status bar and ingest rows, fixed
+   here the same way: a real gap between a chip's parts. */
+.legend-figures {
+  display: flex;
+  gap: var(--space-sm);
+}
+
 .truncate {
   overflow: hidden;
   text-overflow: ellipsis;

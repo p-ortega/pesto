@@ -656,6 +656,12 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const drawnPartrans = partransForGroup(joined, group)
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     committed = { ...committed, scale: newScale, scaleInferred: true }
+    // WINDOWS.md #5: the scale control must show what was just inferred,
+    // not whatever it happened to display for the previous group --
+    // deriveAndDraw's own setLogUsability call (below) can still override
+    // this to linear, for a genuinely different reason (the new field has
+    // non-positive values), so this runs first.
+    controlsHandle?.sync(committed)
     selectedCellId = null
     layer?.setSelected(null)
     deriveAndDraw()
@@ -1164,11 +1170,24 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // tab order, with the group picker stacked under them.
     const controlsEl = document.createElement('div')
     topLeftEl.insertBefore(controlsEl, pickerEl)
+    // WINDOWS.md #8: `committed` already carries the restored colormap,
+    // reverse, scale and limits state (or the fresh-run defaults, when
+    // there is none) -- passed straight through so the checkbox and
+    // selects the user sees never disagree with what performFetch is
+    // about to draw.
     controlsHandle = renderSelectionControls(controlsEl, {
       nlay: mesh.nlay,
       iteration,
       realNames,
       partrans: drawnPartrans,
+      initial: {
+        colormap: committed.colormap,
+        reverseColormap: committed.reverseColormap,
+        scale: committed.scale,
+        scaleInferred: committed.scaleInferred,
+        limitsMode: committed.limitsMode,
+        manualLimits: committed.manualLimits,
+      },
       onSelectionChange: handleSelectionChange,
       onFitToExtent: fitToExtent,
     })
