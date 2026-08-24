@@ -66,6 +66,7 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   // drags -- a value exactly at the limit is what the ramp actually shows
   // at that end.
   const endValues = document.createElement('div')
+  endValues.classList.add('legend-figures')
   const lowEl = document.createElement('span')
   lowEl.classList.add('tabular-nums')
   lowEl.style.display = 'inline-block'
@@ -107,7 +108,7 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   // The two absence counts: D-06's contested mark and the no-parameter
   // case, side by side.
   const countsLine = document.createElement('div')
-  countsLine.classList.add('label')
+  countsLine.classList.add('label', 'legend-figures')
   const contestedEl = document.createElement('span')
   contestedEl.classList.add('tabular-nums')
   contestedEl.textContent = `${opts.contested} cells contested`
