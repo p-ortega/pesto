@@ -31,11 +31,10 @@ const TONE_STYLE: Record<NoticeTone, ToneStyle> = {
   critical: { icon: '✕', word: 'Critical', colorVar: 'var(--status-critical)' },
 }
 
-// Nothing in this module animates today, but the guard is written once
-// here so a future transition starts already respecting the rule, rather
-// than being added and the rule forgotten (§ 11: dropped entirely under
-// this query).
-function prefersReducedMotion(): boolean {
+// Read once here and reused everywhere motion needs the same check
+// (§ 11: dropped entirely under this query) -- exported so plan 05.1-08's
+// camera easing shares this one media query rather than writing a second.
+export function prefersReducedMotion(): boolean {
   try {
     return matchMedia('(prefers-reduced-motion: reduce)').matches
   } catch {

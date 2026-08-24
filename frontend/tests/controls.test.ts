@@ -12,8 +12,16 @@ import { renderSelectionControls, STATISTICS } from '../src/ui/controls'
 function mount(realNames: RealNamesResult, nlay = 3, partrans: string | null = null) {
   const el = document.createElement('div')
   const onSelectionChange = vi.fn()
-  const handle = renderSelectionControls(el, { nlay, iteration: 0, realNames, partrans, onSelectionChange })
-  return { el, onSelectionChange, handle }
+  const onFitToExtent = vi.fn()
+  const handle = renderSelectionControls(el, {
+    nlay,
+    iteration: 0,
+    realNames,
+    partrans,
+    onSelectionChange,
+    onFitToExtent,
+  })
+  return { el, onSelectionChange, onFitToExtent, handle }
 }
 
 const THREE_NAMES: RealNamesResult = { ok: true, names: ['base', 'r001', 'r002'] }
@@ -172,5 +180,16 @@ describe('renderSelectionControls', () => {
     handle.setLogUsability(0)
     expect(logOption.disabled).toBe(false)
     expect(select.getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('renders a real Fit to extent button that calls onFitToExtent when clicked', () => {
+    const { el, onFitToExtent } = mount(THREE_NAMES)
+    const buttons = Array.from(el.querySelectorAll('button'))
+    const fitButton = buttons.find((button) => button.textContent === 'Fit to extent')
+    expect(fitButton).toBeTruthy()
+    expect(fitButton?.getAttribute('tabindex')).toBeNull()
+
+    fitButton!.dispatchEvent(new Event('click'))
+    expect(onFitToExtent).toHaveBeenCalledTimes(1)
   })
 })
