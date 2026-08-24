@@ -142,6 +142,21 @@ export function logIsUsable(values: Float32Array): number {
   return count
 }
 
+/**
+ * Pulls out the values at the given block-row indices, in the order given
+ * -- the piece a caller needs to compute limits from one parameter group's
+ * own rows rather than a whole multi-group field. Kept in this module
+ * (rather than parmap.ts, which owns the `pargp` lookup) so it stays a pure
+ * array function with no dependency on the identity-join types.
+ */
+export function subsetValues(values: Float32Array, indices: readonly number[]): Float32Array {
+  const out = new Float32Array(indices.length)
+  for (let i = 0; i < indices.length; i++) {
+    out[i] = values[indices[i]]
+  }
+  return out
+}
+
 export type LimitsMode = 'robust' | 'minmax' | 'manual'
 
 /**
@@ -191,11 +206,14 @@ export function normalize(value: number, limits: [number, number]): number {
 }
 
 /**
- * A small per-statistic limits memory (D-02): two realizations of one
- * statistic share the limits computed for it, so flicking between them is
- * a comparison; a different statistic gets fresh limits, since the two
- * have unrelated magnitudes. The caller clears it when the iteration or
- * the drawn group changes, since either changes what the numbers mean.
+ * A small limits memory (D-02), keyed by whatever string the caller
+ * builds: two realizations of one statistic share the limits computed for
+ * it, so flicking between them is a comparison. Switching statistic, scale,
+ * limits mode or drawn group each land under a different key rather than
+ * triggering a clear -- a group switched back to replays its own
+ * previously computed pair, the same way a statistic switched back to
+ * already did. The caller clears it only when the iteration changes, since
+ * that invalidates every key's meaning at once.
  */
 export class LimitsMemory {
   private readonly memo = new Map<string, [number, number]>()

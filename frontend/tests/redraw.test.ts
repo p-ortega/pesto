@@ -424,6 +424,126 @@ describe('the redraw path', () => {
     expect(statusBarText(root)).not.toMatch(/couldn't load/)
   })
 
+  it("switching the drawn group recomputes the legend limits from the new group's own rows, not the previous group's cached pair", async () => {
+    // Four block rows in the one fetched field: rows 0-1 are group G1 (a
+    // narrow range, 10-12), rows 2-3 are group G2 (a much wider range,
+    // 10-1000). The bug this reproduces has two halves: computing limits
+    // from the whole field would show 10-1000 for G1 too (the subset bug),
+    // and even once limits are correctly scoped to the group, caching them
+    // under a key with no group in it would make switching to G2 keep
+    // showing G1's cached 10-12 (the cache-key bug). This test only passes
+    // once both are fixed.
+    const groupMesh = { n_vert: 4, n_tri: 2, n_cells: 2, nlay: 1, bounds: [0, 1, 0, 1], crs: null, tag: 'group-tag' }
+    const groupPositions = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
+    const groupCellIndex = new Float32Array([0, 0, 1, 1])
+    const groupIndices = new Uint32Array([0, 1, 2, 0, 2, 3])
+    const groupParmap = new Int32Array([0, 1, 2, 3])
+    const groupCellArray = new Int32Array([0, 1, 0, 1])
+    const groupLayerArray = new Int32Array([0, 0, 0, 0])
+    const groupParTable = tableToIPC(
+      tableFromArrays({ parnme: ['p0', 'p1', 'p2', 'p3'], pargp: ['G1', 'G1', 'G2', 'G2'], partrans: ['none', 'none', 'none', 'none'] }),
+      'stream',
+    )
+    const groupRealsTable = tableToIPC(tableFromArrays({ realization: ['base'] }), 'stream')
+    const wholeField = new Float32Array([10, 12, 10, 1000])
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const [path] = url.split('?')
+        const respond = (result: { status: number; bytes?: Uint8Array; body?: unknown; headers?: Record<string, string> }) => {
+          const bytes = result.bytes ?? new Uint8Array(0)
+          return {
+            ok: result.status >= 200 && result.status < 300,
+            status: result.status,
+            json: async () => result.body ?? {},
+            arrayBuffer: async () => bytes.buffer,
+            headers: { get: (name: string) => result.headers?.[name] ?? null },
+          }
+        }
+        switch (path) {
+          case '/api/run/grid/mesh':
+            return respond({ status: 200, body: groupMesh })
+          case '/api/run/grid/mesh/positions':
+            return respond({ status: 200, bytes: bytesOf(groupPositions), headers: metaHeader('<f4') })
+          case '/api/run/grid/mesh/cell_index':
+            return respond({ status: 200, bytes: bytesOf(groupCellIndex), headers: metaHeader('<f4') })
+          case '/api/run/grid/mesh/indices':
+            return respond({ status: 200, bytes: bytesOf(groupIndices), headers: metaHeader('<u4') })
+          case '/api/run/grid/parmap':
+            return respond({ status: 200, bytes: bytesOf(groupParmap) })
+          case '/api/run/meta':
+            return respond({ status: 200, bytes: groupParTable })
+          case '/api/run/grid/cells/cell':
+            return respond({ status: 200, bytes: bytesOf(groupCellArray) })
+          case '/api/run/grid/cells/layer':
+            return respond({ status: 200, bytes: bytesOf(groupLayerArray) })
+          case '/api/run/reals':
+            return respond({ status: 200, bytes: groupRealsTable })
+          case '/api/run/grid/values':
+            return respond({ status: 200, bytes: bytesOf(wholeField) })
+          default:
+            throw new Error(`unhandled fetch in test: GET ${path}`)
+        }
+      }),
+    )
+
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+
+    const legendText = () => root.querySelector('.floating-bottom-left')?.textContent ?? ''
+    // G1 is drawable[0] (first-seen in block order) and the fresh-run
+    // default: its own two rows are 10 and 12, never the whole field's 1000.
+    expect(legendText()).toContain('10.00')
+    expect(legendText()).toContain('12.00')
+    expect(legendText()).not.toContain('1000')
+
+    const groupSelect = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+    groupSelect.value = 'G2'
+    groupSelect.dispatchEvent(new Event('change'))
+
+    await vi.waitFor(() => {
+      expect(legendText()).toContain('1000')
+    })
+    expect(legendText()).not.toContain('12.00')
+  })
+
+  it('a single-drawable-group field gets the same limits as the whole block, since the two are identical -- the fix is a no-op here', async () => {
+    // MESH_BODY/PARMAP/etc. above carry exactly one group (G1), matching
+    // both benchmark runs the fix is checked against live
+    // (hm_20250406221554, forecast_20250618105403). The escondida-shaped
+    // regression this guards against: a fix that always recomputes from a
+    // group subset must not shift limits when that subset is the entire
+    // field.
+    const values = fields()
+    stubEnvironment((query) => ({ status: 200, bytes: bytesOf(values[query.get('realization') ?? 'base']) }))
+    stubRaf()
+
+    const { mountMap } = await import('../src/views/map')
+    const { scaleLimits } = await import('../src/gl/colormap')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+
+    const legendText = root.querySelector('.floating-bottom-left')?.textContent ?? ''
+    const wholeBlockLimits = vi.mocked(scaleLimits).mock.results[0].value as [number, number]
+    expect(legendText).toContain(wholeBlockLimits[0].toPrecision(4))
+    expect(legendText).toContain(wholeBlockLimits[1].toPrecision(4))
+    // The values landed are exactly [10, 20] (fields().base) -- pinning the
+    // actual numbers, not just "whatever scaleLimits happened to return",
+    // so a bug in scaleLimits itself can't hide behind this assertion.
+    expect(wholeBlockLimits).toEqual([10, 20])
+  })
+
   it('computes limits only in the response-landed path, not on a layer-only change', async () => {
     const values = fields()
     stubEnvironment((query) => ({ status: 200, bytes: bytesOf(values[query.get('realization') ?? 'base']) }))

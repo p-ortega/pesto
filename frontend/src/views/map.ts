@@ -17,7 +17,7 @@ import {
 } from '../data/parmap'
 import { fetchRealNames } from '../data/reals'
 import { Camera } from '../gl/camera'
-import { applyScale, logIsUsable, scaleLimits, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
+import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld } from '../gl/picking'
@@ -645,15 +645,17 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
   // A group change re-runs classifyCells (via applyLayer, which reads
   // drawnGroup), re-derives the scale default from the new group's
-  // partrans, clears the per-statistic limits memory, and redraws -- no
-  // fetch, since the client already holds the whole field. The selection
-  // is cleared: the previous readout described a cell in the old group.
+  // partrans, and redraws -- no fetch, since the client already holds the
+  // whole field. The limits memory is not cleared: the drawn group is part
+  // of its cache key (deriveAndDraw), so a group switched back to replays
+  // its own previously computed pair, exactly like a statistic does. The
+  // selection is cleared: the previous readout described a cell in the old
+  // group.
   function handleGroupChange(group: string): void {
     drawnGroup = group
     const drawnPartrans = partransForGroup(joined, group)
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     committed = { ...committed, scale: newScale, scaleInferred: true }
-    limitsMemory.clear()
     selectedCellId = null
     layer?.setSelected(null)
     deriveAndDraw()
@@ -810,10 +812,18 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // Recomputes the drawn scale, limits and colormap from the raw held
   // field and redraws -- never a fetch. Runs after every selection change
   // that isn't a stat/realization/iteration change, and once when a fetch
-  // lands. D-02: robust/minmax limits are remembered per statistic (and
-  // per effective scale and mode, so switching either never reuses a
-  // pair computed in a different domain); manual limits are the caller's
+  // lands. D-02: robust/minmax limits are remembered per statistic, scale,
+  // limits mode and drawn group (so switching any of the four never reuses
+  // a pair computed for a different one); manual limits are the caller's
   // own pair and are never cached.
+  //
+  // The pair itself is computed from only the drawn group's own block
+  // rows, across every layer of that group -- never the whole map block.
+  // Different parameter groups are different physical quantities (a
+  // conductance and a concentration, say), and a scale spanning both
+  // treats the smaller one as noise near zero. Computing over every layer
+  // of the group, rather than just the current one, is what keeps the
+  // layer slider from moving the legend's own end values (D-01).
   function deriveAndDraw(): void {
     if (!rawFullField || !layer) {
       renderLegend(legendEl, null)
@@ -841,10 +851,26 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (committed.limitsMode === 'manual') {
       limits = committed.manualLimits ?? [0, 1]
     } else {
-      const key = `${effectiveScale}:${committed.limitsMode}:${committed.stat}`
+      const key = `${effectiveScale}:${committed.limitsMode}:${committed.stat}:${drawnGroup ?? ''}`
       const cached = limitsMemory.get(key)
-      limits = cached ?? scaleLimits(scaled, committed.limitsMode)
-      if (!cached) limitsMemory.set(key, limits)
+      if (cached) {
+        limits = cached
+      } else {
+        const groupRows: number[] = []
+        for (let i = 0; i < joined.length; i++) {
+          if (joined[i]?.pargp === drawnGroup) groupRows.push(i)
+        }
+        // A group with no finite rows at all (every row non-finite after
+        // the scale, or the group has no rows for some other reason)
+        // falls back to scaleLimits's own empty-set [0, 1] -- the same
+        // honest "nothing to show a range of" already used everywhere
+        // else, not a new sentinel invented here. A group with exactly one
+        // distinct value gets lo === hi, which normalize already renders
+        // as a single flat colour without producing NaN -- a true fact
+        // about the data, not a scaling bug.
+        limits = scaleLimits(subsetValues(scaled, groupRows), committed.limitsMode)
+        limitsMemory.set(key, limits)
+      }
     }
 
     fullField = scaled
@@ -904,8 +930,22 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (token !== requestToken) return
 
     // D-01: the raw field lands here, before any scale, layer or group
-    // filter -- one scale for the whole run, derived only from this array,
-    // never from an already-filtered subset.
+    // filter, untouched -- so every later transform can recompute from
+    // this same array without a fetch. The scale (log10 vs linear) is one
+    // choice for the whole run; the LIMITS derived from it are scoped to
+    // the drawn group's own rows (deriveAndDraw), because different groups
+    // are different physical quantities and a range spanning all of them
+    // buries the smaller ones near zero.
+    //
+    // rawFieldNonPositiveCount (D-03) stays whole-field on purpose: it
+    // decides whether log10 is offered at all, and that decision is
+    // deliberately left unscoped here, as a separate, narrower defect from
+    // the one this fix addresses -- a group with no non-positive values of
+    // its own can still have log10 disabled by another group's zero or
+    // negative row. Scoping it to the drawn group would need recomputing
+    // and re-showing the count on every group switch, not just every
+    // fetch, which is a real change but not one this fix's verification
+    // covers; left as a follow-up rather than folded in silently.
     rawFullField = field
     rawFieldNonPositiveCount = logIsUsable(field)
     scaledField = null
