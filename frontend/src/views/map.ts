@@ -5,7 +5,14 @@
 
 import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo } from '../data/client'
 import { gridCells, gridMesh, gridMeshBuffer, gridValues } from '../data/client'
-import { fetchParIdentities, fetchParmap, joinBlockToIdentity, type ParIdentity } from '../data/parmap'
+import {
+  classifyCells,
+  fetchParIdentities,
+  fetchParmap,
+  joinBlockToIdentity,
+  type CellClass,
+  type ParIdentity,
+} from '../data/parmap'
 import { fetchRealNames } from '../data/reals'
 import { Camera } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, LimitsMemory, type ValueScale } from '../gl/colormap'
@@ -230,6 +237,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let layerArray: Int32Array = new Int32Array(0)
   let inactiveMask: Uint8Array = new Uint8Array(0)
   let drawnGroup: string | null = null
+  // The drawn layer's own classification (D-06), recomputed by applyLayer
+  // on every layer/group change and every landed fetch -- Task 2's click
+  // readout reads this directly rather than reclassifying per click.
+  let currentClasses: CellClass[] = []
 
   function selectionLabel(selection: Selection): string {
     return selection.stat === 'value' ? (selection.realization ?? '—') : selection.stat
@@ -278,6 +289,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer?.draw()
   }
 
+  // The stripe (--ink-primary over the neutral --gridline fill) and the
+  // selection ring (--accent) resolve exactly like the hairline: read once
+  // at mount, and again on every theme change, never cached across one.
+  function applyThemeColors(): void {
+    layer?.setContestedColors(readColorToken('--ink-primary'), readColorToken('--gridline'))
+    layer?.setAccentColor(readColorToken('--accent'))
+  }
+
   function paintHeader(): void {
     renderHeader(header, {
       title: opts.config?.case ?? 'This run',
@@ -288,6 +307,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         // --hairline resolves differently under each data-theme value, so
         // it is re-read here exactly like --page-plane is, never cached.
         layer?.setHairlineColor(readColorToken('--hairline'))
+        applyThemeColors()
         redraw()
       },
     })
@@ -316,40 +336,30 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   })
 
   // Reprojects a full block-order field into grid-cell order, filtered to
-  // one layer and the drawn group, and counts what D-06/D-04's legend
-  // reports: cells two or more block rows land on (contested, overwritten
-  // here rather than blended -- the real stripe mark is out of this
-  // plan's scope, WINDOWS.md #2), and cells in the model and the drawn
-  // group that no block row lands on at all (no value). A block row's
-  // index is its position in the ensemble file, not a grid cell id -- the
-  // block-order `cell` companion array is the only thing that says which
-  // physical cell each row belongs to.
+  // one layer and the drawn group, from classifyCells' own D-06
+  // classification -- a contested cell gets no value at all (NaN; the
+  // stripe is its only mark) rather than the last-seen row's value.
   function computePerCell(
     field: Float32Array,
     layerIndex: number,
-  ): { perCell: Float32Array; contested: number; noValue: number } {
+  ): { perCell: Float32Array; contested: number; noValue: number; classes: CellClass[] } {
     const nCells = mesh?.nCells ?? 0
+    const { classes, contestedCount, noValueCount } = classifyCells(
+      joined,
+      cellArray,
+      layerArray,
+      drawnGroup ?? '',
+      layerIndex,
+      nCells,
+    )
     const perCell = new Float32Array(nCells).fill(Number.NaN)
-    const writeCount = new Int32Array(nCells)
-    for (let i = 0; i < field.length; i++) {
-      const identity = joined[i]
-      const onLayer = layerArray[i] === layerIndex
-      const inDrawnGroup = identity !== null && identity.pargp === drawnGroup
-      if (!onLayer || !inDrawnGroup) continue
-      const cellId = cellArray[i]
-      if (cellId >= 0 && cellId < nCells) {
-        perCell[cellId] = field[i]
-        writeCount[cellId] += 1
+    for (let c = 0; c < nCells; c++) {
+      const cls = classes[c]
+      if (cls.kind === 'valued') {
+        perCell[c] = field[cls.row]
       }
     }
-    let contested = 0
-    let noValue = 0
-    for (let c = 0; c < nCells; c++) {
-      if (inactiveMask[c]) continue
-      if (writeCount[c] === 0) noValue += 1
-      else if (writeCount[c] >= 2) contested += 1
-    }
-    return { perCell, contested, noValue }
+    return { perCell, contested: contestedCount, noValue: noValueCount, classes }
   }
 
   // A layer change never fetches -- the client already holds the whole
@@ -358,7 +368,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // rule (D-01) means only a landed fetch may change them.
   function applyLayer(): { contested: number; noValue: number } {
     if (!fullField || !layer) return { contested: 0, noValue: 0 }
-    const { perCell, contested, noValue } = computePerCell(fullField, committed.layer)
+    const { perCell, contested, noValue, classes } = computePerCell(fullField, committed.layer)
+    currentClasses = classes
+    const contestedMask = new Uint8Array(classes.length)
+    for (let c = 0; c < classes.length; c++) {
+      contestedMask[c] = classes[c].kind === 'contested' ? 1 : 0
+    }
+    layer.setContested(contestedMask)
     layer.setValues(perCell)
     redraw()
     canvas.setAttribute('data-drawn', 'true')
@@ -567,6 +583,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer.setColormap('viridis')
     layer.setInactive(inactiveMask)
     layer.setHairlineColor(readColorToken('--hairline'))
+    applyThemeColors()
 
     const camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)
