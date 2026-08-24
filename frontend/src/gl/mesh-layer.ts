@@ -127,6 +127,7 @@ export class MeshLayer {
   private limits: [number, number] = [0, 1]
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
   private colormapName: ColormapName = 'viridis'
+  private colormapReverse = false
   private lastValues: Float32Array | null = null
   private inactiveMask: Uint8Array | null = null
   private hairlineColor: [number, number, number] = [0, 0, 0]
@@ -201,7 +202,7 @@ export class MeshLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
     this.rampTex = gl.createTexture()!
-    this.setColormap(this.colormapName)
+    this.setColormap(this.colormapName, this.colormapReverse)
 
     if (this.lastValues) this.setValues(this.lastValues)
     if (this.inactiveMask) this.setInactive(this.inactiveMask)
@@ -223,11 +224,14 @@ export class MeshLayer {
     this.limits = limits
   }
 
-  setColormap(name: ColormapName): void {
+  /** `reverse` mirrors the 256-entry table before upload -- MAP-03's
+   *  reverse switch, applying to whichever ramp is chosen. */
+  setColormap(name: ColormapName, reverse = false): void {
     this.colormapName = name
+    this.colormapReverse = reverse
     const { gl } = this
     gl.bindTexture(gl.TEXTURE_2D, this.rampTex)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, ramp(name))
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, ramp(name, reverse))
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)

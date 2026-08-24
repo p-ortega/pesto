@@ -13,18 +13,18 @@ describe('scaleLimits', () => {
     const values = new Float32Array(
       Array.from({ length: 100 }, (_, i) => i).concat([Number.NaN, Number.NaN]),
     )
-    const [lo, hi] = scaleLimits(values, 0.02)
+    const [lo, hi] = scaleLimits(values, 'robust')
     expect(lo).toBeCloseTo(1, 5)
     expect(hi).toBeCloseTo(98, 5)
   })
 
   it('returns a usable range when every value is identical', () => {
-    const [lo, hi] = scaleLimits(new Float32Array([5, 5, 5]), 0.02)
-    expect(hi).toBeGreaterThan(lo)
+    const [lo, hi] = scaleLimits(new Float32Array([5, 5, 5]), 'robust')
+    expect(hi).toBeGreaterThanOrEqual(lo)
   })
 
   it('returns a usable range when everything is missing', () => {
-    const [lo, hi] = scaleLimits(new Float32Array([Number.NaN, Number.NaN]), 0.02)
+    const [lo, hi] = scaleLimits(new Float32Array([Number.NaN, Number.NaN]), 'robust')
     expect(Number.isFinite(lo)).toBe(true)
     expect(Number.isFinite(hi)).toBe(true)
     expect(hi).toBeGreaterThan(lo)

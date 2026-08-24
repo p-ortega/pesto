@@ -8,12 +8,12 @@
 // samples -- the property that decides whether a ramp can be trusted on a
 // continuous field. Zero means brightness tracks value everywhere. A
 // diverging ramp has one by design, since it must be brightest in the
-// middle. jet has three, which is why it is flagged in the picker later.
+// middle. jet has three, which is why it is flagged in the picker.
 //
-// Only `viridis` is actually drawn by this plan -- the reverse switch and
-// the other eight ramps as user choices land in plan 05.1-05 -- but every
-// table is defined here now so that plan extends this file rather than
-// rewriting it.
+// This module also holds the two value scales, the three limits modes and
+// a small per-statistic limits memory -- everything the colour and scale
+// controls (ui/controls.ts) and the legend (ui/legend.ts) need, as pure
+// functions over plain arrays with no WebGL2 context.
 
 export interface RampInfo {
   kind: 'sequential' | 'diverging' | 'rainbow'
@@ -80,9 +80,11 @@ export function hexToRgb(hex: string): [number, number, number] {
  * A 256-entry RGBA8 lookup table, built by linearly interpolating a ramp's
  * nine stops. Entry 0 is exactly the first stop and entry 255 is exactly
  * the last, so a legend reading the ramp's own end values matches what was
- * actually sampled.
+ * actually sampled. `reverse` mirrors the built 256-entry table -- applied
+ * to the table, not the stops, so a reversed ramp is exactly the forward
+ * ramp read backwards.
  */
-export function ramp(name: ColormapName): Uint8Array {
+export function ramp(name: ColormapName, reverse = false): Uint8Array {
   const stops = STOPS[name].hex.map(hexToRgb)
   const out = new Uint8Array(256 * 4)
   const last = stops.length - 1
@@ -95,33 +97,118 @@ export function ramp(name: ColormapName): Uint8Array {
     }
     out[i * 4 + 3] = 255
   }
+  if (!reverse) return out
+
+  const reversed = new Uint8Array(256 * 4)
+  for (let i = 0; i < 256; i++) {
+    const src = (255 - i) * 4
+    const dst = i * 4
+    reversed[dst] = out[src]
+    reversed[dst + 1] = out[src + 1]
+    reversed[dst + 2] = out[src + 2]
+    reversed[dst + 3] = out[src + 3]
+  }
+  return reversed
+}
+
+export type ValueScale = 'linear' | 'log10'
+
+/**
+ * Linear returns the input unchanged. Log10 returns `Math.log10(v)` for
+ * every strictly positive finite value and NaN for every zero, negative or
+ * non-finite one -- never a guess at a value the data does not have.
+ */
+export function applyScale(values: Float32Array, scale: ValueScale): Float32Array {
+  if (scale === 'linear') return values
+  const out = new Float32Array(values.length)
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    out[i] = Number.isFinite(v) && v > 0 ? Math.log10(v) : Number.NaN
+  }
   return out
 }
 
 /**
- * Robust limits at `fraction` and `1 - fraction` over the finite values,
- * skipping NaN -- the 2-98% default this phase's D-01 fixes at `fraction =
- * 0.02`. A field with too few distinct values (or none at all) still
- * returns a usable, non-degenerate range rather than NaN limits that would
- * blank the whole canvas.
+ * The count of finite entries that are zero or negative -- a count, not a
+ * boolean, so D-03's disabled-control message can name exactly how many
+ * cells forbid log10.
  */
-export function scaleLimits(values: Float32Array, fraction: number): [number, number] {
+export function logIsUsable(values: Float32Array): number {
+  let count = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isFinite(v) && v <= 0) count += 1
+  }
+  return count
+}
+
+export type LimitsMode = 'robust' | 'minmax' | 'manual'
+
+/**
+ * Robust limits are the 2nd and 98th percentiles of the finite values --
+ * 2-98%, the roadmap's correction against the reference's 1-99%. Minmax is
+ * the finite minimum and maximum. Manual returns the caller's own pair
+ * unchanged, so every mode shares one call site. When the resulting upper
+ * and lower limits are equal, or their difference is denormal, they are
+ * returned as they are -- the shader's own `max(hi - lo, 1e-20)` floor
+ * already handles it, and a second fix here would be a second thing for
+ * the two to disagree about.
+ */
+export function scaleLimits(values: Float32Array, mode: LimitsMode, manual?: [number, number]): [number, number] {
+  if (mode === 'manual') {
+    if (!manual) {
+      throw new Error('manual limits mode requires a manual pair')
+    }
+    return manual
+  }
+
   const finite: number[] = []
   for (let i = 0; i < values.length; i++) {
     if (Number.isFinite(values[i])) finite.push(values[i])
   }
   if (finite.length === 0) return [0, 1]
-
   finite.sort((a, b) => a - b)
-  const lowIndex = Math.floor(fraction * (finite.length - 1))
-  const highIndex = Math.ceil((1 - fraction) * (finite.length - 1))
-  let lo = finite[lowIndex]
-  let hi = finite[highIndex]
 
-  if (hi <= lo) {
-    const pad = Math.abs(lo) > 0 ? Math.abs(lo) * 0.05 : 0.5
-    lo -= pad
-    hi += pad
+  if (mode === 'minmax') {
+    return [finite[0], finite[finite.length - 1]]
   }
-  return [lo, hi]
+
+  const lowIndex = Math.floor(0.02 * (finite.length - 1))
+  const highIndex = Math.ceil(0.98 * (finite.length - 1))
+  return [finite[lowIndex], finite[highIndex]]
+}
+
+/**
+ * The shader's own normalisation, mirrored on the CPU: a value exactly at
+ * either limit is provably 0 or 1, and a value beyond either limit clamps
+ * to that same end rather than becoming missing -- clipping is never
+ * mistaken for absence.
+ */
+export function normalize(value: number, limits: [number, number]): number {
+  const [lo, hi] = limits
+  const span = Math.max(hi - lo, 1e-20)
+  return Math.min(Math.max((value - lo) / span, 0), 1)
+}
+
+/**
+ * A small per-statistic limits memory (D-02): two realizations of one
+ * statistic share the limits computed for it, so flicking between them is
+ * a comparison; a different statistic gets fresh limits, since the two
+ * have unrelated magnitudes. The caller clears it when the iteration or
+ * the drawn group changes, since either changes what the numbers mean.
+ */
+export class LimitsMemory {
+  private readonly memo = new Map<string, [number, number]>()
+
+  get(key: string): [number, number] | undefined {
+    return this.memo.get(key)
+  }
+
+  set(key: string, limits: [number, number]): void {
+    this.memo.set(key, limits)
+  }
+
+  clear(): void {
+    this.memo.clear()
+  }
 }
