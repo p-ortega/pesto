@@ -2,7 +2,7 @@
 // the eight behaviours below.
 
 import { describe, expect, it } from 'vitest'
-import { LimitsMemory, STOPS, applyScale, logIsUsable, normalize, ramp, scaleLimits, type ColormapName } from '../src/gl/colormap'
+import { LimitsMemory, STOPS, applyScale, logIsUsable, normalize, ramp, scaleLimits, subsetValues, type ColormapName } from '../src/gl/colormap'
 
 describe('ramp', () => {
   it('returns 256 RGBA entries for each of the nine names, and the reversed table is the forward table read backwards', () => {
@@ -82,6 +82,48 @@ describe('scaleLimits', () => {
     const limitsFromLinearThenLog = applyScale(new Float32Array(linearLimits), 'log10')
 
     expect(limitsFromLog[0]).not.toBeCloseTo(limitsFromLinearThenLog[0], 3)
+  })
+})
+
+describe('subsetValues', () => {
+  it('extracts only the given indices, in the order given', () => {
+    const values = new Float32Array([10, 20, 30, 40])
+    expect(Array.from(subsetValues(values, [1, 3]))).toEqual([20, 40])
+    expect(Array.from(subsetValues(values, []))).toEqual([])
+  })
+
+  it('given every index in block order, returns the whole field unchanged -- the single-group case, where the fix must be a no-op', () => {
+    const values = new Float32Array([1, 2, 3])
+    expect(Array.from(subsetValues(values, [0, 1, 2]))).toEqual([1, 2, 3])
+  })
+})
+
+describe('a narrow group inside a wide field', () => {
+  // The measured hl_maw_cond case from the bug report: six values that sit
+  // in the bottom fifth of the whole map block's range, because the block
+  // also holds a different group reaching 100x higher. Limits taken from
+  // the whole block squash the group into a thin band; limits taken from
+  // only the group's own rows must span the ramp end to end.
+  it('spans the ramp on its own limits, not squashed into a thin band of the whole field', () => {
+    const groupValues = [0.295, 0.599, 0.614, 0.629, 0.642, 0.646]
+    const otherGroupValues = [2.036] // ~100x the group's own top value
+    const wholeField = new Float32Array([...groupValues, ...otherGroupValues])
+    const groupIndices = [0, 1, 2, 3, 4, 5]
+
+    const wholeFieldLimits = scaleLimits(wholeField, 'minmax')
+    const squashed = groupValues.map((v) => normalize(v, wholeFieldLimits))
+    expect(Math.max(...squashed) - Math.min(...squashed)).toBeLessThan(0.25)
+
+    // Read back through the Float32Array itself, not the plain-number
+    // `groupValues` literals -- float32 storage rounds 0.295 etc. to a
+    // slightly different double once widened back, and normalize must
+    // compare a value against limits computed from that same stored
+    // precision to land exactly on 0 and 1.
+    const groupSubset = subsetValues(wholeField, groupIndices)
+    const groupOnlyLimits = scaleLimits(groupSubset, 'minmax')
+    const spanned = Array.from(groupSubset).map((v) => normalize(v, groupOnlyLimits))
+    expect(Math.min(...spanned)).toBe(0)
+    expect(Math.max(...spanned)).toBe(1)
   })
 })
 
