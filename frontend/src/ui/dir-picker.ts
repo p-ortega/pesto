@@ -149,7 +149,15 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
     for (const entry of entries) {
       const item = document.createElement('li')
+      // WINDOWS.md #13's sweep: an entry's marker, name, reason and Open
+      // button are adjacent inline elements with nothing between them --
+      // the same run-together shape the notices had, fixed the same way
+      // progress.ts's own row skeleton fixes it, a real flex gap on the row.
+      item.style.display = 'flex'
+      item.style.gap = 'var(--space-sm)'
       const nameButton = document.createElement('button')
+      nameButton.style.display = 'inline-flex'
+      nameButton.style.gap = 'var(--space-sm)'
 
       if (entry.isRun) {
         const marker = document.createElement('span')
