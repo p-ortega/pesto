@@ -60,6 +60,33 @@ void main() {
   fragColor = vec4(u_color, 1.0);
 }`
 
+// D-06's contested mark: a fine diagonal stripe at 22.5 degrees over a
+// neutral fill, in screen space so the stripe period stays constant on
+// screen whatever the zoom. 22.5 is deliberate -- 45 and 135 are reserved
+// for the at-bounds and prior-data-conflict overlays that arrive later, so
+// reusing either here would collide with them.
+const CONTESTED_VERTEX = `#version 300 es
+in vec2 a_pos;
+uniform mat3 u_matrix;
+
+void main() {
+  gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
+}`
+
+const CONTESTED_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec3 u_stripeColor;
+uniform vec3 u_fillColor;
+out vec4 fragColor;
+
+void main() {
+  float angle = radians(22.5);
+  float period = 6.0;
+  float d = gl_FragCoord.x * cos(angle) + gl_FragCoord.y * sin(angle);
+  float inStripe = step(mod(d, period), period * 0.35);
+  fragColor = vec4(mix(u_fillColor, u_stripeColor, inStripe), 1.0);
+}`
+
 export interface MeshData {
   positions: Float32Array
   cellIndex: Float32Array
@@ -124,6 +151,15 @@ export class MeshLayer {
   private outlineElements!: WebGLBuffer
   private outlineCount = 0
 
+  private contestedProgram!: WebGLProgram
+  private contestedVao!: WebGLVertexArrayObject
+  private contestedElements!: WebGLBuffer
+  private contestedCount = 0
+
+  private selectionVao!: WebGLVertexArrayObject
+  private selectionElements!: WebGLBuffer
+  private selectionCount = 0
+
   private limits: [number, number] = [0, 1]
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
   private colormapName: ColormapName = 'viridis'
@@ -131,6 +167,11 @@ export class MeshLayer {
   private lastValues: Float32Array | null = null
   private inactiveMask: Uint8Array | null = null
   private hairlineColor: [number, number, number] = [0, 0, 0]
+  private contestedMask: Uint8Array | null = null
+  private stripeColor: [number, number, number] = [0, 0, 0]
+  private contestedFillColor: [number, number, number] = [0, 0, 0]
+  private selectedCell: number | null = null
+  private accentColor: [number, number, number] = [0, 0, 0]
 
   constructor(gl: WebGL2RenderingContext, mesh: MeshData) {
     this.gl = gl
@@ -192,6 +233,37 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.outlineElements)
     gl.bindVertexArray(null)
 
+    this.contestedProgram = gl.createProgram()!
+    gl.attachShader(this.contestedProgram, compile(gl, gl.VERTEX_SHADER, CONTESTED_VERTEX))
+    gl.attachShader(this.contestedProgram, compile(gl, gl.FRAGMENT_SHADER, CONTESTED_FRAGMENT))
+    gl.linkProgram(this.contestedProgram)
+    if (!gl.getProgramParameter(this.contestedProgram, gl.LINK_STATUS)) {
+      throw new Error(`contested program failed to link: ${gl.getProgramInfoLog(this.contestedProgram)}`)
+    }
+
+    this.contestedVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.contestedVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
+    const contestedPosLoc = gl.getAttribLocation(this.contestedProgram, 'a_pos')
+    gl.enableVertexAttribArray(contestedPosLoc)
+    gl.vertexAttribPointer(contestedPosLoc, 2, gl.FLOAT, false, 0, 0)
+    this.contestedElements = gl.createBuffer()!
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.contestedElements)
+    gl.bindVertexArray(null)
+
+    // The ring pass shares the outline program (position in, one flat
+    // colour out) with its own VAO and index buffer, so a selection never
+    // needs a third shader.
+    this.selectionVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.selectionVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
+    const selectionPosLoc = gl.getAttribLocation(this.outlineProgram, 'a_pos')
+    gl.enableVertexAttribArray(selectionPosLoc)
+    gl.vertexAttribPointer(selectionPosLoc, 2, gl.FLOAT, false, 0, 0)
+    this.selectionElements = gl.createBuffer()!
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
+    gl.bindVertexArray(null)
+
     this.valuesTex = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.valuesTex)
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, TEX_WIDTH, this.texHeight)
@@ -204,10 +276,17 @@ export class MeshLayer {
     this.rampTex = gl.createTexture()!
     this.setColormap(this.colormapName, this.colormapReverse)
 
-    if (this.lastValues) this.setValues(this.lastValues)
     if (this.inactiveMask) this.setInactive(this.inactiveMask)
+    if (this.contestedMask) this.setContested(this.contestedMask)
+    if (this.selectedCell !== null) this.setSelected(this.selectedCell)
+    if (this.lastValues) this.setValues(this.lastValues)
   }
 
+  /** Uploads `values` to the value texture, forcing every contested cell
+   *  to NaN regardless of what the caller passed for it -- T-5.1-15: no
+   *  drawn colour may ever misattribute one parameter's value to another,
+   *  so this invariant is enforced here rather than trusted to every
+   *  caller. */
   setValues(values: Float32Array): void {
     this.lastValues = values
     const { gl } = this
@@ -215,6 +294,11 @@ export class MeshLayer {
     const count = Math.min(values.length, this.mesh.nCells)
     for (let i = 0; i < count; i++) {
       this.staging[i] = values[i]
+    }
+    if (this.contestedMask) {
+      for (let c = 0; c < this.contestedMask.length; c++) {
+        if (this.contestedMask[c]) this.staging[c] = Number.NaN
+      }
     }
     gl.bindTexture(gl.TEXTURE_2D, this.valuesTex)
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_WIDTH, this.texHeight, gl.RED, gl.FLOAT, this.staging)
@@ -271,6 +355,62 @@ export class MeshLayer {
     this.hairlineColor = rgb
   }
 
+  /** `mask[cell]` true means that cell carries two or more block rows of
+   *  the drawn group at the drawn layer (D-06) -- the view decides this
+   *  from `classifyCells`, this layer only draws whatever it is told.
+   *  Rebuilds the contested pass's triangle index buffer from whichever
+   *  triangles `mesh.cellIndex` says belong to a contested cell, and
+   *  re-applies the NaN-forcing invariant to whatever field is already
+   *  uploaded. */
+  setContested(mask: Uint8Array): void {
+    this.contestedMask = mask
+    const { gl, mesh } = this
+    const triangles: number[] = []
+    for (let t = 0; t < mesh.indices.length; t += 3) {
+      const a = mesh.indices[t]
+      const cell = mesh.cellIndex[a]
+      if (cell >= 0 && cell < mask.length && mask[cell]) {
+        triangles.push(mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2])
+      }
+    }
+    this.contestedCount = triangles.length
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.contestedElements)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(triangles), gl.DYNAMIC_DRAW)
+    if (this.lastValues) this.setValues(this.lastValues)
+  }
+
+  /** The stripe colour (`--ink-primary`) and the neutral fill it sits
+   *  over, both resolved tokens read exactly like the hairline colour. */
+  setContestedColors(stripe: [number, number, number], fill: [number, number, number]): void {
+    this.stripeColor = stripe
+    this.contestedFillColor = fill
+  }
+
+  /** Which cell carries the selection ring, over whatever of the four
+   *  marks that cell already has -- `null` removes it. Rebuilds the ring
+   *  pass's line-list index buffer from that one cell's ring, the same way
+   *  `setInactive` builds the hairline's. */
+  setSelected(cellId: number | null): void {
+    this.selectedCell = cellId
+    const { gl } = this
+    const edges: number[] = []
+    const ring = cellId !== null ? this.rings[cellId] : null
+    if (ring) {
+      const [start, count] = ring
+      for (let i = 0; i < count; i++) {
+        edges.push(start + i, start + ((i + 1) % count))
+      }
+    }
+    this.selectionCount = edges.length
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(edges), gl.DYNAMIC_DRAW)
+  }
+
+  /** `--accent`, resolved the same way as the hairline and stripe colours. */
+  setAccentColor(rgb: [number, number, number]): void {
+    this.accentColor = rgb
+  }
+
   private drawOutline(): void {
     if (this.outlineCount === 0) return
     const { gl } = this
@@ -307,35 +447,55 @@ export class MeshLayer {
     gl.bindVertexArray(null)
   }
 
-  /** Outline first, so a coloured cell never has a stroke drawn over it --
-   *  outside-the-model and has-a-fill never overlap by construction, but
-   *  the ordering is the contract (D-06/MAP-07), not an accident of draw
-   *  order. */
-  draw(): void {
-    this.drawOutline()
-    this.drawFill()
+  private drawContested(): void {
+    if (this.contestedCount === 0) return
+    const { gl } = this
+    gl.useProgram(this.contestedProgram)
+    gl.bindVertexArray(this.contestedVao)
+    gl.uniformMatrix3fv(gl.getUniformLocation(this.contestedProgram, 'u_matrix'), false, this.matrix)
+    gl.uniform3f(
+      gl.getUniformLocation(this.contestedProgram, 'u_stripeColor'),
+      this.stripeColor[0],
+      this.stripeColor[1],
+      this.stripeColor[2],
+    )
+    gl.uniform3f(
+      gl.getUniformLocation(this.contestedProgram, 'u_fillColor'),
+      this.contestedFillColor[0],
+      this.contestedFillColor[1],
+      this.contestedFillColor[2],
+    )
+    gl.drawElements(gl.TRIANGLES, this.contestedCount, gl.UNSIGNED_INT, 0)
+    gl.bindVertexArray(null)
   }
 
-  /** Which cell is at this model coordinate. Point-in-polygon on the CPU
-   *  is fine at these grid sizes (PROJECT.md notes ncpl in the tens of
-   *  thousands) and avoids a second render pass. */
-  pickAtWorld(wx: number, wy: number): number | null {
-    const { positions, cellIndex, indices } = this.mesh
-    for (let t = 0; t < indices.length; t += 3) {
-      const [a, b, c] = [indices[t], indices[t + 1], indices[t + 2]]
-      const ax = positions[a * 2]
-      const ay = positions[a * 2 + 1]
-      const bx = positions[b * 2]
-      const by = positions[b * 2 + 1]
-      const cx = positions[c * 2]
-      const cy = positions[c * 2 + 1]
-      const d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
-      if (d === 0) continue
-      const u = ((by - cy) * (wx - cx) + (cx - bx) * (wy - cy)) / d
-      const v = ((cy - ay) * (wx - cx) + (ax - cx) * (wy - cy)) / d
-      if (u >= 0 && v >= 0 && u + v <= 1) return cellIndex[a]
-    }
-    return null
+  private drawSelection(): void {
+    if (this.selectionCount === 0) return
+    const { gl } = this
+    gl.useProgram(this.outlineProgram)
+    gl.bindVertexArray(this.selectionVao)
+    gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
+    gl.uniform3f(
+      gl.getUniformLocation(this.outlineProgram, 'u_color'),
+      this.accentColor[0],
+      this.accentColor[1],
+      this.accentColor[2],
+    )
+    gl.drawElements(gl.LINES, this.selectionCount, gl.UNSIGNED_INT, 0)
+    gl.bindVertexArray(null)
+  }
+
+  /** Outline, stripe, value, ring -- the contract's own draw order
+   *  (D-06/MAP-07). Outline first so a coloured cell never has a stroke
+   *  drawn over it; the stripe before the value pass since a contested
+   *  cell's value is always NaN and so never overwrites it; the ring last
+   *  so it sits over whichever of the first three marks the selected cell
+   *  carries. */
+  draw(): void {
+    this.drawOutline()
+    this.drawContested()
+    this.drawFill()
+    this.drawSelection()
   }
 
   /** Rebuilds every GL object from the arrays and state this layer already
@@ -349,12 +509,17 @@ export class MeshLayer {
     const { gl } = this
     gl.deleteProgram(this.program)
     gl.deleteProgram(this.outlineProgram)
+    gl.deleteProgram(this.contestedProgram)
     gl.deleteVertexArray(this.vao)
     gl.deleteVertexArray(this.outlineVao)
+    gl.deleteVertexArray(this.contestedVao)
+    gl.deleteVertexArray(this.selectionVao)
     gl.deleteBuffer(this.positionsBuffer)
     gl.deleteBuffer(this.cellBuffer)
     gl.deleteBuffer(this.elementsBuffer)
     gl.deleteBuffer(this.outlineElements)
+    gl.deleteBuffer(this.contestedElements)
+    gl.deleteBuffer(this.selectionElements)
     gl.deleteTexture(this.valuesTex)
     gl.deleteTexture(this.rampTex)
   }

@@ -4,7 +4,7 @@
 // Follows picker-ingest.spec.ts's launch helper for spawning a real
 // `pesto` process and reading its printed URL.
 
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -71,6 +71,29 @@ async function launchPesto(runDir: string): Promise<Launched> {
   return { proc, url }
 }
 
+// Reads back one pixel from a screenshot PNG -- the live canvas is created
+// with preserveDrawingBuffer: false (gl/context.ts), so its backbuffer can
+// already be gone by the time a later page.evaluate reads it directly. A
+// screenshot goes through the compositor and captures what was actually
+// presented; this decodes that same PNG in-page instead.
+async function pixelAt(page: Page, dataUrl: string, x: number, y: number): Promise<number[]> {
+  return page.evaluate(
+    async ([url, px, py]) => {
+      const image = new Image()
+      image.src = url as string
+      await image.decode()
+      const readback = document.createElement('canvas')
+      readback.width = image.naturalWidth
+      readback.height = image.naturalHeight
+      const ctx2d = readback.getContext('2d')!
+      ctx2d.drawImage(image, 0, 0)
+      const [r, g, b, a] = ctx2d.getImageData(px as number, py as number, 1, 1).data
+      return [r, g, b, a]
+    },
+    [dataUrl, x, y] as const,
+  )
+}
+
 test.describe('the map draws a synthetic run end to end, through the real routes', () => {
   test.skip(!existsSync(BUILT_INDEX), `the built frontend is missing at ${BUILT_INDEX} -- run "npm run build" first`)
 
@@ -104,49 +127,24 @@ test.describe('the map draws a synthetic run end to end, through the real routes
   // The synthetic run's six cells lay out in a row, each 128 screen px
   // wide starting at x=16 given the fixed 800x480 canvas and camera.fit's
   // 4% padding (Camera.fit's own math, computed once here rather than
-  // asserted against a magic number). Cell 0 is G1's contested cell (has a
-  // value); cells 1-3 are G2's, active but outside the drawn group (no
-  // value); cells 4-5 carry no parameter of any group at all (outside the
-  // model). This is Task 2's four-mark contract, read back as real pixels.
+  // asserted against a magic number). Cell 0 is G1's contested cell (p1
+  // and p2, both G1, on the same cell and layer); cells 1-3 are G2's,
+  // active but outside the drawn group (no value); cells 4-5 carry no
+  // parameter of any group at all (outside the model). This is D-06's
+  // four-mark contract, read back as real pixels.
   test('marks two absences differently: a hairline for outside the model, nothing at all for no parameter here', async ({
     page,
   }) => {
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
-    // The live canvas is created with preserveDrawingBuffer: false (by
-    // design -- see gl/context.ts), so its backbuffer can already be gone
-    // by the time a later page.evaluate reads it directly. A screenshot
-    // goes through the compositor and captures what was actually
-    // presented, exactly like the toHaveScreenshot comparison above; this
-    // decodes that same PNG in-page instead of touching the live context.
     const png = await page.locator('canvas').screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
-    const pixelAt = (x: number, y: number) =>
-      page.evaluate(
-        async ([url, px, py]) => {
-          const image = new Image()
-          image.src = url as string
-          await image.decode()
-          const readback = document.createElement('canvas')
-          readback.width = image.naturalWidth
-          readback.height = image.naturalHeight
-          const ctx2d = readback.getContext('2d')!
-          ctx2d.drawImage(image, 0, 0)
-          const [r, g, b, a] = ctx2d.getImageData(px as number, py as number, 1, 1).data
-          return [r, g, b, a]
-        },
-        [dataUrl, x, y] as const,
-      )
+    const background = await pixelAt(page, dataUrl, 400, 400) // well clear of every cell
+    const cellTwoBlank = await pixelAt(page, dataUrl, 336, 240) // G2's cell, active, not the drawn group
+    const cellFourInterior = await pixelAt(page, dataUrl, 592, 240) // outside the model, away from its border
 
-    const background = await pixelAt(400, 400) // well clear of every cell
-    const cellZeroFill = await pixelAt(80, 240) // G1's contested cell -- has a value
-    const cellTwoBlank = await pixelAt(336, 240) // G2's cell, active, not the drawn group
-    const cellFourInterior = await pixelAt(592, 240) // outside the model, away from its border
-
-    // A value cell is coloured -- not the background.
-    expect(cellZeroFill).not.toEqual(background)
     // A cell in the model but not in the drawn group is exactly the page
     // plane showing through: it must not borrow the hairline.
     expect(cellTwoBlank).toEqual(background)
@@ -159,12 +157,68 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     // asserting one exact coordinate.
     let borderFound = false
     for (let x = 524; x <= 533; x++) {
-      const pixel = await pixelAt(x, 240)
+      const pixel = await pixelAt(page, dataUrl, x, 240)
       if (pixel.some((channel, i) => channel !== background[i])) {
         borderFound = true
         break
       }
     }
     expect(borderFound).toBe(true)
+  })
+
+  // p1 and p2 are both G1, both on cell 0 and layer 0 -- D-06's contested
+  // mark, never an averaged or first-wins colour.
+  test('a contested cell shows a 22.5-degree stripe, not an averaged colour', async ({ page }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    const png = await page.locator('canvas').screenshot()
+    const dataUrl = `data:image/png;base64,${png.toString('base64')}`
+
+    const background = await pixelAt(page, dataUrl, 400, 400)
+
+    // A stripe pattern shows at least two distinct colours across the
+    // cell's interior -- a solid ramp fill (or an averaged/first-wins
+    // colour) would show exactly one.
+    const colours = new Set<string>()
+    for (let x = 24; x <= 136; x += 4) {
+      const pixel = await pixelAt(page, dataUrl, x, 240)
+      colours.add(pixel.join(','))
+    }
+    expect(colours.size).toBeGreaterThanOrEqual(2)
+
+    // Neither of those colours is the page-plane background -- the
+    // contested cell is never blank.
+    for (const colour of colours) {
+      expect(colour).not.toEqual(background.join(','))
+    }
+  })
+
+  test('clicking a contested cell opens a readout naming every parameter on it', async ({ page }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    const bodyBeforeClick = (await page.textContent('body')) ?? ''
+    expect(bodyBeforeClick).toContain('Click a cell to see its value.')
+
+    await page.locator('canvas').click({ position: { x: 80, y: 240 } })
+
+    const bodyText = (await page.textContent('body')) ?? ''
+    expect(bodyText).toContain('Contested cell')
+    expect(bodyText).toContain('p1 (G1)')
+    expect(bodyText).toContain('p2 (G1)')
+    expect(bodyText).toContain('layer 0, cell 0')
+  })
+
+  test('clicking a cell outside the model says plainly there is no parameter of the drawn group', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    await page.locator('canvas').click({ position: { x: 592, y: 240 } })
+
+    const bodyText = (await page.textContent('body')) ?? ''
+    expect(bodyText).toContain('No parameter of G1 sits on this cell.')
   })
 })
