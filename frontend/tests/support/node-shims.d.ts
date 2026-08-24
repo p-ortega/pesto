@@ -33,33 +33,14 @@ declare module 'node:os' {
   export function tmpdir(): string
 }
 
-// Only the slice of a Node stream/child-process this project's Playwright
-// fixture (tests/visual/picker-ingest.spec.ts) actually touches: reading
-// stdout/stderr line by line and waiting for exit -- not the real Node
-// types, which this project deliberately does not add as a dependency.
-interface ShimStreamChunk {
-  toString(encoding?: string): string
-}
-
-interface ShimReadableStream {
-  on(event: 'data', listener: (chunk: ShimStreamChunk) => void): void
-}
-
-interface ShimChildProcess {
-  stdout: ShimReadableStream | null
-  stderr: ShimReadableStream | null
-  on(event: 'exit', listener: (code: number | null) => void): void
-  kill(): void
-}
-
-declare module 'node:child_process' {
-  export type ChildProcess = ShimChildProcess
-  export function spawn(
-    command: string,
-    args: string[],
-    options: { cwd?: string; env?: Record<string, string | undefined> },
-  ): ShimChildProcess
-}
+// node:child_process is deliberately NOT shimmed here: apache-arrow's own
+// type declarations carry a `/// <reference types="node" />` (its
+// builder.d.ts), so @types/node is unavoidably part of this program's type
+// graph the moment anything imports apache-arrow -- and a hand-rolled
+// `declare module 'node:child_process'` collides with the real one once
+// both exist (a type alias and a class exported under the same name do
+// not merge cleanly). The real, richer @types/node types now cover this
+// module's `spawn`/`ChildProcess` for tests/visual/picker-ingest.spec.ts.
 
 declare module 'node:process' {
   const shimProcess: { env: Record<string, string | undefined> }

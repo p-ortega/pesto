@@ -1,7 +1,7 @@
 // The boot sequence and the screen router: picker, estimate, progress and
-// the placeholder, joined into the one flow the phase promises. D-13 is a
+// the map, joined into the one flow the phase promises. D-13 is a
 // routing rule rather than a screen -- a run whose cache is already fresh
-// mounts the placeholder directly, with neither the estimate gate nor the
+// mounts the map directly, with neither the estimate gate nor the
 // progress screen ever shown. No history entry and no hash route is ever
 // added here: the address bar was deliberately stripped of the token at
 // boot (D-08), and putting state back into it would be the first step
@@ -13,7 +13,7 @@ import { renderNotice } from './ui/chrome'
 import { mountPicker } from './ui/dir-picker'
 import { mountEstimate, mountProgress } from './ui/progress'
 import { initTheme } from './ui/theme'
-import { mountPlaceholder, type RunConfig } from './views/placeholder'
+import { mountMap, type RunConfig } from './views/map'
 
 let activeTeardown: (() => void) | null = null
 
@@ -122,13 +122,13 @@ function showProgress(): void {
   })
 }
 
-function showPlaceholder(config: RunConfig | null, state: IngestState): void {
+function showMap(config: RunConfig | null, state: IngestState): void {
   clearTeardown()
-  mountPlaceholder(getRoot(), { config, state })
+  mountMap(getRoot(), { config, state })
 }
 
 // D-13: the freshness answer decides how many screens the user sees. A
-// fresh cache shows the placeholder immediately, with the recorded ingest
+// fresh cache shows the map immediately, with the recorded ingest
 // time and cache size already in the state response -- so the figures are
 // on screen without a screen of their own for them.
 async function routeByFreshness(config: RunConfig | null): Promise<void> {
@@ -141,7 +141,7 @@ async function routeByFreshness(config: RunConfig | null): Promise<void> {
   }
 
   if (state.fresh) {
-    showPlaceholder(config, state)
+    showMap(config, state)
     return
   }
 
@@ -156,7 +156,7 @@ async function afterRunOpened(): Promise<void> {
   await routeByFreshness(config)
 }
 
-// The progress screen always ends at the placeholder, whatever state the
+// The progress screen always ends at the map, whatever state the
 // ingest left the artifacts in -- routing through the freshness check
 // again here could bounce a cancelled or partial ingest straight back to
 // the estimate screen it just left.
@@ -169,7 +169,7 @@ async function afterIngestFinished(): Promise<void> {
     renderBootFailure(error)
     return
   }
-  showPlaceholder(config, state)
+  showMap(config, state)
 }
 
 async function boot(): Promise<void> {
