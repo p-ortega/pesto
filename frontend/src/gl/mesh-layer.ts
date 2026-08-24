@@ -48,6 +48,10 @@ void main() {
 // The outline pass draws only the ring edges belonging to cells marked
 // inactive by setInactive -- never a fill. The colour is a uniform the
 // caller sets from a resolved token; no colour value is written here.
+// It also draws the selection ring (drawSelection), which shares this same
+// program and uniform. u_color carries alpha because --hairline is
+// authored at 10% opacity (WINDOWS.md #12); --accent has no alpha of its
+// own, so the selection ring always draws at alpha 1.
 const OUTLINE_VERTEX = `#version 300 es
 in vec2 a_pos;
 uniform mat3 u_matrix;
@@ -58,11 +62,11 @@ void main() {
 
 const OUTLINE_FRAGMENT = `#version 300 es
 precision highp float;
-uniform vec3 u_color;
+uniform vec4 u_color;
 out vec4 fragColor;
 
 void main() {
-  fragColor = vec4(u_color, 1.0);
+  fragColor = u_color;
 }`
 
 // D-06's contested mark: a fine diagonal stripe at 22.5 degrees over a
@@ -171,7 +175,7 @@ export class MeshLayer {
   private colormapReverse = false
   private lastValues: Float32Array | null = null
   private inactiveMask: Uint8Array | null = null
-  private hairlineColor: [number, number, number] = [0, 0, 0]
+  private hairlineColor: [number, number, number, number] = [0, 0, 0, 1]
   private contestedMask: Uint8Array | null = null
   private stripeColor: [number, number, number] = [0, 0, 0]
   private contestedFillColor: [number, number, number] = [0, 0, 0]
@@ -355,9 +359,11 @@ export class MeshLayer {
 
   /** Read the same way the canvas clear colour is read -- from a resolved
    *  token, converted to floats by the caller. No colour value is written
-   *  in this file. */
-  setHairlineColor(rgb: [number, number, number]): void {
-    this.hairlineColor = rgb
+   *  in this file. Carries alpha (WINDOWS.md #12): --hairline is authored
+   *  at 10% opacity, and drawOutline blends it in rather than drawing it
+   *  opaque. */
+  setHairlineColor(rgba: [number, number, number, number]): void {
+    this.hairlineColor = rgba
   }
 
   /** `mask[cell]` true means that cell carries two or more block rows of
@@ -422,13 +428,22 @@ export class MeshLayer {
     gl.useProgram(this.outlineProgram)
     gl.bindVertexArray(this.outlineVao)
     gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
-    gl.uniform3f(
+    gl.uniform4f(
       gl.getUniformLocation(this.outlineProgram, 'u_color'),
       this.hairlineColor[0],
       this.hairlineColor[1],
       this.hairlineColor[2],
+      this.hairlineColor[3],
     )
+    // --hairline is authored at 10% opacity (WINDOWS.md #12) -- blend it in,
+    // then restore whatever blend state this call found, so the opaque
+    // fill/contested/selection passes that draw after this one are
+    // unaffected.
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
     gl.drawElements(gl.LINES, this.outlineCount, gl.UNSIGNED_INT, 0)
+    if (!wasBlending) gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
   }
 
@@ -480,11 +495,13 @@ export class MeshLayer {
     gl.useProgram(this.outlineProgram)
     gl.bindVertexArray(this.selectionVao)
     gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
-    gl.uniform3f(
+    // --accent carries no alpha of its own, so the ring always draws opaque.
+    gl.uniform4f(
       gl.getUniformLocation(this.outlineProgram, 'u_color'),
       this.accentColor[0],
       this.accentColor[1],
       this.accentColor[2],
+      1,
     )
     gl.drawElements(gl.LINES, this.selectionCount, gl.UNSIGNED_INT, 0)
     gl.bindVertexArray(null)
