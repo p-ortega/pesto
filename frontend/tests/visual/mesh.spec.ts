@@ -193,4 +193,32 @@ test.describe('the map draws a synthetic run end to end, through the real routes
       expect(colour).not.toEqual(background.join(','))
     }
   })
+
+  test('clicking a contested cell opens a readout naming every parameter on it', async ({ page }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    const bodyBeforeClick = (await page.textContent('body')) ?? ''
+    expect(bodyBeforeClick).toContain('Click a cell to see its value.')
+
+    await page.locator('canvas').click({ position: { x: 80, y: 240 } })
+
+    const bodyText = (await page.textContent('body')) ?? ''
+    expect(bodyText).toContain('Contested cell')
+    expect(bodyText).toContain('p1 (G1)')
+    expect(bodyText).toContain('p2 (G1)')
+    expect(bodyText).toContain('layer 0, cell 0')
+  })
+
+  test('clicking a cell outside the model says plainly there is no parameter of the drawn group', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    await page.locator('canvas').click({ position: { x: 592, y: 240 } })
+
+    const bodyText = (await page.textContent('body')) ?? ''
+    expect(bodyText).toContain('No parameter of G1 sits on this cell.')
+  })
 })
