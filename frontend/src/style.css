@@ -1,0 +1,185 @@
+/* The shared stylesheet every screen in this project draws from: the
+   visual-contract tokens, the 8-point spacing scale, the three type
+   roles, and the surfaces, hairlines and scroll containers §6 of the
+   visual contract describes. Every colour value here is one of these
+   tokens -- nothing in this file picks a colour of its own. */
+
+:root {
+  --page-plane: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink-primary: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+  --gridline: #e1e0d9;
+  --axis: #c3c2b7;
+  --hairline: rgba(11, 11, 11, 0.1);
+  --accent: #2a78d6;
+
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+}
+
+[data-theme='dark'] {
+  --page-plane: #0d0d0d;
+  --surface: #1a1a19;
+  --ink-primary: #ffffff;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #898781;
+  --gridline: #2c2c2a;
+  --axis: #383835;
+  --hairline: rgba(255, 255, 255, 0.1);
+  --accent: #3987e5;
+}
+
+body {
+  margin: 0;
+  background: var(--page-plane);
+  color: var(--ink-primary);
+  font-family: system-ui, sans-serif;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Every control gets a visible focus ring by construction (MAP-11). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+/* A disabled control reads as muted rather than merely greyed by the
+   browser default, so it stays legible in both themes. */
+:disabled {
+  color: var(--ink-muted);
+}
+
+/* Typography -- exactly three roles and two weights. No fourth size,
+   no third weight. */
+
+.label {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--ink-secondary);
+}
+
+.body {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--ink-primary);
+}
+
+.heading {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink-primary);
+}
+
+/* Surfaces and layout */
+
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  padding: var(--space-md);
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--page-plane);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  padding: var(--space-lg) 0;
+}
+
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  padding: var(--space-lg) 0;
+}
+
+/* A status-bar or header field is a label span next to a value span --
+   this is what fixes "Ingest time39.9 sCache size264.9 MB": a real gap
+   inside each field and between adjacent fields. */
+.status-bar > span,
+.header > div {
+  display: inline-flex;
+  gap: var(--space-xs);
+}
+
+.scroll-pane {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-color: var(--axis) var(--gridline);
+}
+
+/* Classes the later plans in this phase attach to, defined once here. */
+
+.map-frame {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-xl);
+}
+
+.divider {
+  position: relative;
+  width: 1px;
+  flex: none;
+  background: var(--hairline);
+  cursor: col-resize;
+}
+
+/* The visible line stays 1px; the draggable hit area is 8px wide,
+   centred on it, so it is easy to grab without adding visual weight. */
+.divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+}
+
+.floating {
+  position: absolute;
+  padding: var(--space-sm);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wrap-note {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A 44px minimum touch target for an icon-only control, even though its
+   visible size stays smaller, for pointer and touch parity. */
+.icon-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
