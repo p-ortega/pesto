@@ -3,8 +3,9 @@
 // realization's field into a WebGL2 drawing. This replaces placeholder.ts
 // as the screen every flow in this phase ends at.
 
-import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo } from '../data/client'
-import { gridCells, gridMesh, gridMeshBuffer, gridValues } from '../data/client'
+import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo, type ViewState } from '../data/client'
+import { gridCells, gridMesh, gridMeshBuffer, gridValues, readViewState, writeViewState } from '../data/client'
+import { renderDivider } from '../ui/divider'
 import {
   classifyCells,
   fetchParIdentities,
@@ -15,7 +16,7 @@ import {
 } from '../data/parmap'
 import { fetchRealNames } from '../data/reals'
 import { Camera } from '../gl/camera'
-import { applyScale, logIsUsable, scaleLimits, LimitsMemory, type ValueScale } from '../gl/colormap'
+import { applyScale, logIsUsable, scaleLimits, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld } from '../gl/picking'
@@ -192,6 +193,37 @@ function partransForGroup(joined: Array<ParIdentity | null>, group: string): str
   return null
 }
 
+// D-11's restored view state carries plain strings from a JSON file on
+// disk, not the closed unions the rest of this module trusts -- a value
+// this code has never seen (an older store, a hand-edited file) falls back
+// to the same default the fresh-run path already uses, rather than being
+// trusted blind.
+const KNOWN_COLORMAPS = new Set([
+  'viridis',
+  'magma',
+  'cividis',
+  'greys',
+  'RdBu',
+  'coolwarm',
+  'BrBG',
+  'turbo',
+  'jet',
+])
+
+function restoredColormap(value: string | undefined): ColormapName {
+  return value !== undefined && KNOWN_COLORMAPS.has(value) ? (value as ColormapName) : 'viridis'
+}
+
+const KNOWN_STATS = new Set(['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'])
+
+function restoredStat(value: string | undefined, realNamesOk: boolean): Selection['stat'] {
+  if (value !== undefined && KNOWN_STATS.has(value)) {
+    if (value === 'value' && !realNamesOk) return 'mean'
+    return value as Selection['stat']
+  }
+  return realNamesOk ? 'value' : 'mean'
+}
+
 /**
  * The map screen: header, blocked-capability notices, the canvas panel and
  * the status bar, then the load-and-draw sequence -- mesh, the D-05 join,
@@ -207,6 +239,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const noticeArea = document.createElement('div')
   const panel = document.createElement('div')
   panel.classList.add('map-frame')
+  // D-09: the map is on the left and always present, not a tab. mapArea
+  // holds the canvas and everything floating over it; the divider splits
+  // it from the Params panel plan 05.1-07's Task 3 renders into
+  // paramsPanelHost.
+  const mapArea = document.createElement('div')
+  const dividerEl = document.createElement('div')
+  const paramsPanelHost = document.createElement('div')
   const canvas = document.createElement('canvas')
   canvas.width = 800
   canvas.height = 480
@@ -215,11 +254,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const legendEl = document.createElement('div')
   const pickerEl = document.createElement('div')
   const readoutEl = document.createElement('div')
-  panel.appendChild(canvas)
-  panel.appendChild(mapNotice)
-  panel.appendChild(legendEl)
-  panel.appendChild(pickerEl)
-  panel.appendChild(readoutEl)
+  mapArea.appendChild(canvas)
+  mapArea.appendChild(mapNotice)
+  mapArea.appendChild(legendEl)
+  mapArea.appendChild(pickerEl)
+  mapArea.appendChild(readoutEl)
+  panel.appendChild(mapArea)
+  panel.appendChild(dividerEl)
+  panel.appendChild(paramsPanelHost)
   const statusBar = document.createElement('div')
   statusBar.classList.add('status-bar')
 
@@ -271,6 +313,37 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
   let controlsHandle: SelectionControlsHandle | null = null
+
+  // D-11: the divider fraction and the colour/scale/group choices persist
+  // per run, server-side, through the view-state routes plan 05.1-02
+  // added. Every write is debounced onto one timer, shared by the divider
+  // drag and every selection/group change, so a slider dragged across
+  // several positions writes once rather than once per tick.
+  let dividerFraction = 0.72
+  let viewWriteTimer: ReturnType<typeof setTimeout> | null = null
+
+  function currentViewState(): ViewState {
+    return {
+      divider: dividerFraction,
+      colormap: committed.colormap,
+      reverse: committed.reverseColormap,
+      scale: committed.scale,
+      limitsMode: committed.limitsMode,
+      group: drawnGroup,
+      stat: committed.stat,
+    }
+  }
+
+  // A failed persist is a convenience regression, not a request failure
+  // (D-11): the on-screen state is never touched here, and no error ever
+  // surfaces from a write that did not land.
+  function scheduleViewWrite(): void {
+    if (viewWriteTimer !== null) clearTimeout(viewWriteTimer)
+    viewWriteTimer = setTimeout(() => {
+      viewWriteTimer = null
+      void writeViewState(currentViewState()).catch(() => {})
+    }, 400)
+  }
 
   // Loaded once at mount and constant afterwards -- this plan carries no
   // iteration selector, so a redraw only ever needs the layer to change.
@@ -394,6 +467,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer?.setSelected(null)
     deriveAndDraw()
     updateReadout()
+    scheduleViewWrite()
   }
 
   // D-12/MAP-10: the chips capability, not the config object, decides
@@ -622,6 +696,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     statusError = null
     deriveAndDraw()
     paintStatusBar()
+    scheduleViewWrite()
   }
 
   function handleSelectionChange(next: Selection): void {
@@ -635,6 +710,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     committed = next
     deriveAndDraw()
+    scheduleViewWrite()
   }
 
   clearCanvas()
@@ -643,6 +719,26 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
   async function loadAndDraw(gl: GlContext): Promise<void> {
     const iteration = opts.config?.first_iteration ?? 0
+
+    // Started here, ahead of the mesh/parmap fetches -- the divider's own
+    // position does not depend on any of that data, so it is rendered as
+    // soon as the read lands rather than waiting on the whole map to load.
+    // A failed read is not this plan's problem to report: the server-side
+    // store never raises and already falls back to its own defaults.
+    const viewStatePromise = readViewState().catch((): ViewState | null => null)
+    void viewStatePromise.then((viewState) => {
+      dividerFraction = viewState?.divider ?? dividerFraction
+      renderDivider(dividerEl, {
+        container: panel,
+        before: mapArea,
+        after: paramsPanelHost,
+        initialFraction: dividerFraction,
+        onCommit: (fraction) => {
+          dividerFraction = fraction
+          scheduleViewWrite()
+        },
+      })
+    })
 
     let positions: Float32Array
     let cellIndexBuf: Float32Array
@@ -700,7 +796,22 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       paintPicker({ kind: 'none-drawable', unmapped })
       return
     }
-    drawnGroup = drawable[0]
+    // D-11: a reopened run comes back showing the group it was left on,
+    // when that group is still drawable -- never a group the current data
+    // cannot place, which the fresh-run default (drawable[0]) already
+    // guards against.
+    //
+    // `group` is the one field in the wire shape with a genuine unset
+    // sentinel (`null`, prefs.py's own default): every other field
+    // (colormap, scale, limits_mode, stat) has a non-null default that is
+    // indistinguishable on the wire from a value the user actually chose.
+    // A non-null restored group is therefore the one honest signal that
+    // this cache_root has ever been written to at all -- everything else
+    // restored view state carries is only trusted alongside it.
+    const restoredView = await viewStatePromise
+    const wasVisitedBefore = restoredView !== null && restoredView.group !== null
+    drawnGroup =
+      wasVisitedBefore && drawable.includes(restoredView!.group!) ? restoredView!.group! : drawable[0]
     paintPicker({ kind: 'ready', drawable, unmapped, selected: drawnGroup })
 
     const realNames = await fetchRealNames(iteration)
@@ -733,28 +844,37 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // A run whose realization names were never recorded can still show an
     // aggregate statistic, which needs no realization name -- 'value'
     // would only ever fail to load, so it is not offered as the default.
-    const initialStat = realNames.ok ? 'value' : 'mean'
+    // D-11: a restored statistic wins over the fresh-run default, on a run
+    // that has actually been visited before, unless it is 'value' on a run
+    // whose names were never recorded, which would only ever fail to load.
+    const initialStat = wasVisitedBefore ? restoredStat(restoredView!.stat, realNames.ok) : restoredStat(undefined, realNames.ok)
     const initialRealization = realNames.ok ? (realNames.names[0] ?? null) : null
     // D-03: the scale defaults from the drawn group's own partrans, read
     // through the D-05 join -- matched case-insensitively after trimming,
-    // and linear for anything this code has never seen.
+    // and linear for anything this code has never seen. A restored scale
+    // is only trusted on a run that has actually been visited before
+    // (`wasVisitedBefore`); otherwise the store's own hardcoded default
+    // ('linear') would silently override a correct log10 inference on
+    // every run that has never once been opened, which is the common case,
+    // not an edge case.
     const drawnPartrans = partransForGroup(joined, drawnGroup)
-    const initialScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
+    const inferredScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
+    const initialScale: ValueScale = wasVisitedBefore ? restoredView!.scale : inferredScale
     committed = {
       iteration,
       layer: 0,
       stat: initialStat,
       realization: initialRealization,
-      colormap: 'viridis',
-      reverseColormap: false,
+      colormap: wasVisitedBefore ? restoredColormap(restoredView!.colormap) : 'viridis',
+      reverseColormap: wasVisitedBefore ? restoredView!.reverse : false,
       scale: initialScale,
-      scaleInferred: true,
-      limitsMode: 'robust',
+      scaleInferred: !wasVisitedBefore,
+      limitsMode: wasVisitedBefore ? restoredView!.limitsMode : 'robust',
       manualLimits: null,
     }
 
     const controlsEl = document.createElement('div')
-    panel.appendChild(controlsEl)
+    mapArea.appendChild(controlsEl)
     controlsHandle = renderSelectionControls(controlsEl, {
       nlay: mesh.nlay,
       iteration,
