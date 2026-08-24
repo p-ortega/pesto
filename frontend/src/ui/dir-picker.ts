@@ -19,17 +19,24 @@ const OPEN_ACTION_REASON =
 
 export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenResult) => void }): void {
   root.textContent = ''
+  root.classList.add('page')
 
   const header = document.createElement('div')
+  header.classList.add('header')
+  const panel = document.createElement('div')
+  panel.classList.add('surface')
   const crumbBar = document.createElement('div')
   const noticeArea = document.createElement('div')
   const list = document.createElement('ul')
+  list.classList.add('scroll-pane')
   const statusBar = document.createElement('div')
+  statusBar.classList.add('status-bar')
 
   root.appendChild(header)
-  root.appendChild(crumbBar)
-  root.appendChild(noticeArea)
-  root.appendChild(list)
+  root.appendChild(panel)
+  panel.appendChild(crumbBar)
+  panel.appendChild(noticeArea)
+  panel.appendChild(list)
   root.appendChild(statusBar)
 
   const levelCache = new Map<string | null, DirEntry[]>()
@@ -152,6 +159,8 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
       const nameText = document.createElement('span')
       nameText.textContent = entry.name
+      nameText.classList.add('truncate')
+      nameText.setAttribute('title', entry.name)
       nameButton.appendChild(nameText)
       item.appendChild(nameButton)
 
