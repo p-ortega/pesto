@@ -322,4 +322,36 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     const bodyText = (await page.textContent('body')) ?? ''
     expect(bodyText).toContain('No parameter of G1 sits on this cell.')
   })
+
+  // WINDOWS.md #6: G1 (the default drawn group) places only on cell 0, and
+  // only at layer 0. Moving the slider to layer 1 leaves G1 with zero cells
+  // anywhere on the grid -- the exact shape of the live repro on
+  // hm_20251104154614 (group gwt_src_benzene_63, layer 10, where none of
+  // the run's four drawable groups has a single cell). The whole model
+  // extent must read as absence, the same page-plane colour already proven
+  // for a merely-not-this-group cell, never the ramp's low end.
+  test('a layer where the drawn group has zero cells shows the page plane, not a ramp colour', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    await page.evaluate(() => {
+      const input = document.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      input.value = '1'
+      input.dispatchEvent(new Event('input'))
+    })
+
+    const bodyText = (await page.textContent('body')) ?? ''
+    expect(bodyText).toMatch(/0 cells contested/)
+    expect(bodyText).toMatch(/4 cells no value/)
+
+    const png = await page.locator('canvas').screenshot()
+    const dataUrl = `data:image/png;base64,${png.toString('base64')}`
+
+    const background = await pixelAt(page, dataUrl, 400, 400) // well clear of every cell
+    const cellZero = await pixelAt(page, dataUrl, 80, 240) // G1's own cell, now no-parameter at layer 1
+
+    expect(cellZero).toEqual(background)
+  })
 })
