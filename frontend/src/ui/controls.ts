@@ -61,6 +61,9 @@ export interface SelectionControlsOptions {
    * defaults to linear, never a crash and never a guess. */
   partrans: string | null
   onSelectionChange: (selection: Selection) => void
+  /** MAP-11/D-15: the one button-shaped primary action this map surface
+   *  has. Calls the same `camera.fit(bounds)` the `Home` key triggers. */
+  onFitToExtent: () => void
 }
 
 export interface SelectionControlsHandle {
@@ -95,6 +98,16 @@ export function renderSelectionControls(
 ): SelectionControlsHandle {
   el.textContent = ''
   el.classList.add('floating')
+
+  // Fit to extent (D-15/MAP-11): a real button, the one button-shaped
+  // primary action on this map surface, calling the same fit(bounds) the
+  // Home key triggers.
+  const fitButton = document.createElement('button')
+  fitButton.type = 'button'
+  fitButton.textContent = 'Fit to extent'
+  fitButton.addEventListener('click', () => {
+    opts.onFitToExtent()
+  })
 
   const nlay = Math.max(opts.nlay, 1)
 
@@ -351,6 +364,7 @@ export function renderSelectionControls(
     opts.onSelectionChange(currentSelection())
   })
 
+  el.appendChild(fitButton)
   el.appendChild(layerLabel)
   el.appendChild(statLabel)
   el.appendChild(realLabel)
