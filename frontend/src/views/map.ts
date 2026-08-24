@@ -475,8 +475,15 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // selection ring (--accent) resolve exactly like the hairline: read once
   // at mount, and again on every theme change, never cached across one.
   function applyThemeColors(): void {
-    layer?.setContestedColors(readColorToken('--ink-primary'), readColorToken('--gridline'))
-    layer?.setAccentColor(readColorToken('--accent'))
+    // --ink-primary, --gridline and --accent carry no alpha of their own
+    // (WINDOWS.md #12 confirmed this by reading style.css) -- only their
+    // RGB is needed here, so the resolved alpha is dropped explicitly by
+    // destructuring, not silently by the reader.
+    const [ir, ig, ib] = readColorToken('--ink-primary')
+    const [gr, gg, gb] = readColorToken('--gridline')
+    const [ar, ag, ab] = readColorToken('--accent')
+    layer?.setContestedColors([ir, ig, ib], [gr, gg, gb])
+    layer?.setAccentColor([ar, ag, ab])
   }
 
   // Resolves synchronously from currentClasses/rawFullField -- the client

@@ -127,7 +127,7 @@ describe('MeshLayer', () => {
     layer.setValues(new Float32Array([0, Number.NaN, Number.NaN]))
     layer.setLimits([0, 1])
     layer.setInactive(new Uint8Array([0, 0, 1]))
-    layer.setHairlineColor([0.5, 0.5, 0.5])
+    layer.setHairlineColor([0.5, 0.5, 0.5, 1])
     layer.draw()
 
     const lineDraws = calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'LINES')
@@ -152,15 +152,42 @@ describe('MeshLayer', () => {
     const layer = new MeshLayer(gl, threeCellMesh())
     layer.setInactive(new Uint8Array([1, 0, 0]))
 
-    layer.setHairlineColor([0.1, 0.2, 0.3])
+    layer.setHairlineColor([0.1, 0.2, 0.3, 1])
     layer.draw()
-    const first = calls.filter((c) => c.method === 'uniform3f').at(-1)
-    expect(first?.args.slice(1)).toEqual([0.1, 0.2, 0.3])
+    const first = calls.filter((c) => c.method === 'uniform4f').at(-1)
+    expect(first?.args.slice(1)).toEqual([0.1, 0.2, 0.3, 1])
 
-    layer.setHairlineColor([0.9, 0.8, 0.7])
+    layer.setHairlineColor([0.9, 0.8, 0.7, 1])
     layer.draw()
-    const second = calls.filter((c) => c.method === 'uniform3f').at(-1)
-    expect(second?.args.slice(1)).toEqual([0.9, 0.8, 0.7])
+    const second = calls.filter((c) => c.method === 'uniform4f').at(-1)
+    expect(second?.args.slice(1)).toEqual([0.9, 0.8, 0.7, 1])
+  })
+
+  // WINDOWS.md #12: the hairline's authored alpha (0.1, i.e. 10% opacity)
+  // must reach the GPU and actually blend, not just be carried as a number
+  // that the shader then ignores -- otherwise the outline still draws at
+  // full strength even though parseColorToken now reports the true alpha.
+  it('draws the hairline outline with its authored alpha and enables blending scoped to that one pass', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setInactive(new Uint8Array([1, 0, 0]))
+    layer.setHairlineColor([1, 1, 1, 26 / 255])
+    layer.draw()
+
+    const outlineColorCall = calls.filter((c) => c.method === 'uniform4f').at(0)
+    expect(outlineColorCall?.args.slice(1)).toEqual([1, 1, 1, 26 / 255])
+
+    const enableBlendIdx = calls.findIndex((c) => c.method === 'enable' && c.args[0] === 'BLEND')
+    const blendFuncIdx = calls.findIndex((c) => c.method === 'blendFunc')
+    const drawIdx = calls.findIndex((c) => c.method === 'drawElements' && c.args[0] === 'LINES')
+    const disableBlendIdx = calls.findIndex((c) => c.method === 'disable' && c.args[0] === 'BLEND')
+
+    expect(enableBlendIdx).toBeGreaterThanOrEqual(0)
+    expect(blendFuncIdx).toBeGreaterThan(enableBlendIdx)
+    expect(blendFuncIdx).toBeLessThan(drawIdx)
+    // Blend state is restored right after the hairline's own draw call, so
+    // the fill/contested/selection passes that follow are never affected.
+    expect(disableBlendIdx).toBeGreaterThan(drawIdx)
   })
 
   it('reupload rebuilds every GL object from the arrays and state already held', () => {
@@ -221,8 +248,10 @@ describe('MeshLayer', () => {
     expect(ringDraws.length).toBe(1)
     // Cell 1's ring is 4 vertices -> 4 edges -> 8 line-list indices.
     expect(ringDraws[0].args[1]).toBe(8)
-    const ringColor = calls.filter((c) => c.method === 'uniform3f').at(-1)
-    expect(ringColor?.args.slice(1)).toEqual([0.2, 0.4, 0.6])
+    // The selection ring shares the outline program's now-vec4 u_color, but
+    // --accent carries no alpha, so it always draws opaque.
+    const ringColor = calls.filter((c) => c.method === 'uniform4f').at(-1)
+    expect(ringColor?.args.slice(1)).toEqual([0.2, 0.4, 0.6, 1])
 
     calls.length = 0
     layer.setSelected(null)
@@ -241,6 +270,9 @@ describe('MeshLayer', () => {
     layer.draw()
     const stripeCalls1 = calls.filter((c) => c.method === 'uniform3f')
     expect(stripeCalls1.some((c) => c.args.slice(1).every((v, i) => v === [0.1, 0.1, 0.1][i]))).toBe(true)
+    // Accent shares the outline program's vec4 u_color (opaque, alpha 1).
+    const accentCalls1 = calls.filter((c) => c.method === 'uniform4f')
+    expect(accentCalls1.some((c) => c.args.slice(1).every((v, i) => v === [0.2, 0.2, 0.2, 1][i]))).toBe(true)
 
     calls.length = 0
     layer.setContestedColors([0.7, 0.7, 0.7], [0.3, 0.3, 0.3])
@@ -248,6 +280,7 @@ describe('MeshLayer', () => {
     layer.draw()
     const stripeCalls2 = calls.filter((c) => c.method === 'uniform3f')
     expect(stripeCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.7, 0.7, 0.7][i]))).toBe(true)
-    expect(stripeCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.8, 0.8, 0.8][i]))).toBe(true)
+    const accentCalls2 = calls.filter((c) => c.method === 'uniform4f')
+    expect(accentCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.8, 0.8, 0.8, 1][i]))).toBe(true)
   })
 })
