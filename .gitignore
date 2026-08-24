@@ -2,7 +2,8 @@
 docs/
 .planning/
 .gsd/
-tests/fixtures/
+tests/fixtures/lheg_ies/
+tests/fixtures/freyberg_ies/
 .DS_Store
 __pycache__/
 *.pyc
