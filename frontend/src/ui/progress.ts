@@ -77,6 +77,11 @@ export async function mountEstimate(root: HTMLElement, opts: MountEstimateOption
   const body = document.createElement('div')
   const noticeArea = document.createElement('div')
   const controls = document.createElement('div')
+  // WINDOWS.md #13's sweep: Agree and Go back sat directly against each
+  // other with nothing between them -- the same fix as every other row in
+  // this file, a real flex gap.
+  controls.style.display = 'flex'
+  controls.style.gap = 'var(--space-sm)'
   root.appendChild(headerEl)
   root.appendChild(body)
   root.appendChild(noticeArea)

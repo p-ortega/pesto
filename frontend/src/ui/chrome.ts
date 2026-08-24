@@ -92,6 +92,12 @@ function appendChip(
  */
 export function renderChips(el: HTMLElement, opts: ChipsInput): void {
   el.textContent = ''
+  // WINDOWS.md #13's sweep: this row's own spacing used to come only from
+  // the ambient `.header > div` rule -- true when a caller happened to hand
+  // this a direct child of a `.header`-classed element, silently absent
+  // otherwise. The Spacing Scale's own "sm: gap between a chip's parts"
+  // is exactly this row, so it carries its own gap now.
+  el.classList.add('legend-figures')
 
   if (opts.failure) {
     const text = `${opts.failure.artifact} failed — ${opts.failure.reason}`
@@ -232,6 +238,7 @@ export function renderNotice(el: HTMLElement, opts: RenderNoticeOptions): void {
   const style = TONE_STYLE[opts.tone]
 
   const notice = document.createElement('div')
+  notice.classList.add('notice-parts')
   notice.style.color = style.colorVar
 
   const iconEl = document.createElement('span')
