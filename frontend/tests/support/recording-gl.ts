@@ -47,6 +47,9 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     TEXTURE0: 0,
     TEXTURE1: 1,
     COLOR_BUFFER_BIT: 'COLOR_BUFFER_BIT',
+    BLEND: 'BLEND',
+    SRC_ALPHA: 'SRC_ALPHA',
+    ONE_MINUS_SRC_ALPHA: 'ONE_MINUS_SRC_ALPHA',
   }
 
   const gl = {
@@ -99,7 +102,15 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     uniform1i: record('uniform1i'),
     uniform2f: record('uniform2f'),
     uniform3f: record('uniform3f'),
+    uniform4f: record('uniform4f'),
     uniformMatrix3fv: record('uniformMatrix3fv'),
+    isEnabled: (...a: unknown[]) => {
+      record('isEnabled')(...a)
+      return false
+    },
+    enable: record('enable'),
+    disable: record('disable'),
+    blendFunc: record('blendFunc'),
     drawElements: record('drawElements'),
     deleteProgram: record('deleteProgram'),
     deleteVertexArray: record('deleteVertexArray'),
