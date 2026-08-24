@@ -7,6 +7,36 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// jsdom has no real WebGL2, so every routing test needs the map screen's
+// canvas setup to succeed anyway -- these stand in for the two GL modules
+// across the whole file. The real drawing pipeline is proven by
+// tests/mesh-layer.test.ts (calls made) and tests/visual/mesh.spec.ts
+// (pixels), never here; this file only asserts routing and fetch order.
+vi.mock('../src/gl/context', () => ({
+  createContext: vi.fn(() => ({
+    gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 },
+    onLost: vi.fn(),
+    onRestored: vi.fn(),
+  })),
+}))
+
+vi.mock('../src/gl/mesh-layer', () => ({
+  MeshLayer: vi.fn().mockImplementation(function MockMeshLayer(this: object) {
+    Object.assign(this, {
+      setValues: vi.fn(),
+      setLimits: vi.fn(),
+      setColormap: vi.fn(),
+      setMatrix: vi.fn(),
+      setInactive: vi.fn(),
+      setHairlineColor: vi.fn(),
+      draw: vi.fn(),
+      reupload: vi.fn(),
+      dispose: vi.fn(),
+      pickAtWorld: vi.fn(),
+    })
+  }),
+}))
+
 const CONFIG_BODY = {
   case: 'forecast_run',
   n_par: 42,
@@ -109,6 +139,14 @@ function screenHasText(text: string): boolean {
   return screenText().includes(text)
 }
 
+// The map screen always appends a canvas as part of mountMap's synchronous
+// setup, whether or not the load-and-draw sequence that follows succeeds --
+// so this is a stable signal that routing reached the map, independent of
+// the (mocked, in this file) GL pipeline underneath it.
+function mapMounted(): boolean {
+  return document.querySelector('canvas') !== null
+}
+
 function findButtonByText(text: string): HTMLButtonElement {
   const buttons = Array.from(document.querySelectorAll('button'))
   const match = buttons.find((button) => button.textContent?.includes(text))
@@ -182,10 +220,9 @@ describe('the screen router', () => {
     await bootMain()
 
     await vi.waitFor(() => {
-      expect(screenHasText('The map is not built yet')).toBe(true)
+      expect(mapMounted()).toBe(true)
     })
     expect(screenHasText('forecast_run')).toBe(true)
-    expect(screenHasText('5.1')).toBe(true)
     expect(stub.calls).not.toContain('GET /api/run/ingest/estimate')
     expect(stub.calls).not.toContain('POST /api/run/ingest')
   })
@@ -199,7 +236,7 @@ describe('the screen router', () => {
     await bootMain()
 
     await vi.waitFor(() => {
-      expect(screenHasText('The map is not built yet')).toBe(true)
+      expect(mapMounted()).toBe(true)
     })
     expect(screenHasText('Critical')).toBe(false)
   })
@@ -271,7 +308,7 @@ describe('the screen router', () => {
       expect(stateCalls).toBeGreaterThanOrEqual(2)
     })
     await vi.waitFor(() => {
-      expect(screenHasText('The map is not built yet')).toBe(true)
+      expect(mapMounted()).toBe(true)
     })
 
     const eventsSignal = stub.signals['GET /api/run/ingest/events']
@@ -304,7 +341,7 @@ describe('the screen router', () => {
     findButtonByText('Open').click()
 
     await vi.waitFor(() => {
-      expect(screenHasText('The map is not built yet')).toBe(true)
+      expect(mapMounted()).toBe(true)
     })
     expect(stub.calls).not.toContain('GET /api/run/ingest/estimate')
   })
@@ -333,6 +370,146 @@ describe('the screen router', () => {
       expect(screenHasText('par_agg/head')).toBe(true)
       expect(screenHasText('the aggregation step crashed reading iteration 3')).toBe(true)
     })
+  })
+})
+
+// The D-05 join and the draw sequence in one place: a real synthetic
+// dataset, fetched through the real client.ts/parmap.ts code, in the exact
+// order the map screen's load sequence promises. Only the two GL modules
+// are mocked (module-level, above); every fetch here is real.
+describe("the map screen's load sequence", () => {
+  interface BytesHandler {
+    (): { status: number; bytes?: Uint8Array; body?: unknown; headers?: Record<string, string> }
+  }
+
+  interface BytesStub {
+    calls: string[]
+  }
+
+  function stubBytesFetch(handlers: Record<string, BytesHandler>): BytesStub {
+    const stub: BytesStub = { calls: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const path = url.split('?')[0]
+        const key = `GET ${path}`
+        stub.calls.push(key)
+
+        const handler = handlers[key]
+        if (!handler) {
+          throw new Error(`unhandled fetch in test: ${key}`)
+        }
+        const result = handler()
+        const bytes = result.bytes ?? new Uint8Array(0)
+        return {
+          ok: result.status >= 200 && result.status < 300,
+          status: result.status,
+          json: async () => result.body ?? {},
+          arrayBuffer: async () => bytes.buffer,
+          headers: { get: (name: string) => result.headers?.[name] ?? null },
+        }
+      }),
+    )
+    return stub
+  }
+
+  function bytesOf(view: ArrayBufferView): Uint8Array {
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+  }
+
+  function metaHeader(dtype: string): Record<string, string> {
+    return { 'X-Pesto-Meta': JSON.stringify({ dtype }) }
+  }
+
+  beforeEach(() => {
+    seedSession()
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('fetches mesh, parmap, the par table, cells and values in that order, and draws once', async () => {
+    const { tableFromArrays, tableToIPC } = await import('apache-arrow')
+
+    const parTable = tableToIPC(
+      tableFromArrays({ parnme: ['p1'], pargp: ['G1'], partrans: ['log'] }),
+      'stream',
+    )
+    const realsTable = tableToIPC(tableFromArrays({ realization: ['base'] }), 'stream')
+
+    const positions = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
+    const cellIndex = new Float32Array([0, 0, 0, 0])
+    const indices = new Uint32Array([0, 1, 2, 0, 2, 3])
+    const parmap = new Int32Array([0])
+    const cellArray = new Int32Array([0])
+    const layerArray = new Int32Array([0])
+    const field = new Float32Array([42])
+
+    const stub = stubBytesFetch({
+      'GET /api/run/config': () => ({ status: 200, body: { ...CONFIG_BODY, first_iteration: 0 } }),
+      'GET /api/run/ingest/state': () => ({ status: 200, body: baseState() }),
+      'GET /api/run/grid/mesh': () => ({
+        status: 200,
+        body: {
+          n_vert: 4,
+          n_tri: 2,
+          n_cells: 1,
+          nlay: 1,
+          bounds: [0, 1, 0, 1],
+          crs: null,
+          tag: 'tag1',
+        },
+      }),
+      'GET /api/run/grid/mesh/positions': () => ({
+        status: 200,
+        bytes: bytesOf(positions),
+        headers: metaHeader('<f4'),
+      }),
+      'GET /api/run/grid/mesh/cell_index': () => ({
+        status: 200,
+        bytes: bytesOf(cellIndex),
+        headers: metaHeader('<f4'),
+      }),
+      'GET /api/run/grid/mesh/indices': () => ({
+        status: 200,
+        bytes: bytesOf(indices),
+        headers: metaHeader('<u4'),
+      }),
+      'GET /api/run/grid/parmap': () => ({ status: 200, bytes: bytesOf(parmap) }),
+      'GET /api/run/meta': () => ({ status: 200, bytes: parTable }),
+      'GET /api/run/grid/cells/cell': () => ({ status: 200, bytes: bytesOf(cellArray) }),
+      'GET /api/run/grid/cells/layer': () => ({ status: 200, bytes: bytesOf(layerArray) }),
+      'GET /api/run/reals': () => ({ status: 200, bytes: realsTable }),
+      'GET /api/run/grid/values': () => ({ status: 200, bytes: bytesOf(field) }),
+    })
+
+    await bootMain()
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+
+    const orderOf = (key: string): number => stub.calls.indexOf(key)
+    expect(orderOf('GET /api/run/grid/mesh')).toBeGreaterThanOrEqual(0)
+    expect(orderOf('GET /api/run/grid/parmap')).toBeGreaterThan(orderOf('GET /api/run/grid/mesh/indices'))
+    expect(orderOf('GET /api/run/meta')).toBeGreaterThan(orderOf('GET /api/run/grid/parmap'))
+    expect(orderOf('GET /api/run/grid/cells/cell')).toBeGreaterThan(orderOf('GET /api/run/meta'))
+    expect(orderOf('GET /api/run/grid/values')).toBeGreaterThan(orderOf('GET /api/run/grid/cells/layer'))
+
+    const { MeshLayer } = await import('../src/gl/mesh-layer')
+    const instance = vi.mocked(MeshLayer).mock.instances[0] as unknown as { draw: ReturnType<typeof vi.fn> }
+    expect(instance.draw).toHaveBeenCalledTimes(1)
   })
 })
 

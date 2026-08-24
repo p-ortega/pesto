@@ -1,3 +1,4 @@
+import { tableFromIPC } from 'apache-arrow'
 import { authHeaders } from '../auth/token'
 
 export interface ProblemDetails {
@@ -64,6 +65,136 @@ export async function apiPost(route: string, body: unknown): Promise<unknown> {
     body: JSON.stringify(body),
   })
   return handleResponse(response)
+}
+
+export interface BytesResult {
+  buffer: ArrayBuffer
+  meta: Record<string, unknown> | null
+}
+
+// apiGet's binary sibling. Shares handleResponse's failure handling, but
+// branches to arrayBuffer() on success instead of readJson, and also
+// returns the parsed X-Pesto-Meta header blob_response attaches -- present
+// on every numeric route (mesh buffers, parmap, values, cells), absent on
+// the Arrow-stream routes, which carry their shape in the stream itself.
+export async function apiGetBytes(route: string): Promise<BytesResult> {
+  const response = await fetch(route, { headers: authHeaders() })
+  if (!response.ok) {
+    const problem = (await readJson(response)) as ProblemDetails
+    throw new ApiError(problem)
+  }
+  const buffer = await response.arrayBuffer()
+  const raw = response.headers.get('X-Pesto-Meta')
+  return { buffer, meta: raw ? (JSON.parse(raw) as Record<string, unknown>) : null }
+}
+
+function typedArrayForDtype(dtype: string, buffer: ArrayBuffer): Float32Array | Int32Array | Uint32Array {
+  switch (dtype) {
+    case '<f4':
+      return new Float32Array(buffer)
+    case '<i4':
+      return new Int32Array(buffer)
+    case '<u4':
+      return new Uint32Array(buffer)
+    default:
+      throw new Error(`unexpected numeric dtype from the server: ${dtype}`)
+  }
+}
+
+export interface MeshInfo {
+  nVert: number
+  nTri: number
+  nCells: number
+  nlay: number
+  bounds: [number, number, number, number]
+  crs: string | null
+  tag: string | null
+}
+
+export async function gridMesh(): Promise<MeshInfo> {
+  const raw = (await apiGet('/api/run/grid/mesh')) as {
+    n_vert: number
+    n_tri: number
+    n_cells: number
+    nlay: number
+    bounds: [number, number, number, number]
+    crs: string | null
+    tag: string | null
+  }
+  return {
+    nVert: raw.n_vert,
+    nTri: raw.n_tri,
+    nCells: raw.n_cells,
+    nlay: raw.nlay,
+    bounds: raw.bounds,
+    crs: raw.crs,
+    tag: raw.tag,
+  }
+}
+
+export type MeshBufferName = 'positions' | 'cell_index' | 'indices'
+
+export async function gridMeshBuffer(buffer: MeshBufferName): Promise<Float32Array | Int32Array | Uint32Array> {
+  const { buffer: bytes, meta } = await apiGetBytes(`/api/run/grid/mesh/${buffer}`)
+  const dtype = meta?.dtype as string | undefined
+  if (!dtype) {
+    throw new Error(`the ${buffer} buffer arrived with no dtype to read it as`)
+  }
+  return typedArrayForDtype(dtype, bytes)
+}
+
+// D-05: the map block's slice of the block-to-control permutation, raw
+// little-endian i32 -- for block row i, parmap[i] is that row's position
+// in the control-order /meta?kind=par table.
+export async function gridParmap(iteration: number): Promise<Int32Array> {
+  const { buffer } = await apiGetBytes(`/api/run/grid/parmap?iteration=${encodeURIComponent(String(iteration))}`)
+  return new Int32Array(buffer)
+}
+
+export interface GridValuesQuery {
+  iteration: number
+  stat?: string
+  realization?: string
+}
+
+// D-05 (inherited): layer is never sent here -- ValuesQuery forbids it,
+// and layer selection is filtered client-side out of the whole field this
+// returns.
+export async function gridValues(query: GridValuesQuery): Promise<Float32Array> {
+  const params = new URLSearchParams({ iteration: String(query.iteration) })
+  if (query.stat !== undefined) params.set('stat', query.stat)
+  if (query.realization !== undefined) params.set('realization', query.realization)
+  const { buffer } = await apiGetBytes(`/api/run/grid/values?${params.toString()}`)
+  return new Float32Array(buffer)
+}
+
+export async function gridCells(which: 'cell' | 'layer', iteration: number): Promise<Int32Array> {
+  const { buffer } = await apiGetBytes(
+    `/api/run/grid/cells/${which}?iteration=${encodeURIComponent(String(iteration))}`,
+  )
+  return new Int32Array(buffer)
+}
+
+// The raw Arrow stream bytes for /meta -- parsing (tableFromIPC, getChild
+// by field name) is data/parmap.ts's job, the D-05 join's first use of
+// apache-arrow.
+export async function runMeta(kind: 'par' | 'obs'): Promise<ArrayBuffer> {
+  const { buffer } = await apiGetBytes(`/api/run/meta?kind=${kind}`)
+  return buffer
+}
+
+export async function runReals(iteration: number): Promise<string[]> {
+  const { buffer } = await apiGetBytes(`/api/run/reals?iteration=${encodeURIComponent(String(iteration))}`)
+  const table = tableFromIPC(new Uint8Array(buffer))
+  const column = table.getChild('realization')
+  if (!column) {
+    throw new Error('the realization table is missing its realization column')
+  }
+  const out: string[] = new Array(table.numRows)
+  for (let i = 0; i < table.numRows; i++) {
+    out[i] = String(column.get(i))
+  }
+  return out
 }
 
 function toDirEntry(raw: unknown): DirEntry {
