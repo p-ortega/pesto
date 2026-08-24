@@ -121,6 +121,22 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(bodyText).toMatch(/Ingest time/)
     expect(bodyText).not.toMatch(/Critical/)
 
+    // The divider and Params panel this plan adds must not cost the map
+    // its own chrome: the selection controls and the legend still render,
+    // asserted on the DOM rather than only checked by eye (a prior attempt
+    // at this plan broke exactly this without either kind of test catching
+    // it).
+    await expect(page.locator('input[aria-label="Layer"]')).toBeAttached()
+    await expect(page.locator('select[aria-label="Statistic"]')).toBeAttached()
+    await expect(page.locator('input[aria-label="Realization"]')).toBeAttached()
+    await expect(page.locator('select[aria-label="Colormap"]')).toBeAttached()
+    await expect(page.locator('select[aria-label="Value scale"]')).toBeAttached()
+    expect(bodyText).toMatch(/Scale: Log₁₀ \(inferred from partrans\)/)
+    expect(bodyText).toMatch(/Limits: Robust 2-98%/)
+    expect(bodyText).toMatch(/1 cells contested/)
+    expect(bodyText).toMatch(/3 cells no value/)
+    await expect(page.locator('[role="separator"][aria-label="Resize panel"]')).toBeAttached()
+
     await expect(page.locator('canvas')).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
   })
 
