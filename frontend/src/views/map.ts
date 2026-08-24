@@ -199,6 +199,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       onThemeChange: (choice: ThemeChoice) => {
         setTheme(choice)
         paintHeader()
+        // --hairline resolves differently under each data-theme value, so
+        // it is re-read here exactly like --page-plane is, never cached.
+        layer?.setHairlineColor(readColorToken('--hairline'))
         redraw()
       },
     })
@@ -347,6 +350,18 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       }
     }
 
+    // Outside the model (MAP-07): a grid cell never referenced by any
+    // block row of any group, at any layer -- distinct from a cell that IS
+    // in the model but not in the drawn group/layer, which perCell already
+    // leaves as NaN above and the fill shader discards.
+    const inactiveMask = new Uint8Array(mesh.nCells).fill(1)
+    for (let i = 0; i < cellArray.length; i++) {
+      const cellId = cellArray[i]
+      if (cellId >= 0 && cellId < mesh.nCells) {
+        inactiveMask[cellId] = 0
+      }
+    }
+
     mapNotice.textContent = ''
 
     const meshData: MeshData = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
@@ -354,6 +369,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer.setValues(perCell)
     layer.setLimits(limits)
     layer.setColormap('viridis')
+    layer.setInactive(inactiveMask)
+    layer.setHairlineColor(readColorToken('--hairline'))
 
     const camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)

@@ -212,6 +212,50 @@ describe('MeshLayer', () => {
     expect(draws[0].args[0]).toBe('TRIANGLES')
   })
 
+  it('setInactive draws a hairline outline for a cell outside the model, and nothing for one merely absent from the field', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    // Cell 1 carries no parameter of the drawn group (NaN, no outline);
+    // cell 2 is outside the model entirely (inactive, hairline outline).
+    layer.setValues(new Float32Array([0, Number.NaN, Number.NaN]))
+    layer.setLimits([0, 1])
+    layer.setInactive(new Uint8Array([0, 0, 1]))
+    layer.setHairlineColor([0.5, 0.5, 0.5])
+    layer.draw()
+
+    const lineDraws = calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'LINES')
+    expect(lineDraws.length).toBe(1)
+    // Cell 2's ring is 4 vertices -> 4 edges -> 8 line-list indices.
+    expect(lineDraws[0].args[1]).toBe(8)
+  })
+
+  it('draws no outline at all when nothing is marked inactive', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([0, Number.NaN, 1]))
+    layer.setLimits([0, 1])
+    layer.setInactive(new Uint8Array([0, 0, 0]))
+    layer.draw()
+
+    expect(calls.some((c) => c.method === 'drawElements' && c.args[0] === 'LINES')).toBe(false)
+  })
+
+  it('reads the outline colour from whatever was last set, so a theme change can re-read it', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setInactive(new Uint8Array([1, 0, 0]))
+
+    layer.setHairlineColor([0.1, 0.2, 0.3])
+    layer.draw()
+    const first = calls.filter((c) => c.method === 'uniform3f').at(-1)
+    expect(first?.args.slice(1)).toEqual([0.1, 0.2, 0.3])
+
+    layer.setHairlineColor([0.9, 0.8, 0.7])
+    layer.draw()
+    const second = calls.filter((c) => c.method === 'uniform3f').at(-1)
+    expect(second?.args.slice(1)).toEqual([0.9, 0.8, 0.7])
+  })
+
   it('reupload rebuilds every GL object from the arrays and state already held', () => {
     const { gl, calls } = createRecordingGl()
     const layer = new MeshLayer(gl, threeCellMesh())
