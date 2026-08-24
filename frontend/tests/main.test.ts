@@ -142,12 +142,14 @@ function screenHasText(text: string): boolean {
   return screenText().includes(text)
 }
 
-// The map screen always appends a canvas as part of mountMap's synchronous
-// setup, whether or not the load-and-draw sequence that follows succeeds --
-// so this is a stable signal that routing reached the map, independent of
-// the (mocked, in this file) GL pipeline underneath it.
+// mountMap appends the .map-frame panel synchronously, before any fetch --
+// a stable signal that routing reached the map, independent of whether the
+// (mocked, in this file) GL pipeline or the data load beneath it succeeds.
+// The canvas itself is no longer that signal (plan 05.1-08): a designed
+// state with no mesh loaded removes it, so a routing test that never
+// stubs the mesh/parmap/cells routes must not depend on it surviving.
 function mapMounted(): boolean {
-  return document.querySelector('canvas') !== null
+  return document.querySelector('.map-frame') !== null
 }
 
 function findButtonByText(text: string): HTMLButtonElement {
