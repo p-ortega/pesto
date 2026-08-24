@@ -6,7 +6,7 @@
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchParIdentities, joinBlockToIdentity, type ParIdentity } from '../src/data/parmap'
+import { classifyCells, fetchParIdentities, joinBlockToIdentity, type ParIdentity } from '../src/data/parmap'
 
 vi.mock('../src/data/client', () => ({
   runMeta: vi.fn(),
@@ -41,6 +41,71 @@ describe('joinBlockToIdentity', () => {
     const joined = joinBlockToIdentity(parmap, identities)
 
     expect(joined).toEqual([{ parnme: 'p0', pargp: 'G1', partrans: 'log' }, null, null])
+  })
+})
+
+// D-06's four marks, classified from the join and the block-order
+// cell/layer companions -- never from a value, since classifyCells is
+// never given one.
+describe('classifyCells', () => {
+  const G1: ParIdentity = { parnme: 'p1', pargp: 'G1', partrans: 'log' }
+  const G1B: ParIdentity = { parnme: 'p2', pargp: 'G1', partrans: 'log' }
+  const G2: ParIdentity = { parnme: 'p3', pargp: 'G2', partrans: 'none' }
+
+  it('classifies a cell with one row of the drawn group as valued, one with two as contested, one with none as no-parameter, and one never referenced as outside the model', () => {
+    // cell 0: p1 (G1) alone -- valued. cell 1: p1B, p2 both G1 -- contested.
+    // cell 2: only G2's row -- in the model, no G1 row -- no-parameter.
+    // cell 3: referenced by nothing -- outside the model.
+    const joined = [G1, G1B, G1, G2]
+    const cells = new Int32Array([0, 1, 1, 2])
+    const layers = new Int32Array([0, 0, 0, 0])
+
+    const result = classifyCells(joined, cells, layers, 'G1', 0, 4)
+
+    expect(result.classes[0]).toEqual({ kind: 'valued', row: 0 })
+    expect(result.classes[1]).toEqual({ kind: 'contested', rows: [1, 2] })
+    expect(result.classes[2]).toEqual({ kind: 'no-parameter' })
+    expect(result.classes[3]).toEqual({ kind: 'outside-model' })
+    expect(result.contestedCount).toBe(1)
+    expect(result.noValueCount).toBe(1)
+  })
+
+  it('marks two rows of the drawn group on the same cell and layer as contested, never averaged or first-wins', () => {
+    const joined = [G1, G1B]
+    const cells = new Int32Array([5, 5])
+    const layers = new Int32Array([1, 1])
+
+    const result = classifyCells(joined, cells, layers, 'G1', 1, 6)
+
+    expect(result.classes[5]).toEqual({ kind: 'contested', rows: [0, 1] })
+    // Never resolved to a single "valued" row for a contested cell.
+    expect(result.classes[5]).not.toHaveProperty('row')
+  })
+
+  it('keeps both rows and their block-scan order even when their values would compare equal -- equality is never a tiebreak', () => {
+    // classifyCells never sees a value at all, so two rows that would
+    // compare exactly equal classify no differently than any other pair --
+    // this proves the rows are kept in scan order, not reordered or deduped.
+    const joined = [G1B, G1]
+    const cells = new Int32Array([2, 2])
+    const layers = new Int32Array([0, 0])
+
+    const result = classifyCells(joined, cells, layers, 'G1', 0, 3)
+
+    expect(result.classes[2]).toEqual({ kind: 'contested', rows: [0, 1] })
+  })
+
+  it('classifies a cell in the grid with no row of the chosen group as no-parameter, distinct from outside-the-model', () => {
+    // cell 1 carries a G2 row -- it is active, just not in G1 (the drawn
+    // group). cell 2 carries no row of any group -- outside the model.
+    const joined = [G1, G2]
+    const cells = new Int32Array([0, 1])
+    const layers = new Int32Array([0, 0])
+
+    const result = classifyCells(joined, cells, layers, 'G1', 0, 3)
+
+    expect(result.classes[1]).toEqual({ kind: 'no-parameter' })
+    expect(result.classes[2]).toEqual({ kind: 'outside-model' })
   })
 })
 

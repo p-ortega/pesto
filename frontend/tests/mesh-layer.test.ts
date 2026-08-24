@@ -269,4 +269,78 @@ describe('MeshLayer', () => {
     // The field held before the loss is re-applied without a fresh fetch.
     expect(calls.some((c) => c.method === 'texSubImage2D')).toBe(true)
   })
+
+  it('setContested draws a stripe pass and forces contested cells to NaN in the value pass, even when the caller supplies a value for one', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setContested(new Uint8Array([0, 1, 0]))
+    // Cell 1 is contested, but a value is supplied for it anyway -- the
+    // layer must still exclude it from the value pass (T-5.1-15).
+    layer.setValues(new Float32Array([0, 5, 1]))
+    layer.setLimits([0, 1])
+    layer.draw()
+
+    const triDraws = calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'TRIANGLES')
+    // One for the contested stripe pass, one for the fill pass.
+    expect(triDraws.length).toBe(2)
+    // Cell 1's ring is a quad -> 2 triangles -> 6 indices.
+    expect(triDraws[0].args[1]).toBe(6)
+
+    const upload = calls.filter((c) => c.method === 'texSubImage2D').at(-1)
+    const staging = upload?.args[8] as Float32Array
+    expect(Number.isNaN(staging[1])).toBe(true)
+  })
+
+  it('draws no contested pass at all when nothing is marked contested', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setContested(new Uint8Array([0, 0, 0]))
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    layer.setLimits([0, 1])
+    layer.draw()
+
+    // Exactly the fill pass's own TRIANGLES draw -- no stripe pass.
+    expect(calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'TRIANGLES').length).toBe(1)
+  })
+
+  it('setSelected draws an accent ring over whatever mark the cell already has, and setSelected(null) removes it', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setAccentColor([0.2, 0.4, 0.6])
+    layer.setSelected(1)
+    layer.draw()
+
+    const ringDraws = calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'LINES')
+    expect(ringDraws.length).toBe(1)
+    // Cell 1's ring is 4 vertices -> 4 edges -> 8 line-list indices.
+    expect(ringDraws[0].args[1]).toBe(8)
+    const ringColor = calls.filter((c) => c.method === 'uniform3f').at(-1)
+    expect(ringColor?.args.slice(1)).toEqual([0.2, 0.4, 0.6])
+
+    calls.length = 0
+    layer.setSelected(null)
+    layer.draw()
+    expect(calls.some((c) => c.method === 'drawElements' && c.args[0] === 'LINES')).toBe(false)
+  })
+
+  it('re-reads the stripe and accent colours from whatever was last set, so a theme change can re-read them', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setContested(new Uint8Array([1, 0, 0]))
+    layer.setSelected(0)
+
+    layer.setContestedColors([0.1, 0.1, 0.1], [0.9, 0.9, 0.9])
+    layer.setAccentColor([0.2, 0.2, 0.2])
+    layer.draw()
+    const stripeCalls1 = calls.filter((c) => c.method === 'uniform3f')
+    expect(stripeCalls1.some((c) => c.args.slice(1).every((v, i) => v === [0.1, 0.1, 0.1][i]))).toBe(true)
+
+    calls.length = 0
+    layer.setContestedColors([0.7, 0.7, 0.7], [0.3, 0.3, 0.3])
+    layer.setAccentColor([0.8, 0.8, 0.8])
+    layer.draw()
+    const stripeCalls2 = calls.filter((c) => c.method === 'uniform3f')
+    expect(stripeCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.7, 0.7, 0.7][i]))).toBe(true)
+    expect(stripeCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.8, 0.8, 0.8][i]))).toBe(true)
+  })
 })
