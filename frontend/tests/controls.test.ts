@@ -192,4 +192,83 @@ describe('renderSelectionControls', () => {
     fitButton!.dispatchEvent(new Event('click'))
     expect(onFitToExtent).toHaveBeenCalledTimes(1)
   })
+
+  // WINDOWS.md #8: a restored view state carried reverseColormap: true and
+  // it was applied to the ramp, but the checkbox this same module renders
+  // read unchecked -- the control never learned what the caller already
+  // knew. This is the same class of bug as #5 (the scale dropdown not
+  // resyncing on a group change): the view can update `committed` without
+  // ever telling the DOM controls.
+  it('shows a restored colormap, reverse, scale and limits mode at construction, not the fresh-run defaults', () => {
+    const el = document.createElement('div')
+    const handle = renderSelectionControls(el, {
+      nlay: 3,
+      iteration: 0,
+      realNames: THREE_NAMES,
+      partrans: 'none',
+      initial: {
+        colormap: 'magma',
+        reverseColormap: true,
+        scale: 'log10',
+        scaleInferred: false,
+        limitsMode: 'minmax',
+        manualLimits: null,
+      },
+      onSelectionChange: vi.fn(),
+      onFitToExtent: vi.fn(),
+    })
+
+    expect((el.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement).checked).toBe(true)
+    expect((el.querySelector('select[aria-label="Colormap"]') as HTMLSelectElement).value).toBe('magma')
+    expect((el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement).value).toBe('log10')
+    expect((el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement).value).toBe('minmax')
+    expect(handle).toBeDefined()
+  })
+
+  it('a restored reverse setting survives an unrelated control change, instead of being silently dropped', () => {
+    const el = document.createElement('div')
+    const onSelectionChange = vi.fn()
+    renderSelectionControls(el, {
+      nlay: 3,
+      iteration: 0,
+      realNames: THREE_NAMES,
+      partrans: 'none',
+      initial: {
+        colormap: 'viridis',
+        reverseColormap: true,
+        scale: 'linear',
+        scaleInferred: true,
+        limitsMode: 'robust',
+        manualLimits: null,
+      },
+      onSelectionChange,
+      onFitToExtent: vi.fn(),
+    })
+
+    const layerSlider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerSlider.value = '1'
+    layerSlider.dispatchEvent(new Event('input'))
+
+    expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ reverseColormap: true }))
+  })
+
+  it('sync() pushes a selection into the displayed controls without emitting onSelectionChange', () => {
+    const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+    onSelectionChange.mockClear()
+
+    handle.sync({
+      colormap: 'turbo',
+      reverseColormap: true,
+      scale: 'log10',
+      scaleInferred: true,
+      limitsMode: 'manual',
+      manualLimits: [2, 9],
+    })
+
+    expect((el.querySelector('select[aria-label="Colormap"]') as HTMLSelectElement).value).toBe('turbo')
+    expect((el.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement).checked).toBe(true)
+    expect((el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement).value).toBe('log10')
+    expect((el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement).value).toBe('manual')
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
 })
