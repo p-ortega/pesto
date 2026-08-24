@@ -139,6 +139,32 @@ async def get_values(request: Request, params: Annotated[ValuesQuery, Query()]) 
     return response
 
 
+@router.get("/parmap")
+async def get_parmap(request: Request, iteration: int, v: str | None = None) -> Response:
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+
+    layout = CacheLayout(root=Path(cache_root))
+    stored = get_stored(request.app.state, cache_root, iteration)
+    if isinstance(stored, ReadFailure):
+        return problem_from_failure(404, stored)
+
+    permutation = map_permutation(stored)
+    if permutation is None:
+        return problem(
+            404,
+            "no map-block permutation was recorded for that iteration",
+            artifact=f"par_ens/{iteration}",
+        )
+
+    manifest = Manifest.load(layout)
+    tag = cache_tag(manifest, f"par_ens/{iteration}")
+    response = blob_response(permutation, meta={"order": "block", "iteration": iteration})
+    response.headers.update(cache_headers(tag, v))
+    return response
+
+
 @router.get("/cells/{which}")
 async def get_cells(
     which: Literal["cell", "layer"], request: Request, iteration: int, v: str | None = None
