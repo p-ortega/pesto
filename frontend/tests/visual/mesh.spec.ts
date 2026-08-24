@@ -100,4 +100,71 @@ test.describe('the map draws a synthetic run end to end, through the real routes
 
     await expect(page.locator('canvas')).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
   })
+
+  // The synthetic run's six cells lay out in a row, each 128 screen px
+  // wide starting at x=16 given the fixed 800x480 canvas and camera.fit's
+  // 4% padding (Camera.fit's own math, computed once here rather than
+  // asserted against a magic number). Cell 0 is G1's contested cell (has a
+  // value); cells 1-3 are G2's, active but outside the drawn group (no
+  // value); cells 4-5 carry no parameter of any group at all (outside the
+  // model). This is Task 2's four-mark contract, read back as real pixels.
+  test('marks two absences differently: a hairline for outside the model, nothing at all for no parameter here', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+
+    // The live canvas is created with preserveDrawingBuffer: false (by
+    // design -- see gl/context.ts), so its backbuffer can already be gone
+    // by the time a later page.evaluate reads it directly. A screenshot
+    // goes through the compositor and captures what was actually
+    // presented, exactly like the toHaveScreenshot comparison above; this
+    // decodes that same PNG in-page instead of touching the live context.
+    const png = await page.locator('canvas').screenshot()
+    const dataUrl = `data:image/png;base64,${png.toString('base64')}`
+
+    const pixelAt = (x: number, y: number) =>
+      page.evaluate(
+        async ([url, px, py]) => {
+          const image = new Image()
+          image.src = url as string
+          await image.decode()
+          const readback = document.createElement('canvas')
+          readback.width = image.naturalWidth
+          readback.height = image.naturalHeight
+          const ctx2d = readback.getContext('2d')!
+          ctx2d.drawImage(image, 0, 0)
+          const [r, g, b, a] = ctx2d.getImageData(px as number, py as number, 1, 1).data
+          return [r, g, b, a]
+        },
+        [dataUrl, x, y] as const,
+      )
+
+    const background = await pixelAt(400, 400) // well clear of every cell
+    const cellZeroFill = await pixelAt(80, 240) // G1's contested cell -- has a value
+    const cellTwoBlank = await pixelAt(336, 240) // G2's cell, active, not the drawn group
+    const cellFourInterior = await pixelAt(592, 240) // outside the model, away from its border
+
+    // A value cell is coloured -- not the background.
+    expect(cellZeroFill).not.toEqual(background)
+    // A cell in the model but not in the drawn group is exactly the page
+    // plane showing through: it must not borrow the hairline.
+    expect(cellTwoBlank).toEqual(background)
+    // A cell outside the model has no fill either...
+    expect(cellFourInterior).toEqual(background)
+
+    // ...but its ring is stroked in the hairline colour somewhere along
+    // cell 4's left edge (x=528), a 1px line that anti-aliasing can shift
+    // by a pixel either way -- scan a small neighbourhood rather than
+    // asserting one exact coordinate.
+    let borderFound = false
+    for (let x = 524; x <= 533; x++) {
+      const pixel = await pixelAt(x, 240)
+      if (pixel.some((channel, i) => channel !== background[i])) {
+        borderFound = true
+        break
+      }
+    }
+    expect(borderFound).toBe(true)
+  })
 })
