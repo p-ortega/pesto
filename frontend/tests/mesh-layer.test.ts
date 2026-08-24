@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import { ramp, scaleLimits, STOPS, hexToRgb } from '../src/gl/colormap'
 import { MeshLayer, type MeshData } from '../src/gl/mesh-layer'
+import { createRecordingGl } from './support/recording-gl'
 
 describe('scaleLimits', () => {
   it('returns the 2nd and 98th percentile of the finite values, ignoring NaN', () => {
@@ -51,117 +52,8 @@ describe('ramp', () => {
   })
 })
 
-interface RecordedCall {
-  method: string
-  args: unknown[]
-}
-
-// Every method MeshLayer calls, logging its name and arguments and
-// returning just enough of a value (a unique tagged object, or true for a
-// status check) to keep the class's own logic moving. Nothing here can
-// render a pixel.
-function createRecordingGl(): { gl: WebGL2RenderingContext; calls: RecordedCall[] } {
-  const calls: RecordedCall[] = []
-  let nextId = 1
-  const tag = (kind: string) => ({ __tag: kind, __id: nextId++ })
-  const record =
-    (method: string) =>
-    (...args: unknown[]) => {
-      calls.push({ method, args })
-    }
-
-  const CONSTANTS: Record<string, string | number> = {
-    TEXTURE_2D: 'TEXTURE_2D',
-    ARRAY_BUFFER: 'ARRAY_BUFFER',
-    ELEMENT_ARRAY_BUFFER: 'ELEMENT_ARRAY_BUFFER',
-    STATIC_DRAW: 'STATIC_DRAW',
-    DYNAMIC_DRAW: 'DYNAMIC_DRAW',
-    FLOAT: 'FLOAT',
-    TRIANGLES: 'TRIANGLES',
-    LINES: 'LINES',
-    UNSIGNED_INT: 'UNSIGNED_INT',
-    R32F: 'R32F',
-    RGBA: 'RGBA',
-    RED: 'RED',
-    UNSIGNED_BYTE: 'UNSIGNED_BYTE',
-    NEAREST: 'NEAREST',
-    LINEAR: 'LINEAR',
-    CLAMP_TO_EDGE: 'CLAMP_TO_EDGE',
-    TEXTURE_MIN_FILTER: 'TEXTURE_MIN_FILTER',
-    TEXTURE_MAG_FILTER: 'TEXTURE_MAG_FILTER',
-    TEXTURE_WRAP_S: 'TEXTURE_WRAP_S',
-    COMPILE_STATUS: 'COMPILE_STATUS',
-    LINK_STATUS: 'LINK_STATUS',
-    VERTEX_SHADER: 'VERTEX_SHADER',
-    FRAGMENT_SHADER: 'FRAGMENT_SHADER',
-    TEXTURE0: 0,
-    TEXTURE1: 1,
-    COLOR_BUFFER_BIT: 'COLOR_BUFFER_BIT',
-  }
-
-  const gl = {
-    ...CONSTANTS,
-    createShader: (...a: unknown[]) => {
-      record('createShader')(...a)
-      return tag('shader')
-    },
-    shaderSource: record('shaderSource'),
-    compileShader: record('compileShader'),
-    getShaderParameter: () => true,
-    getShaderInfoLog: () => '',
-    createProgram: (...a: unknown[]) => {
-      record('createProgram')(...a)
-      return tag('program')
-    },
-    attachShader: record('attachShader'),
-    linkProgram: record('linkProgram'),
-    getProgramParameter: () => true,
-    getProgramInfoLog: () => '',
-    createVertexArray: (...a: unknown[]) => {
-      record('createVertexArray')(...a)
-      return tag('vao')
-    },
-    bindVertexArray: record('bindVertexArray'),
-    createBuffer: (...a: unknown[]) => {
-      record('createBuffer')(...a)
-      return tag('buffer')
-    },
-    bindBuffer: record('bindBuffer'),
-    bufferData: record('bufferData'),
-    getAttribLocation: () => nextId++,
-    enableVertexAttribArray: record('enableVertexAttribArray'),
-    vertexAttribPointer: record('vertexAttribPointer'),
-    createTexture: (...a: unknown[]) => {
-      record('createTexture')(...a)
-      return tag('texture')
-    },
-    bindTexture: record('bindTexture'),
-    texStorage2D: record('texStorage2D'),
-    texParameteri: record('texParameteri'),
-    texSubImage2D: record('texSubImage2D'),
-    texImage2D: record('texImage2D'),
-    useProgram: record('useProgram'),
-    activeTexture: record('activeTexture'),
-    getUniformLocation: (...a: unknown[]) => {
-      record('getUniformLocation')(...a)
-      return tag('uniform')
-    },
-    uniform1i: record('uniform1i'),
-    uniform2f: record('uniform2f'),
-    uniform3f: record('uniform3f'),
-    uniformMatrix3fv: record('uniformMatrix3fv'),
-    drawElements: record('drawElements'),
-    deleteProgram: record('deleteProgram'),
-    deleteVertexArray: record('deleteVertexArray'),
-    deleteBuffer: record('deleteBuffer'),
-    deleteTexture: record('deleteTexture'),
-    viewport: record('viewport'),
-    clearColor: record('clearColor'),
-    clear: record('clear'),
-  }
-
-  return { gl: gl as unknown as WebGL2RenderingContext, calls }
-}
+// createRecordingGl moved to tests/support/recording-gl.ts so the map
+// integration test can share the same stub.
 
 // Three unit quads side by side, matching the reference harness's own
 // three-cell layout (docs/superpowers/plans/2026-08-12-pesto-m0.md).
@@ -175,6 +67,21 @@ function threeCellMesh(): MeshData {
 }
 
 describe('MeshLayer', () => {
+  // WINDOWS.md #6: a cell with no value must read as absence whether the
+  // texel holds NaN or +/-Infinity. `value != value` only ever catches
+  // NaN -- an infinity is equal to itself, so that comparison alone lets a
+  // non-finite value through to be clamped and drawn as if it were data.
+  it('the fill vertex shader treats every non-finite value as missing, not only NaN', () => {
+    const { gl, calls } = createRecordingGl()
+    new MeshLayer(gl, threeCellMesh())
+
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    const vertexSource = sources.find((s) => s.includes('v_missing'))
+    expect(vertexSource).toBeDefined()
+    expect(vertexSource).toMatch(/isnan\(\s*value\s*\)/)
+    expect(vertexSource).toMatch(/isinf\(\s*value\s*\)/)
+  })
+
   it('sets NEAREST filtering on the values texture at construction', () => {
     const { gl, calls } = createRecordingGl()
     new MeshLayer(gl, threeCellMesh())

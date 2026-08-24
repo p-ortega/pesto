@@ -22,7 +22,12 @@ void main() {
   float y = floor(cell / u_texSize.x);
   float value = texelFetch(u_values, ivec2(int(x), int(y)), 0).r;
 
-  v_missing = (value != value) ? 1.0 : 0.0;   // NaN is the only value != itself
+  // A cell with no value is uploaded as NaN (setValues), never a finite
+  // number -- but "value != value" only ever catches NaN. On some GPU
+  // drivers an infinity slips past that test and then clamp() pins it to a
+  // ramp end, drawing it as if it were data (WINDOWS.md #6). isnan/isinf
+  // are the spec-guaranteed way to reject both.
+  v_missing = (isnan(value) || isinf(value)) ? 1.0 : 0.0;
   v_norm = clamp((value - u_limits.x) / max(u_limits.y - u_limits.x, 1e-20), 0.0, 1.0);
 
   gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
