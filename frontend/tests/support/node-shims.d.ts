@@ -13,6 +13,8 @@ declare module 'node:fs' {
   export function mkdtempSync(prefix: string): string
   export function realpathSync(filePath: string): string
   export function writeFileSync(filePath: string, data: string, encoding: string): void
+  export function readdirSync(dirPath: string): string[]
+  export function statSync(filePath: string): { isDirectory(): boolean }
 }
 
 declare module 'node:path' {
