@@ -6,6 +6,7 @@
 import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import { gridCells, gridMesh, gridMeshBuffer, gridValues, readViewState, writeViewState } from '../data/client'
 import { renderDivider } from '../ui/divider'
+import { renderParamsPanel } from '../ui/params-panel'
 import {
   classifyCells,
   fetchParIdentities,
@@ -784,6 +785,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       return
     }
 
+    // The Params panel's per-artifact notes: every artifact the ingest
+    // recorded a reason for, named and shown verbatim (CLAUDE.md's fourth
+    // hard rule -- nothing dropped without a trace).
+    const artifactNotes = opts.state.artifacts
+      .filter((artifact): artifact is typeof artifact & { reason: string } => artifact.reason !== null)
+      .map((artifact) => ({ artifact: artifact.name, reason: artifact.reason }))
+
     // D-07: only groups that place on at least one cell are offered; the
     // rest are counted and named behind the picker's own disclosure.
     const { drawable, unmapped } = computeGroupPlacement(joined, cellArray)
@@ -794,6 +802,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         tone: 'info',
       })
       paintPicker({ kind: 'none-drawable', unmapped })
+      renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes })
       return
     }
     // D-11: a reopened run comes back showing the group it was left on,
@@ -813,6 +822,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     drawnGroup =
       wasVisitedBefore && drawable.includes(restoredView!.group!) ? restoredView!.group! : drawable[0]
     paintPicker({ kind: 'ready', drawable, unmapped, selected: drawnGroup })
+    renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes })
 
     const realNames = await fetchRealNames(iteration)
 
