@@ -7,10 +7,17 @@ a MODFLOW fact, not a general one. It lives inside the boundary GRID-05
 exists to hold, so nothing outside ``src/pesto/model/`` ever has to know
 any of this.
 
-Five rules are tried in order for every parameter group: ``kij``,
-``idx-triple``, ``idx-pair``, ``ij-name-layer``, ``ij-single-layer``. The
-first rule whose columns are present and that produces at least one
+Six rules are tried in order for every parameter group: ``kij``,
+``idx-triple``, ``idx-pair``, ``ij-name-layer``, ``ij-single-layer``,
+``xyz-host-cell``. The first rule whose columns are present and that produces at least one
 in-range hit takes the whole group.
+
+The sixth rule, added for pilot points on 2026-10-15, places a parameter
+that carries ``x`` and ``y`` on the cell containing that point, and takes
+its layer from ``z`` against the grid's elevations, from a layer number in
+its names, or from a one-layer grid. It runs only when the caller hands
+over a ``Geometry``; without one the table is the five rules it was locked
+with in Phase 3.
 
 Row positions used to write into the ``cell``/``layer`` arrays come from
 ``pandas.DataFrame.groupby(...).indices``, a mapping from group name to the
@@ -48,10 +55,11 @@ import numpy as np
 import pandas as pd
 
 from pesto.ingest.failures import ReadFailure
-from pesto.model import GridShape, GroupResolution, ParCells
+from pesto.model import Geometry, GridShape, GroupResolution, ParCells
+from pesto.model._points import layer_from_z, locate_points
 
 DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
-RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer")
+RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer", "xyz-host-cell")
 UNMAPPED = "unmapped"
 GROUP_COLUMN = "pargp"
 
@@ -62,13 +70,14 @@ UNPLACED_REASONS: tuple[tuple[str, str], ...] = (
     ("absent", "carried no value at all"),
     ("no_layer_in_name", "carried no layer number in its name"),
     ("too_large", "carried a value too large to turn into a cell number"),
+    ("outside_grid", "sat outside every cell or layer of the grid"),
     ("unknown", "could not be placed and pesto could not tell why"),
 )
 """The locked wording of every reason a parameter can go unplaced, and the
 order its clauses appear in a shortfall note -- one place, so a reason
 cannot drift between the code that counts it and the sentence that says it.
 ``unknown`` is a structural remainder: every known way a cell or layer can
-come out unusable is named by one of the six causes ahead of it, and this
+come out unusable is named by one of the seven causes ahead of it, and this
 last one exists so a future producer of an unusable value cannot silently
 break the counts."""
 
@@ -116,6 +125,7 @@ class _Rejections:
     not_whole: np.ndarray
     no_layer_in_name: np.ndarray
     too_large: np.ndarray
+    outside_grid: np.ndarray
     columns_not_whole: list[str]
 
     @classmethod
@@ -126,6 +136,7 @@ class _Rejections:
             not_whole=np.zeros(n, dtype=bool),
             no_layer_in_name=np.zeros(n, dtype=bool),
             too_large=np.zeros(n, dtype=bool),
+            outside_grid=np.zeros(n, dtype=bool),
             columns_not_whole=[],
         )
 
@@ -154,6 +165,18 @@ def _numeric(block: pd.DataFrame, column: str, rejections: _Rejections) -> np.nd
         rejections.columns_not_whole.append(column)
         rejections.not_whole |= fractional
         values = np.where(fractional, np.nan, values)
+    return values
+
+
+def _numeric_real(block: pd.DataFrame, column: str, rejections: _Rejections) -> np.ndarray:
+    """``block[column]`` as float, for columns where a fraction is a real
+    value -- coordinates -- so only absence and unreadability are recorded,
+    never ``not_whole``."""
+    series = block[column]
+    values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64)
+    absent = (series.isna() | series.astype(str).str.strip().eq("")).to_numpy()
+    rejections.absent |= absent
+    rejections.unreadable |= ~np.isfinite(values) & ~absent
     return values
 
 
@@ -279,7 +302,39 @@ def _candidate_ij_single_layer(block: pd.DataFrame, shape: GridShape):
     return _combine_cell(i, shape.ncol, j), layer, rejections
 
 
-def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[str]):
+def _candidate_xyz_host_cell(block: pd.DataFrame, shape: GridShape, pattern, geometry):
+    if geometry is None or not {"x", "y"}.issubset(block.columns):
+        return None
+    rejections = _Rejections.blank(len(block))
+    x = _numeric_real(block, "x", rejections)
+    y = _numeric_real(block, "y", rejections)
+    located = locate_points(geometry, x, y)
+    rejections.outside_grid |= (located < 0) & np.isfinite(x) & np.isfinite(y)
+    cell = np.where(located >= 0, located, np.nan).astype(np.float64)
+    if "z" in block.columns and block["z"].notna().any():
+        z = _numeric_real(block, "z", rejections)
+        found = layer_from_z(geometry, located, z)
+        rejections.outside_grid |= (found < 0) & (located >= 0) & np.isfinite(z)
+        layer = np.where(found >= 0, found, np.nan).astype(np.float64)
+    else:
+        layer = _layer_from_names(block, pattern, rejections)
+        if layer is None:
+            if shape.nlay == 1:
+                layer = np.zeros(len(block))
+            else:
+                layer = np.full(len(block), np.nan)
+                # Only a point that found a cell lacks a layer; an empty x/y is
+                # already recorded as absent and must not wake the fallback.
+                rejections.no_layer_in_name |= located >= 0
+    return cell, layer, rejections
+
+
+def _resolve_group(
+    block: pd.DataFrame,
+    shape: GridShape,
+    pattern: re.Pattern[str],
+    geometry: Geometry | None = None,
+):
     """Try each rule in ``RULE_NAMES`` order; the first one whose columns
     are present and that produces at least one in-range hit takes the
     whole group. Rows that rule still cannot place stay ``-1`` within it --
@@ -310,6 +365,7 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
         ("idx-pair", _candidate_idx_pair(block, shape)),
         ("ij-name-layer", _candidate_ij_name_layer(block, shape, pattern)),
         ("ij-single-layer", _candidate_ij_single_layer(block, shape)),
+        ("xyz-host-cell", _candidate_xyz_host_cell(block, shape, pattern, geometry)),
     )
     fallback = None
     for rule, candidate in candidates:
@@ -321,6 +377,7 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
             | rejections.unreadable
             | rejections.not_whole
             | rejections.no_layer_in_name
+            | rejections.outside_grid
         )
         valid = _valid_mask(cell, layer, shape)
         if valid.any():
@@ -329,6 +386,10 @@ def _resolve_group(block: pd.DataFrame, shape: GridShape, pattern: re.Pattern[st
             bool(rejections.columns_not_whole)
             or rejections.unreadable.any()
             or rejections.too_large.any()
+            or (
+                rule == "xyz-host-cell"
+                and (rejections.outside_grid.any() or rejections.no_layer_in_name.any())
+            )
         )
         if fires_fallback and fallback is None:
             fallback = (rule, cell, layer, valid, rejections)
@@ -384,6 +445,7 @@ def _classify_unplaced(
         "absent": rejections.absent,
         "no_layer_in_name": rejections.no_layer_in_name,
         "too_large": rejections.too_large,
+        "outside_grid": rejections.outside_grid,
     }
     counts: list[tuple[str, int]] = []
     assigned = np.zeros(len(unplaced), dtype=bool)
@@ -448,9 +510,10 @@ def resolve(
     par: pd.DataFrame,
     shape: GridShape,
     layer_pattern: str = DEFAULT_LAYER_PATTERN,
+    geometry: Geometry | None = None,
 ) -> ParCells | ReadFailure:
     """Place every parameter in ``par`` on a layer and cell, one group
-    (``pargp``) at a time, trying the five rules in ``RULE_NAMES`` order.
+    (``pargp``) at a time, trying the six rules in ``RULE_NAMES`` order.
 
     Row positions come from ``par.groupby("pargp", ...).indices``, a mapping
     from group name to the integer positions that group occupies in ``par``
@@ -491,7 +554,7 @@ def resolve(
         # requested label rather than one row per request.
         positions = grouped.indices[name]
         rule, candidate_cell, candidate_layer, valid, rejections = _resolve_group(
-            block, shape, pattern
+            block, shape, pattern, geometry
         )
         total = len(block)
 

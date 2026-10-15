@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 
 from pesto.ingest.failures import ReadFailure
-from pesto.model import GridShape, GroupResolution, ParCells
+from pesto.model import Geometry, GridShape, GroupResolution, ParCells, fan_polygons
 from pesto.model._parcells import (
     RULE_NAMES,
     UNMAPPED,
@@ -278,9 +278,9 @@ def test_idx_pair_columns_on_a_structured_grid_fall_through_to_unmapped():
     assert group.mapped == 0
 
 
-def test_all_five_rule_names_are_covered_by_this_module():
+def test_all_six_rule_names_are_covered_by_this_module():
     """A structural check that this file's rule coverage matches
-    ``RULE_NAMES`` exactly -- if a sixth rule is ever added, this test fails
+    ``RULE_NAMES`` exactly -- if a seventh rule is ever added, this test fails
     until this file is extended to cover it too."""
     assert RULE_NAMES == (
         "kij",
@@ -288,6 +288,7 @@ def test_all_five_rule_names_are_covered_by_this_module():
         "idx-pair",
         "ij-name-layer",
         "ij-single-layer",
+        "xyz-host-cell",
     )
 
 
@@ -1012,7 +1013,7 @@ def test_the_reason_counts_in_a_note_add_up_to_every_parameter_that_was_not_plac
     assert sum(counts) == group.total - group.mapped
 
 
-def test_the_unplaced_reasons_table_lists_seven_reasons_in_a_fixed_order():
+def test_the_unplaced_reasons_table_lists_eight_reasons_in_a_fixed_order():
     assert tuple(key for key, _ in UNPLACED_REASONS) == (
         "out_of_range",
         "not_whole",
@@ -1020,5 +1021,78 @@ def test_the_unplaced_reasons_table_lists_seven_reasons_in_a_fixed_order():
         "absent",
         "no_layer_in_name",
         "too_large",
+        "outside_grid",
         "unknown",
     )
+
+
+def _geometry(n: int, nlay: int) -> Geometry:
+    verts = np.array([[float(i), y] for i in range(n + 1) for y in (0.0, 1.0)])
+    iverts = [[2 * i, 2 * (i + 1), 2 * (i + 1) + 1, 2 * i + 1] for i in range(n)]
+    mesh = fan_polygons(verts, iverts, nlay=nlay)
+    top = np.full(n, 10.0)
+    botm = np.array([[10.0 - 5.0 * (k + 1)] * n for k in range(nlay)])
+    return Geometry(mesh.positions, mesh.cell_index, mesh.indices, top=top, botm=botm)
+
+
+def test_xyz_host_cell_places_points_by_x_y_and_z():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["pp", "pp", "pp"], "x": [0.5, 2.5, 3.5], "y": [0.5, 0.5, 0.5], "z": [9.0, 2.0, 11.0]},
+        parnme=["b", "a", "c"],
+    )
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert not isinstance(result, ReadFailure)
+    assert result.cell.tolist() == [0, 2, -1]
+    assert result.layer.tolist() == [0, 1, -1]
+    assert result.groups[0] == GroupResolution(group="pp", rule="xyz-host-cell", mapped=2, total=3)
+    assert any("1 sat outside every cell or layer of the grid" in n for n in result.notes)
+
+
+def test_xyz_host_cell_takes_the_layer_from_the_group_name_when_there_is_no_z():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["hklayer2pp"], "x": [1.5], "y": [0.5]}, parnme=["a"])
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert result.cell.tolist() == [1]
+    assert result.layer.tolist() == [1]
+
+
+def test_xyz_host_cell_uses_layer_zero_on_a_one_layer_grid_and_refuses_otherwise():
+    par = _par_frame({"pargp": ["pp"], "x": [1.5], "y": [0.5]}, parnme=["a"])
+    one = resolve(par, GridShape(ncpl=4, nlay=1, nrow=None, ncol=None), geometry=_geometry(4, 1))
+    assert one.layer.tolist() == [0]
+    two = resolve(par, GridShape(ncpl=4, nlay=2, nrow=None, ncol=None), geometry=_geometry(4, 2))
+    assert two.cell.tolist() == [-1]
+    assert two.groups[0].rule == "xyz-host-cell" and two.groups[0].mapped == 0
+    assert any("carried no layer number in its name" in n for n in two.notes)
+
+
+def test_an_earlier_rule_still_wins_a_group_that_also_carries_x_and_y():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["g"], "idx0": [1], "idx1": [3], "x": [0.5], "y": [0.5]}, parnme=["a"])
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert result.groups[0].rule == "idx-pair"
+    assert result.cell.tolist() == [3]
+
+
+def test_without_geometry_x_and_y_place_nothing_and_the_rule_table_is_unchanged():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["pp"], "x": [0.5], "y": [0.5], "z": [9.0]}, parnme=["a"])
+    result = resolve(par, shape)
+    assert result.groups[0].rule == UNMAPPED
+
+
+def test_outside_grid_is_a_named_reason():
+    assert ("outside_grid", "sat outside every cell or layer of the grid") in UNPLACED_REASONS
+    assert RULE_NAMES[-1] == "xyz-host-cell"
+
+
+def test_a_group_whose_x_and_y_are_empty_stays_an_ordinary_silent_unmapped_group():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["drn", "drn"], "x": [None, None], "y": [None, None], "z": [None, None]},
+        parnme=["a", "b"],
+    )
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert result.groups[0].rule == UNMAPPED
+    assert result.notes == ()
