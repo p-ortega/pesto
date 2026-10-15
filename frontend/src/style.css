@@ -236,9 +236,9 @@ body {
 .params-unmapped {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
-  max-height: 40%;
+  max-height: 30%;
   margin-top: var(--space-sm);
 }
 
