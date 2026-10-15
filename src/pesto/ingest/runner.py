@@ -71,7 +71,7 @@ class PlannedArtifact:
     """
 
     name: str
-    kind: str  # "par_ens" | "par_agg" | "control" | "grid" | "config"
+    kind: str  # "par_ens" | "par_agg" | "control" | "grid" | "pp_factors" | "config"
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
@@ -318,6 +318,39 @@ def _write_grid_artifact(
     return write_grid_from_adapter(adapter, layout)
 
 
+def _write_pp_factors_artifact(
+    run_dir: str, pst_path: str, grid_path: str | None, cache_root: str
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for the pp_factors artifact: links every pilot-point
+    group to its factor file and writes the index. Needs the grid's shape
+    for the layer rule, so a run with no grid file records every group as
+    not interpolable rather than guessing a layer count."""
+    from pesto.ingest.ppfactors import PpIndex, build_pp_index, write_pp_index
+
+    layout = CacheLayout(root=Path(cache_root))
+    run = discover(Path(run_dir))
+    tables = read_control(Path(pst_path))
+    if isinstance(tables, ReadFailure):
+        return tables
+    par = tables.par.set_index("parnme") if "parnme" in tables.par.columns else tables.par
+    if grid_path is None:
+        index = PpIndex(
+            groups=(),
+            not_interpolable=tuple(
+                (p.name, "no grid file, so no layer count to place factors against")
+                for p in run.factor_files
+            ),
+        )
+        return write_pp_index(index, layout)
+    from pesto.model.mf6 import Mf6Adapter
+
+    shape = Mf6Adapter(Path(grid_path)).grid_shape()
+    if isinstance(shape, ReadFailure):
+        return shape
+    index = build_pp_index(Path(run_dir), run.mult2model, run.factor_files, par, shape)
+    return write_pp_index(index, layout)
+
+
 def _write_config_artifact(
     run_dir: str,
     cache_root: str,
@@ -498,6 +531,21 @@ def plan_artifacts(
         config_sources = (str(pst_path),)
         config_bytes = pst_bytes
 
+    pp_sources = [str(p) for p in run.factor_files]
+    if run.mult2model is not None:
+        pp_sources.insert(0, str(run.mult2model))
+    if pp_sources:
+        pp_sources.append(str(pst_path))
+        artifacts.append(
+            PlannedArtifact(
+                name="pp_factors",
+                kind="pp_factors",
+                sources=tuple(pp_sources),
+                outputs=(str(layout.pp_index),),
+                source_bytes=sum(_stat_size(Path(s)) for s in pp_sources),
+            )
+        )
+
     artifacts.append(
         PlannedArtifact(
             name="config",
@@ -653,6 +701,12 @@ def estimate_bytes(
             per_artifact.append(("grid", grid_bytes))
             total += grid_bytes
 
+    if run.mult2model is not None or run.factor_files:
+        notes.append(
+            "pp_factors: a small index of pilot-point groups whose size does not follow "
+            "from its source files' sizes -- excluded rather than guessed"
+        )
+
     per_artifact.append(("config", _CONFIG_BYTES))
     total += _CONFIG_BYTES
 
@@ -718,6 +772,8 @@ def _dispatch(
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
         return _write_grid_artifact, (grid_path, cache_root)
+    if artifact.kind == "pp_factors":
+        return _write_pp_factors_artifact, (run_dir, pst_path, grid_path, cache_root)
     if artifact.kind == "config":
         return _write_config_artifact, (run_dir, cache_root, first_iteration)
     raise ValueError(f"plan_artifacts produced an artifact of unknown kind: {artifact.kind!r}")
