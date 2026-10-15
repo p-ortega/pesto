@@ -79,8 +79,8 @@ async def get_idomain(request: Request) -> JSONResponse:
     if isinstance(idomain, ReadFailure):
         return problem_from_failure(502, idomain)
     if idomain is None:
-        notes = mesh_notes(layout)
-        return problem(404, notes[-1] if notes else "the grid has no idomain")
+        notes = [n for n in mesh_notes(layout) if "idomain" in n]
+        return problem(404, notes[0] if notes else "the grid has no idomain")
 
     manifest = Manifest.load(layout)
     tag = cache_tag(manifest, "grid")

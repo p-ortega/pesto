@@ -183,6 +183,13 @@ def test_idomain_route_is_a_404_carrying_the_note_when_there_is_none(tmp_path):
     assert "records no idomain" in response.json()["title"]
 
 
+def test_idomain_404_names_the_idomain_note_even_when_a_projection_note_follows(tmp_path):
+    client, _layout, _mesh = _opened_client(tmp_path, crs=None)
+    response = client.get("/api/run/grid/mesh/idomain")
+    assert response.status_code == 404
+    assert "records no idomain" in response.json()["title"]
+
+
 def test_a_matching_v_tag_marks_the_buffer_permanently_cacheable(tmp_path):
     client, _layout, _mesh = _opened_client(tmp_path)
 
