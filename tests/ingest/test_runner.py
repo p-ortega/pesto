@@ -1050,6 +1050,18 @@ def test_plan_artifacts_adds_pp_factors_only_when_the_run_carries_pilot_point_fi
     assert [a.kind for a in with_pp].index("pp_factors") > [a.kind for a in with_pp].index("grid") if any(a.kind == "grid" for a in with_pp) else True
 
 
+def test_pp_factors_sources_include_the_templates_point_files_and_grid_it_reads(tmp_path):
+    make_run(tmp_path, iterations=(0,), extras=False)
+    (tmp_path / "mult2model_info.csv").write_text(",fac_file,pp_file\n")
+    (tmp_path / "hk.fac").write_text("")
+    (tmp_path / "hkpp.dat.tpl").write_text("ptf ~\n")
+    (tmp_path / "ppoints.hk.csv").write_text("name,x,y\n")
+    run = discover(tmp_path)
+    assert run.grid is not None
+    (pp,) = [a for a in plan_artifacts(run, CacheLayout(root=tmp_path / ".pesto")) if a.kind == "pp_factors"]
+    assert {"hkpp.dat.tpl", "ppoints.hk.csv", run.grid.name} <= {Path(s).name for s in pp.sources}
+
+
 def test_estimate_bytes_names_pp_factors_instead_of_guessing_its_size(tmp_path):
     make_run(tmp_path, iterations=(0,), extras=False)
     (tmp_path / "hk.fac").write_text("")

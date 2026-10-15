@@ -535,6 +535,12 @@ def plan_artifacts(
     if run.mult2model is not None:
         pp_sources.insert(0, str(run.mult2model))
     if pp_sources:
+        # The index also reads templates, point files and the grid, so an
+        # edit to any of them must mark it stale too.
+        pp_sources.extend(str(p) for p in sorted(run.run_dir.glob("*.tpl")))
+        pp_sources.extend(str(p) for p in sorted(run.run_dir.glob("ppoints.*.csv")))
+        if grid_path is not None:
+            pp_sources.append(str(grid_path))
         pp_sources.append(str(pst_path))
         artifacts.append(
             PlannedArtifact(
