@@ -246,6 +246,20 @@ body {
   flex: 1 1 auto;
 }
 
+/* The estimate gate is a short read: one panel, a comfortable measure,
+   the figures and notes stacked with the standard gap. */
+.estimate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin: 0 var(--space-md);
+  max-width: 60rem;
+}
+
+.estimate-body > p {
+  margin: 0 0 var(--space-sm);
+}
+
 /* The picker's own disclosure list, capped so it never runs under the
    legend. */
 .unmapped-list {
