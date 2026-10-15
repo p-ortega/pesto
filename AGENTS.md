@@ -75,6 +75,19 @@ rule table, so the map reads as mostly empty grid. Drawing them needs interpolat
 pilot points to cells, which is new scope. The user decides whether the MVP ships as is or
 waits for that.
 
+## Pilot-point fields — in progress (started 2026-10-15)
+
+The user chose pilot-point interpolation as the next step. Design approved, plan approved,
+executing inline on branch `pilot-point-fields` (nothing merged yet).
+
+- Spec: `docs/superpowers/specs/2026-10-15-pilot-point-fields-design.md`
+- Plan: `docs/superpowers/plans/2026-10-15-pilot-point-fields.md` (11 tasks)
+- Ledger: `.superpowers/sdd/2026-10-15-pilot-point-fields/progress.md` says which tasks are done.
+- To resume in a fresh session: say "continue the pilot-point fields plan"; the agent loads
+  superpowers:executing-plans, reads the ledger, and takes the first task without a
+  "complete" line. Permissions already given for this session: commit and push; add the
+  `pypestutils` dependency.
+
 ## Leftovers
 
 - A stale agent worktree sits at `.claude/worktrees/agent-adc6c68234b6e73e5` on branch
