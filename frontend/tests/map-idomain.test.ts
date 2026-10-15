@@ -275,4 +275,25 @@ describe('outside the model on the map', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(lastInactive(spy)).toEqual([0, 1])
   })
+
+  it('the legend says how many inactive cells an interpolated field still paints', async () => {
+    const root = await mounted(() => {
+      meshBody = meshWith({ has_idomain: true, notes: [] })
+    })
+    choose(root, 'G3')
+    const legend = () => root.querySelector('.floating-bottom-left')?.textContent ?? ''
+    await vi.waitFor(() => expect(legend()).toContain('G3 · interpolated'))
+    // Cell 1 is inactive on layer 0, G3's layer, and the field gives it a value.
+    expect(legend()).toContain('1 cells inactive in idomain, still drawn')
+  })
+
+  it('with no idomain the legend says nothing about inactive cells', async () => {
+    const root = await mounted(() => {
+      meshBody = meshWith({ has_idomain: false, notes: [NO_IDOMAIN_NOTE] })
+    })
+    choose(root, 'G3')
+    const legend = () => root.querySelector('.floating-bottom-left')?.textContent ?? ''
+    await vi.waitFor(() => expect(legend()).toContain('G3 · interpolated'))
+    expect(legend()).not.toContain('inactive in idomain')
+  })
 })
