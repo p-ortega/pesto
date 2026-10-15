@@ -29,6 +29,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     FLOAT: 'FLOAT',
     TRIANGLES: 'TRIANGLES',
     LINES: 'LINES',
+    POINTS: 'POINTS',
     UNSIGNED_INT: 'UNSIGNED_INT',
     R32F: 'R32F',
     RGBA: 'RGBA',
@@ -100,6 +101,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
       return tag('uniform')
     },
     uniform1i: record('uniform1i'),
+    uniform1f: record('uniform1f'),
     uniform2f: record('uniform2f'),
     uniform3f: record('uniform3f'),
     uniform4f: record('uniform4f'),
@@ -112,6 +114,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     disable: record('disable'),
     blendFunc: record('blendFunc'),
     drawElements: record('drawElements'),
+    drawArrays: record('drawArrays'),
     deleteProgram: record('deleteProgram'),
     deleteVertexArray: record('deleteVertexArray'),
     deleteBuffer: record('deleteBuffer'),
