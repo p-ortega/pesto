@@ -133,6 +133,8 @@ function stubEnvironment(): { calls: string[] } {
           return respond({ status: 200, bytes: bytesOf(CELL_ARRAY) })
         case '/api/run/grid/cells/layer':
           return respond({ status: 200, bytes: bytesOf(LAYER_ARRAY) })
+        case '/api/run/grid/cells/xy':
+          return respond({ status: 404, body: { title: 'no point positions were recorded for that iteration', status: 404 } })
         case '/api/run/reals':
           return respond({ status: 200, bytes: REALS_TABLE })
         case '/api/run/view':

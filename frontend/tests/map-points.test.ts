@@ -60,6 +60,7 @@ const CELL_ARRAY = new Int32Array([0, 0, 0])
 const LAYER_ARRAY = new Int32Array([0, 0, 0])
 const POINT_XY = new Float32Array([Number.NaN, Number.NaN, 0.25, 0.5, 0.75, 0.5])
 const REALS_TABLE = tableToIPC(tableFromArrays({ realization: ['base'] }), 'stream')
+const FIELDS = { plain: [10, 20, 40], log: [10, -5, 20], nan: [10, Number.NaN, 40] }
 const NO_POSITIONS = { title: 'no point positions were recorded for that iteration', status: 404 }
 
 function bytesOf(view: ArrayBufferView): Uint8Array {
@@ -70,8 +71,9 @@ function metaHeader(dtype: string): Record<string, string> {
   return { 'X-Pesto-Meta': JSON.stringify({ dtype }) }
 }
 
-// 'log' gives k a log partrans and a negative value, so log10 is chosen and refused.
-let kMode: 'plain' | 'log' = 'plain'
+// 'log' gives k a log partrans and a negative value, so log10 is chosen and
+// refused; 'nan' gives pa no value, so its dot cannot be drawn.
+let kMode: 'plain' | 'log' | 'nan' = 'plain'
 let xyMode: 'ok' | 'none' = 'ok'
 
 function stubFetch(): void {
@@ -122,7 +124,7 @@ function stubFetch(): void {
         case '/api/run/reals':
           return respond({ status: 200, bytes: REALS_TABLE })
         case '/api/run/grid/values':
-          return respond({ status: 200, bytes: bytesOf(new Float32Array(kMode === 'log' ? [10, -5, 20] : [10, 20, 40])) })
+          return respond({ status: 200, bytes: bytesOf(new Float32Array(FIELDS[kMode])) })
         case '/api/run/grid/pp':
           return respond({ status: 200, body: { groups: [], not_interpolable: [], notes: [] } })
         case '/api/run/view':
@@ -233,11 +235,11 @@ describe('a group placed by x/y draws as dots', () => {
     canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 2, clientY: canvas.height / 2 }))
     const readout = root.querySelector('.floating-bottom-right')?.textContent ?? ''
     expect(readout).toContain('pb')
-    expect(readout).toContain('x 0.8, y 0.5')
-    expect(readout).not.toContain('pa')
+    expect(readout).toContain('x 1, y 1 · layer 0')
+    expect(readout).not.toMatch(/\bpa\b/)
   })
 
-  it('a click away from every dot falls back to the cell', async () => {
+  it('a click on the host cell away from its dots says how many sit there, not that none do', async () => {
     const root = await mounted()
     choose(root, 'k')
     await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
@@ -245,7 +247,27 @@ describe('a group placed by x/y draws as dots', () => {
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
     canvas.dispatchEvent(new MouseEvent('click', { clientX: canvas.width / 2, clientY: canvas.height / 2 }))
     const readout = root.querySelector('.floating-bottom-right')?.textContent ?? ''
-    expect(readout).toContain('No parameter of k sits on this cell.')
+    expect(readout).toContain('2 parameters of k sit in this cell, drawn as dots. Click a dot to read one.')
+    expect(readout).not.toContain('No parameter')
+  })
+
+  it('leaves out a dot with no value, so it is neither drawn nor picked', async () => {
+    const root = await mounted(() => {
+      kMode = 'nan'
+    })
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('1 points on this layer'))
+    const [xy, values] = lastPoints()
+    expect(Array.from(xy)).toEqual([0.75, 0.5])
+    expect(Array.from(values)).toEqual([40])
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    const scale = 0.96 * Math.min(canvas.width, canvas.height)
+    const x = canvas.width / 2 + scale * (0.25 - 0.5)
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: canvas.height / 2 }))
+    const readout = root.querySelector('.floating-bottom-right')?.textContent ?? ''
+    expect(readout).not.toMatch(/\bpa\b/)
+    expect(readout).toContain('2 parameters of k sit in this cell')
   })
 
   it('draws as cells exactly as before when the run recorded no positions', async () => {

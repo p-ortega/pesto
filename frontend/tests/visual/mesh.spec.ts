@@ -431,6 +431,6 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     const dotX = Math.round(layout.width / 2 + layout.cell * (2.75 - 3))
     await page.locator('canvas').click({ position: { x: dotX, y: layout.midY } })
     await expect(page.locator('.floating-bottom-right')).toContainText('p11')
-    await expect(page.locator('.floating-bottom-right')).toContainText('x 2.8, y 0.5')
+    await expect(page.locator('.floating-bottom-right')).toContainText('x 3, y 1 · layer 0')
   })
 })
