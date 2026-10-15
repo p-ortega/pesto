@@ -124,12 +124,25 @@ The reading that lands on the grid wins, with a note when the points were moved;
 land, the group is refused as `frame_unclear`. No bench grid has an offset, so this is
 covered by tests only.
 
+A group placed by x and y (the `xyz-host-cell` rule) and not interpolated draws as dots at
+its own positions, coloured by value, instead of filling the cell each point sits in. Ingest
+keeps each such parameter's real-world x/y (moved, when the grid frame was used) in
+`ens/par_{iteration}.xy.f32`, served at `/api/run/grid/cells/xy`. A click picks the nearest
+dot; a click on a cell holding dots says how many sit there. On escondida layer 30 this
+replaced the wide striped band with 2400 dots. The cache version went to 2 for this.
+
+A cell is outside the model when the grid file's `idomain` is 0 or less on the drawn layer.
+The grid artifact stores it as `grid/idomain.i32`, served at `/api/run/grid/mesh/idomain`.
+With no `idomain`, or one of the wrong length, the old rule applies (any parameter lands
+on the cell) and a note says so. A parameter on an inactive cell still draws, and the
+Params panel counts them per group. Escondida layer 0 is almost all pass-through cells.
+
 Still open:
 
-- On escondida layer 30, large outer cells that each hold many `iid.k` points draw as one
-  wide striped band.
-- The review's last minor: `idomain` from the grid file could answer "in the model"
-  instead of the finite-value rule.
+- With a point group drawn, no cell is filled, so the model footprint does not show under
+  the dots.
+- A point group opens on the current layer even when all its points sit on another.
+- A pilot-point field value on an `idomain`-inactive cell draws with no note.
 
 ## Leftovers
 
