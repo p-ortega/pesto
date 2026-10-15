@@ -113,14 +113,19 @@ What each benchmark run shows:
 Out of scope: escondida's run-time 3D kriging of K; binary factor files whose targets are
 not the grid cells; a family view across `npfklayer1pp` to `npfklayer17pp`.
 
-Seen in Chrome and left open:
+Fixed after the merge: an interpolated group opens on its own layer; a restored statistic
+shows in the Statistic menu; the Params panel's notes scroll in their own box; and six of
+the review's seven deferred minors (stale memo and index sources, `..` names, factor files
+outside the run folder, points-file ties, z with no elevations, the binary readout).
 
-- The map opens on layer 0. An interpolated group whose field lives on another layer shows
-  an empty map until the slider is moved.
-- After a reload with `mean` restored, the Statistic menu still reads "value" while the
-  map and legend show the mean. Not caused by this work.
+Still open:
+
 - On escondida layer 30, large outer cells that each hold many `iid.k` points draw as one
   wide striped band.
+- Pilot-point x/y are never reconciled with a grid's origin or rotation. Every bench grid
+  has neither, so nothing on this machine shows it; the user chooses the frame.
+- The review's last minor: `idomain` from the grid file could answer "in the model"
+  instead of the finite-value rule.
 
 ## Leftovers
 
