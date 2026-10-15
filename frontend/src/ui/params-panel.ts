@@ -122,6 +122,18 @@ function appendRowCells(rowEl: HTMLElement, row: ParamRow): void {
 function renderTable(host: HTMLElement, rows: ParamRow[]): void {
   host.textContent = ''
 
+  // One header row above the windowed table, with the same column rule as
+  // every data row (style.css `.param-header`), so the labels line up.
+  const headerEl = document.createElement('div')
+  headerEl.classList.add('param-header')
+  for (const text of ['Parameter', 'Group', 'Lower', 'Upper', 'Transform']) {
+    const cell = document.createElement('span')
+    cell.classList.add('label')
+    cell.textContent = text
+    headerEl.appendChild(cell)
+  }
+  host.appendChild(headerEl)
+
   const scrollPane = document.createElement('div')
   scrollPane.classList.add('scroll-pane')
   // The pane's height comes from the frame (style.css `.params-table`); the
@@ -167,18 +179,24 @@ function renderTable(host: HTMLElement, rows: ParamRow[]): void {
 function renderUnmappedSection(el: HTMLElement, unmapped: UnmappedGroup[]): void {
   if (unmapped.length === 0) return
   const section = document.createElement('div')
+  section.classList.add('params-unmapped')
   const heading = document.createElement('div')
   heading.classList.add('label')
   heading.textContent = unmapped.length === 1 ? '1 group unmapped' : `${unmapped.length} groups unmapped`
   section.appendChild(heading)
+  // The rows scroll inside their own pane: a real run can have a hundred
+  // unmapped groups, and they must not push the table off the panel.
+  const list = document.createElement('div')
+  list.classList.add('scroll-pane')
   for (const entry of unmapped) {
     const row = document.createElement('div')
     row.classList.add('label', 'truncate')
     const text = entry.note ?? `${entry.group} — no placement rule matched`
     row.textContent = text
     row.title = entry.note ?? entry.group
-    section.appendChild(row)
+    list.appendChild(row)
   }
+  section.appendChild(list)
   el.appendChild(section)
 }
 

@@ -75,6 +75,7 @@ function appendChip(
   opts?: { colorVar?: string; numeric?: boolean; truncate?: boolean },
 ): HTMLElement {
   const chip = document.createElement('span')
+  chip.classList.add('chip')
   if (opts?.numeric) chip.classList.add('tabular-nums')
   if (opts?.truncate) chip.classList.add('truncate')
   if (opts?.colorVar) chip.style.color = opts.colorVar
@@ -157,6 +158,7 @@ export function renderHeader(el: HTMLElement, opts: RenderHeaderOptions): void {
 
   const titleGroup = document.createElement('div')
   const titleEl = document.createElement('span')
+  titleEl.classList.add('heading')
   titleEl.textContent = opts.title
   titleGroup.appendChild(titleEl)
 

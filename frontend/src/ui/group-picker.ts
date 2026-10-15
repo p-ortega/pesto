@@ -68,6 +68,7 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
     el.appendChild(noticeHost)
 
     const list = document.createElement('div')
+    list.classList.add('scroll-pane', 'unmapped-list')
     renderUnmappedRows(list, opts.state.unmapped)
     el.appendChild(list)
     return
@@ -102,7 +103,8 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
 
   const list = document.createElement('div')
   list.style.display = 'none'
-  renderUnmappedRows(list, unmapped)
+  list.classList.add('scroll-pane', 'unmapped-list')
+    renderUnmappedRows(list, unmapped)
   el.appendChild(list)
 
   toggle.addEventListener('click', () => {
