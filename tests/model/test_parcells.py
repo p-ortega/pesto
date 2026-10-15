@@ -1164,3 +1164,36 @@ def test_a_group_the_host_cell_rule_places_carries_a_note_naming_the_rule():
     par = _par_frame({"pargp": ["pp"], "x": [0.5], "y": [0.5], "z": [9.0]}, parnme=["a"])
     result = resolve(par, shape, geometry=_geometry(4, 2))
     assert any("pp" in n and "xyz-host-cell" in n and "pilot point" in n for n in result.notes)
+
+
+def test_a_point_placed_by_x_and_y_keeps_its_own_position_for_drawing():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame(
+        {"pargp": ["pp", "pp", "pp"], "x": [0.5, 2.5, 3.5], "y": [0.25, 0.75, 0.5], "z": [9.0, 2.0, 11.0]},
+        parnme=["b", "a", "c"],
+    )
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert result.point_xy.shape == (3, 2)
+    assert result.point_xy[0].tolist() == [0.5, 0.25]
+    assert result.point_xy[1].tolist() == [2.5, 0.75]
+    # c sat above the grid, so it has no cell and no dot.
+    assert np.isnan(result.point_xy[2]).all()
+
+
+def test_a_parameter_placed_by_cell_index_has_no_point_position():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["g"], "idx0": [0], "idx1": [1]}, parnme=["a"])
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert result.cell.tolist() == [1]
+    assert np.isnan(result.point_xy).all()
+
+
+@pytest.mark.parametrize("angrot", [0.0, 30.0])
+def test_a_point_moved_from_grid_coordinates_keeps_its_moved_position(angrot):
+    from flopy.utils.geometry import transform
+
+    geometry = _framed_geometry(1000.0, 5000.0, angrot)
+    par = _par_frame({"pargp": ["hklayer1pp"], "x": [2.5], "y": [0.5]}, parnme=["a"])
+    result = resolve(par, GridShape(ncpl=4, nlay=2, nrow=None, ncol=None), geometry=geometry)
+    gx, gy = transform(np.array([2.5]), np.array([0.5]), 1000.0, 5000.0, np.radians(angrot))
+    assert result.point_xy[0] == pytest.approx([gx[0], gy[0]])
