@@ -82,7 +82,8 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   if (opts.pick.kind === 'point') {
     const { row, layer, x, y, selectionLabel } = opts.pick
     appendRow(el, row, opts.joined, opts.field)
-    appendLine(el, `x ${x.toFixed(1)}, y ${y.toFixed(1)} · layer ${layer} · ${selectionLabel}`, 'label')
+    // Positions are float32 copies of real-world coordinates, good to about a metre at large northings.
+    appendLine(el, `x ${x.toFixed(0)}, y ${y.toFixed(0)} · layer ${layer} · ${selectionLabel}`, 'label')
     return
   }
 
@@ -90,6 +91,14 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
 
   if (classification.kind === 'no-parameter' || classification.kind === 'outside-model') {
     appendLine(el, `No parameter of ${opts.group} sits on this cell.`, 'body')
+    appendFooter(el, layer, cellId, selectionLabel)
+    return
+  }
+
+  if (classification.kind === 'points') {
+    const n = classification.rows.length
+    const sits = n === 1 ? `1 parameter of ${opts.group} sits` : `${n} parameters of ${opts.group} sit`
+    appendLine(el, `${sits} in this cell, drawn as dots. Click a dot to read one.`, 'body', 'wrap-note')
     appendFooter(el, layer, cellId, selectionLabel)
     return
   }

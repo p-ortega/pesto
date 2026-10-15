@@ -498,6 +498,7 @@ describe("the map screen's load sequence", () => {
       'GET /api/run/meta': () => ({ status: 200, bytes: parTable }),
       'GET /api/run/grid/cells/cell': () => ({ status: 200, bytes: bytesOf(cellArray) }),
       'GET /api/run/grid/cells/layer': () => ({ status: 200, bytes: bytesOf(layerArray) }),
+      'GET /api/run/grid/cells/xy': () => ({ status: 404, body: { title: 'no point positions were recorded for that iteration', status: 404 } }),
       'GET /api/run/reals': () => ({ status: 200, bytes: realsTable }),
       'GET /api/run/grid/values': () => ({ status: 200, bytes: bytesOf(field) }),
     })

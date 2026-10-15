@@ -115,6 +115,7 @@ const DEFAULT_ROUTES: Routes = {
   '/api/run/meta': { status: 200, bytes: PAR_TABLE },
   '/api/run/grid/cells/cell': { status: 200, bytes: bytesOf(CELL_ARRAY) },
   '/api/run/grid/cells/layer': { status: 200, bytes: bytesOf(LAYER_ARRAY) },
+  '/api/run/grid/cells/xy': { status: 404, body: { title: 'no point positions were recorded for that iteration', status: 404 } },
   '/api/run/reals': { status: 200, bytes: REALS_TABLE },
   '/api/run/view': { status: 200, body: VIEW_STATE_BODY },
   '/api/run/grid/values': { status: 200, bytes: bytesOf(FIELD) },

@@ -498,7 +498,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const mask = new Uint8Array(active.length)
     for (let c = 0; c < mask.length; c++) {
       const kind = currentClasses[c]?.kind
-      const drawn = kind === 'valued' || kind === 'contested' || kind === 'interpolated'
+      const drawn = kind === 'valued' || kind === 'contested' || kind === 'interpolated' || kind === 'points'
       mask[c] = !active[c] && !drawn ? 1 : 0
     }
     return mask
@@ -999,13 +999,24 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       return { perCell, contested: 0, noValue: noValueCount, classes }
     }
     if (drawsAsPoints()) {
-      // The dots carry the values; a cell is only in or out of the model.
+      // The dots carry the values; a cell only says which of the group's rows it hosts.
+      const hosted = new Map<number, number[]>()
+      for (let row = 0; row < joined.length; row++) {
+        const c = cellArray[row]
+        if (joined[row]?.pargp !== drawnGroup || layerArray[row] !== layerIndex || c < 0 || c >= nCells) continue
+        const rows = hosted.get(c)
+        if (rows) rows.push(row)
+        else hosted.set(c, [row])
+      }
       const active = activeMaskFor(layerIndex)
       const classes: CellClass[] = []
       let noValue = 0
       for (let c = 0; c < nCells; c++) {
-        classes.push(active[c] ? { kind: 'no-parameter' } : { kind: 'outside-model' })
-        if (active[c]) noValue += 1
+        const rows = hosted.get(c)
+        if (rows) classes.push({ kind: 'points', rows })
+        else if (active[c]) classes.push({ kind: 'no-parameter' })
+        else classes.push({ kind: 'outside-model' })
+        if (!rows && active[c]) noValue += 1
       }
       return { perCell: new Float32Array(nCells).fill(Number.NaN), contested: 0, noValue, classes }
     }
@@ -1062,12 +1073,21 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       layer.setPoints(new Float32Array(0), new Float32Array(0))
       return
     }
-    currentPoints = pointsOnLayer(joined, layerArray, pointXy, drawnGroup ?? '', committed.layer)
-    const values = new Float32Array(currentPoints.rows.length)
-    currentPoints.rows.forEach((row, i) => {
-      values[i] = field[row]
+    const onLayer = pointsOnLayer(joined, layerArray, pointXy, drawnGroup ?? '', committed.layer)
+    // The shader drops a non-finite value, so such a dot is left out here too and cannot be picked.
+    const kept: number[] = []
+    onLayer.rows.forEach((row, i) => {
+      if (Number.isFinite(field[row])) kept.push(i)
     })
-    layer.setPoints(currentPoints.xy, values)
+    const xy = new Float32Array(2 * kept.length)
+    const values = new Float32Array(kept.length)
+    kept.forEach((i, k) => {
+      xy[2 * k] = onLayer.xy[2 * i]
+      xy[2 * k + 1] = onLayer.xy[2 * i + 1]
+      values[k] = field[onLayer.rows[i]]
+    })
+    currentPoints = { rows: Int32Array.from(kept, (i) => onLayer.rows[i]), xy }
+    layer.setPoints(xy, values)
     const index = selectedPointRow === null ? -1 : currentPoints.rows.indexOf(selectedPointRow)
     if (index < 0) selectedPointRow = null
     layer.setSelectedPoint(index < 0 ? null : index)

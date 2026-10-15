@@ -70,6 +70,8 @@ export type CellClass =
   | { kind: 'no-parameter' }
   | { kind: 'outside-model' }
   | { kind: 'interpolated' }
+  /** A cell hosting rows of a group drawn as dots: unfilled, the dots carry the values. */
+  | { kind: 'points'; rows: number[] }
 
 export interface ClassifyCellsResult {
   /** One entry per grid cell, `classes[cell]`. */
