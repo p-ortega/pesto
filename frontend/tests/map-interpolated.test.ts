@@ -138,6 +138,11 @@ function stubFetch(): void {
               notes: [],
             },
           })
+        case '/api/run/grid/field/cell':
+          return respond({
+            status: 200,
+            body: { group: 'G3', cell: 0, contributors: [{ parnme: 'p2', weight: 1.0 }] },
+          })
         case '/api/run/grid/field':
           fieldFetches.push(url)
           return respond({
@@ -218,5 +223,20 @@ describe('an interpolated pilot-point group on the map', () => {
     expect(valueFetches.length).toBe(1)
     choose(root, 'G1')
     await vi.waitFor(() => expect(valueFetches.length).toBe(2))
+  })
+
+  it('a click on an interpolated cell names its point count, then the points behind it', async () => {
+    const root = await mounted()
+    choose(root, 'G3')
+    await vi.waitFor(() => expect(fieldFetches.length).toBe(1))
+    await vi.waitFor(() => {
+      expect(root.querySelector('.floating-bottom-left')?.textContent).toContain('G3 · interpolated')
+    })
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: canvas.width / 2, clientY: canvas.height / 2 }))
+    const readout = () => root.textContent ?? ''
+    await vi.waitFor(() => expect(readout()).toContain('Interpolated from 1 pilot point'))
+    await vi.waitFor(() => expect(readout()).toContain('p2 (weight 1.00)'))
   })
 })

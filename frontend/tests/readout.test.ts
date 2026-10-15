@@ -118,4 +118,54 @@ describe('renderReadout', () => {
     expect(el.querySelector('img')).toBeNull()
     expect(el.textContent).toContain('<img src=x onerror=alert(1)>')
   })
+
+  it('an interpolated cell shows its value, the point count, and the largest three contributors', () => {
+    const el = document.createElement('div')
+    renderReadout(el, {
+      pick: { kind: 'cell', cellId: 4, layer: 0, selectionLabel: 'base', classification: { kind: 'interpolated' } },
+      group: 'npfklayer1pp',
+      joined: [],
+      field: new Float32Array(0),
+      interpolated: {
+        value: 1.5,
+        nPoints: 20,
+        contributors: [
+          { parnme: 'a', weight: 0.5 },
+          { parnme: 'b', weight: 0.3 },
+          { parnme: 'c', weight: 0.1 },
+          { parnme: 'd', weight: 0.1 },
+        ],
+      },
+    })
+    const text = el.textContent ?? ''
+    expect(text).toContain('npfklayer1pp: 1.500')
+    expect(text).toContain('layer 0, cell 4 · base')
+    expect(text).toContain('Interpolated from 20 pilot points')
+    expect(text).toContain('a (weight 0.50)')
+    expect(text).not.toContain('d (weight')
+  })
+
+  it('an interpolated cell says it is still loading its contributors while they are null', () => {
+    const el = document.createElement('div')
+    renderReadout(el, {
+      pick: { kind: 'cell', cellId: 4, layer: 0, selectionLabel: 'base', classification: { kind: 'interpolated' } },
+      group: 'npfklayer1pp',
+      joined: [],
+      field: new Float32Array(0),
+      interpolated: { value: 1.5, nPoints: 20, contributors: null },
+    })
+    expect(el.textContent).toContain('Loading the points behind this cell…')
+  })
+
+  it('an interpolated cell says so when its contributors could not be read', () => {
+    const el = document.createElement('div')
+    renderReadout(el, {
+      pick: { kind: 'cell', cellId: 4, layer: 0, selectionLabel: 'base', classification: { kind: 'interpolated' } },
+      group: 'npfklayer1pp',
+      joined: [],
+      field: new Float32Array(0),
+      interpolated: { value: 1.5, nPoints: 20, contributors: 'failed' },
+    })
+    expect(el.textContent).toContain('The points behind this cell could not be read.')
+  })
 })

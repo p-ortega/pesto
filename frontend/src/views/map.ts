@@ -20,7 +20,9 @@ import {
   EMPTY_PP_INDEX,
   classifyFieldCells,
   fetchPpIndex,
+  fieldContributors,
   gridField,
+  type Contributor,
   type PpGroupInfo,
   type PpIndex,
 } from '../data/fields'
@@ -438,6 +440,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // group until the next fetch lands, even if the picker moved on.
   let fieldGroup: string | null = null
 
+  // The points behind an interpolated cell, fetched on click and kept until
+  // the drawn field changes.
+  const contributorsMemo = new Map<number, Contributor[] | 'failed'>()
+
   function interpolatedEntry(group: string | null): PpGroupInfo | null {
     return ppIndex.groups.find((g) => g.group === group) ?? null
   }
@@ -564,7 +570,30 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
             classification,
           }
         : { kind: 'none' }
-    renderReadout(readoutEl, { pick, group, joined, field })
+    const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
+    const interpolated =
+      selectedCellId !== null && classification?.kind === 'interpolated' && entry !== null
+        ? {
+            value: field[selectedCellId],
+            nPoints: entry.n_pp,
+            contributors: contributorsMemo.get(selectedCellId) ?? null,
+          }
+        : undefined
+    renderReadout(readoutEl, { pick, group, joined, field, interpolated })
+  }
+
+  function fetchContributors(cellId: number): void {
+    const group = fieldGroup
+    if (group === null || contributorsMemo.has(cellId)) return
+    const iteration = committed.iteration
+    void fieldContributors(iteration, group, cellId)
+      .then((list): Contributor[] | 'failed' => list)
+      .catch((): 'failed' => 'failed')
+      .then((result) => {
+        if (fieldGroup !== group || committed.iteration !== iteration) return
+        contributorsMemo.set(cellId, result)
+        if (selectedCellId === cellId) updateReadout()
+      })
   }
 
   // camera.screenToWorld then pickAtWorld on a canvas click -- both are
@@ -579,6 +608,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer?.setSelected(selectedCellId)
     redraw()
     updateReadout()
+    if (selectedCellId !== null && currentClasses[selectedCellId]?.kind === 'interpolated') {
+      fetchContributors(selectedCellId)
+    }
   }
   canvas.addEventListener('click', handleCanvasClick)
 
@@ -1072,6 +1104,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // covers; left as a follow-up rather than folded in silently.
     rawFullField = field
     fieldKind = kind
+    if (fieldGroup !== group || kind === 'block') contributorsMemo.clear()
     fieldGroup = group
     layer?.setInactive(drawnInactiveMask())
     rawFieldNonPositiveCount = logIsUsable(field)
