@@ -18,6 +18,8 @@ export interface LegendOptions {
   group: string
   contested: number
   noValue: number
+  /** Set for an x/y group drawn as dots: the count on this layer. */
+  points?: number
 }
 
 const LIMITS_LABEL: Record<LimitsMode, string> = {
@@ -105,10 +107,18 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   groupLine.title = opts.group
   el.appendChild(groupLine)
 
-  // The two absence counts: D-06's contested mark and the no-parameter
-  // case, side by side.
   const countsLine = document.createElement('div')
   countsLine.classList.add('label', 'legend-figures')
+  if (opts.points !== undefined) {
+    const pointsEl = document.createElement('span')
+    pointsEl.classList.add('tabular-nums')
+    pointsEl.textContent = `${opts.points} points on this layer`
+    countsLine.appendChild(pointsEl)
+    el.appendChild(countsLine)
+    return
+  }
+  // The two absence counts: D-06's contested mark and the no-parameter
+  // case, side by side.
   const contestedEl = document.createElement('span')
   contestedEl.classList.add('tabular-nums')
   contestedEl.textContent = `${opts.contested} cells contested`

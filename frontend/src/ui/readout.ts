@@ -21,6 +21,7 @@ export type ReadoutPick =
       selectionLabel: string
       classification: CellClass
     }
+  | { kind: 'point'; row: number; layer: number; x: number; y: number; selectionLabel: string }
 
 export interface ReadoutOptions {
   pick: ReadoutPick
@@ -75,6 +76,13 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   if (opts.pick.kind === 'none') {
     const line = appendLine(el, 'Click a cell to see its value.', 'label')
     line.style.color = 'var(--ink-muted)'
+    return
+  }
+
+  if (opts.pick.kind === 'point') {
+    const { row, layer, x, y, selectionLabel } = opts.pick
+    appendRow(el, row, opts.joined, opts.field)
+    appendLine(el, `x ${x.toFixed(1)}, y ${y.toFixed(1)} · layer ${layer} · ${selectionLabel}`, 'label')
     return
   }
 

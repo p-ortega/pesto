@@ -168,4 +168,13 @@ describe('renderReadout', () => {
     })
     expect(el.textContent).toContain('The points behind this cell could not be listed: contributors are only read from text factor files')
   })
+
+  it('a point pick renders the identity line and the position footer', () => {
+    const el = mount()
+    const pick: ReadoutPick = { kind: 'point', row: 0, layer: 0, x: 10, y: 0, selectionLabel: 'base' }
+    renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([42.5]) })
+
+    expect(el.textContent).toContain('par_one (G1): 42.50')
+    expect(el.textContent).toContain('x 10.0, y 0.0 · layer 0 · base')
+  })
 })

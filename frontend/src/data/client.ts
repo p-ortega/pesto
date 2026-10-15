@@ -188,11 +188,27 @@ export async function gridValues(query: GridValuesQuery): Promise<Float32Array> 
   return new Float32Array(buffer)
 }
 
-export async function gridCells(which: 'cell' | 'layer', iteration: number): Promise<Int32Array> {
+export async function gridCells(which: 'cell' | 'layer', iteration: number): Promise<Int32Array>
+export async function gridCells(which: 'xy', iteration: number): Promise<Float32Array>
+export async function gridCells(which: 'cell' | 'layer' | 'xy', iteration: number): Promise<Int32Array | Float32Array> {
   const { buffer } = await apiGetBytes(
     `/api/run/grid/cells/${which}?iteration=${encodeURIComponent(String(iteration))}`,
   )
-  return new Int32Array(buffer)
+  return which === 'xy' ? new Float32Array(buffer) : new Int32Array(buffer)
+}
+
+const NO_POSITIONS_TITLE = 'no point positions were recorded for that iteration'
+
+// null means the run recorded no x/y positions; any other failure is real.
+export async function gridPointXy(iteration: number): Promise<Float32Array | null> {
+  try {
+    return await gridCells('xy', iteration)
+  } catch (error) {
+    if (error instanceof ApiError && error.problem.status === 404 && error.problem.title === NO_POSITIONS_TITLE) {
+      return null
+    }
+    throw error
+  }
 }
 
 // The raw Arrow stream bytes for /meta -- parsing (tableFromIPC, getChild

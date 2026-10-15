@@ -63,4 +63,13 @@ describe('renderLegend', () => {
     expect(groupEl.textContent).toBe(name)
     expect(groupEl.children.length).toBe(0)
   })
+
+  it('with a point count, says how many points and drops the contested and no-value spans', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, points: 12 })
+
+    expect(el.textContent).toContain('12 points on this layer')
+    expect(el.textContent).not.toContain('contested')
+    expect(el.textContent).not.toContain('no value')
+  })
 })
