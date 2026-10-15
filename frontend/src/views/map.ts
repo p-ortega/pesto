@@ -152,29 +152,34 @@ function renderBlockedCapabilities(container: HTMLElement, state: IngestState): 
   }
 }
 
-// D-07: a group is drawable when at least one of its identified block rows
-// places on a real cell (cell !== -1, Phase 3's own -1 sentinel for "no
-// rule matched"); every other identified group is unmapped. Order is
-// first-seen in block order, matching the control file's own ordering.
-// The recorded placement note (ParCells.notes) is not exposed by any
-// route today, so every unmapped entry carries `note: null` and falls
-// back to the "no placement rule matched" copy -- a real gap, not a
-// silent guess (see this plan's Known Stubs).
+// D-07: a group is drawable when at least one of its block rows places on
+// a real cell (cell !== -1, Phase 3's own -1 sentinel for "no rule
+// matched"); every other group in the control table is unmapped. The map
+// block carries only the parameters that placed, so a group none of whose
+// parameters placed never appears in it at all -- on a real PstFrom run
+// that is nearly every group -- which is why the groups are read from the
+// control table, which lists every parameter, and only the placed set from
+// the block. Order is first-seen in control-file order. The recorded
+// placement note (ParCells.notes) is not exposed by any route today, so
+// every unmapped entry carries `note: null` and falls back to the "no
+// placement rule matched" copy -- a real gap, not a silent guess.
 function computeGroupPlacement(
+  identities: ParIdentity[],
   joined: Array<ParIdentity | null>,
   cells: Int32Array,
 ): { drawable: string[]; unmapped: UnmappedGroup[] } {
   const order: string[] = []
   const seen = new Set<string>()
-  const placed = new Set<string>()
-  for (let i = 0; i < joined.length; i++) {
-    const identity = joined[i]
-    if (identity === null) continue
+  for (const identity of identities) {
     if (!seen.has(identity.pargp)) {
       seen.add(identity.pargp)
       order.push(identity.pargp)
     }
-    if (cells[i] >= 0) placed.add(identity.pargp)
+  }
+  const placed = new Set<string>()
+  for (let i = 0; i < joined.length; i++) {
+    const identity = joined[i]
+    if (identity !== null && cells[i] >= 0) placed.add(identity.pargp)
   }
   const drawable: string[] = []
   const unmapped: UnmappedGroup[] = []
@@ -1109,7 +1114,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
     // D-07: only groups that place on at least one cell are offered; the
     // rest are counted and named behind the picker's own disclosure.
-    const { drawable, unmapped } = computeGroupPlacement(joined, cellArray)
+    const { drawable, unmapped } = computeGroupPlacement(identities, joined, cellArray)
     if (drawable.length === 0) {
       addNotice(mapNotice, {
         title: 'No parameter group can be drawn on this map',
