@@ -126,3 +126,20 @@ def test_a_missing_index_reads_as_a_failure_naming_the_file(tmp_path):
     result = load_pp_index(layout)
     assert isinstance(result, ReadFailure)
     assert "index.json" in result.reason
+
+
+@pytest.mark.parametrize("group", ["hklayer0pp", "hklayer4pp"])
+def test_a_layer_number_outside_the_grid_is_refused_naming_the_group(tmp_path, group):
+    shape = GridShape(ncpl=6, nlay=3, nrow=None, ncol=None)
+    index = _build(_run(tmp_path), par=_par(["p8", "p9"], [group, group]), shape=shape)
+    assert index.groups == ()
+    ((name, reason),) = index.not_interpolable
+    assert name == group
+    assert "3 layers" in reason
+
+
+def test_a_refusal_found_after_the_group_is_known_is_keyed_by_the_group(tmp_path):
+    shape = GridShape(ncpl=6, nlay=3, nrow=None, ncol=None)
+    index = _build(_run(tmp_path), shape=shape)
+    ((name, _),) = index.not_interpolable
+    assert name == "G4"

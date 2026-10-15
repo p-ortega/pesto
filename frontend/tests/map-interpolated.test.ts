@@ -87,10 +87,13 @@ function metaHeader(dtype: string): Record<string, string> {
 }
 
 const fieldFetches: string[] = []
+// 'hang' never answers, so a test can act while the fetch is pending.
+let fieldMode: 'ok' | 'fail' | 'hang' = 'ok'
 const valueFetches: string[] = []
 
 function stubFetch(): void {
   fieldFetches.length = 0
+  fieldMode = 'ok'
   valueFetches.length = 0
   vi.stubGlobal(
     'fetch',
@@ -134,7 +137,10 @@ function stubFetch(): void {
             status: 200,
             body: {
               groups: [{ group: 'G3', layer: 0, n_pp: 1, log_space: false, format: 'text', notes: [] }],
-              not_interpolable: [{ group: 'G2', reason: 'no template' }],
+              not_interpolable: [
+                { group: 'G2', reason: 'no template' },
+                { group: 'g9pp_inst0pp.dat', reason: 'template g9pp_inst0pp.dat.tpl is not in the run directory' },
+              ],
               notes: [],
             },
           })
@@ -145,6 +151,8 @@ function stubFetch(): void {
           })
         case '/api/run/grid/field':
           fieldFetches.push(url)
+          if (fieldMode === 'hang') return new Promise(() => {})
+          if (fieldMode === 'fail') return respond({ status: 404, body: { title: 'read failure', status: 404 } })
           return respond({
             status: 200,
             bytes: bytesOf(new Float32Array([7])),
@@ -238,5 +246,40 @@ describe('an interpolated pilot-point group on the map', () => {
     const readout = () => root.textContent ?? ''
     await vi.waitFor(() => expect(readout()).toContain('Interpolated from 1 pilot point'))
     await vi.waitFor(() => expect(readout()).toContain('p2 (weight 1.00)'))
+  })
+
+  it('a refusal the index keys by file, not group, still reaches the Params panel', async () => {
+    const root = await mounted()
+    const panel = root.querySelector('.params-panel')?.textContent ?? ''
+    expect(panel).toContain('g9pp_inst0pp.dat')
+    expect(panel).toContain('template g9pp_inst0pp.dat.tpl is not in the run directory')
+  })
+
+  it('while a switch to an interpolated group is pending, the legend keeps naming the field on screen', async () => {
+    const root = await mounted()
+    fieldMode = 'hang'
+    choose(root, 'G3')
+    await vi.waitFor(() => expect(fieldFetches.length).toBe(1))
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const legend = root.querySelector('.floating-bottom-left')?.textContent ?? ''
+    expect(legend).toContain('G1')
+    expect(legend).not.toContain('G3')
+  })
+
+  it('a failed switch puts the picker back on the group still drawn', async () => {
+    const root = await mounted()
+    fieldMode = 'fail'
+    choose(root, 'G3')
+    await vi.waitFor(() => expect(fieldFetches.length).toBe(1))
+    const picker = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+    await vi.waitFor(() => expect(picker.value).toBe('G1'))
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(root.querySelector('.floating-bottom-left')?.textContent ?? '').not.toContain('G3')
   })
 })

@@ -439,6 +439,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // The group a per-cell field was fetched for; it keeps drawing as that
   // group until the next fetch lands, even if the picker moved on.
   let fieldGroup: string | null = null
+  // A group the picker moved to whose field has not landed yet. drawnGroup
+  // keeps naming the field on screen until it does, so the legend and the
+  // limits memory never describe one group's values under another's name.
+  let pendingGroup: string | null = null
 
   // The points behind an interpolated cell, fetched on click and kept until
   // the drawn field changes.
@@ -777,9 +781,20 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // The raw field itself changes when either side of the switch is an
     // interpolated group, so that switch fetches; block to block stays local.
     const needsFetch = fieldKind === 'cell' || interpolatedEntry(group) !== null
-    drawnGroup = group
     const drawnPartrans = partransForGroup(joined, group, allIdentities)
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
+    if (needsFetch) {
+      pendingGroup = group
+      const next: Selection = { ...committed, scale: newScale, scaleInferred: true }
+      controlsHandle?.sync(next)
+      selectedCellId = null
+      layer?.setSelected(null)
+      scheduleFetch(next)
+      updateReadout()
+      return
+    }
+    pendingGroup = null
+    drawnGroup = group
     committed = { ...committed, scale: newScale, scaleInferred: true }
     // WINDOWS.md #5: the scale control must show what was just inferred,
     // not whatever it happened to display for the previous group --
@@ -789,11 +804,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     controlsHandle?.sync(committed)
     selectedCellId = null
     layer?.setSelected(null)
-    if (needsFetch) {
-      scheduleFetch(committed)
-      updateReadout()
-      return
-    }
     deriveAndDraw()
     updateReadout()
     scheduleViewWrite()
@@ -1067,7 +1077,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         ? { iteration: selection.iteration, realization: selection.realization ?? undefined }
         : { iteration: selection.iteration, stat: selection.stat }
 
-    const group = drawnGroup
+    const group = pendingGroup ?? drawnGroup
     const kind: 'block' | 'cell' = interpolatedEntry(group) !== null ? 'cell' : 'block'
     let field: Float32Array
     try {
@@ -1080,10 +1090,19 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       const status = error instanceof ApiError ? error.problem.status : 'unknown'
       statusError = `${selectionLabel(selection)} — couldn't load (${status})`
       pending = null
+      if (pendingGroup !== null) {
+        // The switch failed: the picker and controls go back to what is drawn.
+        pendingGroup = null
+        const select = pickerEl.querySelector('select')
+        if (select && drawnGroup !== null) select.value = drawnGroup
+        controlsHandle?.sync(committed)
+      }
       paintStatusBar()
       return
     }
     if (token !== requestToken) return
+    drawnGroup = group
+    pendingGroup = null
 
     // D-01: the raw field lands here, before any scale, layer or group
     // filter, untouched -- so every later transform can recompute from
@@ -1235,6 +1254,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const artifactNotes = opts.state.artifacts
       .filter((artifact): artifact is typeof artifact & { reason: string } => artifact.reason !== null)
       .map((artifact) => ({ artifact: artifact.name, reason: artifact.reason }))
+    // A pp_factors refusal found before the template named a group is keyed
+    // by its file; it has no group row to sit beside, so it is listed here.
+    const knownGroups = new Set(identities.map((i) => i.pargp))
+    for (const refusal of ppIndex.not_interpolable) {
+      if (!knownGroups.has(refusal.group)) {
+        artifactNotes.push({ artifact: 'pp_factors', reason: `${refusal.group}: ${refusal.reason}` })
+      }
+    }
 
     // D-07: only groups that place on at least one cell are offered; the
     // rest are counted and named behind the picker's own disclosure.

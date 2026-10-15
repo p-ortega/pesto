@@ -134,7 +134,13 @@ def _read_factor_header(path: Path) -> tuple[list[str], int, bool]:
 def _layer_for(group: str, shape: GridShape) -> int:
     match = LAYER_PATTERN.search(group)
     if match:
-        return int(match.group(1)) - 1
+        layer = int(match.group(1)) - 1
+        if not 0 <= layer < shape.nlay:
+            raise _Refused(
+                f"group {group!r} names layer {match.group(1)} but the grid has {shape.nlay} layers, "
+                "so pesto cannot tell which layer its factors describe"
+            )
+        return layer
     if shape.nlay == 1:
         return 0
     raise _Refused(
@@ -155,6 +161,9 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
     linked = table[(table["pp_file"] != "") & (table["fac_file"] != "")]
     for pp_file, rows in linked.groupby("pp_file", sort=True):
         fac_files = sorted(set(rows["fac_file"]))
+        # A refusal is keyed by the group once the template names it, so the
+        # map can show the reason beside the group; before that, by the file.
+        key = str(pp_file)
         try:
             if len(fac_files) != 1:
                 raise _Refused(f"{pp_file} is linked to {len(fac_files)} factor files: {', '.join(fac_files)}")
@@ -177,6 +186,7 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
             if len(pargps) != 1:
                 raise _Refused(f"template {tpl_path.name} names parameters from {len(pargps)} groups: {', '.join(pargps[:5])}")
             group = pargps[0]
+            key = group
             layer = _layer_for(group, shape)
             groups.append(
                 PpGroup(
@@ -191,9 +201,9 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
                 )
             )
         except _Refused as exc:
-            refused.append((str(pp_file), str(exc)))
+            refused.append((key, str(exc)))
         except OSError as exc:
-            refused.append((str(pp_file), f"could not read a file for {pp_file}: {exc}"))
+            refused.append((key, f"could not read a file for {pp_file}: {exc}"))
     return groups, refused
 
 
@@ -235,6 +245,7 @@ def _binary_groups(run_dir, factor_files, par, shape):
             if "ppname" not in par.columns or "usecol" not in par.columns:
                 raise _Refused("the control table carries no ppname/usecol columns to link points to parameters")
             rows = par[par["ppname"].astype(str).isin(points["ppname"]) & par["usecol"].astype(str).isin(points.columns)]
+            found_before = len(groups)
             for group, block in rows.groupby("pargp", sort=True, observed=True):
                 group_layer_match = LAYER_PATTERN.search(str(group))
                 if not group_layer_match or int(group_layer_match.group(1)) - 1 != layer:
@@ -265,6 +276,11 @@ def _binary_groups(run_dir, factor_files, par, shape):
                         n_cells=shape.ncpl,
                         notes=notes,
                     )
+                )
+            if len(groups) == found_before:
+                raise _Refused(
+                    f"no parameter group in the control table matches {path.name}'s points "
+                    f"in {tag.name} and its layer {layer}"
                 )
         except _Refused as exc:
             refused.append((path.name, str(exc)))

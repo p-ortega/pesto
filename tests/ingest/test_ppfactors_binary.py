@@ -42,3 +42,13 @@ def test_a_binary_factor_file_whose_targets_are_not_the_grid_is_refused_with_the
     index = build_pp_index(tmp_path, None, (tmp_path / "factors.m.bnd.layer0.bin",), par, GridShape(ncpl=9, nlay=2, nrow=None, ncol=None))
     ((_, reason),) = index.not_interpolable
     assert "6" in reason and "9" in reason
+
+
+def test_a_binary_factor_file_no_group_matches_is_refused_not_dropped(tmp_path):
+    par = _binary_run(tmp_path)
+    par["pargp"] = ["bnd.cond.layer2"] * 2  # layer index 1, the file says layer0
+    index = build_pp_index(tmp_path, None, (tmp_path / "factors.m.bnd.layer0.bin",), par, GridShape(ncpl=6, nlay=2, nrow=None, ncol=None))
+    assert index.groups == ()
+    ((name, reason),) = index.not_interpolable
+    assert name == "factors.m.bnd.layer0.bin"
+    assert "no parameter group" in reason
