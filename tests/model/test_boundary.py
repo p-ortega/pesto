@@ -306,7 +306,7 @@ class _MissingLocateObs:
 
 
 class _AllSixMethods:
-    """All six ``SpatialAdapter`` methods -- the mechanical statement that a
+    """All seven ``SpatialAdapter`` methods -- the mechanical statement that a
     second model type providing this surface is a valid adapter."""
 
     def grid_mesh(self):
@@ -325,6 +325,9 @@ class _AllSixMethods:
         raise NotImplementedError
 
     def locate_obs(self, obs):
+        raise NotImplementedError
+
+    def geometry(self):
         raise NotImplementedError
 
 

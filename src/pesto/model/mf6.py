@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 
 from pesto.ingest.failures import ReadFailure
-from pesto.model import GridShape, MeshBuffers, ParCells, fan_polygons
+from pesto.model import Geometry, GridShape, MeshBuffers, ParCells, fan_polygons
 from pesto.model._parcells import resolve
 
 
@@ -137,11 +137,45 @@ class Mf6Adapter:
             return grid
         return getattr(grid, "crs", None)
 
+    def geometry(self) -> Geometry | ReadFailure:
+        """The fanned mesh plus the grid's elevations. ``top``/``botm`` come
+        back ``None`` when flopy's grid carries none, which places nothing by
+        ``z`` rather than guessing a layer."""
+        grid = self._grid_or_failure()
+        if isinstance(grid, ReadFailure):
+            return grid
+        mesh = self.grid_mesh()
+        if isinstance(mesh, ReadFailure):
+            return mesh
+        top = getattr(grid, "top", None)
+        botm = getattr(grid, "botm", None)
+        ncpl = mesh.n_cells
+        top_arr = None if top is None else np.asarray(top, dtype=np.float64).reshape(-1)
+        botm_arr = (
+            None
+            if botm is None
+            else np.asarray(botm, dtype=np.float64).reshape(int(grid.nlay), -1)
+        )
+        if top_arr is not None and top_arr.shape[0] != ncpl:
+            top_arr, botm_arr = None, None
+        if botm_arr is not None and botm_arr.shape[1] != ncpl:
+            top_arr, botm_arr = None, None
+        return Geometry(
+            positions=mesh.positions,
+            cell_index=mesh.cell_index,
+            indices=mesh.indices,
+            top=top_arr,
+            botm=botm_arr,
+        )
+
     def locate_par(self, par: pd.DataFrame) -> ParCells | ReadFailure:
         shape = self.grid_shape()
         if isinstance(shape, ReadFailure):
             return shape
-        return resolve(par, shape)
+        geometry = self.geometry()
+        if isinstance(geometry, ReadFailure):
+            return geometry
+        return resolve(par, shape, geometry=geometry)
 
     def locate_obs(self, obs: pd.DataFrame) -> ParCells | ReadFailure:
         return ReadFailure(

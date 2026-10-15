@@ -383,3 +383,29 @@ def test_a_grid_with_no_cells_names_the_path_it_could_not_read(tmp_path, monkeyp
     assert isinstance(result, ReadFailure)
     assert grid_path.name in result.reason
     assert "no cells" in result.reason
+
+
+def test_geometry_carries_the_mesh_and_the_elevations_the_grid_file_declares(tmp_path):
+    from pesto.model.mf6 import Mf6Adapter
+
+    adapter = Mf6Adapter(write_dis_grb(tmp_path / "g.grb", nlay=2, nrow=3, ncol=4))
+    geom = adapter.geometry()
+    assert not isinstance(geom, ReadFailure)
+    assert geom.top.shape == (12,)
+    assert geom.botm.shape == (2, 12)
+    assert geom.positions.shape[0] == 48  # 12 quads, 4 unshared vertices each
+
+
+def test_locate_par_places_a_parameter_by_its_coordinates_on_a_structured_grid(tmp_path):
+    from pesto.model.mf6 import Mf6Adapter
+
+    # write_dis_grb: xorigin 1000, yorigin 2000, delr 10, delc 20, 3 rows by 4 cols,
+    # top 10, layer bottoms 5 and 0. Row 0 is the top row (highest y).
+    adapter = Mf6Adapter(write_dis_grb(tmp_path / "g.grb", nlay=2, nrow=3, ncol=4))
+    par = pd.DataFrame(
+        {"pargp": ["pp"], "x": [1015.0], "y": [2010.0], "z": [3.0]},
+        index=pd.Index(["p"], name="parnme"),
+    )
+    cells = adapter.locate_par(par)
+    assert cells.layer.tolist() == [1]
+    assert cells.cell.tolist() == [2 * 4 + 1]  # bottom row (row 2), column 1
