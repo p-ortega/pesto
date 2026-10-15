@@ -143,3 +143,23 @@ def test_a_refusal_found_after_the_group_is_known_is_keyed_by_the_group(tmp_path
     index = _build(_run(tmp_path), shape=shape)
     ((name, _),) = index.not_interpolable
     assert name == "G4"
+
+
+@pytest.mark.parametrize("outside", ["absolute", "parent"])
+def test_a_factor_file_outside_the_run_directory_refuses_that_group_only(tmp_path, outside):
+    run = tmp_path / "run"
+    run.mkdir()
+    _run(run)
+    elsewhere = tmp_path / "elsewhere.fac"
+    elsewhere.write_text(FAC)
+    (run / "other.dat.tpl").write_text(TPL)
+    fac_file = str(elsewhere) if outside == "absolute" else "../elsewhere.fac"
+    (run / "mult2model_info.csv").write_text(
+        ",org_file,model_file,fac_file,pp_file\n"
+        "0,org/k_layer1.txt,k_layer1.txt,g4pp_inst0pp.fac,g4pp_inst0pp.dat\n"
+        f"1,org/k_layer2.txt,k_layer2.txt,{fac_file},other.dat\n"
+    )
+    index = _build(run)
+    assert [g.group for g in index.groups] == ["G4"]
+    ((key, reason),) = index.not_interpolable
+    assert key == "other.dat" and "outside the run directory" in reason
