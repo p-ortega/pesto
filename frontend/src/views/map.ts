@@ -16,6 +16,14 @@ import {
   type ParIdentity,
 } from '../data/parmap'
 import { fetchRealNames } from '../data/reals'
+import {
+  EMPTY_PP_INDEX,
+  classifyFieldCells,
+  fetchPpIndex,
+  gridField,
+  type PpGroupInfo,
+  type PpIndex,
+} from '../data/fields'
 import { Camera } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
 // WINDOWS.md #10: this parser lives outside views/ because style-frame.test.ts
@@ -167,7 +175,8 @@ function computeGroupPlacement(
   identities: ParIdentity[],
   joined: Array<ParIdentity | null>,
   cells: Int32Array,
-): { drawable: string[]; unmapped: UnmappedGroup[] } {
+  ppIndex: PpIndex,
+): { drawable: string[]; unmapped: UnmappedGroup[]; interpolated: string[] } {
   const order: string[] = []
   const seen = new Set<string>()
   for (const identity of identities) {
@@ -181,25 +190,39 @@ function computeGroupPlacement(
     const identity = joined[i]
     if (identity !== null && cells[i] >= 0) placed.add(identity.pargp)
   }
+  // An interpolated group draws as a field even when no parameter of it
+  // places on a cell; a group the index refused carries the index's reason.
+  const interpolated = new Set(ppIndex.groups.map((g) => g.group))
+  const refused = new Map(ppIndex.not_interpolable.map((r) => [r.group, r.reason]))
   const drawable: string[] = []
   const unmapped: UnmappedGroup[] = []
   for (const group of order) {
-    if (placed.has(group)) {
+    if (placed.has(group) || interpolated.has(group)) {
       drawable.push(group)
     } else {
-      unmapped.push({ group, note: null })
+      const reason = refused.get(group)
+      unmapped.push({ group, note: reason === undefined ? null : `${group} — ${reason}` })
     }
   }
-  return { drawable, unmapped }
+  return { drawable, unmapped, interpolated: drawable.filter((g) => interpolated.has(g)) }
 }
 
 // The drawn group's own partrans, read straight from the D-05 join --
 // never a positional guess. A group with no identified row (never reached
 // while drawnGroup itself came from this same join) returns null, which
 // the scale default treats as linear.
-function partransForGroup(joined: Array<ParIdentity | null>, group: string): string | null {
+function partransForGroup(
+  joined: Array<ParIdentity | null>,
+  group: string,
+  identities: ParIdentity[] = [],
+): string | null {
   for (const identity of joined) {
     if (identity !== null && identity.pargp === group) return identity.partrans
+  }
+  // A pilot-point group need not sit in the map block at all; the control
+  // table still names its partrans.
+  for (const identity of identities) {
+    if (identity.pargp === group) return identity.partrans
   }
   return null
 }
@@ -406,6 +429,36 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let layerArray: Int32Array = new Int32Array(0)
   let inactiveMask: Uint8Array = new Uint8Array(0)
   let drawnGroup: string | null = null
+  // Interpolated pilot-point groups. `fieldKind` says what rawFullField
+  // holds: block rows from /values, or one value per cell from /field.
+  let ppIndex: PpIndex = EMPTY_PP_INDEX
+  let allIdentities: ParIdentity[] = []
+  let fieldKind: 'block' | 'cell' = 'block'
+  // The group a per-cell field was fetched for; it keeps drawing as that
+  // group until the next fetch lands, even if the picker moved on.
+  let fieldGroup: string | null = null
+
+  function interpolatedEntry(group: string | null): PpGroupInfo | null {
+    return ppIndex.groups.find((g) => g.group === group) ?? null
+  }
+
+  // A cell carrying an interpolated value is in the model even when no block
+  // row names it, so it loses the outside-the-model hairline.
+  function drawnInactiveMask(): Uint8Array {
+    if (fieldKind !== 'cell' || !rawFullField) return inactiveMask
+    const mask = new Uint8Array(inactiveMask.length)
+    for (let c = 0; c < mask.length; c++) {
+      mask[c] = inactiveMask[c] && !Number.isFinite(rawFullField[c]) ? 1 : 0
+    }
+    return mask
+  }
+
+  function legendGroupLabel(): string {
+    const group = drawnGroup ?? ''
+    if (interpolatedEntry(drawnGroup) === null) return group
+    const multiplier = allIdentities.some((i) => i.pargp === group && /_pstyle:m(_|$)/.test(i.parnme))
+    return multiplier ? `${group} · interpolated multiplier field` : `${group} · interpolated`
+  }
   // The drawn layer's own classification (D-06), recomputed by applyLayer
   // on every layer/group change and every landed fetch -- Task 2's click
   // readout reads this directly rather than reclassifying per click.
@@ -689,8 +742,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // selection is cleared: the previous readout described a cell in the old
   // group.
   function handleGroupChange(group: string): void {
+    // The raw field itself changes when either side of the switch is an
+    // interpolated group, so that switch fetches; block to block stays local.
+    const needsFetch = fieldKind === 'cell' || interpolatedEntry(group) !== null
     drawnGroup = group
-    const drawnPartrans = partransForGroup(joined, group)
+    const drawnPartrans = partransForGroup(joined, group, allIdentities)
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     committed = { ...committed, scale: newScale, scaleInferred: true }
     // WINDOWS.md #5: the scale control must show what was just inferred,
@@ -701,6 +757,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     controlsHandle?.sync(committed)
     selectedCellId = null
     layer?.setSelected(null)
+    if (needsFetch) {
+      scheduleFetch(committed)
+      updateReadout()
+      return
+    }
     deriveAndDraw()
     updateReadout()
     scheduleViewWrite()
@@ -811,6 +872,16 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layerIndex: number,
   ): { perCell: Float32Array; contested: number; noValue: number; classes: CellClass[] } {
     const nCells = mesh?.nCells ?? 0
+    const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
+    if (fieldKind === 'cell' && entry !== null) {
+      const active = drawnInactiveMask().map((v) => (v ? 0 : 1))
+      const { classes, noValueCount } = classifyFieldCells(field, active, entry.layer, layerIndex)
+      const perCell = new Float32Array(nCells).fill(Number.NaN)
+      for (let c = 0; c < nCells; c++) {
+        if (classes[c].kind === 'interpolated') perCell[c] = field[c]
+      }
+      return { perCell, contested: 0, noValue: noValueCount, classes }
+    }
     const { classes, contestedCount, noValueCount } = classifyCells(
       joined,
       cellArray,
@@ -900,8 +971,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         limits = cached
       } else {
         const groupRows: number[] = []
-        for (let i = 0; i < joined.length; i++) {
-          if (joined[i]?.pargp === drawnGroup) groupRows.push(i)
+        if (fieldKind === 'cell') {
+          // The per-cell field is the group's own; scaleLimits skips its NaNs.
+          for (let c = 0; c < scaled.length; c++) groupRows.push(c)
+        } else {
+          for (let i = 0; i < joined.length; i++) {
+            if (joined[i]?.pargp === drawnGroup) groupRows.push(i)
+          }
         }
         // A group with no finite rows at all (every row non-finite after
         // the scale, or the group has no rows for some other reason)
@@ -928,7 +1004,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       scale: effectiveScale,
       scaleInferred: committed.scaleInferred,
       limitsMode: committed.limitsMode,
-      group: drawnGroup ?? '',
+      group: legendGroupLabel(),
       contested,
       noValue,
     })
@@ -959,9 +1035,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         ? { iteration: selection.iteration, realization: selection.realization ?? undefined }
         : { iteration: selection.iteration, stat: selection.stat }
 
+    const group = drawnGroup
+    const kind: 'block' | 'cell' = interpolatedEntry(group) !== null ? 'cell' : 'block'
     let field: Float32Array
     try {
-      field = await gridValues(query)
+      field =
+        kind === 'cell'
+          ? await gridField({ ...query, group: group! })
+          : await gridValues(query)
     } catch (error) {
       if (token !== requestToken) return
       const status = error instanceof ApiError ? error.problem.status : 'unknown'
@@ -990,6 +1071,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // fetch, which is a real change but not one this fix's verification
     // covers; left as a follow-up rather than folded in silently.
     rawFullField = field
+    fieldKind = kind
+    fieldGroup = group
+    layer?.setInactive(drawnInactiveMask())
     rawFieldNonPositiveCount = logIsUsable(field)
     scaledField = null
     scaledFieldScale = null
@@ -1089,6 +1173,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       return
     }
     joined = joinBlockToIdentity(parmap, identities)
+    allIdentities = identities
+    // A run with no pilot points has no index; that is not an error.
+    try {
+      ppIndex = await fetchPpIndex()
+    } catch {
+      ppIndex = EMPTY_PP_INDEX
+    }
 
     try {
       cellArray = await gridCells('cell', iteration)
@@ -1114,7 +1205,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
     // D-07: only groups that place on at least one cell are offered; the
     // rest are counted and named behind the picker's own disclosure.
-    const { drawable, unmapped } = computeGroupPlacement(identities, joined, cellArray)
+    const { drawable, unmapped, interpolated } = computeGroupPlacement(identities, joined, cellArray, ppIndex)
     if (drawable.length === 0) {
       addNotice(mapNotice, {
         title: 'No parameter group can be drawn on this map',
@@ -1142,7 +1233,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const wasVisitedBefore = restoredView !== null && restoredView.group !== null
     drawnGroup =
       wasVisitedBefore && drawable.includes(restoredView!.group!) ? restoredView!.group! : drawable[0]
-    paintPicker({ kind: 'ready', drawable, unmapped, selected: drawnGroup })
+    paintPicker({ kind: 'ready', drawable, interpolated, unmapped, selected: drawnGroup })
     renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes })
 
     const realNames = await fetchRealNames(iteration)
@@ -1187,7 +1278,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // ('linear') would silently override a correct log10 inference on
     // every run that has never once been opened, which is the common case,
     // not an edge case.
-    const drawnPartrans = partransForGroup(joined, drawnGroup)
+    const drawnPartrans = partransForGroup(joined, drawnGroup, allIdentities)
     const inferredScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     const initialScale: ValueScale = wasVisitedBefore ? restoredView!.scale : inferredScale
     if (wasVisitedBefore && restoredView!.limitsMode === 'manual') {

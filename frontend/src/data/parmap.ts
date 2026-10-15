@@ -69,6 +69,7 @@ export type CellClass =
   | { kind: 'contested'; rows: number[] }
   | { kind: 'no-parameter' }
   | { kind: 'outside-model' }
+  | { kind: 'interpolated' }
 
 export interface ClassifyCellsResult {
   /** One entry per grid cell, `classes[cell]`. */

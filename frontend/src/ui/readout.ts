@@ -86,6 +86,12 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
     return
   }
 
+  if (classification.kind === 'interpolated') {
+    appendLine(el, `${opts.group}: ${opts.field[cellId]}`, 'body')
+    appendFooter(el, layer, cellId, selectionLabel)
+    return
+  }
+
   // Contested: the title, one row per parameter (capped, +K more never a
   // silent drop), then the same footer.
   appendLine(el, 'Contested cell', 'heading')
