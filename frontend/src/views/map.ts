@@ -4,7 +4,17 @@
 // as the screen every flow in this phase ends at.
 
 import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo, type ViewState } from '../data/client'
-import { gridCells, gridIdomain, gridMesh, gridMeshBuffer, gridValues, readViewState, writeViewState } from '../data/client'
+import {
+  gridCells,
+  gridIdomain,
+  gridMesh,
+  gridMeshBuffer,
+  gridPointXy,
+  gridValues,
+  readViewState,
+  writeViewState,
+} from '../data/client'
+import { isPointGroup, pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
 import { inactiveLandingNotes, layerActiveMask, referencedMask } from '../data/domain'
 import { renderDivider } from '../ui/divider'
 import { renderParamsPanel } from '../ui/params-panel'
@@ -432,6 +442,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let layerArray: Int32Array = new Int32Array(0)
   // The grid file's idomain, flat and layer-major; null when the grid has none.
   let idomain: Int32Array | null = null
+  // x/y of every block row placed by position, NaN elsewhere; null when the run recorded none.
+  let pointXy: Float32Array | null = null
+  let currentPoints: DrawnPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
+  // Held as a block row, not a dot index, since a layer change changes which dots are drawn.
+  let selectedPointRow: number | null = null
   let referenced: Uint8Array | null = null
   let drawnGroup: string | null = null
   // Interpolated pilot-point groups. `fieldKind` says what rawFullField
@@ -453,6 +468,19 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
   function interpolatedEntry(group: string | null): PpGroupInfo | null {
     return ppIndex.groups.find((g) => g.group === group) ?? null
+  }
+
+  // An interpolated group draws its field even when its points carry an x/y.
+  function drawsAsPoints(): boolean {
+    if (fieldKind !== 'block' || drawnGroup === null || interpolatedEntry(drawnGroup) !== null) return false
+    return isPointGroup(joined, pointXy, drawnGroup)
+  }
+
+  function clearSelection(): void {
+    selectedCellId = null
+    selectedPointRow = null
+    layer?.setSelected(null)
+    layer?.setSelectedPoint(null)
   }
 
   // In the model on one layer: the idomain when the grid has one, else any
@@ -568,6 +596,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const [ar, ag, ab] = readColorToken('--accent')
     layer?.setContestedColors([ir, ig, ib], [gr, gg, gb])
     layer?.setAccentColor([ar, ag, ab])
+    // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
+    const [pr, pg, pb] = readColorToken('--page-plane')
+    layer?.setPointRingColor([pr, pg, pb])
   }
 
   // Resolves synchronously from currentClasses/rawFullField -- the client
@@ -577,8 +608,18 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const group = drawnGroup ?? ''
     const field = rawFullField ?? new Float32Array(0)
     const classification = selectedCellId !== null ? currentClasses[selectedCellId] : undefined
+    const pointRow = selectedPointRow
     const pick: ReadoutPick =
-      selectedCellId !== null && classification
+      pointRow !== null && pointXy !== null
+        ? {
+            kind: 'point',
+            row: pointRow,
+            layer: committed.layer,
+            x: pointXy[2 * pointRow],
+            y: pointXy[2 * pointRow + 1],
+            selectionLabel: selectionLabel(committed),
+          }
+        : selectedCellId !== null && classification
         ? {
             kind: 'cell',
             cellId: selectedCellId,
@@ -621,6 +662,19 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width
     const y = ((event.clientY - rect.top) / rect.height) * canvas.height
     const [wx, wy] = camera.screenToWorld(x, y)
+    // Dots are sized in device pixels, so the reach is 6 CSS pixels at the device's ratio.
+    const reach = 6 * (window.devicePixelRatio || 1)
+    const pointIndex = pickPoint(currentPoints, wx, wy, camera.screenToWorld(x + reach, y)[0] - wx)
+    if (pointIndex !== null) {
+      clearSelection()
+      selectedPointRow = currentPoints.rows[pointIndex]
+      layer?.setSelectedPoint(pointIndex)
+      redraw()
+      updateReadout()
+      return
+    }
+    selectedPointRow = null
+    layer?.setSelectedPoint(null)
     selectedCellId = pickAtWorld(meshGeom, wx, wy)
     layer?.setSelected(selectedCellId)
     redraw()
@@ -803,8 +857,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       const next: Selection = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
       controlsHandle?.sync(next)
       controlsHandle?.setLayer(nextLayer)
-      selectedCellId = null
-      layer?.setSelected(null)
+      clearSelection()
       scheduleFetch(next)
       updateReadout()
       return
@@ -818,8 +871,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // this to linear, for a genuinely different reason (the new field has
     // non-positive values), so this runs first.
     controlsHandle?.sync(committed)
-    selectedCellId = null
-    layer?.setSelected(null)
+    clearSelection()
     deriveAndDraw()
     updateReadout()
     scheduleViewWrite()
@@ -946,6 +998,17 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       }
       return { perCell, contested: 0, noValue: noValueCount, classes }
     }
+    if (drawsAsPoints()) {
+      // The dots carry the values; a cell is only in or out of the model.
+      const active = activeMaskFor(layerIndex)
+      const classes: CellClass[] = []
+      let noValue = 0
+      for (let c = 0; c < nCells; c++) {
+        classes.push(active[c] ? { kind: 'no-parameter' } : { kind: 'outside-model' })
+        if (active[c]) noValue += 1
+      }
+      return { perCell: new Float32Array(nCells).fill(Number.NaN), contested: 0, noValue, classes }
+    }
     const { classes, contestedCount, noValueCount } = classifyCells(
       joined,
       cellArray,
@@ -979,6 +1042,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     layer.setContested(contestedMask)
     layer.setValues(perCell)
+    applyPoints(fullField)
     redraw()
     canvas.setAttribute('data-drawn', 'true')
     // A layer/group change can move the selected cell into a different
@@ -986,6 +1050,27 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // whatever currentClasses now says, never a stale copy.
     updateReadout()
     return { contested, noValue }
+  }
+
+  // Each dot reads the same scaled field the fill does, so log scale and its refusal apply alike.
+  function applyPoints(field: Float32Array): void {
+    if (!layer) return
+    if (pointXy === null || !drawsAsPoints()) {
+      currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
+      selectedPointRow = null
+      layer.setSelectedPoint(null)
+      layer.setPoints(new Float32Array(0), new Float32Array(0))
+      return
+    }
+    currentPoints = pointsOnLayer(joined, layerArray, pointXy, drawnGroup ?? '', committed.layer)
+    const values = new Float32Array(currentPoints.rows.length)
+    currentPoints.rows.forEach((row, i) => {
+      values[i] = field[row]
+    })
+    layer.setPoints(currentPoints.xy, values)
+    const index = selectedPointRow === null ? -1 : currentPoints.rows.indexOf(selectedPointRow)
+    if (index < 0) selectedPointRow = null
+    layer.setSelectedPoint(index < 0 ? null : index)
   }
 
   // Recomputes the drawn scale, limits and colormap from the raw held
@@ -1072,6 +1157,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       group: legendGroupLabel(),
       contested,
       noValue,
+      points: drawsAsPoints() ? currentPoints.rows.length : undefined,
     })
   }
 
@@ -1177,6 +1263,24 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   clearCanvas()
 
   void loadAndDraw(ctx)
+
+  // A failed or misshapen read draws every group as cells, with a notice saying why.
+  async function readPointXy(iteration: number): Promise<Float32Array | null> {
+    let reason: string
+    try {
+      const xy = await gridPointXy(iteration)
+      if (xy === null || xy.length === 2 * cellArray.length) return xy
+      reason = `It has ${xy.length} values, not the ${2 * cellArray.length} the map block needs (an x and a y per row).`
+    } catch (error) {
+      reason = describeError(error)
+    }
+    addNotice(mapNotice, {
+      title: 'Point positions could not be read',
+      detail: `${reason} Groups placed by x/y draw as the cells their points sit in.`,
+      tone: 'serious',
+    })
+    return null
+  }
 
   async function loadAndDraw(gl: GlContext): Promise<void> {
     const iteration = opts.config?.first_iteration ?? 0
@@ -1292,6 +1396,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       canvas.remove()
       return
     }
+    pointXy = await readPointXy(iteration)
 
     // The Params panel's per-artifact notes: every artifact the ingest
     // recorded a reason for, named and shown verbatim (CLAUDE.md's fourth

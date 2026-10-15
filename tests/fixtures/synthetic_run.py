@@ -61,13 +61,17 @@ _FIXED_MTIME_NS = 1_700_000_000_000_000_000
 # cell by a factor file; the layer number in its name is what lets a
 # two-layer grid know which layer the field belongs to. They sit on cells 1
 # and 3 so cells 4 and 5 stay outside the model for the hairline checks.
+# p10 and p11 are POINT_GROUP, placed by x/y and not interpolated: both sit
+# in cell 2 on layer 0, so they draw as two dots rather than one contested cell.
 PP_GROUP = "G4layer1"
-CONTROL_NAMES = ("p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9")
-GROUPS = ("G1", "G1", "G2", "G2", "G2", "G3", "G3", PP_GROUP, PP_GROUP)
-PARTRANS = ("log", "log", "none", "none", "none", "none", "none", "none", "none")
-MAPPABLE = frozenset({"G1", "G2", PP_GROUP})
-CELLS = (0, 0, 1, 2, 3, -1, -1, 1, 3)
-LAYERS = (0, 0, 0, 0, 1, -1, -1, 0, 0)
+POINT_GROUP = "G5"
+CONTROL_NAMES = ("p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11")
+GROUPS = ("G1", "G1", "G2", "G2", "G2", "G3", "G3", PP_GROUP, PP_GROUP, POINT_GROUP, POINT_GROUP)
+PARTRANS = ("log", "log", "none", "none", "none", "none", "none", "none", "none", "none", "none")
+MAPPABLE = frozenset({"G1", "G2", PP_GROUP, POINT_GROUP})
+CELLS = (0, 0, 1, 2, 3, -1, -1, 1, 3, 2, 2)
+LAYERS = (0, 0, 0, 0, 1, -1, -1, 0, 0, 0, 0)
+POINT_XY = {"p10": (2.25, 0.5), "p11": (2.75, 0.5)}
 
 REAL_NAMES = ("base", "r1", "r2")
 ITERATIONS = (0, 1)
@@ -131,7 +135,7 @@ def _control_tables() -> ControlTables:
             }
         ),
         obs=pd.DataFrame({"obsnme": [], "obgnme": [], "weight": []}),
-        par_groups=("G1", "G2", "G3", PP_GROUP),
+        par_groups=("G1", "G2", "G3", PP_GROUP, POINT_GROUP),
         obs_groups=(),
         source_path=Path(f"{CASE}.pst"),
         notes=(),
@@ -140,6 +144,9 @@ def _control_tables() -> ControlTables:
 
 
 def _cells() -> ParCells:
+    point_xy = np.full((len(CONTROL_NAMES), 2), np.nan)
+    for name, xy in POINT_XY.items():
+        point_xy[CONTROL_NAMES.index(name)] = xy
     return ParCells(
         cell=np.array(CELLS, dtype=np.int32),
         layer=np.array(LAYERS, dtype=np.int32),
@@ -149,9 +156,11 @@ def _cells() -> ParCells:
             GroupResolution(group="G2", rule="synthetic", mapped=3, total=3),
             GroupResolution(group="G3", rule="synthetic", mapped=0, total=2),
             GroupResolution(group=PP_GROUP, rule="xyz-host-cell", mapped=2, total=2),
+            GroupResolution(group=POINT_GROUP, rule="xyz-host-cell", mapped=2, total=2),
         ),
         summary="synthetic fixture placed G1 and G2 on cells and left G3 unplaced",
         notes=(),
+        point_xy=point_xy,
     )
 
 
@@ -165,11 +174,14 @@ def _ensemble_data(iteration: int) -> EnsembleData:
     # p1-p7 are drawn first, as before the pilot points existed, so the
     # screenshot of G1 does not move. p8 and p9 are pinned so the
     # interpolated field has known ends: 10 at cell 0, 20 at cell 5.
-    drawn = rng.uniform(1.0, 100.0, size=(n_real, n_par - 2)).astype(np.float32)
+    n_drawn = CONTROL_NAMES.index("p8")
+    drawn = rng.uniform(1.0, 100.0, size=(n_real, n_drawn)).astype(np.float32)
     values = np.empty((n_real, n_par), dtype=np.float32)
-    values[:, : n_par - 2] = drawn
+    values[:, :n_drawn] = drawn
     values[:, CONTROL_NAMES.index("p8")] = 10.0
     values[:, CONTROL_NAMES.index("p9")] = 20.0
+    values[:, CONTROL_NAMES.index("p10")] = 30.0
+    values[:, CONTROL_NAMES.index("p11")] = 60.0
     return EnsembleData(
         values=values,
         real_names=REAL_NAMES,

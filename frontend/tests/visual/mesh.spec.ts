@@ -415,4 +415,22 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('.floating-bottom-right')).toContainText('Interpolated from 2 pilot points')
     await expect(page.locator('.floating-bottom-right')).toContainText('p8 (weight 0.50)')
   })
+
+  // G5's two points, p10 = 30 at x 2.25 and p11 = 60 at x 2.75, both sit in
+  // cell 2 on layer 0: they draw as two dots, not one contested cell.
+  test('a group placed by x/y draws as dots, and a click on one names its parameter and position', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+    await page.selectOption('select[aria-label="Parameter group"]', 'G5')
+    await expect(page.locator('.floating-bottom-left')).toContainText('2 points on this layer')
+    await expect(page.locator('.floating-bottom-left')).not.toContainText('contested')
+
+    const layout = await cellLayout(page)
+    const dotX = Math.round(layout.width / 2 + layout.cell * (2.75 - 3))
+    await page.locator('canvas').click({ position: { x: dotX, y: layout.midY } })
+    await expect(page.locator('.floating-bottom-right')).toContainText('p11')
+    await expect(page.locator('.floating-bottom-right')).toContainText('x 2.8, y 0.5')
+  })
 })
