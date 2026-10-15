@@ -1,9 +1,10 @@
 // The click readout (D-08/D-06): the value with its full identity, a
 // contested cell's every parameter rather than one invented colour's
 // worth, and a named refusal when the join cannot say what a row is.
-// Resolves synchronously from state the client already holds -- there is
-// no fetch and no loading state in this module.
+// Resolves synchronously from state the client already holds; an
+// interpolated cell's contributors arrive later and the caller re-renders.
 
+import type { Contributor } from '../data/fields'
 import type { CellClass, ParIdentity } from '../data/parmap'
 
 const CONTESTED_ROW_CAP = 20
@@ -30,6 +31,11 @@ export interface ReadoutOptions {
   joined: Array<ParIdentity | null>
   /** The raw block-order field the drawn group's values are read from. */
   field: Float32Array
+  /** Set when the picked cell's value came from interpolation: there is no
+   *  block row to read, so the value and the points behind it come from
+   *  the field and the contributors route. `contributors` is `null` while
+   *  that route has not answered, `'failed'` when it could not. */
+  interpolated?: { value: number; nPoints: number; contributors: Contributor[] | null | 'failed' }
 }
 
 function formatValue(value: number): string {
@@ -87,8 +93,21 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   }
 
   if (classification.kind === 'interpolated') {
-    appendLine(el, `${opts.group}: ${opts.field[cellId]}`, 'body')
+    const info = opts.interpolated ?? { value: opts.field[cellId] ?? Number.NaN, nPoints: 0, contributors: null }
+    const { value, nPoints, contributors } = info
+    appendLine(el, `${opts.group}: ${formatValue(value)}`, 'body')
     appendFooter(el, layer, cellId, selectionLabel)
+    appendLine(el, `Interpolated from ${nPoints} pilot point${nPoints === 1 ? '' : 's'}`, 'label')
+    if (contributors === null) {
+      appendLine(el, 'Loading the points behind this cell…', 'label').style.color = 'var(--ink-muted)'
+    } else if (contributors === 'failed') {
+      appendLine(el, 'The points behind this cell could not be read.', 'label').style.color = 'var(--ink-muted)'
+    } else {
+      for (const { parnme, weight } of contributors.slice(0, 3)) {
+        const line = appendLine(el, `${parnme} (weight ${weight.toFixed(2)})`, 'label', 'truncate')
+        line.title = parnme
+      }
+    }
     return
   }
 
