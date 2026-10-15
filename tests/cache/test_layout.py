@@ -207,3 +207,12 @@ def test_for_run_on_a_read_only_git_run_directory_succeeds_and_carries_the_note(
 
 def test_cache_version_is_an_integer():
     assert isinstance(CACHE_VERSION, int)
+
+
+@pytest.mark.parametrize("name", [".", "..", "a/../..", "../x"])
+def test_a_field_memo_path_stays_in_its_own_folder_whatever_the_group_or_key(tmp_path, name):
+    layout = CacheLayout(root=tmp_path)
+    fields = layout.pp / "fields"
+    for path in (layout.pp_field(name, 0, "t", "base"), layout.pp_field("G", 0, "t", name)):
+        assert path.resolve().is_relative_to(fields.resolve())
+        assert len(path.relative_to(fields).parts) == 4

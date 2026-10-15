@@ -4,6 +4,7 @@ as /values, and the readout's contributors."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -81,6 +82,18 @@ def test_field_is_memoised_under_the_ensemble_tag(tmp_path):
     client.get("/api/run/grid/field", params={"iteration": 0, "group": "G4", "realization": "base"})
     files = list((layout.pp / "fields").rglob("*.f32"))
     assert len(files) == 1 and files[0].name == "base.f32"
+
+
+def test_an_edited_factor_file_is_never_answered_from_the_old_memo(tmp_path):
+    _, client = _case(tmp_path)
+    params = {"iteration": 0, "group": "G4", "realization": "34"}
+    assert np.frombuffer(client.get("/api/run/grid/field", params=params).content, dtype="<f4")[0] == 30.0
+    fac = tmp_path / "g.fac"
+    # Same length, so only the modified time tells the two files apart.
+    fac.write_text(FAC.replace("1 0 2 0.0 1 1.0 2 0.0", "1 0 2 0.0 1 0.0 2 1.0"))
+    st = fac.stat()
+    os.utime(fac, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    assert np.frombuffer(client.get("/api/run/grid/field", params=params).content, dtype="<f4")[0] == 40.0
 
 
 def test_field_cell_names_contributors(tmp_path):
