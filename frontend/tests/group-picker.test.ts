@@ -17,7 +17,7 @@ function mount(): HTMLElement {
 describe('renderGroupPicker', () => {
   it('lists only drawable groups, with no disclosure when nothing is unmapped', () => {
     const el = mount()
-    const state: GroupPickerState = { kind: 'ready', drawable: ['G1', 'G2'], unmapped: [], selected: 'G1' }
+    const state: GroupPickerState = { kind: 'ready', interpolated: [], drawable: ['G1', 'G2'], unmapped: [], selected: 'G1' }
     renderGroupPicker(el, { state, onGroupChange: vi.fn() })
 
     const select = el.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
@@ -29,7 +29,7 @@ describe('renderGroupPicker', () => {
   it('reads "1 group unmapped" at one and "{N} groups unmapped" above one', () => {
     const oneEl = mount()
     renderGroupPicker(oneEl, {
-      state: { kind: 'ready', drawable: ['G1'], unmapped: [{ group: 'G3', note: null }], selected: 'G1' },
+      state: { kind: 'ready', interpolated: [], drawable: ['G1'], unmapped: [{ group: 'G3', note: null }], selected: 'G1' },
       onGroupChange: vi.fn(),
     })
     expect(oneEl.querySelector('button')?.textContent).toBe('1 group unmapped')
@@ -37,7 +37,7 @@ describe('renderGroupPicker', () => {
     const manyEl = mount()
     renderGroupPicker(manyEl, {
       state: {
-        kind: 'ready',
+        kind: 'ready', interpolated: [],
         drawable: ['G1'],
         unmapped: [
           { group: 'G3', note: null },
@@ -54,7 +54,7 @@ describe('renderGroupPicker', () => {
     const el = mount()
     renderGroupPicker(el, {
       state: {
-        kind: 'ready',
+        kind: 'ready', interpolated: [],
         drawable: ['G1'],
         unmapped: [
           { group: 'obs_prior', note: "group 'obs_prior' carries idx0, which looks like placement data" },
@@ -113,7 +113,7 @@ describe('renderGroupPicker', () => {
     const el = mount()
     const longName = 'g'.repeat(120)
     renderGroupPicker(el, {
-      state: { kind: 'ready', drawable: [longName], unmapped: [{ group: longName, note: null }], selected: longName },
+      state: { kind: 'ready', interpolated: [], drawable: [longName], unmapped: [{ group: longName, note: null }], selected: longName },
       onGroupChange: vi.fn(),
     })
 
@@ -130,7 +130,7 @@ describe('renderGroupPicker', () => {
     const el = mount()
     const name = '<img src=x onerror=alert(1)>'
     renderGroupPicker(el, {
-      state: { kind: 'ready', drawable: [name], unmapped: [], selected: name },
+      state: { kind: 'ready', interpolated: [], drawable: [name], unmapped: [], selected: name },
       onGroupChange: vi.fn(),
     })
 
@@ -142,7 +142,7 @@ describe('renderGroupPicker', () => {
     const el = mount()
     const onGroupChange = vi.fn()
     renderGroupPicker(el, {
-      state: { kind: 'ready', drawable: ['G1', 'G2'], unmapped: [], selected: 'G1' },
+      state: { kind: 'ready', interpolated: [], drawable: ['G1', 'G2'], unmapped: [], selected: 'G1' },
       onGroupChange,
     })
 
@@ -151,5 +151,18 @@ describe('renderGroupPicker', () => {
     select.dispatchEvent(new Event('change'))
 
     expect(onGroupChange).toHaveBeenCalledWith('G2')
+  })
+
+  it('marks an interpolated group in its option text and keeps the plain group as the value', () => {
+    const el = document.createElement('div')
+    renderGroupPicker(el, {
+      state: { kind: 'ready', interpolated: ['G2'], drawable: ['G1', 'G2'], unmapped: [], selected: 'G1' },
+      onGroupChange: vi.fn(),
+    })
+    const select = el.querySelector('select') as HTMLSelectElement
+    expect(Array.from(select.options).map((o) => [o.value, o.textContent])).toEqual([
+      ['G1', 'G1'],
+      ['G2', 'G2 · interpolated'],
+    ])
   })
 })

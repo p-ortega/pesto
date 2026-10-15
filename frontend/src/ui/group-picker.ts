@@ -16,7 +16,7 @@ export type GroupPickerState =
   | { kind: 'loading' }
   | { kind: 'failed' }
   | { kind: 'none-drawable'; unmapped: UnmappedGroup[] }
-  | { kind: 'ready'; drawable: string[]; unmapped: UnmappedGroup[]; selected: string }
+  | { kind: 'ready'; drawable: string[]; interpolated: string[]; unmapped: UnmappedGroup[]; selected: string }
 
 export interface GroupPickerOptions {
   state: GroupPickerState
@@ -80,7 +80,7 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
   for (const group of opts.state.drawable) {
     const option = document.createElement('option')
     option.setAttribute('value', group)
-    option.textContent = group
+    option.textContent = opts.state.interpolated.includes(group) ? `${group} · interpolated` : group
     option.title = group
     select.appendChild(option)
   }
