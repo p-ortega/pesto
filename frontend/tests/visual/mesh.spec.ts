@@ -94,6 +94,38 @@ async function pixelAt(page: Page, dataUrl: string, x: number, y: number): Promi
   )
 }
 
+// The synthetic run's six unit cells lie in a row, x from 0 to 6 and y from
+// 0 to 1 (tests/fixtures/synthetic_run.py). Camera.fit centres that row on
+// the canvas with 4% padding, so every cell's screen box follows from the
+// canvas's own size -- computed here from Camera.fit's own math, never a
+// magic number, because the canvas takes the size of the frame it sits in
+// rather than a fixed 800x480.
+interface CellLayout {
+  width: number
+  height: number
+  /** One cell's screen width, and height: the cells are unit squares. */
+  cell: number
+  left: (i: number) => number
+  centreX: (i: number) => number
+  midY: number
+  /** A point on the canvas well clear of every cell. */
+  clear: [number, number]
+}
+
+async function cellLayout(page: Page): Promise<CellLayout> {
+  const box = await page.locator('canvas').boundingBox()
+  if (!box) throw new Error('no canvas on the page')
+  const width = Math.round(box.width)
+  const height = Math.round(box.height)
+  const cell = 0.96 * Math.min(width / 6, height / 1)
+  const left = (i: number) => Math.round(width / 2 + cell * (i - 3))
+  const centreX = (i: number) => Math.round(width / 2 + cell * (i - 2.5))
+  const midY = Math.round(height / 2)
+  const clear: [number, number] = [Math.round(width / 2), Math.min(height - 2, Math.round(midY + cell))]
+  if (clear[1] <= midY + cell / 2) throw new Error('the canvas is too short to have a point clear of the row of cells')
+  return { width, height, cell, left, centreX, midY, clear }
+}
+
 test.describe('the map draws a synthetic run end to end, through the real routes', () => {
   test.skip(!existsSync(BUILT_INDEX), `the built frontend is missing at ${BUILT_INDEX} -- run "npm run build" first`)
 
@@ -225,26 +257,24 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(notice).toHaveScreenshot('mesh-no-crs-notice.png')
   })
 
-  // The synthetic run's six cells lay out in a row, each 128 screen px
-  // wide starting at x=16 given the fixed 800x480 canvas and camera.fit's
-  // 4% padding (Camera.fit's own math, computed once here rather than
-  // asserted against a magic number). Cell 0 is G1's contested cell (p1
-  // and p2, both G1, on the same cell and layer); cells 1-3 are G2's,
-  // active but outside the drawn group (no value); cells 4-5 carry no
-  // parameter of any group at all (outside the model). This is D-06's
-  // four-mark contract, read back as real pixels.
+  // Cell 0 is G1's contested cell (p1 and p2, both G1, on the same cell
+  // and layer); cells 1-3 are G2's, active but outside the drawn group (no
+  // value); cells 4-5 carry no parameter of any group at all (outside the
+  // model). This is D-06's four-mark contract, read back as real pixels at
+  // the positions cellLayout derives from the canvas's size.
   test('marks two absences differently: a hairline for outside the model, nothing at all for no parameter here', async ({
     page,
   }) => {
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
+    const layout = await cellLayout(page)
     const png = await page.locator('canvas').screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
-    const background = await pixelAt(page, dataUrl, 400, 400) // well clear of every cell
-    const cellTwoBlank = await pixelAt(page, dataUrl, 336, 240) // G2's cell, active, not the drawn group
-    const cellFourInterior = await pixelAt(page, dataUrl, 592, 240) // outside the model, away from its border
+    const background = await pixelAt(page, dataUrl, ...layout.clear)
+    const cellTwoBlank = await pixelAt(page, dataUrl, layout.centreX(2), layout.midY) // G2's cell, active, not the drawn group
+    const cellFourInterior = await pixelAt(page, dataUrl, layout.centreX(4), layout.midY) // outside the model, away from its border
 
     // A cell in the model but not in the drawn group is exactly the page
     // plane showing through: it must not borrow the hairline.
@@ -253,12 +283,13 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(cellFourInterior).toEqual(background)
 
     // ...but its ring is stroked in the hairline colour somewhere along
-    // cell 4's left edge (x=528), a 1px line that anti-aliasing can shift
-    // by a pixel either way -- scan a small neighbourhood rather than
-    // asserting one exact coordinate.
+    // cell 4's left edge, a 1px line that anti-aliasing can shift by a
+    // pixel either way -- scan a small neighbourhood rather than asserting
+    // one exact coordinate.
     let borderFound = false
-    for (let x = 524; x <= 533; x++) {
-      const pixel = await pixelAt(page, dataUrl, x, 240)
+    const edge = layout.left(4)
+    for (let x = edge - 4; x <= edge + 5; x++) {
+      const pixel = await pixelAt(page, dataUrl, x, layout.midY)
       if (pixel.some((channel, i) => channel !== background[i])) {
         borderFound = true
         break
@@ -273,17 +304,18 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
+    const layout = await cellLayout(page)
     const png = await page.locator('canvas').screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
-    const background = await pixelAt(page, dataUrl, 400, 400)
+    const background = await pixelAt(page, dataUrl, ...layout.clear)
 
     // A stripe pattern shows at least two distinct colours across the
     // cell's interior -- a solid ramp fill (or an averaged/first-wins
     // colour) would show exactly one.
     const colours = new Set<string>()
-    for (let x = 24; x <= 136; x += 4) {
-      const pixel = await pixelAt(page, dataUrl, x, 240)
+    for (let x = layout.left(0) + 8; x <= layout.left(1) - 8; x += 4) {
+      const pixel = await pixelAt(page, dataUrl, x, layout.midY)
       colours.add(pixel.join(','))
     }
     expect(colours.size).toBeGreaterThanOrEqual(2)
@@ -302,7 +334,8 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     const bodyBeforeClick = (await page.textContent('body')) ?? ''
     expect(bodyBeforeClick).toContain('Click a cell to see its value.')
 
-    await page.locator('canvas').click({ position: { x: 80, y: 240 } })
+    const layout = await cellLayout(page)
+    await page.locator('canvas').click({ position: { x: layout.centreX(0), y: layout.midY } })
 
     const bodyText = (await page.textContent('body')) ?? ''
     expect(bodyText).toContain('Contested cell')
@@ -317,7 +350,8 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
-    await page.locator('canvas').click({ position: { x: 592, y: 240 } })
+    const layout = await cellLayout(page)
+    await page.locator('canvas').click({ position: { x: layout.centreX(4), y: layout.midY } })
 
     const bodyText = (await page.textContent('body')) ?? ''
     expect(bodyText).toContain('No parameter of G1 sits on this cell.')
@@ -346,11 +380,12 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(bodyText).toMatch(/0 cells contested/)
     expect(bodyText).toMatch(/4 cells no value/)
 
+    const layout = await cellLayout(page)
     const png = await page.locator('canvas').screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
-    const background = await pixelAt(page, dataUrl, 400, 400) // well clear of every cell
-    const cellZero = await pixelAt(page, dataUrl, 80, 240) // G1's own cell, now no-parameter at layer 1
+    const background = await pixelAt(page, dataUrl, ...layout.clear)
+    const cellZero = await pixelAt(page, dataUrl, layout.centreX(0), layout.midY) // G1's own cell, now no-parameter at layer 1
 
     expect(cellZero).toEqual(background)
   })
