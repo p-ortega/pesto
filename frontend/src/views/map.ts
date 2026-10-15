@@ -855,7 +855,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (needsFetch) {
       pendingGroup = group
       // An interpolated group has values on one layer only, so it opens there.
-      const nextLayer = interpolatedEntry(group)?.layer ?? committed.layer
+      const nextLayer = interpolatedEntry(group)?.layer ?? dotLayerFor(group) ?? committed.layer
       const next: Selection = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
       controlsHandle?.sync(next)
       controlsHandle?.setLayer(nextLayer)

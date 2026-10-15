@@ -77,14 +77,28 @@ let xyMode: 'ok' | 'none' = 'ok'
 // Which layer k's two points sit on: both on 0, both on 1, or pa on 0 and pb on 1.
 let layerMode: 'same' | 'k-on-1' | 'split' = 'same'
 const LAYERS = { same: [0, 0, 0], 'k-on-1': [0, 1, 1], split: [0, 0, 1] }
+// 'field' makes G1 an interpolated pilot-point group on layer 0.
+let ppMode: 'none' | 'field' = 'none'
+// 'two' adds a second cell at x 1..2 that no parameter lands on, so it is outside the model.
+let meshMode: 'one' | 'two' = 'one'
+const TWO_CELLS = {
+  body: { n_vert: 6, n_tri: 4, n_cells: 2, nlay: 2, bounds: [0, 2, 0, 1], crs: null, tag: 'points-two' },
+  positions: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1, 2, 0, 2, 1]),
+  cellIndex: new Float32Array([0, 0, 0, 0, 1, 1]),
+  indices: new Uint32Array([0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2]),
+}
+const viewWrites: Array<Record<string, unknown>> = []
 
 function stubFetch(): void {
   kMode = 'plain'
   xyMode = 'ok'
   layerMode = 'same'
+  ppMode = 'none'
+  meshMode = 'one'
+  viewWrites.length = 0
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (input: string | URL) => {
+    vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString()
       const [path] = url.split('?')
       const respond = (result: { status: number; bytes?: Uint8Array; body?: unknown; headers?: Record<string, string> }) => {
@@ -100,13 +114,13 @@ function stubFetch(): void {
       const kTrans = kMode === 'log' ? 'log' : 'none'
       switch (path) {
         case '/api/run/grid/mesh':
-          return respond({ status: 200, body: MESH_BODY })
+          return respond({ status: 200, body: meshMode === 'two' ? TWO_CELLS.body : MESH_BODY })
         case '/api/run/grid/mesh/positions':
-          return respond({ status: 200, bytes: bytesOf(POSITIONS), headers: metaHeader('<f4') })
+          return respond({ status: 200, bytes: bytesOf(meshMode === 'two' ? TWO_CELLS.positions : POSITIONS), headers: metaHeader('<f4') })
         case '/api/run/grid/mesh/cell_index':
-          return respond({ status: 200, bytes: bytesOf(CELL_INDEX), headers: metaHeader('<f4') })
+          return respond({ status: 200, bytes: bytesOf(meshMode === 'two' ? TWO_CELLS.cellIndex : CELL_INDEX), headers: metaHeader('<f4') })
         case '/api/run/grid/mesh/indices':
-          return respond({ status: 200, bytes: bytesOf(INDICES), headers: metaHeader('<u4') })
+          return respond({ status: 200, bytes: bytesOf(meshMode === 'two' ? TWO_CELLS.indices : INDICES), headers: metaHeader('<u4') })
         case '/api/run/grid/parmap':
           return respond({ status: 200, bytes: bytesOf(PARMAP) })
         case '/api/run/meta':
@@ -129,8 +143,31 @@ function stubFetch(): void {
         case '/api/run/grid/values':
           return respond({ status: 200, bytes: bytesOf(new Float32Array(FIELDS[kMode])) })
         case '/api/run/grid/pp':
+          if (ppMode === 'field') {
+            return respond({
+              status: 200,
+              body: {
+                groups: [{ group: 'G1', layer: 0, n_pp: 1, log_space: false, format: 'text', notes: [] }],
+                not_interpolable: [],
+                notes: [],
+              },
+            })
+          }
           return respond({ status: 200, body: { groups: [], not_interpolable: [], notes: [] } })
+        case '/api/run/grid/field': {
+          const n = meshMode === 'two' ? 2 : 1
+          return respond({
+            status: 200,
+            bytes: bytesOf(new Float32Array(n).fill(7)),
+            headers: { 'X-Pesto-Meta': JSON.stringify({ order: 'cell', group: 'G1', layer: 0, n_pp: 1 }) },
+          })
+        }
         case '/api/run/view':
+          if (init?.method === 'PUT') {
+            const body = JSON.parse(String(init.body)) as Record<string, unknown>
+            viewWrites.push(body)
+            return respond({ status: 200, body })
+          }
           throw new Error('no saved view')
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
@@ -287,11 +324,14 @@ describe('a group placed by x/y draws as dots', () => {
 
   it('lays a quiet footprint under the dots, and takes it away for a cell group', async () => {
     const setFootprint = vi.spyOn(MeshLayer.prototype, 'setFootprint')
-    const root = await mounted()
+    const root = await mounted(() => {
+      meshMode = 'two'
+    })
     choose(root, 'k')
     await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
+    // Cell 0 hosts the dots; cell 1 has no parameter on it, so it is outside the model.
     const mask = setFootprint.mock.calls.at(-1)![0] as Uint8Array
-    expect(Array.from(mask)).toEqual([1])
+    expect(Array.from(mask)).toEqual([1, 0])
     choose(root, 'G1')
     await vi.waitFor(() => expect(legendText(root)).not.toContain('points on this layer'))
     expect(setFootprint.mock.calls.at(-1)![0]).toBeNull()
@@ -321,5 +361,20 @@ describe('a group placed by x/y draws as dots', () => {
     expect(layerInput.value).toBe('1')
     const [xy] = lastPoints()
     expect(Array.from(xy)).toEqual([0.75, 0.5])
+  })
+
+  it('switched to from an interpolated group, still opens on the layer holding its dots', async () => {
+    const root = await mounted(() => {
+      layerMode = 'k-on-1'
+      ppMode = 'field'
+    })
+    choose(root, 'G1')
+    await vi.waitFor(() => expect(legendText(root)).toContain('G1 · interpolated'))
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    expect(layerInput.value).toBe('0')
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('2 points on this layer'))
+    expect(layerInput.value).toBe('1')
+    await vi.waitFor(() => expect(viewWrites.at(-1)?.group).toBe('k'), { timeout: 2000 })
   })
 })
