@@ -72,9 +72,16 @@ export interface MountEstimateOptions {
  */
 export async function mountEstimate(root: HTMLElement, opts: MountEstimateOptions): Promise<void> {
   root.textContent = ''
+  // The same frame as the picker and the ingest screen: a header, then one
+  // surface panel holding the figures, any notice and the two controls.
+  root.classList.add('page')
 
   const headerEl = document.createElement('div')
+  headerEl.classList.add('header')
+  const panel = document.createElement('div')
+  panel.classList.add('surface', 'estimate-panel')
   const body = document.createElement('div')
+  body.classList.add('estimate-body')
   const noticeArea = document.createElement('div')
   const controls = document.createElement('div')
   // WINDOWS.md #13's sweep: Agree and Go back sat directly against each
@@ -83,9 +90,10 @@ export async function mountEstimate(root: HTMLElement, opts: MountEstimateOption
   controls.style.display = 'flex'
   controls.style.gap = 'var(--space-sm)'
   root.appendChild(headerEl)
-  root.appendChild(body)
-  root.appendChild(noticeArea)
-  root.appendChild(controls)
+  panel.appendChild(body)
+  panel.appendChild(noticeArea)
+  panel.appendChild(controls)
+  root.appendChild(panel)
 
   function paintHeader(): void {
     renderHeader(headerEl, {
@@ -119,10 +127,12 @@ export async function mountEstimate(root: HTMLElement, opts: MountEstimateOption
   }
 
   const totalLine = document.createElement('p')
+  totalLine.classList.add('body', 'tabular-nums')
   totalLine.textContent = `Projected cache size: ${formatBytes(estimate.total)} (a projection, not a measurement)`
   body.appendChild(totalLine)
 
   const freeLine = document.createElement('p')
+  freeLine.classList.add('body', 'tabular-nums')
   freeLine.textContent = estimate.cacheRootExists
     ? `Free space where the cache lives: ${formatBytes(estimate.freeBytes)}`
     : `Free space, for the directory that is about to be created: ${formatBytes(estimate.freeBytes)}`
@@ -138,12 +148,14 @@ export async function mountEstimate(root: HTMLElement, opts: MountEstimateOption
 
   if (estimate.notes.length > 0) {
     const notesHeading = document.createElement('p')
+    notesHeading.classList.add('label')
     notesHeading.textContent = 'These artifacts could not be sized and are left out of the total above:'
     body.appendChild(notesHeading)
 
     const notesList = document.createElement('ul')
     for (const note of estimate.notes) {
       const item = document.createElement('li')
+      item.classList.add('label', 'wrap-note')
       item.textContent = note
       notesList.appendChild(item)
     }
