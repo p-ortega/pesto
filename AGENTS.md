@@ -39,6 +39,9 @@ cache, point the cache elsewhere: `--cache-dir /some/empty/folder`.
    spec waits for the benchmark listing before tabbing and accepts a warm open. That
    second one was failing before this session: it assumed the forecast run had never been
    ingested on this machine.
+5. The estimate screen ("Before ingesting: a projected cost") was bare text at the page
+   edge; it now sits in the same header-and-panel frame as the picker and the ingest
+   screen, in both themes.
 
 Frontend 262 unit tests, 10 Playwright checks and the backend quick suite (650) are green.
 
@@ -57,6 +60,8 @@ Still for the user to approve or reject; the agent cannot stand in for human eye
   layer and realization changes and move with the statistic. Clicking a drain cell at
   layer 12 names the parameter, its group, the value, the cell, the layer and `base`.
   Colormap, scale, group, statistic and the divider position survive a reload.
+- Cold flow, with the cache pointed at an empty scratch folder: estimate screen, then the
+  ingest rows (par_ens, par_agg, control, grid, config), then the map, in 37 s.
 - Not checked: closing the laptop lid. Nothing in the run directory changed (file sizes
   and mtimes compared before and after, cache folder excluded).
 
