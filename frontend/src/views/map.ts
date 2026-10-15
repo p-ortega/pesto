@@ -446,7 +446,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
   // The points behind an interpolated cell, fetched on click and kept until
   // the drawn field changes.
-  const contributorsMemo = new Map<number, Contributor[] | 'failed'>()
+  const contributorsMemo = new Map<number, Contributor[] | { failed: string }>()
 
   function interpolatedEntry(group: string | null): PpGroupInfo | null {
     return ppIndex.groups.find((g) => g.group === group) ?? null
@@ -591,8 +591,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (group === null || contributorsMemo.has(cellId)) return
     const iteration = committed.iteration
     void fieldContributors(iteration, group, cellId)
-      .then((list): Contributor[] | 'failed' => list)
-      .catch((): 'failed' => 'failed')
+      .then((list): Contributor[] | { failed: string } => list)
+      .catch((error: unknown) => ({ failed: problemArtifactAndReason(error).reason }))
       .then((result) => {
         if (fieldGroup !== group || committed.iteration !== iteration) return
         contributorsMemo.set(cellId, result)
