@@ -464,16 +464,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     return referenced.slice()
   }
 
-  // A cell carrying a drawn value is never outlined, whatever the mask says.
+  // A cell drawn with a value on this layer is never outlined, whatever the mask says.
   function drawnInactiveMask(): Uint8Array {
     const active = activeMaskFor(committed.layer)
     const mask = new Uint8Array(active.length)
     for (let c = 0; c < mask.length; c++) {
       const kind = currentClasses[c]?.kind
-      const drawn =
-        kind === 'valued' ||
-        kind === 'contested' ||
-        (fieldKind === 'cell' && rawFullField !== null && Number.isFinite(rawFullField[c]))
+      const drawn = kind === 'valued' || kind === 'contested' || kind === 'interpolated'
       mask[c] = !active[c] && !drawn ? 1 : 0
     }
     return mask
@@ -936,8 +933,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
     if (fieldKind === 'cell' && entry !== null) {
       const active = activeMaskFor(layerIndex)
-      for (let c = 0; c < active.length; c++) {
-        if (Number.isFinite(field[c])) active[c] = 1
+      // The field is drawn only on its own layer, so only there does a value put a cell in the model.
+      if (layerIndex === entry.layer) {
+        for (let c = 0; c < active.length; c++) {
+          if (Number.isFinite(field[c])) active[c] = 1
+        }
       }
       const { classes, noValueCount } = classifyFieldCells(field, active, entry.layer, layerIndex)
       const perCell = new Float32Array(nCells).fill(Number.NaN)
@@ -1222,12 +1222,22 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     meshBytes = positions.byteLength + cellIndexBuf.byteLength + indices.byteLength
 
     if (mesh.hasIdomain) {
+      let reason: string | null = null
       try {
-        idomain = await gridIdomain()
+        const read = await gridIdomain()
+        const expected = mesh.nlay * mesh.nCells
+        if (read.length === expected) {
+          idomain = read
+        } else {
+          reason = `It has ${read.length} values, not the ${expected} the grid needs (${mesh.nlay} layers of ${mesh.nCells} cells).`
+        }
       } catch (error) {
+        reason = describeError(error)
+      }
+      if (reason !== null) {
         addNotice(mapNotice, {
           title: "The grid file's idomain could not be read",
-          detail: `${describeError(error)} A cell counts as in the model when any parameter lands on it.`,
+          detail: `${reason} A cell counts as in the model when any parameter lands on it.`,
           tone: 'serious',
         })
       }
