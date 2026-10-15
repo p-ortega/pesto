@@ -137,12 +137,10 @@ With no `idomain`, or one of the wrong length, the old rule applies (any paramet
 on the cell) and a note says so. A parameter on an inactive cell still draws, and the
 Params panel counts them per group. Escondida layer 0 is almost all pass-through cells.
 
-Still open:
-
-- With a point group drawn, no cell is filled, so the model footprint does not show under
-  the dots.
-- A point group opens on the current layer even when all its points sit on another.
-- A pilot-point field value on an `idomain`-inactive cell draws with no note.
+Under a dot group, every cell in the model on the drawn layer is filled with a quiet
+`--gridline` shade, so the model's shape shows behind the dots. Picking a dot group moves to
+the lowest layer holding its dots when the current layer holds none. When a pilot-point
+field paints cells that `idomain` marks inactive, the legend says how many.
 
 ## Leftovers
 
