@@ -30,6 +30,9 @@ _MACOS_RESOURCE_FORK_PREFIX = "._"
 _ENS_EXTS = "jcb|jco|bin|csv"
 _ITER_TOKEN = r"\d+|prior|mean"
 _GRID_EXT = ".grb"
+_MULT2MODEL_NAME = "mult2model_info.csv"
+_FACTOR_TEXT_EXT = ".fac"
+_FACTOR_BINARY_PATTERN = re.compile(r"^factors\..+\.bin$", re.IGNORECASE)
 _PHI_KINDS = ("actual", "meas", "regul", "composite", "group", "lambda")
 
 # The starting ensembles pestpp-ies reads as *input* -- named by the control
@@ -128,6 +131,12 @@ class RunLayout:
     pcs: Mapping[tuple[IterationKey, str], Path]
     grid: Path | None
     noise: Path | None
+    # Pilot-point files, matched by name only. mult2model_info.csv is what
+    # PstFrom writes to link a pilot-point file to its factor file;
+    # factor_files holds every PEST text factor file (*.fac) and every
+    # pypestutils binary one (factors.*.bin) the directory carries.
+    mult2model: Path | None
+    factor_files: tuple[Path, ...]
     notes: tuple[str, ...]
     ambiguities: tuple[Ambiguity, ...]
 
@@ -457,6 +466,8 @@ def discover(run_dir: Path) -> RunLayout:
     pcs_candidates: dict[tuple[IterationKey, str], list[tuple[str, Path]]] = {}
     grid_candidates: list[tuple[str, Path]] = []
     noise_candidates: list[tuple[str, Path]] = []
+    mult2model: Path | None = None
+    factor_files: list[Path] = []
 
     for candidate in sorted(run_path.iterdir()):
         name = candidate.name
@@ -501,6 +512,12 @@ def discover(run_dir: Path) -> RunLayout:
 
         if candidate.suffix.lower() == _GRID_EXT:
             grid_candidates.append((name, candidate))
+        if candidate.name.lower() == _MULT2MODEL_NAME:
+            mult2model = candidate
+        if candidate.suffix.lower() == _FACTOR_TEXT_EXT or _FACTOR_BINARY_PATTERN.match(
+            candidate.name
+        ):
+            factor_files.append(candidate)
 
     # Resolution pass: one call to choose_one per slot, in a deterministic
     # order (sorted by str(key), since iteration keys mix int and str), so
@@ -625,6 +642,8 @@ def discover(run_dir: Path) -> RunLayout:
         pcs=pcs,
         grid=grid,
         noise=noise,
+        mult2model=mult2model,
+        factor_files=tuple(factor_files),
         notes=tuple(notes),
         ambiguities=tuple(ambiguities),
     )
