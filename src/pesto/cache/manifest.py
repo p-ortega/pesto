@@ -247,7 +247,9 @@ class Manifest:
     def mark_missing(self, name: str, reason: str) -> None:
         self.artifacts[name] = Artifact(name=name, state="missing", reason=reason, sources=[])
 
-    def is_stale(self, name: str, layout: "CacheLayout | None" = None) -> bool:
+    def is_stale(
+        self, name: str, layout: "CacheLayout | None" = None, sources: Sequence[str] | None = None
+    ) -> bool:
         """An artifact that was never ingested, or whose recorded state is
         anything other than ``ok``, reports stale. An ``ok`` artifact is
         stale when at least one of its recorded sources no longer matches,
@@ -266,9 +268,14 @@ class Manifest:
 
         ``layout`` defaults to ``None``, so every call written before this
         check existed keeps its exact original behaviour.
+
+        When ``sources`` (the files the artifact would read now) is given, an
+        artifact recorded against a different set of file names is stale too.
         """
         artifact = self.artifacts.get(name)
         if artifact is None or artifact.state != "ok":
+            return True
+        if sources is not None and {Path(s).name for s in sources} != {s.path for s in artifact.sources}:
             return True
         if not all(source.matches(Path(self.run_dir)) for source in artifact.sources):
             return True
