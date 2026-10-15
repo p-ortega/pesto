@@ -52,3 +52,21 @@ def test_a_binary_factor_file_no_group_matches_is_refused_not_dropped(tmp_path):
     ((name, reason),) = index.not_interpolable
     assert name == "factors.m.bnd.layer0.bin"
     assert "no parameter group" in reason
+
+
+def test_a_points_file_whose_tag_is_only_part_of_a_name_segment_is_not_matched(tmp_path):
+    par = _binary_run(tmp_path)
+    pd.DataFrame({"ppname": ["pa", "pb", "pc"]}).to_csv(tmp_path / "ppoints.bn.csv", index=False)
+    index = build_pp_index(tmp_path, None, (tmp_path / "factors.m.bnd.layer0.bin",), par, GridShape(ncpl=6, nlay=2, nrow=None, ncol=None))
+    (group,) = index.groups
+    assert group.parnames == ("q1", "q2")
+
+
+def test_two_points_files_that_both_match_refuse_the_factor_file_naming_both(tmp_path):
+    par = _binary_run(tmp_path)
+    pd.DataFrame({"ppname": ["pa", "pb"], "cond": [1.0, 1.0]}).to_csv(tmp_path / "ppoints.m.csv", index=False)
+    index = build_pp_index(tmp_path, None, (tmp_path / "factors.m.bnd.layer0.bin",), par, GridShape(ncpl=6, nlay=2, nrow=None, ncol=None))
+    assert index.groups == ()
+    ((name, reason),) = index.not_interpolable
+    assert name == "factors.m.bnd.layer0.bin"
+    assert "ppoints.bnd.csv" in reason and "ppoints.m.csv" in reason

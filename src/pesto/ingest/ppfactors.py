@@ -168,6 +168,8 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
             if len(fac_files) != 1:
                 raise _Refused(f"{pp_file} is linked to {len(fac_files)} factor files: {', '.join(fac_files)}")
             fac_path = run_dir / fac_files[0]
+            if Path(fac_files[0]).is_absolute() or not fac_path.resolve().is_relative_to(run_dir.resolve()):
+                raise _Refused(f"factor file {fac_files[0]} is outside the run directory")
             tpl_path = run_dir / f"{pp_file}.tpl"
             if not fac_path.is_file():
                 raise _Refused(f"factor file {fac_files[0]} is not in the run directory")
@@ -236,9 +238,13 @@ def _binary_groups(run_dir, factor_files, par, shape):
             if not layer_match:
                 raise _Refused(f"{path.name} carries no layer number in its name")
             layer = int(layer_match.group(1))
-            tag = next((pf for pf in point_files if pf.stem.split(".", 1)[1] in path.name), None)
-            if tag is None:
+            # The tag must be whole dot-separated segments of the factor file's name.
+            matches = [pf for pf in point_files if f".{pf.stem.split('.', 1)[1]}." in f".{path.name}"]
+            if not matches:
                 raise _Refused(f"no ppoints.<tag>.csv matches {path.name}")
+            if len(matches) > 1:
+                raise _Refused(f"{len(matches)} points files match {path.name}: {', '.join(m.name for m in matches)}")
+            (tag,) = matches
             points = pd.read_csv(tag, dtype=str)
             if "ppname" not in points.columns or len(points) != npts:
                 raise _Refused(f"{tag.name} has {len(points)} points, {path.name} was built from {npts}")
