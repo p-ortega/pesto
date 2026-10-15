@@ -284,3 +284,57 @@ describe('MeshLayer', () => {
     expect(accentCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.8, 0.8, 0.8, 1][i]))).toBe(true)
   })
 })
+
+describe('MeshLayer points pass', () => {
+  const pointDraws = (calls: { method: string; args: unknown[] }[]) =>
+    calls.filter((c) => c.method === 'drawArrays' && c.args[0] === 'POINTS')
+
+  it('draws every point in one POINTS call', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.draw()
+    expect(pointDraws(calls).map((c) => c.args)).toEqual([['POINTS', 0, 2]])
+  })
+
+  it('draws no points once they are cleared', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.setPoints(new Float32Array(0), new Float32Array(0))
+    layer.draw()
+    expect(pointDraws(calls)).toHaveLength(0)
+  })
+
+  it('refuses positions and values of different lengths, naming both', () => {
+    const { gl } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    expect(() => layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1]))).toThrow(
+      /4.*1|1.*4/,
+    )
+  })
+
+  it('rebuilds the point buffers after a context restore', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.reupload()
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls).map((c) => c.args)).toEqual([['POINTS', 0, 2]])
+  })
+
+  it('draws the selected point once more, larger', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.setSelectedPoint(1)
+    layer.draw()
+    expect(pointDraws(calls).map((c) => c.args)).toEqual([
+      ['POINTS', 0, 2],
+      ['POINTS', 1, 1],
+    ])
+    const sizes = calls.filter((c) => c.method === 'uniform1f').map((c) => c.args[1])
+    expect(sizes).toEqual([7, 9])
+  })
+})

@@ -96,6 +96,41 @@ void main() {
   fragColor = vec4(mix(u_fillColor, u_stripeColor, inStripe), 1.0);
 }`
 
+// The points pass draws an x/y group as fixed-size dots, sized in device
+// pixels so they stay the same on screen at any zoom. The ring keeps a dot
+// readable on any fill. A NaN value is discarded, never drawn at a ramp end.
+const POINTS_VERTEX = `#version 300 es
+in vec2 a_pos;
+in float a_value;
+uniform mat3 u_matrix;
+uniform vec2 u_limits;
+uniform float u_size;
+flat out float v_norm;
+flat out float v_missing;
+
+void main() {
+  v_missing = (isnan(a_value) || isinf(a_value)) ? 1.0 : 0.0;
+  v_norm = clamp((a_value - u_limits.x) / max(u_limits.y - u_limits.x, 1e-20), 0.0, 1.0);
+  gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
+  gl_PointSize = u_size;
+}`
+
+const POINTS_FRAGMENT = `#version 300 es
+precision highp float;
+flat in float v_norm;
+flat in float v_missing;
+uniform sampler2D u_ramp;
+uniform vec3 u_ringColor;
+out vec4 fragColor;
+
+void main() {
+  if (v_missing > 0.5) discard;
+  vec2 d = gl_PointCoord - vec2(0.5);
+  float r = length(d);
+  if (r > 0.5) discard;
+  fragColor = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
+}`
+
 export interface MeshData {
   positions: Float32Array
   cellIndex: Float32Array
@@ -168,6 +203,16 @@ export class MeshLayer {
   private selectionVao!: WebGLVertexArrayObject
   private selectionElements!: WebGLBuffer
   private selectionCount = 0
+
+  private pointsProgram!: WebGLProgram
+  private pointsVao!: WebGLVertexArrayObject
+  private pointsPosBuffer!: WebGLBuffer
+  private pointsValueBuffer!: WebGLBuffer
+  private pointCount = 0
+  private lastPointXy: Float32Array | null = null
+  private lastPointValues: Float32Array | null = null
+  private pointRingColor: [number, number, number] = [0, 0, 0]
+  private selectedPoint: number | null = null
 
   private limits: [number, number] = [0, 1]
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
@@ -273,6 +318,28 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
     gl.bindVertexArray(null)
 
+    this.pointsProgram = gl.createProgram()!
+    gl.attachShader(this.pointsProgram, compile(gl, gl.VERTEX_SHADER, POINTS_VERTEX))
+    gl.attachShader(this.pointsProgram, compile(gl, gl.FRAGMENT_SHADER, POINTS_FRAGMENT))
+    gl.linkProgram(this.pointsProgram)
+    if (!gl.getProgramParameter(this.pointsProgram, gl.LINK_STATUS)) {
+      throw new Error(`points program failed to link: ${gl.getProgramInfoLog(this.pointsProgram)}`)
+    }
+
+    this.pointsVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.pointsVao)
+    this.pointsPosBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsPosBuffer)
+    const pointsPosLoc = gl.getAttribLocation(this.pointsProgram, 'a_pos')
+    gl.enableVertexAttribArray(pointsPosLoc)
+    gl.vertexAttribPointer(pointsPosLoc, 2, gl.FLOAT, false, 0, 0)
+    this.pointsValueBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsValueBuffer)
+    const pointsValueLoc = gl.getAttribLocation(this.pointsProgram, 'a_value')
+    gl.enableVertexAttribArray(pointsValueLoc)
+    gl.vertexAttribPointer(pointsValueLoc, 1, gl.FLOAT, false, 0, 0)
+    gl.bindVertexArray(null)
+
     this.valuesTex = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.valuesTex)
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, TEX_WIDTH, this.texHeight)
@@ -289,6 +356,7 @@ export class MeshLayer {
     if (this.contestedMask) this.setContested(this.contestedMask)
     if (this.selectedCell !== null) this.setSelected(this.selectedCell)
     if (this.lastValues) this.setValues(this.lastValues)
+    if (this.lastPointXy && this.lastPointValues) this.setPoints(this.lastPointXy, this.lastPointValues)
   }
 
   /** Uploads `values` to the value texture, forcing every contested cell
@@ -422,6 +490,60 @@ export class MeshLayer {
     this.accentColor = rgb
   }
 
+  /** `xy` is x, y pairs in the same coordinates as the mesh; `values` is
+   *  one already-scaled value per point. An empty `xy` clears the points. */
+  setPoints(xy: Float32Array, values: Float32Array): void {
+    if (values.length * 2 !== xy.length) {
+      throw new Error(
+        `points need one value per x/y pair, got ${xy.length} coordinates and ${values.length} values`,
+      )
+    }
+    this.lastPointXy = xy
+    this.lastPointValues = values
+    this.pointCount = values.length
+    const { gl } = this
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsPosBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, xy, gl.DYNAMIC_DRAW)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsValueBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW)
+    if (this.selectedPoint !== null && this.selectedPoint >= this.pointCount) this.selectedPoint = null
+  }
+
+  setPointRingColor(rgb: [number, number, number]): void {
+    this.pointRingColor = rgb
+  }
+
+  /** The point drawn larger with an accent ring; `null` removes it. */
+  setSelectedPoint(index: number | null): void {
+    this.selectedPoint = index
+  }
+
+  private drawPoints(): void {
+    if (this.pointCount === 0) return
+    const { gl } = this
+    const dpr = globalThis.devicePixelRatio || 1
+    const program = this.pointsProgram
+    gl.useProgram(program)
+    gl.bindVertexArray(this.pointsVao)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, this.rampTex)
+    gl.uniform1i(gl.getUniformLocation(program, 'u_ramp'), 1)
+    gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
+    gl.uniform2f(gl.getUniformLocation(program, 'u_limits'), this.limits[0], this.limits[1])
+    gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 7 * dpr)
+    const ring = this.pointRingColor
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), ring[0], ring[1], ring[2])
+    gl.drawArrays(gl.POINTS, 0, this.pointCount)
+
+    if (this.selectedPoint !== null && this.selectedPoint < this.pointCount) {
+      const accent = this.accentColor
+      gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 9 * dpr)
+      gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), accent[0], accent[1], accent[2])
+      gl.drawArrays(gl.POINTS, this.selectedPoint, 1)
+    }
+    gl.bindVertexArray(null)
+  }
+
   private drawOutline(): void {
     if (this.outlineCount === 0) return
     const { gl } = this
@@ -512,11 +634,12 @@ export class MeshLayer {
    *  drawn over it; the stripe before the value pass since a contested
    *  cell's value is always NaN and so never overwrites it; the ring last
    *  so it sits over whichever of the first three marks the selected cell
-   *  carries. */
+   *  carries. Points go after the fill and before the ring. */
   draw(): void {
     this.drawOutline()
     this.drawContested()
     this.drawFill()
+    this.drawPoints()
     this.drawSelection()
   }
 
@@ -532,16 +655,20 @@ export class MeshLayer {
     gl.deleteProgram(this.program)
     gl.deleteProgram(this.outlineProgram)
     gl.deleteProgram(this.contestedProgram)
+    gl.deleteProgram(this.pointsProgram)
     gl.deleteVertexArray(this.vao)
     gl.deleteVertexArray(this.outlineVao)
     gl.deleteVertexArray(this.contestedVao)
     gl.deleteVertexArray(this.selectionVao)
+    gl.deleteVertexArray(this.pointsVao)
     gl.deleteBuffer(this.positionsBuffer)
     gl.deleteBuffer(this.cellBuffer)
     gl.deleteBuffer(this.elementsBuffer)
     gl.deleteBuffer(this.outlineElements)
     gl.deleteBuffer(this.contestedElements)
     gl.deleteBuffer(this.selectionElements)
+    gl.deleteBuffer(this.pointsPosBuffer)
+    gl.deleteBuffer(this.pointsValueBuffer)
     gl.deleteTexture(this.valuesTex)
     gl.deleteTexture(this.rampTex)
   }
