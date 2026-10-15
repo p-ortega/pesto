@@ -338,3 +338,43 @@ describe('MeshLayer points pass', () => {
     expect(sizes).toEqual([7, 9])
   })
 })
+
+describe('MeshLayer footprint pass', () => {
+  const triDraws = (calls: { method: string; args: unknown[] }[]) =>
+    calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'TRIANGLES')
+
+  it('fills the masked cells in the footprint colour before the value fill', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setFootprintColor([0.2, 0.3, 0.4])
+    layer.setFootprint(new Uint8Array([1, 0, 1]))
+    layer.draw()
+
+    const draws = triDraws(calls)
+    // Footprint first (two quads, 12 indices), then the full value fill.
+    expect(draws.map((c) => c.args[1])).toEqual([12, 18])
+    const colour = calls.filter((c) => c.method === 'uniform4f').map((c) => c.args.slice(1))
+    expect(colour).toContainEqual([0.2, 0.3, 0.4, 1])
+  })
+
+  it('draws no footprint for null or an all-zero mask', () => {
+    for (const mask of [null, new Uint8Array([0, 0, 0])]) {
+      const { gl, calls } = createRecordingGl()
+      const layer = new MeshLayer(gl, threeCellMesh())
+      layer.setFootprint(new Uint8Array([1, 1, 1]))
+      layer.setFootprint(mask)
+      layer.draw()
+      expect(triDraws(calls)).toHaveLength(1)
+    }
+  })
+
+  it('keeps the footprint after a context restore', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setFootprint(new Uint8Array([0, 1, 0]))
+    layer.reupload()
+    calls.length = 0
+    layer.draw()
+    expect(triDraws(calls).map((c) => c.args[1])).toEqual([6, 18])
+  })
+})

@@ -57,7 +57,6 @@ const CELL_INDEX = new Float32Array([0, 0, 0, 0])
 const INDICES = new Uint32Array([0, 1, 2, 0, 2, 3])
 const PARMAP = new Int32Array([0, 1, 2])
 const CELL_ARRAY = new Int32Array([0, 0, 0])
-const LAYER_ARRAY = new Int32Array([0, 0, 0])
 const POINT_XY = new Float32Array([Number.NaN, Number.NaN, 0.25, 0.5, 0.75, 0.5])
 const REALS_TABLE = tableToIPC(tableFromArrays({ realization: ['base'] }), 'stream')
 const FIELDS = { plain: [10, 20, 40], log: [10, -5, 20], nan: [10, Number.NaN, 40] }
@@ -75,10 +74,14 @@ function metaHeader(dtype: string): Record<string, string> {
 // refused; 'nan' gives pa no value, so its dot cannot be drawn.
 let kMode: 'plain' | 'log' | 'nan' = 'plain'
 let xyMode: 'ok' | 'none' = 'ok'
+// Which layer k's two points sit on: both on 0, both on 1, or pa on 0 and pb on 1.
+let layerMode: 'same' | 'k-on-1' | 'split' = 'same'
+const LAYERS = { same: [0, 0, 0], 'k-on-1': [0, 1, 1], split: [0, 0, 1] }
 
 function stubFetch(): void {
   kMode = 'plain'
   xyMode = 'ok'
+  layerMode = 'same'
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
@@ -117,7 +120,7 @@ function stubFetch(): void {
         case '/api/run/grid/cells/cell':
           return respond({ status: 200, bytes: bytesOf(CELL_ARRAY) })
         case '/api/run/grid/cells/layer':
-          return respond({ status: 200, bytes: bytesOf(LAYER_ARRAY) })
+          return respond({ status: 200, bytes: bytesOf(new Int32Array(LAYERS[layerMode])) })
         case '/api/run/grid/cells/xy':
           if (xyMode === 'none') return respond({ status: 404, body: NO_POSITIONS })
           return respond({ status: 200, bytes: bytesOf(POINT_XY) })
@@ -280,5 +283,17 @@ describe('a group placed by x/y draws as dots', () => {
     const contested = setContested.mock.calls.at(-1)![0] as Uint8Array
     expect(Array.from(contested)).toEqual([1])
     expect(root.textContent).not.toContain('Point positions')
+  })
+
+  it('lays a quiet footprint under the dots, and takes it away for a cell group', async () => {
+    const setFootprint = vi.spyOn(MeshLayer.prototype, 'setFootprint')
+    const root = await mounted()
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
+    const mask = setFootprint.mock.calls.at(-1)![0] as Uint8Array
+    expect(Array.from(mask)).toEqual([1])
+    choose(root, 'G1')
+    await vi.waitFor(() => expect(legendText(root)).not.toContain('points on this layer'))
+    expect(setFootprint.mock.calls.at(-1)![0]).toBeNull()
   })
 })
