@@ -1,4 +1,4 @@
-"""The only module in pesto permitted to import pyemu or flopy.
+"""The only module in pesto permitted to import pyemu, flopy or pypestutils.
 
 Importing pyemu mutates global state and has historically seeded numpy's
 global RNG. Anything in pesto that needs randomness must construct its own
@@ -33,6 +33,12 @@ def load_pyemu() -> ModuleType:
 
 def load_flopy() -> ModuleType:
     return _load("flopy")
+
+
+def load_pypestutils() -> ModuleType:
+    """pypestutils, for binary factor files. Raises ImportError when it is
+    not installed; callers turn that into a reason, never a crash."""
+    return _load("pypestutils")
 
 
 def warm_up() -> None:

@@ -39,7 +39,7 @@ SRC_ROOT = Path("src/pesto")
 WARM_MODULE = SRC_ROOT / "warm.py"
 MODEL_PACKAGE = SRC_ROOT / "model"
 
-HEAVY_LIBRARIES = ("flopy", "pyemu")
+HEAVY_LIBRARIES = ("flopy", "pyemu", "pypestutils")
 MODFLOW_KEYWORDS = ("flopy", "mf6", "modflow", "disv")
 REPROJECTION_CALL_NAMES = ("to_crs", "set_crs", "reproject")
 
@@ -112,7 +112,7 @@ def test_only_warm_names_a_heavy_modelling_library_at_module_scope():
                 if name == heavy or name.startswith(f"{heavy}."):
                     offenders.append(f"{path}:{lineno} imports {name!r}")
     assert not offenders, (
-        "only src/pesto/warm.py may name flopy or pyemu at module scope; "
+        "only src/pesto/warm.py may name flopy, pyemu or pypestutils at module scope; "
         "every other module must go through load_flopy()/load_pyemu() "
         "inside a function body -- offending imports:\n" + "\n".join(offenders)
     )
