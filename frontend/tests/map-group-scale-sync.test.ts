@@ -35,6 +35,8 @@ vi.mock('../src/gl/mesh-layer', () => ({
       setAccentColor: vi.fn(),
       setPoints: vi.fn(),
       setPointRingColor: vi.fn(),
+      setFootprint: vi.fn(),
+      setFootprintColor: vi.fn(),
       setSelectedPoint: vi.fn(),
       draw: vi.fn(),
       reupload: vi.fn(),

@@ -200,6 +200,12 @@ export class MeshLayer {
   private contestedElements!: WebGLBuffer
   private contestedCount = 0
 
+  private footprintVao!: WebGLVertexArrayObject
+  private footprintElements!: WebGLBuffer
+  private footprintCount = 0
+  private footprintMask: Uint8Array | null = null
+  private footprintColor: [number, number, number] = [0, 0, 0]
+
   private selectionVao!: WebGLVertexArrayObject
   private selectionElements!: WebGLBuffer
   private selectionCount = 0
@@ -305,6 +311,17 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.contestedElements)
     gl.bindVertexArray(null)
 
+    // The footprint is one flat colour, so it shares the outline program too.
+    this.footprintVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.footprintVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
+    const footprintPosLoc = gl.getAttribLocation(this.outlineProgram, 'a_pos')
+    gl.enableVertexAttribArray(footprintPosLoc)
+    gl.vertexAttribPointer(footprintPosLoc, 2, gl.FLOAT, false, 0, 0)
+    this.footprintElements = gl.createBuffer()!
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.footprintElements)
+    gl.bindVertexArray(null)
+
     // The ring pass shares the outline program (position in, one flat
     // colour out) with its own VAO and index buffer, so a selection never
     // needs a third shader.
@@ -354,6 +371,7 @@ export class MeshLayer {
 
     if (this.inactiveMask) this.setInactive(this.inactiveMask)
     if (this.contestedMask) this.setContested(this.contestedMask)
+    if (this.footprintMask) this.setFootprint(this.footprintMask)
     if (this.selectedCell !== null) this.setSelected(this.selectedCell)
     if (this.lastValues) this.setValues(this.lastValues)
     if (this.lastPointXy && this.lastPointValues) this.setPoints(this.lastPointXy, this.lastPointValues)
@@ -456,6 +474,30 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.contestedElements)
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(triangles), gl.DYNAMIC_DRAW)
     if (this.lastValues) this.setValues(this.lastValues)
+  }
+
+  /** `mask[cell]` true means that cell is in the model and gets the quiet
+   *  footprint fill under a dot group. `null` or an all-zero mask draws
+   *  nothing. */
+  setFootprint(mask: Uint8Array | null): void {
+    this.footprintMask = mask
+    const { gl, mesh } = this
+    const triangles: number[] = []
+    if (mask) {
+      for (let t = 0; t < mesh.indices.length; t += 3) {
+        const cell = mesh.cellIndex[mesh.indices[t]]
+        if (cell >= 0 && cell < mask.length && mask[cell]) {
+          triangles.push(mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2])
+        }
+      }
+    }
+    this.footprintCount = triangles.length
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.footprintElements)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(triangles), gl.DYNAMIC_DRAW)
+  }
+
+  setFootprintColor(rgb: [number, number, number]): void {
+    this.footprintColor = rgb
   }
 
   /** The stripe colour (`--ink-primary`) and the neutral fill it sits
@@ -569,6 +611,18 @@ export class MeshLayer {
     gl.bindVertexArray(null)
   }
 
+  private drawFootprint(): void {
+    if (this.footprintCount === 0) return
+    const { gl } = this
+    gl.useProgram(this.outlineProgram)
+    gl.bindVertexArray(this.footprintVao)
+    gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
+    const c = this.footprintColor
+    gl.uniform4f(gl.getUniformLocation(this.outlineProgram, 'u_color'), c[0], c[1], c[2], 1)
+    gl.drawElements(gl.TRIANGLES, this.footprintCount, gl.UNSIGNED_INT, 0)
+    gl.bindVertexArray(null)
+  }
+
   private drawFill(): void {
     const { gl } = this
     gl.useProgram(this.program)
@@ -634,8 +688,10 @@ export class MeshLayer {
    *  drawn over it; the stripe before the value pass since a contested
    *  cell's value is always NaN and so never overwrites it; the ring last
    *  so it sits over whichever of the first three marks the selected cell
-   *  carries. Points go after the fill and before the ring. */
+   *  carries. Points go after the fill and before the ring. The footprint
+   *  goes under everything, so the hairline still reads at its edge. */
   draw(): void {
+    this.drawFootprint()
     this.drawOutline()
     this.drawContested()
     this.drawFill()
@@ -660,6 +716,7 @@ export class MeshLayer {
     gl.deleteVertexArray(this.outlineVao)
     gl.deleteVertexArray(this.contestedVao)
     gl.deleteVertexArray(this.selectionVao)
+    gl.deleteVertexArray(this.footprintVao)
     gl.deleteVertexArray(this.pointsVao)
     gl.deleteBuffer(this.positionsBuffer)
     gl.deleteBuffer(this.cellBuffer)
@@ -667,6 +724,7 @@ export class MeshLayer {
     gl.deleteBuffer(this.outlineElements)
     gl.deleteBuffer(this.contestedElements)
     gl.deleteBuffer(this.selectionElements)
+    gl.deleteBuffer(this.footprintElements)
     gl.deleteBuffer(this.pointsPosBuffer)
     gl.deleteBuffer(this.pointsValueBuffer)
     gl.deleteTexture(this.valuesTex)

@@ -595,6 +595,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const [gr, gg, gb] = readColorToken('--gridline')
     const [ar, ag, ab] = readColorToken('--accent')
     layer?.setContestedColors([ir, ig, ib], [gr, gg, gb])
+    // --surface is lighter than --page-plane in the light theme, so it would not show as a shade there.
+    layer?.setFootprintColor([gr, gg, gb])
     layer?.setAccentColor([ar, ag, ab])
     // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
     const [pr, pg, pb] = readColorToken('--page-plane')
@@ -1052,6 +1054,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       contestedMask[c] = classes[c].kind === 'contested' ? 1 : 0
     }
     layer.setContested(contestedMask)
+    layer.setFootprint(drawsAsPoints() ? footprintMask(classes) : null)
     layer.setValues(perCell)
     applyPoints(fullField)
     redraw()
@@ -1061,6 +1064,16 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // whatever currentClasses now says, never a stale copy.
     updateReadout()
     return { contested, noValue }
+  }
+
+  // Under dots no cell carries a value, so this quiet fill is what shows the model's shape.
+  function footprintMask(classes: CellClass[]): Uint8Array {
+    const mask = new Uint8Array(classes.length)
+    for (let c = 0; c < classes.length; c++) {
+      const kind = classes[c].kind
+      mask[c] = kind === 'points' || kind === 'no-parameter' ? 1 : 0
+    }
+    return mask
   }
 
   // Each dot reads the same scaled field the fill does, so log scale and its refusal apply alike.
