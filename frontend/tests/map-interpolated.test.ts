@@ -90,11 +90,16 @@ const fieldFetches: string[] = []
 // 'hang' never answers, so a test can act while the fetch is pending.
 let fieldMode: 'ok' | 'fail' | 'hang' = 'ok'
 const valueFetches: string[] = []
+// The layer the pp index gives G3, and the group a reopened run was left on.
+let ppLayer = 0
+let restoredGroup: string | null = null
 
 function stubFetch(): void {
   fieldFetches.length = 0
   fieldMode = 'ok'
   valueFetches.length = 0
+  ppLayer = 0
+  restoredGroup = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
@@ -136,13 +141,19 @@ function stubFetch(): void {
           return respond({
             status: 200,
             body: {
-              groups: [{ group: 'G3', layer: 0, n_pp: 1, log_space: false, format: 'text', notes: [] }],
+              groups: [{ group: 'G3', layer: ppLayer, n_pp: 1, log_space: false, format: 'text', notes: [] }],
               not_interpolable: [
                 { group: 'G2', reason: 'no template' },
                 { group: 'g9pp_inst0pp.dat', reason: 'template g9pp_inst0pp.dat.tpl is not in the run directory' },
               ],
               notes: [],
             },
+          })
+        case '/api/run/view':
+          if (restoredGroup === null) throw new Error('no saved view')
+          return respond({
+            status: 200,
+            body: { divider: 0.72, colormap: 'viridis', reverse: false, scale: 'linear', limits_mode: 'robust', group: restoredGroup, stat: 'value' },
           })
         case '/api/run/grid/field/cell':
           return respond({
@@ -165,8 +176,9 @@ function stubFetch(): void {
   )
 }
 
-async function mounted(): Promise<HTMLElement> {
+async function mounted(setup: () => void = () => {}): Promise<HTMLElement> {
   stubFetch()
+  setup()
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
@@ -231,6 +243,46 @@ describe('an interpolated pilot-point group on the map', () => {
     expect(valueFetches.length).toBe(1)
     choose(root, 'G1')
     await vi.waitFor(() => expect(valueFetches.length).toBe(2))
+  })
+
+  it('choosing an interpolated group moves the layer slider to the group\'s own layer and draws it there', async () => {
+    const root = await mounted(() => {
+      ppLayer = 1
+    })
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    expect(layerInput.value).toBe('0')
+    choose(root, 'G3')
+    await vi.waitFor(() => {
+      expect(root.querySelector('.floating-bottom-left')?.textContent).toContain('G3 · interpolated')
+    })
+    expect(layerInput.value).toBe('1')
+    const uploads = recording.calls.filter((c) => c.method === 'texSubImage2D')
+    const staging = uploads.at(-1)!.args[8] as Float32Array
+    expect(staging[0]).toBe(7)
+  })
+
+  it('a run reopened on an interpolated group opens on that group\'s layer', async () => {
+    const root = await mounted(() => {
+      ppLayer = 1
+      restoredGroup = 'G3'
+    })
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    expect(layerInput.value).toBe('1')
+    const uploads = recording.calls.filter((c) => c.method === 'texSubImage2D')
+    const staging = uploads.at(-1)!.args[8] as Float32Array
+    expect(staging[0]).toBe(7)
+  })
+
+  it('a failed switch to an interpolated group puts the layer slider back', async () => {
+    const root = await mounted(() => {
+      ppLayer = 1
+    })
+    fieldMode = 'fail'
+    choose(root, 'G3')
+    const picker = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+    await vi.waitFor(() => expect(fieldFetches.length).toBe(1))
+    await vi.waitFor(() => expect(picker.value).toBe('G1'))
+    expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('0')
   })
 
   it('a click on an interpolated cell names its point count, then the points behind it', async () => {
