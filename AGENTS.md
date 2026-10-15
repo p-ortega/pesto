@@ -80,7 +80,7 @@ waits for that.
 Pilot-point groups now reach the map, on branch `pilot-point-fields`. Spec:
 `docs/superpowers/specs/2026-10-15-pilot-point-fields-design.md`. Plan:
 `docs/superpowers/plans/2026-10-15-pilot-point-fields.md`. Ledger with every ruling made
-during the build: `.superpowers/sdd/2026-10-15-pilot-point-fields/progress.md`.
+during the build and the review's deferred minors: `docs/superpowers/plans/2026-10-15-pilot-point-fields-ledger.md`.
 
 What was built:
 
