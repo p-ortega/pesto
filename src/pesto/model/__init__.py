@@ -58,6 +58,22 @@ class MeshBuffers:
 
 
 @dataclass(frozen=True)
+class Geometry:
+    """What the host-cell placement rule needs from a grid: the same fanned
+    mesh the renderer draws, plus cell elevations when the grid file
+    carries them. ``positions`` is ``(n_vert, 2)``, ``cell_index`` is
+    ``(n_vert,)``, ``indices`` is the ``(n_tri * 3,)`` triangle list, ``top``
+    is ``(ncpl,)`` and ``botm`` is ``(nlay, ncpl)``; the last two are
+    ``None`` on a grid with no elevations, which places nothing by ``z``."""
+
+    positions: np.ndarray
+    cell_index: np.ndarray
+    indices: np.ndarray
+    top: np.ndarray | None
+    botm: np.ndarray | None
+
+
+@dataclass(frozen=True)
 class GridShape:
     """A grid's cell and layer counts. ``nrow``/``ncol`` are ``None`` for a
     vertex (DISV) grid -- that absence is how the rule table in
@@ -129,6 +145,10 @@ class SpatialAdapter(Protocol):
     def locate_par(self, par: pd.DataFrame) -> ParCells | ReadFailure: ...
 
     def locate_obs(self, obs: pd.DataFrame) -> ParCells | ReadFailure: ...
+
+    def geometry(self) -> "Geometry | ReadFailure":
+        """The mesh and elevations the host-cell rule places points against."""
+        ...
 
 
 def fan_polygons(
