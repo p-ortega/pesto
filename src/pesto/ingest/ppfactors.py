@@ -8,8 +8,10 @@ files for every linked group and writes one index. It never computes a
 weight of its own, and a group it cannot link is recorded with the reason
 rather than dropped (CLAUDE.md's fourth hard rule).
 
-Binary (pypestutils) factor files are indexed by Task 9's extension of
-``_binary_groups``; this module's text path needs no library at all."""
+Binary (pypestutils) factor files are linked through a ``ppoints.<tag>.csv``
+point file and the control table's ``ppname``/``usecol`` columns. Only a
+file whose targets are exactly one layer of grid cells is a group; any
+other is refused with its target count. Neither path imports a library."""
 
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from pesto.cache._atomic import write_atomic_text
@@ -194,14 +197,80 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
     return groups, refused
 
 
-def _binary_groups(run_dir: Path, factor_files: tuple[Path, ...], par: pd.DataFrame, shape: GridShape):
-    """Filled in by Task 9. Until then every binary factor file is listed
-    as not interpolable, with the reason, so nothing is silently absent."""
-    refused = []
-    for path in factor_files:
-        if path.suffix.lower() == ".bin":
-            refused.append((path.name, "binary factor files are not read yet"))
-    return [], refused
+_BINARY_LAYER = re.compile(r"\.layer(\d+)\.bin$", re.IGNORECASE)
+
+
+def _binary_header(path: Path) -> tuple[int, int]:
+    """Point and target counts from a pypestutils binary factor file: a
+    20-byte text tag, then two little-endian int32s. Verified against the
+    files escondida's forward run reads with krige_using_file."""
+    with path.open("rb") as f:
+        f.read(20)
+        counts = np.frombuffer(f.read(8), dtype="<i4")
+    if counts.shape != (2,):
+        raise _Refused(f"{path.name} is too short to be a factor file")
+    return int(counts[0]), int(counts[1])
+
+
+def _binary_groups(run_dir, factor_files, par, shape):
+    groups, refused = [], []
+    point_files = sorted(run_dir.glob("ppoints.*.csv"))
+    for path in [p for p in factor_files if p.suffix.lower() == ".bin"]:
+        try:
+            npts, mpts = _binary_header(path)
+            if mpts != shape.ncpl:
+                raise _Refused(
+                    f"{path.name} interpolates to {mpts} points, not the grid's {shape.ncpl} cells, so its targets are not cells pesto can draw"
+                )
+            layer_match = _BINARY_LAYER.search(path.name)
+            if not layer_match:
+                raise _Refused(f"{path.name} carries no layer number in its name")
+            layer = int(layer_match.group(1))
+            tag = next((pf for pf in point_files if pf.stem.split(".", 1)[1] in path.name), None)
+            if tag is None:
+                raise _Refused(f"no ppoints.<tag>.csv matches {path.name}")
+            points = pd.read_csv(tag, dtype=str)
+            if "ppname" not in points.columns or len(points) != npts:
+                raise _Refused(f"{tag.name} has {len(points)} points, {path.name} was built from {npts}")
+            if "ppname" not in par.columns or "usecol" not in par.columns:
+                raise _Refused("the control table carries no ppname/usecol columns to link points to parameters")
+            rows = par[par["ppname"].astype(str).isin(points["ppname"]) & par["usecol"].astype(str).isin(points.columns)]
+            for group, block in rows.groupby("pargp", sort=True, observed=True):
+                group_layer_match = LAYER_PATTERN.search(str(group))
+                if not group_layer_match or int(group_layer_match.group(1)) - 1 != layer:
+                    continue
+                by_point = {str(pn): str(name) for name, pn in zip(block.index, block["ppname"])}
+                ordered = [str(p) for p in points["ppname"]]
+                missing = [p for p in ordered if p not in by_point]
+                if missing:
+                    raise _Refused(f"group {group!r} has no parameter for point(s) {', '.join(missing[:5])}")
+                log_space = (
+                    "partrans" in block.columns
+                    and bool((block["partrans"].astype(str).str.lower() == "log").all())
+                )
+                notes = (
+                    ("log-space interpolation inferred from partrans, the binary factor file does not record it",)
+                    if log_space
+                    else ()
+                )
+                groups.append(
+                    PpGroup(
+                        group=str(group),
+                        layer=layer,
+                        factor_file=str(path.relative_to(run_dir)),
+                        format="binary",
+                        parnames=tuple(by_point[p] for p in ordered),
+                        pp_names=tuple(ordered),
+                        log_space=log_space,
+                        n_cells=shape.ncpl,
+                        notes=notes,
+                    )
+                )
+        except _Refused as exc:
+            refused.append((path.name, str(exc)))
+        except (OSError, ValueError) as exc:
+            refused.append((path.name, f"could not read {path.name}: {exc}"))
+    return groups, refused
 
 
 def build_pp_index(
