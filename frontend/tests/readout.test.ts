@@ -164,8 +164,8 @@ describe('renderReadout', () => {
       group: 'npfklayer1pp',
       joined: [],
       field: new Float32Array(0),
-      interpolated: { value: 1.5, nPoints: 20, contributors: 'failed' },
+      interpolated: { value: 1.5, nPoints: 20, contributors: { failed: 'contributors are only read from text factor files' } },
     })
-    expect(el.textContent).toContain('The points behind this cell could not be read.')
+    expect(el.textContent).toContain('The points behind this cell could not be listed: contributors are only read from text factor files')
   })
 })

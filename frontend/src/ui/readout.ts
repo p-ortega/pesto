@@ -35,7 +35,7 @@ export interface ReadoutOptions {
    *  block row to read, so the value and the points behind it come from
    *  the field and the contributors route. `contributors` is `null` while
    *  that route has not answered, `'failed'` when it could not. */
-  interpolated?: { value: number; nPoints: number; contributors: Contributor[] | null | 'failed' }
+  interpolated?: { value: number; nPoints: number; contributors: Contributor[] | null | { failed: string } }
 }
 
 function formatValue(value: number): string {
@@ -100,8 +100,9 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
     appendLine(el, `Interpolated from ${nPoints} pilot point${nPoints === 1 ? '' : 's'}`, 'label')
     if (contributors === null) {
       appendLine(el, 'Loading the points behind this cell…', 'label').style.color = 'var(--ink-muted)'
-    } else if (contributors === 'failed') {
-      appendLine(el, 'The points behind this cell could not be read.', 'label').style.color = 'var(--ink-muted)'
+    } else if ('failed' in contributors) {
+      appendLine(el, `The points behind this cell could not be listed: ${contributors.failed}`, 'label', 'wrap-note').style.color =
+        'var(--ink-muted)'
     } else {
       for (const { parnme, weight } of contributors.slice(0, 3)) {
         const line = appendLine(el, `${parnme} (weight ${weight.toFixed(2)})`, 'label', 'truncate')
