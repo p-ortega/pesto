@@ -210,3 +210,32 @@ describe('a restored reverse-colormap setting (WINDOWS.md #8)', () => {
     expect(reverseCheckbox.checked).toBe(true)
   })
 })
+
+describe('a restored statistic', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    RESTORED_VIEW.stat = 'mean'
+  })
+
+  afterEach(() => {
+    RESTORED_VIEW.stat = 'value'
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('shows in the Statistic menu at mount, matching the field it drew', async () => {
+    stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+
+    const valueUrls = vi.mocked(fetch).mock.calls.map(([input]) => String(input)).filter((u) => u.startsWith('/api/run/grid/values'))
+    expect(valueUrls.at(-1)).toContain('stat=mean')
+    expect((root.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement).value).toBe('mean')
+    expect((root.querySelector('input[aria-label="Realization"]') as HTMLInputElement).disabled).toBe(true)
+  })
+})

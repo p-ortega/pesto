@@ -66,7 +66,9 @@ export interface SelectionControlsOptions {
    *  `partrans`). Omitted, this control still falls back to exactly those
    *  defaults, so every existing caller keeps its old behaviour (WINDOWS.md
    *  #8: the checkbox used to never learn what the view already knew). */
-  initial?: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>
+  initial?: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'> & {
+    stat?: Statistic
+  }
   onSelectionChange: (selection: Selection) => void
   /** MAP-11/D-15: the one button-shaped primary action this map surface
    *  has. Calls the same `camera.fit(bounds)` the `Home` key triggers. */
@@ -175,7 +177,7 @@ export function renderSelectionControls(
   // 'value' would only ever fail to load when no realization can be named,
   // so a run with no recorded names defaults to an aggregate statistic
   // instead -- matching the initial fetch views/map.ts issues.
-  statSelect.value = opts.realNames.ok ? 'value' : 'mean'
+  statSelect.value = opts.initial?.stat ?? (opts.realNames.ok ? 'value' : 'mean')
   statLabel.appendChild(statSelect)
 
   // Realization: positions are the names fetchRealNames returned, in the

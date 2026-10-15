@@ -225,6 +225,35 @@ describe('renderSelectionControls', () => {
     expect(handle).toBeDefined()
   })
 
+  it('shows a restored statistic at construction, with the realization slider off for an aggregate', () => {
+    const el = document.createElement('div')
+    const onSelectionChange = vi.fn()
+    renderSelectionControls(el, {
+      nlay: 3,
+      iteration: 0,
+      realNames: THREE_NAMES,
+      partrans: 'none',
+      initial: {
+        colormap: 'viridis',
+        reverseColormap: false,
+        scale: 'linear',
+        scaleInferred: true,
+        limitsMode: 'robust',
+        manualLimits: null,
+        stat: 'mean',
+      },
+      onSelectionChange,
+      onFitToExtent: vi.fn(),
+    })
+
+    expect((el.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement).value).toBe('mean')
+    expect((el.querySelector('input[aria-label="Realization"]') as HTMLInputElement).disabled).toBe(true)
+    const layerSlider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerSlider.value = '1'
+    layerSlider.dispatchEvent(new Event('input'))
+    expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ stat: 'mean', realization: null }))
+  })
+
   it('a restored reverse setting survives an unrelated control change, instead of being silently dropped', () => {
     const el = document.createElement('div')
     const onSelectionChange = vi.fn()
