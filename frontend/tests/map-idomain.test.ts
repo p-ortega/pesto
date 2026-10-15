@@ -59,8 +59,8 @@ let meshBody: Record<string, unknown> = {}
 const POSITIONS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1, 2, 0, 2, 1])
 const CELL_INDEX = new Float32Array([0, 0, 0, 0, 1, 1])
 const INDICES = new Uint32Array([0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2])
-// Cell 1 is inactive on layer 0 and active on layer 1.
-const IDOMAIN = new Int32Array([1, 0, 1, 1])
+// By default cell 1 is inactive on layer 0 and active on layer 1.
+let idomain = new Int32Array([1, 0, 1, 1])
 const PARMAP = new Int32Array([0, 1])
 const CELL_ARRAY = new Int32Array([0, -1])
 const LAYER_ARRAY = new Int32Array([0, -1])
@@ -95,6 +95,7 @@ function stubFetch(): void {
   fieldMode = 'ok'
   valueFetches.length = 0
   ppLayer = 0
+  idomain = new Int32Array([1, 0, 1, 1])
   restoredGroup = null
   vi.stubGlobal(
     'fetch',
@@ -116,7 +117,7 @@ function stubFetch(): void {
           return respond({ status: 200, body: meshBody })
         case '/api/run/grid/mesh/idomain':
           idomainFetches.push(url)
-          return respond({ status: 200, bytes: bytesOf(IDOMAIN), headers: metaHeader('<i4') })
+          return respond({ status: 200, bytes: bytesOf(idomain), headers: metaHeader('<i4') })
         case '/api/run/grid/mesh/positions':
           return respond({ status: 200, bytes: bytesOf(POSITIONS), headers: metaHeader('<f4') })
         case '/api/run/grid/mesh/cell_index':
@@ -165,7 +166,7 @@ function stubFetch(): void {
           if (fieldMode === 'fail') return respond({ status: 404, body: { title: 'read failure', status: 404 } })
           return respond({
             status: 200,
-            bytes: bytesOf(new Float32Array([7])),
+            bytes: bytesOf(new Float32Array([7, 8])),
             headers: { 'X-Pesto-Meta': JSON.stringify({ order: 'cell', group: 'G3', layer: 0, n_pp: 1 }) },
           })
         default:
@@ -190,6 +191,12 @@ async function mounted(setup: () => void = () => {}): Promise<HTMLElement> {
     expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
   })
   return root
+}
+
+function choose(root: HTMLElement, group: string): void {
+  const picker = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+  picker.value = group
+  picker.dispatchEvent(new Event('change'))
 }
 
 function lastInactive(spy: ReturnType<typeof vi.spyOn>): number[] {
@@ -230,5 +237,40 @@ describe('outside the model on the map', () => {
     expect(idomainFetches.length).toBe(0)
     expect(lastInactive(spy)).toEqual([0, 1])
     expect(root.querySelector('.params-panel')?.textContent).toContain(NO_IDOMAIN_NOTE)
+  })
+
+  it('an interpolated value puts its cell in the model on the group\'s own layer only', async () => {
+    const spy = vi.spyOn(MeshLayer.prototype, 'setInactive')
+    const root = await mounted(() => {
+      meshBody = meshWith({ has_idomain: true, notes: [] })
+      // Cell 1 is inactive on layer 1 only; the field gives it a value.
+      idomain = new Int32Array([1, 1, 1, 0])
+    })
+    choose(root, 'G3')
+    await vi.waitFor(() => {
+      expect(root.querySelector('.floating-bottom-left')?.textContent).toContain('G3 · interpolated')
+    })
+    expect(lastInactive(spy)).toEqual([0, 0])
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+    await vi.waitFor(() => expect(lastInactive(spy)).toEqual([0, 1]))
+  })
+
+  it('a wrong-sized idomain is refused with a notice naming the lengths, and the old rule applies', async () => {
+    const spy = vi.spyOn(MeshLayer.prototype, 'setInactive')
+    const root = await mounted(() => {
+      meshBody = meshWith({ has_idomain: true, notes: [] })
+      idomain = new Int32Array([1, 1, 1])
+    })
+    const notices = root.querySelector('[data-testid="map-notices"]')?.textContent ?? ''
+    expect(notices).toContain("The grid file's idomain could not be read")
+    expect(notices).toContain('It has 3 values, not the 4 the grid needs (2 layers of 2 cells).')
+    expect(lastInactive(spy)).toEqual([0, 1])
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(lastInactive(spy)).toEqual([0, 1])
   })
 })
