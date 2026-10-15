@@ -20,6 +20,8 @@ export interface LegendOptions {
   noValue: number
   /** Set for an x/y group drawn as dots: the count on this layer. */
   points?: number
+  /** Set for an interpolated field: cells it paints that idomain marks inactive. */
+  inactiveDrawn?: number
 }
 
 const LIMITS_LABEL: Record<LimitsMode, string> = {
@@ -128,4 +130,11 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   countsLine.appendChild(contestedEl)
   countsLine.appendChild(noValueEl)
   el.appendChild(countsLine)
+
+  if (typeof opts.inactiveDrawn === 'number' && opts.inactiveDrawn > 0) {
+    const inactiveLine = document.createElement('div')
+    inactiveLine.classList.add('label', 'tabular-nums')
+    inactiveLine.textContent = `${opts.inactiveDrawn} cells inactive in idomain, still drawn`
+    el.appendChild(inactiveLine)
+  }
 }

@@ -72,4 +72,14 @@ describe('renderLegend', () => {
     expect(el.textContent).not.toContain('contested')
     expect(el.textContent).not.toContain('no value')
   })
+
+  it('says how many inactive cells a field still paints, and only when there are some', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, inactiveDrawn: 3 })
+    expect(el.textContent).toContain('3 cells inactive in idomain, still drawn')
+    for (const inactiveDrawn of [0, undefined]) {
+      renderLegend(el, { ...BASE_OPTIONS, inactiveDrawn })
+      expect(el.textContent).not.toContain('inactive in idomain')
+    }
+  })
 })

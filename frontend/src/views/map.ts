@@ -1206,7 +1206,19 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       contested,
       noValue,
       points: drawsAsPoints() ? currentPoints.rows.length : undefined,
+      inactiveDrawn: inactiveDrawnCount(),
     })
+  }
+
+  // A pilot-point field paints its value on an idomain-inactive cell too; this says how many.
+  function inactiveDrawnCount(): number | undefined {
+    if (idomain === null || fieldKind !== 'cell') return undefined
+    const active = layerActiveMask(idomain, mesh?.nCells ?? 0, committed.layer)
+    let count = 0
+    for (let c = 0; c < active.length; c++) {
+      if (!active[c] && currentClasses[c]?.kind === 'interpolated') count += 1
+    }
+    return count
   }
 
   // D-13: a realization, statistic or iteration change is coalesced to the
