@@ -389,4 +389,30 @@ test.describe('the map draws a synthetic run end to end, through the real routes
 
     expect(cellZero).toEqual(background)
   })
+
+  // G4layer1's two pilot points sit at x 1.5 (p8 = 10) and x 3.5 (p9 = 20);
+  // its factor file spreads them across all six cells, so the field rises
+  // from cell 0 to cell 5 and cell 2 takes half of each point.
+  test('an interpolated pilot-point group draws a gradient from one point to the other, and the readout names both', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+    await page.selectOption('select[aria-label="Parameter group"]', 'G4layer1')
+    await expect(page.locator('.floating-bottom-left')).toContainText('G4layer1 · interpolated')
+
+    const layout = await cellLayout(page)
+    const png = await page.locator('canvas').screenshot()
+    const dataUrl = `data:image/png;base64,${png.toString('base64')}`
+    const first = await pixelAt(page, dataUrl, layout.centreX(0), layout.midY)
+    const middle = await pixelAt(page, dataUrl, layout.centreX(2), layout.midY)
+    const last = await pixelAt(page, dataUrl, layout.centreX(5), layout.midY)
+    expect(first).not.toEqual(last)
+    expect(middle).not.toEqual(first)
+    expect(middle).not.toEqual(last)
+
+    await page.locator('canvas').click({ position: { x: layout.centreX(2), y: layout.midY } })
+    await expect(page.locator('.floating-bottom-right')).toContainText('Interpolated from 2 pilot points')
+    await expect(page.locator('.floating-bottom-right')).toContainText('p8 (weight 0.50)')
+  })
 })

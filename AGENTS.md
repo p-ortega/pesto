@@ -75,18 +75,51 @@ rule table, so the map reads as mostly empty grid. Drawing them needs interpolat
 pilot points to cells, which is new scope. The user decides whether the MVP ships as is or
 waits for that.
 
-## Pilot-point fields — in progress (started 2026-10-15)
+## Pilot-point fields (2026-10-15)
 
-The user chose pilot-point interpolation as the next step. Design approved, plan approved,
-executing inline on branch `pilot-point-fields` (nothing merged yet).
+Pilot-point groups now reach the map, on branch `pilot-point-fields`. Spec:
+`docs/superpowers/specs/2026-10-15-pilot-point-fields-design.md`. Plan:
+`docs/superpowers/plans/2026-10-15-pilot-point-fields.md`. Ledger with every ruling made
+during the build: `.superpowers/sdd/2026-10-15-pilot-point-fields/progress.md`.
 
-- Spec: `docs/superpowers/specs/2026-10-15-pilot-point-fields-design.md`
-- Plan: `docs/superpowers/plans/2026-10-15-pilot-point-fields.md` (11 tasks)
-- Ledger: `.superpowers/sdd/2026-10-15-pilot-point-fields/progress.md` says which tasks are done.
-- To resume in a fresh session: say "continue the pilot-point fields plan"; the agent loads
-  superpowers:executing-plans, reads the ledger, and takes the first task without a
-  "complete" line. Permissions already given for this session: commit and push; add the
-  `pypestutils` dependency.
+What was built:
+
+- A sixth placement rule, `xyz-host-cell`, puts a parameter that carries `x` and `y` on
+  the cell containing that point, with its layer from `z`, from a layer number in its
+  names, or from a one-layer grid. Escondida's `iid.*` and `hyp.*` groups (about 101,500
+  points) now draw as dots; the run's 72 `ghb.pp.boundary.*` groups stay unplaced with
+  "no layer number in its name".
+- A `pp_factors` ingest artifact links each PstFrom text factor file to its template and
+  control-table names, and lists every group it cannot link, with the reason.
+- Three routes: `/api/run/grid/pp` (the index), `/api/run/grid/field` (one value per cell
+  for a realization or statistic) and `/api/run/grid/field/cell` (the points behind one
+  cell). The map offers such groups as "<group> · interpolated", draws the field on the
+  group's own layer, and the click readout names the three largest contributors.
+
+Cache layout: the index is `grid/pp/index.json`. Computed fields are memoised at
+`grid/pp/fields/<group>/<iteration>/<ensemble cache tag>/<realization or stat>.f32`; a
+re-ingest changes the tag, so a stale field is never served. A field with no tag is
+computed fresh and never memoised.
+
+What each benchmark run shows:
+
+- `hm_20251104154614` (pl253): 272 interpolable text-factor groups. `npfklayer3pp` draws on
+  layer index 2; the first field takes about 312 ms and the memo serves repeats under
+  100 ms. The run has two grid files and discovery picks `org.grb`; the factors fit it.
+- `forecast_20250618105403` (escondida): no interpolable group yet. Its 88 factor files
+  are binary (pypestutils), listed as "binary factor files are not read yet".
+
+Out of scope: escondida's run-time 3D kriging of K; binary factor files whose targets are
+not the grid cells; a family view across `npfklayer1pp` to `npfklayer17pp`.
+
+Seen in Chrome and left open:
+
+- The map opens on layer 0. An interpolated group whose field lives on another layer shows
+  an empty map until the slider is moved.
+- After a reload with `mean` restored, the Statistic menu still reads "value" while the
+  map and legend show the mean. Not caused by this work.
+- On escondida layer 30, large outer cells that each hold many `iid.k` points draw as one
+  wide striped band.
 
 ## Leftovers
 
