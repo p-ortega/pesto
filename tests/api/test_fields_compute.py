@@ -145,3 +145,25 @@ def test_contributors_name_the_points_behind_a_cell_largest_weight_first(tmp_pat
     assert contributors(tmp_path, group, 1) == [("p8", 0.75), ("p9", 0.25)]
     assert contributors(tmp_path, group, 2) == [("p8", 0.5), ("p9", 0.5)]
     assert contributors(tmp_path, group, 3) == []
+
+
+def test_compute_field_applies_a_binary_factor_file_through_pypestutils(tmp_path):
+    pytest.importorskip("pypestutils")
+    from pypestutils.pestutilslib import PestUtilsLib
+
+    PestUtilsLib().calc_kriging_factors_2d(
+        np.array([1.5, 4.5]), np.array([0.5, 0.5]), 1,
+        np.arange(6) + 0.5, np.full(6, 0.5), 1,
+        "exp", "ordinary", 10.0, 1.0, 0.0, 100.0, 2, 1,
+        str(tmp_path / "factors.b.layer0.bin"), "binary",
+    )
+    group = PpGroup(
+        group="B", layer=0, factor_file="factors.b.layer0.bin", format="binary",
+        parnames=("q1", "q2"), pp_names=("pa", "pb"), log_space=False, n_cells=6,
+    )
+    field = compute_field(tmp_path, group, np.array([10.0, 20.0]), GridShape(ncpl=6, nlay=1, nrow=None, ncol=None))
+    assert not isinstance(field, ReadFailure), field
+    assert field.dtype == np.float32 and field.shape == (6,)
+    assert np.all((field >= 10.0 - 1e-4) & (field <= 20.0 + 1e-4))
+    assert field[1] == pytest.approx(10.0, abs=1e-3) and field[4] == pytest.approx(20.0, abs=1e-3)
+    assert field[1] < field[2] < field[3] < field[4]
