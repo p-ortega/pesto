@@ -167,7 +167,7 @@ async def get_parmap(request: Request, iteration: int, v: str | None = None) -> 
 
 @router.get("/cells/{which}")
 async def get_cells(
-    which: Literal["cell", "layer"], request: Request, iteration: int, v: str | None = None
+    which: Literal["cell", "layer", "xy"], request: Request, iteration: int, v: str | None = None
 ) -> Response:
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
@@ -178,13 +178,14 @@ async def get_cells(
     if isinstance(stored, ReadFailure):
         return problem_from_failure(404, stored)
 
-    array = stored.cell if which == "cell" else stored.layer
+    array = {"cell": stored.cell, "layer": stored.layer, "xy": stored.xy}[which]
     if array is None:
-        return problem(
-            404,
-            "no cell mapping was recorded for that iteration",
-            artifact=f"par_ens/{iteration}",
+        detail = (
+            "no point positions were recorded for that iteration"
+            if which == "xy"
+            else "no cell mapping was recorded for that iteration"
         )
+        return problem(404, detail, artifact=f"par_ens/{iteration}")
 
     manifest = Manifest.load(layout)
     tag = cache_tag(manifest, f"par_ens/{iteration}")

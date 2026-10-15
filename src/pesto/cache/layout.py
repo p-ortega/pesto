@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pesto.cache.gitignore import ensure_gitignored
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 _DIR_NAME = ".pesto"
 
 

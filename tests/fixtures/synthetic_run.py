@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pesto.cache.layout import CacheLayout, for_run
+from pesto.cache.layout import CACHE_VERSION, CacheLayout, for_run
 from pesto.cache.manifest import Manifest, SourceFingerprint
 from pesto.cache.runconfig import NoiseFact, RunConfig, write_config
 from pesto.ingest.aggregate import write_par_agg
@@ -206,7 +206,7 @@ def _build_config(run_dir: Path) -> RunConfig:
         notes=(),
     )
     return RunConfig(
-        cache_version=1,
+        cache_version=CACHE_VERSION,
         run_dir=str(run_dir),
         case=CASE,
         n_par=len(CONTROL_NAMES),

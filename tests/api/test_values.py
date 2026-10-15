@@ -115,7 +115,7 @@ def _ensemble_data(real_names=REAL_NAMES, values=None) -> EnsembleData:
     )
 
 
-def _cells() -> ParCells:
+def _cells(point_xy=None) -> ParCells:
     return ParCells(
         cell=np.array([10, 20, 30, 40, 50], dtype=np.int32),
         layer=np.array([0, 1, 0, 1, 2], dtype=np.int32),
@@ -127,6 +127,7 @@ def _cells() -> ParCells:
         ),
         summary="test adapter placed every group",
         notes=(),
+        point_xy=point_xy,
     )
 
 
@@ -136,6 +137,7 @@ def _write_case(
     iteration: int = 0,
     mappable: frozenset = MAPPABLE,
     cells: bool = True,
+    point_xy=None,
     write_agg: bool = True,
     real_names=REAL_NAMES,
 ):
@@ -154,7 +156,7 @@ def _write_case(
         mappable=mappable,
         iteration=iteration,
         layout=layout,
-        cells=_cells() if cells else None,
+        cells=_cells(point_xy) if cells else None,
     )
     assert isinstance(ens_result, WrittenArtifact), ens_result
 
@@ -319,6 +321,37 @@ def test_an_ensemble_with_no_recorded_cell_mapping_returns_404_from_the_cells_ro
 
     assert response.status_code == 404
     assert response.json()["artifact"] == "par_ens/2"
+
+
+def test_cells_xy_serves_the_point_positions_in_block_order(tmp_path):
+    xy = np.full((N_PAR, 2), np.nan)
+    xy[3] = [11.5, 22.5]
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path, point_xy=xy)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    response = client.get("/api/run/grid/cells/xy", params={"iteration": 0})
+
+    assert response.status_code == 200
+    stored = load_stored(0, layout)
+    np.testing.assert_array_equal(np.frombuffer(response.content, dtype="<f4"), stored.xy)
+    row = np.frombuffer(response.content, dtype="<f4").reshape(-1, 2)[int(stored.control_to_block[3])]
+    np.testing.assert_array_equal(row, [11.5, 22.5])
+
+
+def test_cells_xy_is_a_404_naming_the_absence_when_no_points_were_recorded(tmp_path):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    response = client.get("/api/run/grid/cells/xy", params={"iteration": 0})
+
+    assert response.status_code == 404
+    assert "no point positions were recorded" in response.json()["title"]
 
 
 # ---------------------------------------------------------------------------

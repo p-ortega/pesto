@@ -69,7 +69,8 @@ class StoredEnsemble:
     permutation `write_par_ensemble` computed, ``control_to_block`` is
     its inverse (built once here with ``numpy.argsort`` so
     ``read_par_across_reals`` never recomputes it per call),
-    ``cell``/``layer`` are the map block's companion arrays (``None``
+    ``cell``/``layer`` are the map block's companion arrays and ``xy`` the
+    flat x/y of each x/y-placed row, NaN elsewhere (all ``None``
     when the sidecar names none), and ``map_values``/``nomap_values``
     become read-only ``numpy.memmap`` views rather than materialised
     arrays.
@@ -96,6 +97,7 @@ class StoredEnsemble:
     control_to_block: np.ndarray | None = None
     cell: np.ndarray | None = None
     layer: np.ndarray | None = None
+    xy: np.ndarray | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, StoredEnsemble):
@@ -118,6 +120,7 @@ class StoredEnsemble:
             and _optional_array_equal(self.control_to_block, other.control_to_block)
             and _optional_array_equal(self.cell, other.cell)
             and _optional_array_equal(self.layer, other.layer)
+            and _optional_array_equal(self.xy, other.xy)
         )
 
     __hash__ = None
@@ -370,6 +373,8 @@ def write_par_ensemble(
 
         cell_file_entry = None
         layer_file_entry = None
+        xy_file_entry = None
+        xy_file_name: str | None = None
         cell_file_name: str | None = None
         layer_file_name: str | None = None
         if cells is not None and n_map > 0:
@@ -391,6 +396,16 @@ def write_par_ensemble(
             written.append(layer_file_entry)
             cell_file_name = cell_path.name
             layer_file_name = layer_path.name
+            if cells.point_xy is not None:
+                xy_map_order = np.asarray(cells.point_xy, dtype="<f4")[map_positions]
+                if np.isfinite(xy_map_order[:, 0]).any():
+                    xy_path = layout.ens / f"par_{iteration}.xy.f32"
+                    xy_bytes = write_atomic_bytes(xy_path, lambda f: f.write(xy_map_order.tobytes()))
+                    xy_file_entry = CacheFile(
+                        path=str(xy_path.relative_to(layout.root)), bytes=xy_bytes
+                    )
+                    written.append(xy_file_entry)
+                    xy_file_name = xy_path.name
 
         reals_result = write_par_reals(stored.real_names, iteration, layout)
         if isinstance(reals_result, ReadFailure):
@@ -429,6 +444,7 @@ def write_par_ensemble(
             "block_to_control_file": parmap_path.name,
             "cell_file": cell_file_name,
             "layer_file": layer_file_name,
+            "xy_file": xy_file_name,
             "source": {
                 "path": str(stored.source_path),
                 "on_disk_format": stored.on_disk_format,
@@ -450,6 +466,8 @@ def write_par_ensemble(
             files.append(cell_file_entry)
         if layer_file_entry is not None:
             files.append(layer_file_entry)
+        if xy_file_entry is not None:
+            files.append(xy_file_entry)
         return WrittenArtifact(name=name, files=tuple(files), notes=stored.notes)
     except Exception as exc:
         try:
@@ -543,6 +561,7 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         block_to_control_file = sidecar["block_to_control_file"]
         cell_file = sidecar.get("cell_file")
         layer_file = sidecar.get("layer_file")
+        xy_file = sidecar.get("xy_file")
         source = sidecar.get("source", {})
         notes = tuple(sidecar.get("notes", []))
     except (KeyError, TypeError, ValueError) as exc:
@@ -577,6 +596,7 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         block_to_control = np.fromfile(layout.ens / block_to_control_file, dtype="<i4")
         cell = np.fromfile(layout.ens / cell_file, dtype="<i4") if cell_file else None
         layer = np.fromfile(layout.ens / layer_file, dtype="<i4") if layer_file else None
+        xy = np.fromfile(layout.ens / xy_file, dtype="<f4") if xy_file else None
 
         map_block = next(b for b in blocks if b.name == "map")
         nomap_block = next(b for b in blocks if b.name == "nomap")
@@ -619,6 +639,7 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         control_to_block=np.argsort(block_to_control),
         cell=cell,
         layer=layer,
+        xy=xy,
     )
 
 

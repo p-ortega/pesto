@@ -347,6 +347,44 @@ def test_load_stored_cell_and_layer_are_int32_arrays_with_cells(tmp_path):
     assert stored.layer.dtype == np.dtype("int32")
 
 
+def _fake_cells_with_xy(point_xy) -> ParCells:
+    base = _fake_cells()
+    return ParCells(
+        cell=base.cell,
+        layer=base.layer,
+        parnme=base.parnme,
+        groups=base.groups,
+        summary=base.summary,
+        notes=base.notes,
+        point_xy=point_xy,
+    )
+
+
+def test_load_stored_returns_the_point_position_at_its_block_position(tmp_path):
+    xy = np.full((3, 2), np.nan)
+    xy[0] = [10.0, 20.0]
+    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells_with_xy(xy))
+
+    stored = load_stored(0, layout)
+
+    assert stored.xy is not None
+    rows = stored.xy.reshape(-1, 2)
+    placed_at = int(stored.control_to_block[0])
+    np.testing.assert_array_equal(rows[placed_at], [10.0, 20.0])
+    others = [i for i in range(rows.shape[0]) if i != placed_at]
+    assert np.isnan(rows[others]).all()
+
+
+def test_point_positions_that_are_all_nan_write_no_xy_file(tmp_path):
+    xy = np.full((3, 2), np.nan)
+    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells_with_xy(xy))
+
+    stored = load_stored(0, layout)
+
+    assert stored.xy is None
+    assert not (layout.ens / "par_0.xy.f32").exists()
+
+
 def test_load_stored_missing_payload_file_is_a_read_failure(tmp_path):
     layout, _ = _write_sample_ensemble(tmp_path)
     layout.par_ens(0).unlink()
