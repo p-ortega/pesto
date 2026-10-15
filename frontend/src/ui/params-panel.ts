@@ -136,9 +136,8 @@ function renderTable(host: HTMLElement, rows: ParamRow[]): void {
 
   const scrollPane = document.createElement('div')
   scrollPane.classList.add('scroll-pane')
-  // The pane's height comes from the frame (style.css `.params-table`); the
-  // fixed figure is only the fallback for a pane that has no layout yet.
-  scrollPane.style.minHeight = `${VIEWPORT_HEIGHT}px`
+  // The pane's height comes from the frame (style.css `.params-table`);
+  // VIEWPORT_HEIGHT is only renderVisible's fallback before layout.
   scrollPane.style.position = 'relative'
 
   const spacer = document.createElement('div')
@@ -203,6 +202,7 @@ function renderUnmappedSection(el: HTMLElement, unmapped: UnmappedGroup[]): void
 function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: string }[]): void {
   if (notes.length === 0) return
   const section = document.createElement('div')
+  section.classList.add('params-notes', 'scroll-pane')
   for (const note of notes) {
     const row = document.createElement('div')
     row.classList.add('label', 'wrap-note')
