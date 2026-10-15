@@ -11,7 +11,12 @@ export class Camera {
     private height: number,
   ) {}
 
+  /** The canvas changed size. The world point at the centre stays at
+   *  the centre and the scale is untouched: the new room is added at the
+   *  edges, so a wider window shows more of the model, not a zoomed one. */
   resize(width: number, height: number): void {
+    this.tx += (width - this.width) / 2
+    this.ty += (height - this.height) / 2
     this.width = width
     this.height = height
   }

@@ -251,7 +251,7 @@ function restoredLimitsMode(mode: ViewState['limitsMode']): 'robust' | 'minmax' 
  */
 export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   root.textContent = ''
-  root.classList.add('page')
+  root.classList.add('page', 'page-map')
 
   const header = document.createElement('div')
   header.classList.add('header')
@@ -263,6 +263,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // it from the Params panel plan 05.1-07's Task 3 renders into
   // paramsPanelHost.
   const mapArea = document.createElement('div')
+  mapArea.classList.add('map-column')
   const dividerEl = document.createElement('div')
   const paramsPanelHost = document.createElement('div')
   // The positioning context for the four floating overlays is the canvas's
@@ -272,6 +273,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const mapCanvasArea = document.createElement('div')
   mapCanvasArea.classList.add('map-area')
   const canvas = document.createElement('canvas')
+  // A fallback only: fitCanvasToFrame below sizes the canvas to its box as
+  // soon as the box has a layout, and keeps it there.
   canvas.width = 800
   canvas.height = 480
   canvas.tabIndex = 0
@@ -535,6 +538,29 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (!camera) return
     layer?.setMatrix(camera.matrix())
     redraw()
+  }
+
+  // The canvas's pixel size follows the box it sits in, at the device's
+  // pixel ratio, so the map fills the frame rather than a fixed 800x480. A
+  // box with no layout yet (jsdom, or a frame not yet attached) leaves the
+  // size alone rather than collapsing the canvas to nothing.
+  function fitCanvasToFrame(): void {
+    const rect = mapCanvasArea.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+    const ratio = window.devicePixelRatio || 1
+    const width = Math.max(1, Math.round(rect.width * ratio))
+    const height = Math.max(1, Math.round(rect.height * ratio))
+    if (width === canvas.width && height === canvas.height) return
+    canvas.width = width
+    canvas.height = height
+    if (camera) {
+      camera.resize(width, height)
+      redrawFromCamera()
+    }
+  }
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => fitCanvasToFrame()).observe(mapCanvasArea)
   }
 
   // MAP-11/D-15: the button and the Home key call exactly this, both
@@ -1135,6 +1161,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer.setHairlineColor(readColorToken('--hairline'))
     applyThemeColors()
 
+    fitCanvasToFrame()
     camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)
     layer.setMatrix(camera.matrix())

@@ -124,7 +124,9 @@ function renderTable(host: HTMLElement, rows: ParamRow[]): void {
 
   const scrollPane = document.createElement('div')
   scrollPane.classList.add('scroll-pane')
-  scrollPane.style.height = `${VIEWPORT_HEIGHT}px`
+  // The pane's height comes from the frame (style.css `.params-table`); the
+  // fixed figure is only the fallback for a pane that has no layout yet.
+  scrollPane.style.minHeight = `${VIEWPORT_HEIGHT}px`
   scrollPane.style.position = 'relative'
 
   const spacer = document.createElement('div')
@@ -201,7 +203,7 @@ function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: 
  */
 export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): void {
   el.textContent = ''
-  el.classList.add('surface')
+  el.classList.add('surface', 'params-panel')
 
   const title = document.createElement('div')
   title.classList.add('heading')
@@ -209,6 +211,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): vo
   el.appendChild(title)
 
   const tableHost = document.createElement('div')
+  tableHost.classList.add('params-table')
   el.appendChild(tableHost)
 
   const loading = document.createElement('div')

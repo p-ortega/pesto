@@ -100,20 +100,26 @@ body {
   background: var(--page-plane);
 }
 
+/* The map screen is exactly one window tall: the frame takes whatever the
+   header, notices and status bar leave, and the canvas inside it follows. */
+.page-map {
+  height: 100vh;
+}
+
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-md);
-  padding: var(--space-lg) 0;
+  padding: var(--space-lg) var(--space-md);
 }
 
 .status-bar {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-md);
-  padding: var(--space-lg) 0;
+  padding: var(--space-lg) var(--space-md);
 }
 
 /* A status-bar or header field is a label span next to a value span --
@@ -137,6 +143,23 @@ body {
   display: flex;
   align-items: stretch;
   gap: var(--space-xl);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Both sides of the divider may shrink below their content's natural
+   size; without this a wide table or canvas would push the frame wider than
+   the window. */
+.map-frame > * {
+  min-width: 0;
+}
+
+/* The map column stacks the canvas box over its notices; the box takes
+   every pixel the notices leave. */
+.map-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .divider {
@@ -173,6 +196,34 @@ body {
    over the map itself rather than the whole page. */
 .map-area {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.map-area > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The Params panel is a column too: heading, then a table that scrolls
+   inside the frame's height, then the unmapped list and notes. */
+.params-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.params-table {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.params-table > .scroll-pane {
+  flex: 1 1 auto;
 }
 
 /* The controls and the group picker share this one top-left cluster,
