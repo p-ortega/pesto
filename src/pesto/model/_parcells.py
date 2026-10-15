@@ -133,6 +133,10 @@ class _Rejections:
     columns_not_whole: list[str]
     # True when x/y were read as grid coordinates and moved onto the grid.
     moved_from_grid_frame: bool = False
+    # The x/y of each row in the grid's real-world frame, kept so the map can draw it.
+    moved_xy: tuple[np.ndarray, np.ndarray] | None = None
+    point_x: np.ndarray | None = None
+    point_y: np.ndarray | None = None
 
     @classmethod
     def blank(cls, n: int) -> "_Rejections":
@@ -324,6 +328,7 @@ def _pick_frame(geometry, x, y, located, finite, rejections):
         return np.full_like(located, -1)
     if as_grid:
         rejections.moved_from_grid_frame = True
+        rejections.moved_xy = (gx, gy)
         return moved
     return located
 
@@ -334,6 +339,7 @@ def _candidate_xyz_host_cell(block: pd.DataFrame, shape: GridShape, pattern, geo
     rejections = _Rejections.blank(len(block))
     x = _numeric_real(block, "x", rejections)
     y = _numeric_real(block, "y", rejections)
+    rejections.point_x, rejections.point_y = x, y
     finite = np.isfinite(x) & np.isfinite(y)
     located = locate_points(geometry, x, y)
     if geometry.xoff or geometry.yoff or geometry.angrot:
@@ -583,6 +589,7 @@ def resolve(
     n = len(par)
     cell = np.full(n, -1, dtype=np.int32)
     layer = np.full(n, -1, dtype=np.int32)
+    point_xy = np.full((n, 2), np.nan, dtype=np.float64)
     notes: list[str] = []
     groups: list[GroupResolution] = []
     pattern = re.compile(layer_pattern, re.IGNORECASE)
@@ -618,6 +625,10 @@ def resolve(
         mapped_positions = positions[valid]
         cell[mapped_positions] = candidate_cell[valid].astype(np.int32)
         layer[mapped_positions] = candidate_layer[valid].astype(np.int32)
+        if rule == "xyz-host-cell":
+            px, py = rejections.moved_xy or (rejections.point_x, rejections.point_y)
+            point_xy[mapped_positions, 0] = px[valid]
+            point_xy[mapped_positions, 1] = py[valid]
         mapped = int(valid.sum())
         if rule == "xyz-host-cell" and mapped > 0:
             notes.append(
@@ -666,4 +677,5 @@ def resolve(
         groups=groups_tuple,
         summary=_summarize(groups_tuple, len(par)),
         notes=tuple(notes),
+        point_xy=point_xy,
     )

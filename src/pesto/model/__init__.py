@@ -117,6 +117,8 @@ class ParCells:
     the same order, so a caller never has to infer identity from position.
     ``groups`` carries one :class:`GroupResolution` per parameter group,
     always, and ``summary`` is the one sentence GRID-03 asks for.
+    ``point_xy`` is ``(n, 2)`` float64: the real-world x/y of each parameter
+    the ``xyz-host-cell`` rule placed, ``NaN`` for every other row.
     """
 
     cell: np.ndarray
@@ -125,6 +127,7 @@ class ParCells:
     groups: tuple[GroupResolution, ...]
     summary: str
     notes: tuple[str, ...]
+    point_xy: np.ndarray | None = None
 
     @property
     def placed_groups(self) -> tuple[str, ...]:
