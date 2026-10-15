@@ -16,6 +16,7 @@ import builtins
 import json
 import multiprocessing
 import threading
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -1031,3 +1032,27 @@ def test_estimate_bytes_is_within_tolerance_of_a_real_ingest(hm_run, tmp_path):
     actual = sum(f.bytes for a in manifest.artifacts.values() for f in a.files)
     tolerance = 0.5
     assert abs(estimate.total - actual) <= tolerance * actual
+
+
+def test_plan_artifacts_adds_pp_factors_only_when_the_run_carries_pilot_point_files(tmp_path):
+    run = make_run(tmp_path, iterations=(0,), extras=False)
+    from pesto.ingest.discover import discover
+
+    without = plan_artifacts(discover(tmp_path), CacheLayout(root=tmp_path / ".pesto"))
+    assert [a.name for a in without if a.kind == "pp_factors"] == []
+
+    (tmp_path / "mult2model_info.csv").write_text(",fac_file,pp_file\n")
+    (tmp_path / "hk.fac").write_text("")
+    with_pp = plan_artifacts(discover(tmp_path), CacheLayout(root=tmp_path / ".pesto"))
+    (pp,) = [a for a in with_pp if a.kind == "pp_factors"]
+    assert pp.name == "pp_factors"
+    assert set(Path(s).name for s in pp.sources) >= {"mult2model_info.csv", "hk.fac", run.pst_path.name}
+    assert [a.kind for a in with_pp].index("pp_factors") > [a.kind for a in with_pp].index("grid") if any(a.kind == "grid" for a in with_pp) else True
+
+
+def test_estimate_bytes_names_pp_factors_instead_of_guessing_its_size(tmp_path):
+    make_run(tmp_path, iterations=(0,), extras=False)
+    (tmp_path / "hk.fac").write_text("")
+    estimate = estimate_bytes(discover(tmp_path))
+    assert any(note.startswith("pp_factors:") for note in estimate.notes)
+    assert all(name != "pp_factors" for name, _ in estimate.per_artifact)

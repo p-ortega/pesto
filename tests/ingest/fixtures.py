@@ -551,10 +551,10 @@ def make_run(
     decoy_paths: tuple[Path, ...] = ()
     if extras:
         # Both end in a real ensemble extension and neither is an
-        # ensemble -- present in the real benchmark directories, and what
-        # makes discovery's filename matching honest rather than a loose
-        # glob on extension alone.
-        decoy1 = root / "factors.coarse.boundary.layer10.bin"
+        # ensemble, which keeps discovery's filename matching honest rather
+        # than a loose glob on extension alone. Not named factors.*.bin:
+        # that is a pilot-point factor file now, which these runs do not carry.
+        decoy1 = root / "coarse.boundary.layer10.bin"
         decoy1.write_bytes(b"decoy, not an ensemble")
         decoy2 = root / f"{case}.adjusted.weights.bin"
         decoy2.write_bytes(b"decoy, not an ensemble")

@@ -121,6 +121,30 @@ class CacheLayout:
     def time(self) -> Path:
         return self.root / "time"
 
+    @property
+    def pp(self) -> Path:
+        return self.root / "grid" / "pp"
+
+    @property
+    def pp_index(self) -> Path:
+        return self.pp / "index.json"
+
+    def pp_field(self, group: str, iteration: int, tag: str, key: str) -> Path:
+        """Where one computed field is memoised. ``tag`` is the ensemble
+        artifact's cache tag, so a re-ingest never serves a stale field;
+        ``key`` is the realization name or statistic. Both names are
+        URL-quoted so a name can never escape the folder."""
+        from urllib.parse import quote
+
+        return (
+            self.pp
+            / "fields"
+            / quote(group, safe="")
+            / str(iteration)
+            / tag
+            / f"{quote(key, safe='')}.f32"
+        )
+
     def ensure(self) -> None:
         """Create the root and all seven directories. Idempotent, and safe
         for two processes doing this at once."""

@@ -284,7 +284,7 @@ def test_make_run_inventory_contains_every_expected_file(tmp_path):
         "case.0.pcs.csv",
         "case.0.reinflate.pcs.csv",
         "coarse.disv.grb",
-        "factors.coarse.boundary.layer10.bin",
+        "coarse.boundary.layer10.bin",
         "case.adjusted.weights.bin",
     }
     existing_names = {p.name for p in tmp_path.iterdir()}
