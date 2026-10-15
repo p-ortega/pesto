@@ -133,10 +133,6 @@ Still open:
 
 ## Leftovers
 
-- A stale agent worktree sits at `.claude/worktrees/agent-adc6c68234b6e73e5` on branch
-  `worktree-agent-adc6c68234b6e73e5`. Its work is on `main` through other commits. Its
-  one uncommitted change is a comment and an `export` on `renderUnmappedRows`. Safe to
-  delete with `git worktree remove --force`.
 - The picker lists `hm_20250406221554_restarted` as "not a run" because no control file
   sits beside its parameter ensemble. Not investigated.
 - The unmapped rows all say "no placement rule matched" because no route exposes the
