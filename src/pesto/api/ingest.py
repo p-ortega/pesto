@@ -127,7 +127,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     fresh = True
     for planned_artifact in planned:
         artifact = manifest.artifacts.get(planned_artifact.name)
-        stale = manifest.is_stale(planned_artifact.name, layout)
+        stale = manifest.is_stale(planned_artifact.name, layout, planned_artifact.sources)
         if stale:
             fresh = False
         artifacts_out.append(

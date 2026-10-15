@@ -185,6 +185,19 @@ def test_ok_artifact_is_not_stale_until_its_source_changes(tmp_path):
     assert manifest.is_stale("par_0") is True
 
 
+def test_an_artifact_that_now_reads_a_different_set_of_files_is_stale(tmp_path):
+    index = tmp_path / "mult2model_info.csv"
+    index.write_text("a")
+    template = tmp_path / "hk.dat.tpl"
+    template.write_text("b")
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("pp_factors", [SourceFingerprint.of(index)])
+
+    assert manifest.is_stale("pp_factors", sources=[str(index)]) is False
+    assert manifest.is_stale("pp_factors", sources=[str(index), str(template)]) is True
+    assert manifest.is_stale("pp_factors") is False
+
+
 def test_failed_artifact_records_a_reason_and_stays_stale(tmp_path):
     manifest = Manifest.empty(str(tmp_path))
 

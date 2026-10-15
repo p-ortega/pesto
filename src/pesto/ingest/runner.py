@@ -907,7 +907,7 @@ def ingest_run(
 
         existing = manifest.artifacts.get(artifact.name)
         declined_retry = not _should_retry(manifest, artifact.name, run_dir)
-        fresh = (not declined_retry) and (not manifest.is_stale(artifact.name, layout))
+        fresh = (not declined_retry) and (not manifest.is_stale(artifact.name, layout, artifact.sources))
         if declined_retry or fresh:
             written_bytes = sum(f.bytes for f in existing.files) if existing is not None else 0
             if on_progress is not None:
