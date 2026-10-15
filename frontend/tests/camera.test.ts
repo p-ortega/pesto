@@ -353,3 +353,22 @@ describe('Camera.fitAnimated', () => {
     expect(callbacks.length).toBe(0)
   })
 })
+
+describe('Camera.resize', () => {
+  it('keeps the world point at the centre where it is and does not zoom when the canvas changes size', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 50])
+    const [cx, cy] = camera.screenToWorld(400, 240)
+    const [rightX] = camera.screenToWorld(500, 240)
+
+    camera.resize(1600, 960)
+
+    const [nx, ny] = camera.screenToWorld(800, 480)
+    expect(nx).toBeCloseTo(cx, 5)
+    expect(ny).toBeCloseTo(cy, 5)
+    // 100 screen px still covers the same world distance: the new room is
+    // added at the edges, nothing is rescaled.
+    const [newRightX] = camera.screenToWorld(900, 480)
+    expect(newRightX - nx).toBeCloseTo(rightX - cx, 5)
+  })
+})
