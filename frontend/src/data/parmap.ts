@@ -82,9 +82,9 @@ export interface ClassifyCellsResult {
  * Classifies every grid cell against one drawn group and layer, from the
  * D-05 join and the block-order cell/layer companion arrays -- the same
  * inputs `computePerCell` already reprojects with. A cell is "outside the
- * model" when no block row of *any* group, at *any* layer, ever names it;
- * that requires `nCells` (the grid's own cell count), since a cell nothing
- * ever references cannot be found by scanning `cells` for its own index.
+ * model" when `active` says it is not in the model on the drawn layer and
+ * no row of the drawn group sits there; a row of the drawn group is always
+ * drawn, whatever `active` says.
  */
 export function classifyCells(
   joined: Array<ParIdentity | null>,
@@ -92,14 +92,9 @@ export function classifyCells(
   layers: Int32Array,
   group: string,
   layer: number,
-  nCells: number,
+  active: Uint8Array,
 ): ClassifyCellsResult {
-  const active = new Uint8Array(nCells)
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i]
-    if (c >= 0 && c < nCells) active[c] = 1
-  }
-
+  const nCells = active.length
   const rowsByCell: Array<number[] | undefined> = new Array(nCells)
   for (let i = 0; i < cells.length; i++) {
     if (layers[i] !== layer) continue
@@ -115,14 +110,14 @@ export function classifyCells(
   let contestedCount = 0
   let noValueCount = 0
   for (let c = 0; c < nCells; c++) {
-    if (!active[c]) {
-      classes[c] = { kind: 'outside-model' }
-      continue
-    }
     const rows = rowsByCell[c]
     if (!rows || rows.length === 0) {
-      classes[c] = { kind: 'no-parameter' }
-      noValueCount += 1
+      if (active[c]) {
+        classes[c] = { kind: 'no-parameter' }
+        noValueCount += 1
+      } else {
+        classes[c] = { kind: 'outside-model' }
+      }
     } else if (rows.length === 1) {
       classes[c] = { kind: 'valued', row: rows[0] }
     } else {

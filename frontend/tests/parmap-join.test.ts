@@ -6,6 +6,7 @@
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { referencedMask } from '../src/data/domain'
 import { classifyCells, fetchParIdentities, joinBlockToIdentity, type ParIdentity } from '../src/data/parmap'
 
 vi.mock('../src/data/client', () => ({
@@ -60,7 +61,7 @@ describe('classifyCells', () => {
     const cells = new Int32Array([0, 1, 1, 2])
     const layers = new Int32Array([0, 0, 0, 0])
 
-    const result = classifyCells(joined, cells, layers, 'G1', 0, 4)
+    const result = classifyCells(joined, cells, layers, 'G1', 0, referencedMask(cells, 4))
 
     expect(result.classes[0]).toEqual({ kind: 'valued', row: 0 })
     expect(result.classes[1]).toEqual({ kind: 'contested', rows: [1, 2] })
@@ -75,7 +76,7 @@ describe('classifyCells', () => {
     const cells = new Int32Array([5, 5])
     const layers = new Int32Array([1, 1])
 
-    const result = classifyCells(joined, cells, layers, 'G1', 1, 6)
+    const result = classifyCells(joined, cells, layers, 'G1', 1, referencedMask(cells, 6))
 
     expect(result.classes[5]).toEqual({ kind: 'contested', rows: [0, 1] })
     // Never resolved to a single "valued" row for a contested cell.
@@ -90,7 +91,7 @@ describe('classifyCells', () => {
     const cells = new Int32Array([2, 2])
     const layers = new Int32Array([0, 0])
 
-    const result = classifyCells(joined, cells, layers, 'G1', 0, 3)
+    const result = classifyCells(joined, cells, layers, 'G1', 0, referencedMask(cells, 3))
 
     expect(result.classes[2]).toEqual({ kind: 'contested', rows: [0, 1] })
   })
@@ -102,10 +103,23 @@ describe('classifyCells', () => {
     const cells = new Int32Array([0, 1])
     const layers = new Int32Array([0, 0])
 
-    const result = classifyCells(joined, cells, layers, 'G1', 0, 3)
+    const result = classifyCells(joined, cells, layers, 'G1', 0, referencedMask(cells, 3))
 
     expect(result.classes[1]).toEqual({ kind: 'no-parameter' })
     expect(result.classes[2]).toEqual({ kind: 'outside-model' })
+  })
+
+  it('draws a cell the active mask calls outside the model when the drawn group has a row there', () => {
+    // cell 0 carries a G1 row but is inactive; cell 1 has no row and is inactive.
+    const joined = [G1]
+    const cells = new Int32Array([0])
+    const layers = new Int32Array([0])
+
+    const result = classifyCells(joined, cells, layers, 'G1', 0, new Uint8Array([0, 0, 1]))
+
+    expect(result.classes[0]).toEqual({ kind: 'valued', row: 0 })
+    expect(result.classes[1]).toEqual({ kind: 'outside-model' })
+    expect(result.classes[2]).toEqual({ kind: 'no-parameter' })
   })
 })
 

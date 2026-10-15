@@ -118,6 +118,8 @@ export interface MeshInfo {
   bounds: [number, number, number, number]
   crs: string | null
   tag: string | null
+  hasIdomain: boolean
+  notes: string[]
 }
 
 export async function gridMesh(): Promise<MeshInfo> {
@@ -129,6 +131,8 @@ export async function gridMesh(): Promise<MeshInfo> {
     bounds: [number, number, number, number]
     crs: string | null
     tag: string | null
+    has_idomain?: boolean
+    notes?: string[]
   }
   return {
     nVert: raw.n_vert,
@@ -138,7 +142,14 @@ export async function gridMesh(): Promise<MeshInfo> {
     bounds: raw.bounds,
     crs: raw.crs,
     tag: raw.tag,
+    hasIdomain: raw.has_idomain ?? false,
+    notes: raw.notes ?? [],
   }
+}
+
+export async function gridIdomain(): Promise<Int32Array> {
+  const { buffer } = await apiGetBytes('/api/run/grid/mesh/idomain')
+  return new Int32Array(buffer)
 }
 
 export type MeshBufferName = 'positions' | 'cell_index' | 'indices'

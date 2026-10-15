@@ -4,7 +4,8 @@
 // as the screen every flow in this phase ends at.
 
 import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo, type ViewState } from '../data/client'
-import { gridCells, gridMesh, gridMeshBuffer, gridValues, readViewState, writeViewState } from '../data/client'
+import { gridCells, gridIdomain, gridMesh, gridMeshBuffer, gridValues, readViewState, writeViewState } from '../data/client'
+import { inactiveLandingNotes, layerActiveMask, referencedMask } from '../data/domain'
 import { renderDivider } from '../ui/divider'
 import { renderParamsPanel } from '../ui/params-panel'
 import {
@@ -429,7 +430,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let joined: Array<ParIdentity | null> = []
   let cellArray: Int32Array = new Int32Array(0)
   let layerArray: Int32Array = new Int32Array(0)
-  let inactiveMask: Uint8Array = new Uint8Array(0)
+  // The grid file's idomain, flat and layer-major; null when the grid has none.
+  let idomain: Int32Array | null = null
+  let referenced: Uint8Array | null = null
   let drawnGroup: string | null = null
   // Interpolated pilot-point groups. `fieldKind` says what rawFullField
   // holds: block rows from /values, or one value per cell from /field.
@@ -452,13 +455,26 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     return ppIndex.groups.find((g) => g.group === group) ?? null
   }
 
-  // A cell carrying an interpolated value is in the model even when no block
-  // row names it, so it loses the outside-the-model hairline.
+  // In the model on one layer: the idomain when the grid has one, else any
+  // cell a block row names, at any layer (the mesh notes say which).
+  function activeMaskFor(layerIndex: number): Uint8Array {
+    const nCells = mesh?.nCells ?? 0
+    if (idomain !== null) return layerActiveMask(idomain, nCells, layerIndex)
+    if (referenced === null) referenced = referencedMask(cellArray, nCells)
+    return referenced.slice()
+  }
+
+  // A cell carrying a drawn value is never outlined, whatever the mask says.
   function drawnInactiveMask(): Uint8Array {
-    if (fieldKind !== 'cell' || !rawFullField) return inactiveMask
-    const mask = new Uint8Array(inactiveMask.length)
+    const active = activeMaskFor(committed.layer)
+    const mask = new Uint8Array(active.length)
     for (let c = 0; c < mask.length; c++) {
-      mask[c] = inactiveMask[c] && !Number.isFinite(rawFullField[c]) ? 1 : 0
+      const kind = currentClasses[c]?.kind
+      const drawn =
+        kind === 'valued' ||
+        kind === 'contested' ||
+        (fieldKind === 'cell' && rawFullField !== null && Number.isFinite(rawFullField[c]))
+      mask[c] = !active[c] && !drawn ? 1 : 0
     }
     return mask
   }
@@ -919,7 +935,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const nCells = mesh?.nCells ?? 0
     const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
     if (fieldKind === 'cell' && entry !== null) {
-      const active = drawnInactiveMask().map((v) => (v ? 0 : 1))
+      const active = activeMaskFor(layerIndex)
+      for (let c = 0; c < active.length; c++) {
+        if (Number.isFinite(field[c])) active[c] = 1
+      }
       const { classes, noValueCount } = classifyFieldCells(field, active, entry.layer, layerIndex)
       const perCell = new Float32Array(nCells).fill(Number.NaN)
       for (let c = 0; c < nCells; c++) {
@@ -933,7 +952,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       layerArray,
       drawnGroup ?? '',
       layerIndex,
-      nCells,
+      activeMaskFor(layerIndex),
     )
     const perCell = new Float32Array(nCells).fill(Number.NaN)
     for (let c = 0; c < nCells; c++) {
@@ -953,6 +972,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (!fullField || !layer) return { contested: 0, noValue: 0 }
     const { perCell, contested, noValue, classes } = computePerCell(fullField, committed.layer)
     currentClasses = classes
+    layer.setInactive(drawnInactiveMask())
     const contestedMask = new Uint8Array(classes.length)
     for (let c = 0; c < classes.length; c++) {
       contestedMask[c] = classes[c].kind === 'contested' ? 1 : 0
@@ -1129,7 +1149,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     fieldKind = kind
     if (fieldGroup !== group || kind === 'block') contributorsMemo.clear()
     fieldGroup = group
-    layer?.setInactive(drawnInactiveMask())
     rawFieldNonPositiveCount = logIsUsable(field)
     scaledField = null
     scaledFieldScale = null
@@ -1202,6 +1221,18 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     meshBytes = positions.byteLength + cellIndexBuf.byteLength + indices.byteLength
 
+    if (mesh.hasIdomain) {
+      try {
+        idomain = await gridIdomain()
+      } catch (error) {
+        addNotice(mapNotice, {
+          title: "The grid file's idomain could not be read",
+          detail: `${describeError(error)} A cell counts as in the model when any parameter lands on it.`,
+          tone: 'serious',
+        })
+      }
+    }
+
     // Not a failure and never blocking (visual contract §9): a run with no
     // CRS is a normal state, so this is purely additive and the load
     // sequence carries on regardless.
@@ -1258,6 +1289,12 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const artifactNotes = opts.state.artifacts
       .filter((artifact): artifact is typeof artifact & { reason: string } => artifact.reason !== null)
       .map((artifact) => ({ artifact: artifact.name, reason: artifact.reason }))
+    for (const note of mesh.notes) artifactNotes.push({ artifact: 'mesh', reason: note })
+    if (idomain !== null) {
+      for (const note of inactiveLandingNotes(joined, cellArray, layerArray, idomain, mesh.nCells)) {
+        artifactNotes.push({ artifact: 'idomain', reason: note })
+      }
+    }
     // A pp_factors refusal found before the template named a group is keyed
     // by its file; it has no group row to sit beside, so it is listed here.
     const knownGroups = new Set(identities.map((i) => i.pargp))
@@ -1302,22 +1339,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
     const realNames = await fetchRealNames(iteration)
 
-    // Outside the model (MAP-07): a grid cell never referenced by any
-    // block row of any group, at any layer -- distinct from a cell that IS
-    // in the model but not in the drawn group/layer, which computePerCell
-    // already leaves as NaN and the fill shader discards.
-    inactiveMask = new Uint8Array(mesh.nCells).fill(1)
-    for (let i = 0; i < cellArray.length; i++) {
-      const cellId = cellArray[i]
-      if (cellId >= 0 && cellId < mesh.nCells) {
-        inactiveMask[cellId] = 0
-      }
-    }
-
     meshGeom = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
     layer = new MeshLayer(gl.gl, meshGeom)
     layer.setColormap('viridis')
-    layer.setInactive(inactiveMask)
+    layer.setInactive(drawnInactiveMask())
     layer.setHairlineColor(readColorToken('--hairline'))
     applyThemeColors()
 
