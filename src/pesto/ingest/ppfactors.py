@@ -24,7 +24,9 @@ from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CACHE_VERSION, CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
-from pesto.model import GridShape
+
+# GridShape lives in pesto.model, which nothing under pesto.ingest may import,
+# even for typing; the annotations below stay unresolved forward references.
 
 ARTIFACT_NAME = "pp_factors"
 LAYER_PATTERN = re.compile(r"layer[_-]?(\d+)", re.IGNORECASE)
