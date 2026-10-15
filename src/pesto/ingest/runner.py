@@ -35,10 +35,11 @@ from pesto.ingest.tables import write_control
 
 # CellsPayload is what crosses the process boundary in place of a live
 # ParCells: the cell and layer arrays as little-endian int32 bytes plus
-# their shared length, and parnme as a list of strings. Only picklable
+# their shared length, parnme as a list of strings, and the x/y point
+# positions as little-endian float64 bytes (None when absent). Only picklable
 # primitives -- never a CacheLayout, an open file handle, or a live
 # DataFrame -- cross into or out of a worker.
-CellsPayload = tuple[bytes, bytes, int, list[str]]
+CellsPayload = tuple[bytes, bytes, int, list[str], bytes | None]
 
 
 @dataclass(frozen=True)
@@ -250,7 +251,7 @@ def _write_par_ens(
 
     cells = None
     if cells_payload is not None:
-        cell_bytes, layer_bytes, n, parnme = cells_payload
+        cell_bytes, layer_bytes, n, parnme, xy_bytes = cells_payload
         # Deferred import for the same reason as in _resolve_cells: ParCells
         # lives in pesto.model, which pesto.ingest may never name at module
         # level. Reconstructed purely as a carrier for cell/layer arrays --
@@ -264,6 +265,11 @@ def _write_par_ens(
             groups=(),
             summary="",
             notes=(),
+            point_xy=(
+                None
+                if xy_bytes is None
+                else np.frombuffer(xy_bytes, dtype="<f8", count=2 * n).reshape(n, 2).copy()
+            ),
         )
 
     layout = CacheLayout(root=Path(cache_root))
@@ -860,11 +866,13 @@ def ingest_run(
         cell_note = f"cell resolution failed, so the map block is empty: {cells_result.reason}"
     else:
         mappable = sorted(cells_result.placed_groups)
+        point_xy = cells_result.point_xy
         cells_payload = (
             np.asarray(cells_result.cell, dtype="<i4").tobytes(),
             np.asarray(cells_result.layer, dtype="<i4").tobytes(),
             len(cells_result.cell),
             list(cells_result.parnme),
+            None if point_xy is None else np.asarray(point_xy, dtype="<f8").tobytes(),
         )
 
     total = len(planned)

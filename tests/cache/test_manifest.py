@@ -330,6 +330,22 @@ def test_a_version_bump_invalidates_everything(tmp_path):
     assert reloaded.is_stale("par_0") is True
 
 
+def test_a_cache_written_before_point_positions_and_idomain_is_stale(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    source = tmp_path / "par_0.f32"
+    source.write_bytes(b"content")
+    manifest = Manifest.empty(str(tmp_path))
+    manifest.mark_ok("par_0", [SourceFingerprint.of(source)])
+    manifest.save(layout)
+
+    payload = json.loads(layout.manifest.read_text())
+    payload["cache_version"] = 1
+    layout.manifest.write_text(json.dumps(payload))
+
+    assert Manifest.load(layout).artifacts == {}
+
+
 def test_loading_a_missing_or_corrupt_manifest_gives_an_empty_one(tmp_path):
     layout = CacheLayout(root=tmp_path / ".pesto")
     layout.ensure()

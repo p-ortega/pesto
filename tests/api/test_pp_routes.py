@@ -11,6 +11,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from pesto.api.app import create_app
+from pesto.cache.layout import CACHE_VERSION
 from pesto.cache.manifest import CacheFile, Manifest
 from pesto.ingest.ppfactors import PpGroup, PpIndex, write_pp_index
 from .test_fields_compute import FAC, _stored
@@ -31,7 +32,7 @@ def _case(tmp_path):
     group = PpGroup("G4", 0, "g.fac", "text", ("p8", "p9"), ("pp0", "pp1"), False, 4)
     write_pp_index(PpIndex((group,), (("hk", "no template"),)), layout)
     # mesh.json is what the field route reads ncpl from
-    (layout.grid / "mesh.json").write_text(json.dumps({"cache_version": 1, "n_cells": 5, "nlay": 1}))
+    (layout.grid / "mesh.json").write_text(json.dumps({"cache_version": CACHE_VERSION, "n_cells": 5, "nlay": 1}))
     manifest = Manifest.empty(str(tmp_path))
     for name, folder in (("par_ens/0", layout.ens), ("par_agg/0", layout.agg)):
         files = tuple(
