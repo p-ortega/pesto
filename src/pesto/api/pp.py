@@ -3,6 +3,7 @@ points behind one cell."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Annotated, Literal
@@ -75,6 +76,18 @@ def _shape(layout: CacheLayout) -> GridShape | Response:
         return problem_from_failure(404, failure)
 
 
+def _with_factor_file(tag: str, run_dir: Path, group: PpGroup) -> str | None:
+    """The ensemble tag joined with the factor file's size and modified time
+    and the group's points, so an edited factor file never reuses a memo.
+    None when the file cannot be read, which computes fresh."""
+    try:
+        st = (run_dir / group.factor_file).stat()
+    except OSError:
+        return None
+    stamp = f"{st.st_size}:{st.st_mtime_ns}:{','.join(group.parnames)}"
+    return f"{tag}-{hashlib.sha256(stamp.encode()).hexdigest()[:12]}"
+
+
 @router.get("/pp")
 async def get_pp(request: Request) -> Response:
     opened = _open(request)
@@ -128,6 +141,8 @@ async def get_field(request: Request, params: Annotated[FieldQuery, Query()]) ->
     if isinstance(values, ReadFailure):
         return problem_from_failure(404, values)
     tag = cache_tag(manifest, artifact)
+    if tag is not None:
+        tag = _with_factor_file(tag, run_dir, group)
 
     def compute():
         return compute_field(run_dir, group, values, shape)
@@ -136,7 +151,7 @@ async def get_field(request: Request, params: Annotated[FieldQuery, Query()]) ->
     if tag is None:
         field = compute()
     else:
-        field = memo_field(layout, group.group, params.iteration, tag, key, compute)
+        field = memo_field(layout, group.group, params.iteration, tag, key, shape.ncpl, compute)
     if isinstance(field, ReadFailure):
         return problem_from_failure(404, field)
     meta = {

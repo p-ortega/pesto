@@ -136,13 +136,18 @@ class CacheLayout:
         URL-quoted so a name can never escape the folder."""
         from urllib.parse import quote
 
+        def segment(name: str) -> str:
+            # quote() leaves "." and ".." alone, and those would walk the path.
+            quoted = quote(name, safe="")
+            return quoted.replace(".", "%2E") if quoted in {".", ".."} else quoted
+
         return (
             self.pp
             / "fields"
-            / quote(group, safe="")
+            / segment(group)
             / str(iteration)
             / tag
-            / f"{quote(key, safe='')}.f32"
+            / f"{segment(key)}.f32"
         )
 
     def ensure(self) -> None:

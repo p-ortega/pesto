@@ -119,21 +119,24 @@ def _binary_field(path: Path, group: PpGroup, values: np.ndarray, shape: GridSha
     return np.asarray(result["targval"], dtype=np.float32)
 
 
-def memo_field(layout: CacheLayout, group: str, iteration: int, tag: str, key: str, compute: Callable[[], np.ndarray | ReadFailure]) -> np.ndarray | ReadFailure:
+def memo_field(layout: CacheLayout, group: str, iteration: int, tag: str, key: str, n_cells: int, compute: Callable[[], np.ndarray | ReadFailure]) -> np.ndarray | ReadFailure:
     """Read the field back from the cache, or compute it once and keep it.
-    An unreadable memo file is recomputed and rewritten, never served."""
+    An unreadable or wrong-length memo file is recomputed and rewritten,
+    never served."""
     path = layout.pp_field(group, iteration, tag, key)
     if path.is_file():
         try:
-            return np.fromfile(path, dtype="<f4")
+            memo = np.fromfile(path, dtype="<f4")
+            if memo.shape[0] == n_cells:
+                return memo
         except OSError:
             pass
     field = compute()
     if isinstance(field, ReadFailure):
         return field
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = np.ascontiguousarray(field, dtype="<f4")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         write_atomic_bytes(path, lambda f: f.write(data.tobytes()))
     except OSError:
         pass  # a failed memo write is a convenience lost, not a wrong answer
@@ -145,7 +148,7 @@ def contributors(run_dir: Path, group: PpGroup, cell: int) -> list[tuple[str, fl
     Reads the factor file's own line for that cell; empty when it has none."""
     path = Path(run_dir) / group.factor_file
     if group.format != "text":
-        return ReadFailure(name=group.group, path=str(path), reason="contributors are only read from text factor files")
+        return ReadFailure(name=group.group, path=str(path), reason=f"{group.factor_file} is a binary factor file, and pesto lists the points behind a cell only from text factor files")
     try:
         with path.open() as f:
             for _ in range(4):

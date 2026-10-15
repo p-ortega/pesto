@@ -132,12 +132,32 @@ def test_memo_field_computes_once_and_reads_back_after(tmp_path):
         calls.append(1)
         return np.array([1.0, np.nan], dtype=np.float32)
 
-    first = memo_field(layout, "G4", 0, "tag1", "base", compute)
-    second = memo_field(layout, "G4", 0, "tag1", "base", compute)
+    first = memo_field(layout, "G4", 0, "tag1", "base", 2, compute)
+    second = memo_field(layout, "G4", 0, "tag1", "base", 2, compute)
     assert len(calls) == 1 and np.array_equal(first, second, equal_nan=True)
-    memo_field(layout, "G4", 0, "tag2", "base", compute)
+    memo_field(layout, "G4", 0, "tag2", "base", 2, compute)
     assert len(calls) == 2  # a new tag misses
     assert layout.pp_field("G4", 0, "tag1", "base").is_file()
+
+
+def test_memo_field_recomputes_a_memo_of_the_wrong_length(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    path = layout.pp_field("G4", 0, "tag1", "base")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(np.array([9.0], dtype="<f4").tobytes())
+    field = memo_field(layout, "G4", 0, "tag1", "base", 2, lambda: np.array([1.0, 2.0], dtype=np.float32))
+    assert field.tolist() == [1.0, 2.0]
+    assert np.fromfile(path, dtype="<f4").tolist() == [1.0, 2.0]
+
+
+def test_memo_field_still_answers_when_the_memo_folder_cannot_be_made(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    layout.pp.mkdir(parents=True, exist_ok=True)
+    (layout.pp / "fields").write_text("not a folder")
+    field = memo_field(layout, "G4", 0, "tag1", "base", 2, lambda: np.array([1.0, 2.0], dtype=np.float32))
+    assert field.tolist() == [1.0, 2.0]
 
 
 def test_contributors_name_the_points_behind_a_cell_largest_weight_first(tmp_path):
@@ -167,3 +187,12 @@ def test_compute_field_applies_a_binary_factor_file_through_pypestutils(tmp_path
     assert np.all((field >= 10.0 - 1e-4) & (field <= 20.0 + 1e-4))
     assert field[1] == pytest.approx(10.0, abs=1e-3) and field[4] == pytest.approx(20.0, abs=1e-3)
     assert field[1] < field[2] < field[3] < field[4]
+
+
+def test_contributors_of_a_binary_group_say_why_they_are_not_listed(tmp_path):
+    group = PpGroup(
+        group="bnd", layer=0, factor_file="factors.bnd.layer0.bin", format="binary",
+        parnames=("q1",), pp_names=("pa",), log_space=False, n_cells=6,
+    )
+    result = contributors(tmp_path, group, 0)
+    assert isinstance(result, ReadFailure) and "factors.bnd.layer0.bin is a binary factor file" in result.reason
