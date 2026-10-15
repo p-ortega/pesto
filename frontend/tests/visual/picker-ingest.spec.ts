@@ -124,9 +124,7 @@ test.describe('the picker and ingest flow, in a real browser against a real pest
     launched?.proc.kill()
   })
 
-  test('cold open: pick the run by keyboard, agree to ingest, watch it finish, reach the placeholder', async ({
-    page,
-  }) => {
+  test('pick the run by keyboard, ingest it if this machine never has, and reach the map', async ({ page }) => {
     await page.goto(pestoUrl)
 
     // D-08's whole point, now checked in a real address bar rather than a
@@ -138,25 +136,38 @@ test.describe('the picker and ingest flow, in a real browser against a real pest
     await tabUntilFocused(page, (text) => text === benchmarkRootName)
     await page.keyboard.press('Enter')
 
-    await expect(page.getByRole('button', { name: 'Open' }).first()).toBeVisible()
+    // The benchmark root's listing replaces the one above it only once the
+    // server has scanned every folder in it; until then the old rows, with
+    // their disabled Open buttons, are still on screen. So wait for the
+    // run's own row, not for any Open button.
+    await expect(page.getByRole('button', { name: new RegExp(FORECAST_RUN_NAME) })).toBeVisible({ timeout: 60_000 })
     await tabUntilFocused(page, (text) => text === 'Open')
     await page.keyboard.press('Enter')
 
+    // Opening the run goes one of two ways, and which one is a fact about
+    // this machine, not about the code: a run never ingested here shows the
+    // estimate screen first, a run with a fresh cache goes straight to the
+    // map. Asserting the cold path alone would break the moment the run
+    // had been opened once (CLAUDE.md, Tests).
     const agreeButton = page.getByRole('button', { name: 'Agree and ingest' })
-    await expect(agreeButton).toBeVisible()
-    await expect(page.getByText(/Projected cache size/)).toBeVisible()
-    await expect(page.getByText(/Free space/)).toBeVisible()
+    const drawnCanvas = page.locator('canvas[data-drawn="true"]')
+    await expect(agreeButton.or(drawnCanvas)).toBeVisible({ timeout: 60_000 })
 
-    await agreeButton.click()
+    if (await agreeButton.isVisible()) {
+      await expect(page.getByText(/Projected cache size/)).toBeVisible()
+      await expect(page.getByText(/Free space/)).toBeVisible()
 
-    // The first row can take a while to appear on a genuinely large run --
-    // discovery and planning are cheap (filename checks only, D-10), but
-    // the background ingest thread's first artifact may itself be slow to
-    // start on several gigabytes of real ensemble data.
-    await expect(page.locator('li').first()).toBeVisible({ timeout: 60_000 })
-    await expect(page.getByText(/Done|Failed|Already fresh/).first()).toBeVisible({ timeout: INGEST_WAIT_MS })
+      await agreeButton.click()
 
-    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: INGEST_WAIT_MS })
+      // The first row can take a while to appear on a genuinely large run --
+      // discovery and planning are cheap (filename checks only, D-10), but
+      // the background ingest thread's first artifact may itself be slow to
+      // start on several gigabytes of real ensemble data.
+      await expect(page.locator('li').first()).toBeVisible({ timeout: 60_000 })
+      await expect(page.getByText(/Done|Failed|Already fresh/).first()).toBeVisible({ timeout: INGEST_WAIT_MS })
+    }
+
+    await expect(drawnCanvas).toBeVisible({ timeout: INGEST_WAIT_MS })
 
     const bodyText = (await page.textContent('body')) ?? ''
     expect(bodyText).toMatch(/Ingest time[\d.]/)
