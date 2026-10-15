@@ -16,7 +16,7 @@ import pytest
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import WrittenArtifact
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.mesh import load_mesh, write_grid_from_adapter, write_mesh
+from pesto.ingest.mesh import load_idomain, load_mesh, write_grid_from_adapter, write_mesh
 from pesto.model import GridShape, MeshBuffers, fan_polygons
 
 
@@ -34,15 +34,19 @@ class _FakeAdapter:
     only ever calls ``grid_mesh`` and ``grid_shape``, so this is all it
     needs to provide."""
 
-    def __init__(self, mesh_result, shape_result=None):
+    def __init__(self, mesh_result, shape_result=None, idomain_result=None):
         self._mesh_result = mesh_result
         self._shape_result = shape_result
+        self._idomain_result = idomain_result
 
     def grid_mesh(self):
         return self._mesh_result
 
     def grid_shape(self):
         return self._shape_result
+
+    def idomain(self):
+        return self._idomain_result
 
 
 def _snapshot(root):
@@ -267,3 +271,55 @@ def test_write_grid_from_adapter_against_a_real_mf6_adapter_matches_the_grid_sha
     loaded = load_mesh(layout)
     assert isinstance(loaded, MeshBuffers)
     assert loaded.n_cells == expected_shape.ncpl
+
+
+def test_an_idomain_of_the_right_length_is_written_and_read_back(tmp_path):
+    layout = CacheLayout(root=tmp_path)
+    layout.ensure()
+    idomain = np.array([1, 0, -1, 1], dtype=np.int64)
+    adapter = _FakeAdapter(mesh_result=_mesh(), shape_result=_shape(), idomain_result=idomain)
+    assert not isinstance(write_grid_from_adapter(adapter, layout), ReadFailure)
+    assert load_idomain(layout).tolist() == [1, 0, -1, 1]
+
+
+def test_a_grid_with_no_idomain_writes_none_and_says_which_rule_is_used_instead(tmp_path):
+    layout = CacheLayout(root=tmp_path)
+    layout.ensure()
+    artifact = write_grid_from_adapter(
+        _FakeAdapter(mesh_result=_mesh(), shape_result=_shape()), layout
+    )
+    assert load_idomain(layout) is None
+    assert any("records no idomain" in n for n in artifact.notes)
+
+
+def test_an_idomain_of_the_wrong_length_is_not_written_and_says_why(tmp_path):
+    layout = CacheLayout(root=tmp_path)
+    layout.ensure()
+    adapter = _FakeAdapter(
+        mesh_result=_mesh(), shape_result=_shape(), idomain_result=np.ones(3, dtype=int)
+    )
+    artifact = write_grid_from_adapter(adapter, layout)
+    assert load_idomain(layout) is None
+    assert any("has 3 values, not nlay x ncpl = 4" in n for n in artifact.notes)
+
+
+def test_an_idomain_read_failure_still_writes_the_mesh_and_names_the_reason(tmp_path):
+    layout = CacheLayout(root=tmp_path)
+    layout.ensure()
+    failure = ReadFailure(name="g.grb", path="g.grb", reason="boom")
+    adapter = _FakeAdapter(mesh_result=_mesh(), shape_result=_shape(), idomain_result=failure)
+    artifact = write_grid_from_adapter(adapter, layout)
+    assert not isinstance(artifact, ReadFailure)
+    assert any("idomain could not be read (boom)" in n for n in artifact.notes)
+
+
+def test_a_truncated_idomain_file_is_a_read_failure_naming_it(tmp_path):
+    layout = CacheLayout(root=tmp_path)
+    layout.ensure()
+    adapter = _FakeAdapter(
+        mesh_result=_mesh(), shape_result=_shape(), idomain_result=np.ones(4, dtype=int)
+    )
+    write_grid_from_adapter(adapter, layout)
+    (layout.grid / "idomain.i32").write_bytes(b"\x01\x00\x00\x00")
+    result = load_idomain(layout)
+    assert isinstance(result, ReadFailure) and "idomain.i32" in result.reason

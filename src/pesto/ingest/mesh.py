@@ -26,8 +26,14 @@ from pesto.ingest.failures import ReadFailure
 # stay unresolved forward references, never evaluated at runtime.
 
 
+_NO_IDOMAIN_RULE = "a cell counts as in the model when any parameter lands on it"
+
+
 def write_mesh(
-    mesh: "MeshBuffers", shape: "GridShape | None", layout: CacheLayout
+    mesh: "MeshBuffers",
+    shape: "GridShape | None",
+    layout: CacheLayout,
+    idomain: "np.ndarray | ReadFailure | None" = None,
 ) -> WrittenArtifact | ReadFailure:
     """Write ``mesh`` into ``layout.grid`` as three little-endian binaries
     plus a JSON sidecar, and return the artifact describing what was
@@ -62,6 +68,27 @@ def write_mesh(
         n_tri = int(indices.shape[0] // 3)
 
         notes: list[str] = []
+        idomain_path = layout.grid / "idomain.i32"
+        idomain_bytes = None
+        idomain_entry = None
+        expected = int(mesh.nlay) * int(mesh.n_cells)
+        if idomain is None:
+            notes.append(f"the grid file records no idomain, so {_NO_IDOMAIN_RULE}")
+        elif isinstance(idomain, ReadFailure):
+            notes.append(f"idomain could not be read ({idomain.reason}), so {_NO_IDOMAIN_RULE}")
+        else:
+            flat = np.asarray(idomain).reshape(-1)
+            if flat.shape[0] != expected:
+                notes.append(
+                    f"the grid file's idomain has {flat.shape[0]} values, not "
+                    f"nlay x ncpl = {expected}, so it was not used; {_NO_IDOMAIN_RULE}"
+                )
+            else:
+                idomain_i32 = np.ascontiguousarray(flat, dtype="<i4")
+                idomain_bytes = write_atomic_bytes(
+                    idomain_path, lambda f: f.write(idomain_i32.tobytes())
+                )
+                idomain_entry = {"name": idomain_path.name, "dtype": "<i4", "count": expected}
         if mesh.crs is None:
             notes.append(
                 "no projection recorded -- the binary grid format carries no "
@@ -93,6 +120,7 @@ def write_mesh(
                     "dtype": "<u4",
                     "count": 3 * n_tri,
                 },
+                "idomain": idomain_entry,
             },
             "notes": notes,
         }
@@ -105,6 +133,8 @@ def write_mesh(
             CacheFile(path=str(indices_path.relative_to(root)), bytes=indices_bytes),
             CacheFile(path=str(mesh_json_path.relative_to(root)), bytes=mesh_json_bytes),
         )
+        if idomain_bytes is not None:
+            files += (CacheFile(path=str(idomain_path.relative_to(root)), bytes=idomain_bytes),)
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
         return ReadFailure(
@@ -137,7 +167,77 @@ def write_grid_from_adapter(
     if isinstance(shape, ReadFailure):
         return shape
 
-    return write_mesh(mesh, shape, layout)
+    idomain = adapter.idomain()
+    return write_mesh(mesh, shape, layout, idomain=idomain)
+
+
+def _read_binary(layout: CacheLayout, filename: str, dtype: str, count: int):
+    path = layout.grid / filename
+    try:
+        array = np.fromfile(path, dtype=dtype)
+    except OSError as exc:
+        return ReadFailure(name="grid", path=str(path), reason=f"failed to read {path.name}: {exc}")
+    if array.shape[0] != count:
+        return ReadFailure(
+            name="grid",
+            path=str(path),
+            reason=f"{path.name} has {array.shape[0]} elements, expected {count}",
+        )
+    return array
+
+
+def _read_sidecar(layout: CacheLayout) -> "dict | ReadFailure":
+    """``mesh.json`` as a dict, after the same shape and version checks
+    ``load_mesh`` makes."""
+    mesh_json_path = layout.grid / "mesh.json"
+    try:
+        raw = json.loads(mesh_json_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return ReadFailure(
+            name="grid", path=str(mesh_json_path), reason=f"failed to read {mesh_json_path.name}: {exc}"
+        )
+    if not isinstance(raw, dict):
+        return ReadFailure(
+            name="grid", path=str(mesh_json_path), reason=f"{mesh_json_path.name} is not a JSON object"
+        )
+    if raw.get("cache_version") != CACHE_VERSION:
+        return ReadFailure(
+            name="grid",
+            path=str(mesh_json_path),
+            reason=(
+                f"{mesh_json_path.name} was written at cache_version "
+                f"{raw.get('cache_version')!r}, this reader expects {CACHE_VERSION}"
+            ),
+        )
+    return raw
+
+
+def load_idomain(layout: CacheLayout) -> "np.ndarray | None | ReadFailure":
+    """The cached idomain, or ``None`` when ``mesh.json`` names none."""
+    raw = _read_sidecar(layout)
+    if isinstance(raw, ReadFailure):
+        return raw
+    try:
+        entry = (raw.get("files") or {}).get("idomain")
+        if entry is None:
+            return None
+        filename, dtype, count = str(entry["name"]), str(entry["dtype"]), int(entry["count"])
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        return ReadFailure(
+            name="grid",
+            path=str(layout.grid / "mesh.json"),
+            reason=f"mesh.json has an unexpected idomain entry: {exc}",
+        )
+    return _read_binary(layout, filename, dtype, count)
+
+
+def mesh_notes(layout: CacheLayout) -> list[str]:
+    """The notes ``mesh.json`` carries, or none when it cannot be read."""
+    raw = _read_sidecar(layout)
+    if isinstance(raw, ReadFailure):
+        return []
+    notes = raw.get("notes")
+    return [str(n) for n in notes] if isinstance(notes, list) else []
 
 
 def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
@@ -195,29 +295,13 @@ def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
             reason=f"{mesh_json_path.name} has an unexpected shape: {exc}",
         )
 
-    def _read_binary(filename: str, dtype: str, count: int):
-        path = layout.grid / filename
-        try:
-            array = np.fromfile(path, dtype=dtype)
-        except OSError as exc:
-            return ReadFailure(name=name, path=str(path), reason=f"failed to read {path.name}: {exc}")
-        if array.shape[0] != count:
-            return ReadFailure(
-                name=name,
-                path=str(path),
-                reason=(
-                    f"{path.name} has {array.shape[0]} elements, expected {count}"
-                ),
-            )
-        return array
-
-    positions_flat = _read_binary("positions.f32", "<f4", 2 * n_vert)
+    positions_flat = _read_binary(layout, "positions.f32", "<f4", 2 * n_vert)
     if isinstance(positions_flat, ReadFailure):
         return positions_flat
-    cell_index = _read_binary("cell_index.f32", "<f4", n_vert)
+    cell_index = _read_binary(layout, "cell_index.f32", "<f4", n_vert)
     if isinstance(cell_index, ReadFailure):
         return cell_index
-    indices = _read_binary("indices.u32", "<u4", 3 * n_tri)
+    indices = _read_binary(layout, "indices.u32", "<u4", 3 * n_tri)
     if isinstance(indices, ReadFailure):
         return indices
 
