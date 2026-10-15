@@ -106,8 +106,9 @@ What each benchmark run shows:
 - `hm_20251104154614` (pl253): 272 interpolable text-factor groups. `npfklayer3pp` draws on
   layer index 2; the first field takes about 312 ms and the memo serves repeats under
   100 ms. The run has two grid files and discovery picks `org.grb`; the factors fit it.
-- `forecast_20250618105403` (escondida): no interpolable group yet. Its 88 factor files
-  are binary (pypestutils), listed as "binary factor files are not read yet".
+- `forecast_20250618105403` (escondida): no interpolable group. Its 88 binary factor
+  files interpolate to boundary points or to 3-D hyperparameter points, not to one layer
+  of cells, and each is listed with its target count.
 
 Out of scope: escondida's run-time 3D kriging of K; binary factor files whose targets are
 not the grid cells; a family view across `npfklayer1pp` to `npfklayer17pp`.
