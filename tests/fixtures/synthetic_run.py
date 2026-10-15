@@ -41,6 +41,7 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_mesh
+from pesto.ingest.ppfactors import build_pp_index, write_pp_index
 from pesto.ingest.runner import plan_artifacts
 from pesto.ingest.tables import write_control
 from pesto.model import GridShape, GroupResolution, ParCells, fan_polygons
@@ -53,15 +54,19 @@ CASE = "synthetic"
 # run happened.
 _FIXED_MTIME_NS = 1_700_000_000_000_000_000
 
-# Seven parameters over three groups: G1 and G2 place on cells, G3 places on
+# Nine parameters over four groups: G1 and G2 place on cells, G3 places on
 # none at all (the unmapped disclosure has something to disclose). p1 and p2
 # share a group, cell and layer (the contested mark has something to mark).
-CONTROL_NAMES = ("p1", "p2", "p3", "p4", "p5", "p6", "p7")
-GROUPS = ("G1", "G1", "G2", "G2", "G2", "G3", "G3")
-PARTRANS = ("log", "log", "none", "none", "none", "none", "none")
-MAPPABLE = frozenset({"G1", "G2"})
-CELLS = (0, 0, 1, 2, 3, -1, -1)
-LAYERS = (0, 0, 0, 0, 1, -1, -1)
+# p8 and p9 are the two pilot points of PP_GROUP, interpolated across every
+# cell by a factor file; the layer number in its name is what lets a
+# two-layer grid know which layer the field belongs to.
+PP_GROUP = "G4layer1"
+CONTROL_NAMES = ("p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9")
+GROUPS = ("G1", "G1", "G2", "G2", "G2", "G3", "G3", PP_GROUP, PP_GROUP)
+PARTRANS = ("log", "log", "none", "none", "none", "none", "none", "none", "none")
+MAPPABLE = frozenset({"G1", "G2", PP_GROUP})
+CELLS = (0, 0, 1, 2, 3, -1, -1, 1, 4)
+LAYERS = (0, 0, 0, 0, 1, -1, -1, 0, 0)
 
 REAL_NAMES = ("base", "r1", "r2")
 ITERATIONS = (0, 1)
@@ -92,6 +97,25 @@ def _write_source_files(run_dir: Path) -> None:
     grid.write_bytes(b"synthetic grid placeholder\n")
     _pin_mtime(grid)
 
+    # Weights run linearly from pp0 at x=1.5 to pp1 at x=4.5 and clamp beyond.
+    centres = [0.5 + i for i in range(NCPL)]
+    weights = [min(max((xc - 1.5) / 3.0, 0.0), 1.0) for xc in centres]
+    lines = ["g4pp_inst0pp.dat", "zone.junk", f"1 {NCPL}", "2", "pp0", "pp1"]
+    for node, w in enumerate(weights, start=1):
+        lines.append(f"{node} 0 2 0.0 1 {1.0 - w:.6f} 2 {w:.6f}")
+    pp_files = {
+        "g4pp_inst0pp.fac": "\n".join(lines) + "\n",
+        "g4pp_inst0pp.dat": "pp0 1.5 0.5 1 1.0\npp1 4.5 0.5 1 1.0\n",
+        "g4pp_inst0pp.dat.tpl": "ptf ~\npp0 1.5 0.5 1 ~ p8 ~\npp1 4.5 0.5 1 ~ p9 ~\n",
+        "mult2model_info.csv": (
+            ",org_file,model_file,fac_file,pp_file\n"
+            "0,org/k.txt,k.txt,g4pp_inst0pp.fac,g4pp_inst0pp.dat\n"
+        ),
+    }
+    for name, text in pp_files.items():
+        (run_dir / name).write_text(text)
+        _pin_mtime(run_dir / name)
+
 
 def _control_tables() -> ControlTables:
     n = len(CONTROL_NAMES)
@@ -106,7 +130,7 @@ def _control_tables() -> ControlTables:
             }
         ),
         obs=pd.DataFrame({"obsnme": [], "obgnme": [], "weight": []}),
-        par_groups=("G1", "G2", "G3"),
+        par_groups=("G1", "G2", "G3", PP_GROUP),
         obs_groups=(),
         source_path=Path(f"{CASE}.pst"),
         notes=(),
@@ -123,6 +147,7 @@ def _cells() -> ParCells:
             GroupResolution(group="G1", rule="synthetic", mapped=2, total=2),
             GroupResolution(group="G2", rule="synthetic", mapped=3, total=3),
             GroupResolution(group="G3", rule="synthetic", mapped=0, total=2),
+            GroupResolution(group=PP_GROUP, rule="xyz-host-cell", mapped=2, total=2),
         ),
         summary="synthetic fixture placed G1 and G2 on cells and left G3 unplaced",
         notes=(),
@@ -137,6 +162,9 @@ def _ensemble_data(iteration: int) -> EnsembleData:
     n_real = len(REAL_NAMES)
     n_par = len(CONTROL_NAMES)
     values = rng.uniform(1.0, 100.0, size=(n_real, n_par)).astype(np.float32)
+    # Pinned so the interpolated field has known ends: 10 at cell 0, 20 at cell 5.
+    values[:, CONTROL_NAMES.index("p8")] = 10.0
+    values[:, CONTROL_NAMES.index("p9")] = 20.0
     return EnsembleData(
         values=values,
         real_names=REAL_NAMES,
@@ -241,6 +269,15 @@ def write_synthetic_run(dest: Path) -> Path:
             written = write_control(tables, layout)
         elif artifact.kind == "grid":
             written = write_mesh(mesh, grid_shape, layout)
+        elif artifact.kind == "pp_factors":
+            index = build_pp_index(
+                run_dir,
+                run.mult2model,
+                run.factor_files,
+                tables.par.set_index("parnme"),
+                grid_shape,
+            )
+            written = write_pp_index(index, layout)
         elif artifact.kind == "config":
             written = write_config(_build_config(run_dir), layout)
         else:

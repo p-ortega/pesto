@@ -7,9 +7,10 @@ twice into the same destination is byte-for-byte reproducible.
 
 from __future__ import annotations
 
+import numpy as np
 from fastapi.testclient import TestClient
 
-from fixtures.synthetic_run import write_synthetic_run
+from fixtures.synthetic_run import PP_GROUP, write_synthetic_run
 from pesto.api.app import create_app
 from pesto.cache.layout import for_run
 
@@ -130,3 +131,18 @@ def test_running_the_generator_twice_into_the_same_destination_is_byte_identical
 
     assert set(first) == set(second)
     assert first == second
+
+
+def test_the_synthetic_run_interpolates_its_pilot_point_group_from_its_own_factor_file(tmp_path):
+    dest = write_synthetic_run(tmp_path / "run")
+    client = _opened_client(dest)
+    index = client.get("/api/run/grid/pp").json()
+    assert [g["group"] for g in index["groups"]] == [PP_GROUP]
+    assert index["not_interpolable"] == []
+    r = client.get(
+        "/api/run/grid/field", params={"iteration": 0, "group": PP_GROUP, "realization": "base"}
+    )
+    field = np.frombuffer(r.content, dtype="<f4")
+    assert field.shape == (6,)
+    assert field[0] == 10.0 and field[5] == 20.0
+    assert np.all(np.diff(field) >= 0)
