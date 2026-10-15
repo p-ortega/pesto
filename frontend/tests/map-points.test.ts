@@ -296,4 +296,30 @@ describe('a group placed by x/y draws as dots', () => {
     await vi.waitFor(() => expect(legendText(root)).not.toContain('points on this layer'))
     expect(setFootprint.mock.calls.at(-1)![0]).toBeNull()
   })
+
+  it('picked from a layer with none of its dots, opens on the first layer that has some', async () => {
+    const root = await mounted(() => {
+      layerMode = 'k-on-1'
+    })
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    expect(layerInput.value).toBe('0')
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('2 points on this layer'))
+    expect(layerInput.value).toBe('1')
+  })
+
+  it('picked from a layer that holds some of its dots, stays there', async () => {
+    const root = await mounted(() => {
+      layerMode = 'split'
+    })
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('1 points on this layer'))
+    expect(layerInput.value).toBe('1')
+    const [xy] = lastPoints()
+    expect(Array.from(xy)).toEqual([0.75, 0.5])
+  })
 })

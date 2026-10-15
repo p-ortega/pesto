@@ -10,7 +10,7 @@ export interface DrawnPoints {
   xy: Float32Array
 }
 
-function hasPosition(xy: Float32Array, row: number): boolean {
+export function hasPosition(xy: Float32Array, row: number): boolean {
   return Number.isFinite(xy[2 * row]) && Number.isFinite(xy[2 * row + 1])
 }
 

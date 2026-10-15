@@ -14,7 +14,7 @@ import {
   readViewState,
   writeViewState,
 } from '../data/client'
-import { isPointGroup, pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
+import { hasPosition, isPointGroup, pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
 import { inactiveLandingNotes, layerActiveMask, referencedMask } from '../data/domain'
 import { renderDivider } from '../ui/divider'
 import { renderParamsPanel } from '../ui/params-panel'
@@ -866,7 +866,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     pendingGroup = null
     drawnGroup = group
-    committed = { ...committed, scale: newScale, scaleInferred: true }
+    const nextLayer = dotLayerFor(group) ?? committed.layer
+    committed = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
+    controlsHandle?.setLayer(nextLayer)
     // WINDOWS.md #5: the scale control must show what was just inferred,
     // not whatever it happened to display for the previous group --
     // deriveAndDraw's own setLogUsability call (below) can still override
@@ -877,6 +879,19 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     deriveAndDraw()
     updateReadout()
     scheduleViewWrite()
+  }
+
+  // A dot group picked on a layer holding none of its dots opens on the lowest layer that does.
+  function dotLayerFor(group: string): number | null {
+    if (interpolatedEntry(group) !== null || !isPointGroup(joined, pointXy, group)) return null
+    let lowest: number | null = null
+    for (let row = 0; row < joined.length; row++) {
+      if (joined[row]?.pargp !== group || pointXy === null || !hasPosition(pointXy, row)) continue
+      const l = layerArray[row]
+      if (l === committed.layer) return null
+      if (l >= 0 && (lowest === null || l < lowest)) lowest = l
+    }
+    return lowest
   }
 
   // D-12/MAP-10: the chips capability, not the config object, decides
