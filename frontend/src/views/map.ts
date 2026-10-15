@@ -1388,6 +1388,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         scaleInferred: committed.scaleInferred,
         limitsMode: committed.limitsMode,
         manualLimits: committed.manualLimits,
+        stat: committed.stat,
       },
       onSelectionChange: handleSelectionChange,
       onFitToExtent: fitToExtent,
