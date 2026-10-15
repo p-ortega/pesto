@@ -23,7 +23,7 @@ from pesto.api.problem import problem, problem_from_failure
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.mesh import load_mesh
+from pesto.ingest.mesh import load_idomain, load_mesh, mesh_notes
 
 router = APIRouter(prefix="/api/run/grid")
 
@@ -57,9 +57,40 @@ async def get_mesh(request: Request) -> JSONResponse:
             },
             "indices": {"dtype": mesh.indices.dtype.str, "count": int(mesh.indices.size)},
         },
+        "has_idomain": load_idomain(layout) is not None,
+        "notes": mesh_notes(layout),
         "tag": tag,
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/mesh/idomain")
+async def get_idomain(request: Request) -> JSONResponse:
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+
+    layout = CacheLayout(root=Path(cache_root))
+    mesh = load_mesh(layout)
+    if isinstance(mesh, ReadFailure):
+        return problem_from_failure(502, mesh)
+
+    idomain = load_idomain(layout)
+    if isinstance(idomain, ReadFailure):
+        return problem_from_failure(502, idomain)
+    if idomain is None:
+        notes = mesh_notes(layout)
+        return problem(404, notes[-1] if notes else "the grid has no idomain")
+
+    manifest = Manifest.load(layout)
+    tag = cache_tag(manifest, "grid")
+    requested = request.query_params.get("v")
+
+    response = blob_response(
+        idomain, meta={"buffer": "idomain", "nlay": mesh.nlay, "ncpl": mesh.n_cells}
+    )
+    response.headers.update(cache_headers(tag, requested))
+    return response
 
 
 @router.get("/mesh/{buffer}")

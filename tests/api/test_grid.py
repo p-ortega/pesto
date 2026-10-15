@@ -35,11 +35,11 @@ def _mesh(crs="EPSG:26910"):
     return fan_polygons(verts, [[0, 1, 2, 3], [1, 4, 5, 2]], nlay=2, crs=crs)
 
 
-def _write_grid_cache(tmp_path, *, crs="EPSG:26910"):
+def _write_grid_cache(tmp_path, *, crs="EPSG:26910", idomain=None):
     mesh = _mesh(crs=crs)
     layout = CacheLayout(root=tmp_path / ".pesto")
     layout.ensure()
-    written = write_mesh(mesh, GridShape(ncpl=2, nlay=2, nrow=None, ncol=None), layout)
+    written = write_mesh(mesh, GridShape(ncpl=2, nlay=2, nrow=None, ncol=None), layout, idomain=idomain)
     manifest = Manifest.empty(str(tmp_path))
     manifest.mark_ok("grid", sources=[], files=written.files)
     manifest.save(layout)
@@ -153,6 +153,34 @@ def test_no_active_run_is_a_409_on_both_routes():
     for path in ("/api/run/grid/mesh", "/api/run/grid/mesh/positions"):
         response = client.get(path)
         assert response.status_code == 409
+
+
+def test_mesh_document_says_whether_an_idomain_is_cached_and_carries_the_notes(tmp_path):
+    client, _layout, _mesh = _opened_client(
+        tmp_path / "with", idomain=np.array([1, 0, -1, 1])
+    )
+    body = client.get("/api/run/grid/mesh").json()
+    assert body["has_idomain"] is True
+
+    client, _layout, _mesh = _opened_client(tmp_path / "without")
+    body = client.get("/api/run/grid/mesh").json()
+    assert body["has_idomain"] is False
+    assert any("records no idomain" in n for n in body["notes"])
+
+
+def test_idomain_route_serves_the_int32_bytes(tmp_path):
+    client, _layout, _mesh = _opened_client(tmp_path, idomain=np.array([1, 0, -1, 1]))
+    response = client.get("/api/run/grid/mesh/idomain")
+    assert response.status_code == 200
+    assert np.frombuffer(response.content, dtype="<i4").tolist() == [1, 0, -1, 1]
+    assert _meta(response)["buffer"] == "idomain"
+
+
+def test_idomain_route_is_a_404_carrying_the_note_when_there_is_none(tmp_path):
+    client, _layout, _mesh = _opened_client(tmp_path)
+    response = client.get("/api/run/grid/mesh/idomain")
+    assert response.status_code == 404
+    assert "records no idomain" in response.json()["title"]
 
 
 def test_a_matching_v_tag_marks_the_buffer_permanently_cacheable(tmp_path):
