@@ -411,6 +411,20 @@ def test_locate_par_places_a_parameter_by_its_coordinates_on_a_structured_grid(t
     assert cells.cell.tolist() == [2 * 4 + 1]  # bottom row (row 2), column 1
 
 
+def test_locate_par_moves_grid_coordinates_by_the_grid_files_own_offset(tmp_path):
+    from pesto.model.mf6 import Mf6Adapter
+
+    # The same point as above, given relative to the grid's corner instead.
+    adapter = Mf6Adapter(write_dis_grb(tmp_path / "g.grb", nlay=2, nrow=3, ncol=4))
+    par = pd.DataFrame(
+        {"pargp": ["pp"], "x": [15.0], "y": [10.0], "z": [3.0]},
+        index=pd.Index(["p"], name="parnme"),
+    )
+    cells = adapter.locate_par(par)
+    assert cells.cell.tolist() == [2 * 4 + 1]
+    assert any("offset (1000, 2000)" in n for n in cells.notes)
+
+
 def test_locate_par_keeps_full_precision_at_real_world_northings(tmp_path):
     # At ~7e6 m a float32 cell edge can sit half a metre off; placement must
     # use the grid's own float64 vertices. Rows are 50 m; the edge between

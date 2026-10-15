@@ -171,6 +171,9 @@ class Mf6Adapter:
             indices=mesh.indices,
             top=top_arr,
             botm=botm_arr,
+            xoff=float(grid.xoffset or 0.0),
+            yoff=float(grid.yoffset or 0.0),
+            angrot=float(grid.angrot or 0.0),
         )
 
     def locate_par(self, par: pd.DataFrame) -> ParCells | ReadFailure:

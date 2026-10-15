@@ -1013,7 +1013,7 @@ def test_the_reason_counts_in_a_note_add_up_to_every_parameter_that_was_not_plac
     assert sum(counts) == group.total - group.mapped
 
 
-def test_the_unplaced_reasons_table_lists_nine_reasons_in_a_fixed_order():
+def test_the_unplaced_reasons_table_lists_ten_reasons_in_a_fixed_order():
     assert tuple(key for key, _ in UNPLACED_REASONS) == (
         "out_of_range",
         "not_whole",
@@ -1023,6 +1023,7 @@ def test_the_unplaced_reasons_table_lists_nine_reasons_in_a_fixed_order():
         "too_large",
         "outside_grid",
         "no_elevations",
+        "frame_unclear",
         "unknown",
     )
 
@@ -1059,6 +1060,54 @@ def test_a_z_on_a_grid_with_no_elevations_is_named_as_such_not_as_outside_the_gr
     assert result.cell.tolist() == [-1]
     assert any("1 carried a z, but the grid file has no elevations to compare it with" in n for n in result.notes)
     assert not any("sat outside every cell" in n for n in result.notes)
+
+
+def _framed_geometry(xoff: float, yoff: float, angrot: float) -> Geometry:
+    """_geometry(4, 2) moved into real-world coordinates by flopy's own
+    transform, carrying the offset and rotation the way a grid file does."""
+    from flopy.utils.geometry import transform
+
+    local = _geometry(4, 2)
+    x, y = transform(local.positions[:, 0], local.positions[:, 1], xoff, yoff, np.radians(angrot))
+    return Geometry(
+        np.column_stack([x, y]), local.cell_index, local.indices, top=local.top, botm=local.botm,
+        xoff=xoff, yoff=yoff, angrot=angrot,
+    )
+
+
+@pytest.mark.parametrize("angrot", [0.0, 30.0])
+def test_real_world_x_and_y_on_an_offset_grid_place_as_given_with_no_note(angrot):
+    from flopy.utils.geometry import transform
+
+    geometry = _framed_geometry(1000.0, 5000.0, angrot)
+    x, y = transform(np.array([2.5]), np.array([0.5]), 1000.0, 5000.0, np.radians(angrot))
+    par = _par_frame({"pargp": ["hklayer1pp"], "x": x, "y": y}, parnme=["a"])
+    result = resolve(par, GridShape(ncpl=4, nlay=2, nrow=None, ncol=None), geometry=geometry)
+    assert result.cell.tolist() == [2]
+    assert not any("grid coordinates" in n for n in result.notes)
+
+
+@pytest.mark.parametrize("angrot", [0.0, 30.0])
+def test_grid_coordinates_on_an_offset_grid_are_moved_onto_it_and_say_so(angrot):
+    geometry = _framed_geometry(1000.0, 5000.0, angrot)
+    par = _par_frame({"pargp": ["hklayer1pp"], "x": [2.5], "y": [0.5]}, parnme=["a"])
+    result = resolve(par, GridShape(ncpl=4, nlay=2, nrow=None, ncol=None), geometry=geometry)
+    assert result.cell.tolist() == [2]
+    assert any(
+        "read as grid coordinates and moved by the grid file's offset (1000, 5000) and rotation" in n
+        for n in result.notes
+    )
+
+
+def test_x_and_y_that_land_on_the_grid_either_way_refuse_the_group():
+    geometry = _framed_geometry(1.0, 0.0, 0.0)
+    par = _par_frame({"pargp": ["hklayer1pp"], "x": [2.5], "y": [0.5]}, parnme=["a"])
+    result = resolve(par, GridShape(ncpl=4, nlay=2, nrow=None, ncol=None), geometry=geometry)
+    assert result.cell.tolist() == [-1]
+    assert any(
+        "1 could be read both as real-world and as grid coordinates, so pesto cannot tell which cell holds it" in n
+        for n in result.notes
+    )
 
 
 def test_xyz_host_cell_takes_the_layer_from_the_group_name_when_there_is_no_z():
