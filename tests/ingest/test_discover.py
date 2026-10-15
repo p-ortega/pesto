@@ -876,3 +876,27 @@ def test_discover_never_writes_to_a_real_run_directory(forecast_run):
     }
 
     assert after == before
+
+
+def test_mult2model_and_factor_files_are_discovered_by_name(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(tmp_path / "case.0.par.jcb")
+    info = _touch(tmp_path / "mult2model_info.csv")
+    fac_a = _touch(tmp_path / "hklayer1pp_inst0pp.fac")
+    fac_b = _touch(tmp_path / "factors.coarse.boundary.layer3.bin")
+    _touch(tmp_path / "factors.txt")  # not a factor file: wrong suffix
+
+    layout = discover(tmp_path)
+
+    assert layout.mult2model == info
+    assert layout.factor_files == (fac_b, fac_a)  # sorted by name
+
+
+def test_a_run_without_pilot_point_files_reports_none_and_an_empty_tuple(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(tmp_path / "case.0.par.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.mult2model is None
+    assert layout.factor_files == ()
