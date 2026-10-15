@@ -84,6 +84,8 @@ export interface SelectionControlsHandle {
    *  group change re-inferring the scale, say), so the control the user
    *  sees never disagrees with what is actually drawn (WINDOWS.md #5, #8). */
   sync(selection: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>): void
+  /** Moves the layer slider without emitting onSelectionChange. */
+  setLayer(layer: number): void
 }
 
 function isStatistic(value: string): value is Statistic {
@@ -439,6 +441,10 @@ export function renderSelectionControls(
         manualLower.value = String(selection.manualLimits[0])
         manualUpper.value = String(selection.manualLimits[1])
       }
+    },
+    setLayer(layer): void {
+      layerInput.value = String(layer)
+      layerValue.textContent = layerInput.value
     },
   }
 }

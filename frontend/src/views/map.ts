@@ -785,8 +785,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     if (needsFetch) {
       pendingGroup = group
-      const next: Selection = { ...committed, scale: newScale, scaleInferred: true }
+      // An interpolated group has values on one layer only, so it opens there.
+      const nextLayer = interpolatedEntry(group)?.layer ?? committed.layer
+      const next: Selection = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
       controlsHandle?.sync(next)
+      controlsHandle?.setLayer(nextLayer)
       selectedCellId = null
       layer?.setSelected(null)
       scheduleFetch(next)
@@ -1096,6 +1099,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         const select = pickerEl.querySelector('select')
         if (select && drawnGroup !== null) select.value = drawnGroup
         controlsHandle?.sync(committed)
+        controlsHandle?.setLayer(committed.layer)
       }
       paintStatusBar()
       return
@@ -1351,7 +1355,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     committed = {
       iteration,
-      layer: 0,
+      layer: interpolatedEntry(drawnGroup)?.layer ?? 0,
       stat: initialStat,
       realization: initialRealization,
       colormap: wasVisitedBefore ? restoredColormap(restoredView!.colormap) : 'viridis',
@@ -1388,6 +1392,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       onSelectionChange: handleSelectionChange,
       onFitToExtent: fitToExtent,
     })
+    controlsHandle.setLayer(committed.layer)
 
     await performFetch(committed)
   }
