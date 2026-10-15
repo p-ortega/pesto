@@ -1096,3 +1096,10 @@ def test_a_group_whose_x_and_y_are_empty_stays_an_ordinary_silent_unmapped_group
     result = resolve(par, shape, geometry=_geometry(4, 2))
     assert result.groups[0].rule == UNMAPPED
     assert result.notes == ()
+
+
+def test_a_group_the_host_cell_rule_places_carries_a_note_naming_the_rule():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["pp"], "x": [0.5], "y": [0.5], "z": [9.0]}, parnme=["a"])
+    result = resolve(par, shape, geometry=_geometry(4, 2))
+    assert any("pp" in n and "xyz-host-cell" in n and "pilot point" in n for n in result.notes)

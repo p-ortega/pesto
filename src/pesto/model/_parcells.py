@@ -577,6 +577,11 @@ def resolve(
         cell[mapped_positions] = candidate_cell[valid].astype(np.int32)
         layer[mapped_positions] = candidate_layer[valid].astype(np.int32)
         mapped = int(valid.sum())
+        if rule == "xyz-host-cell" and mapped > 0:
+            notes.append(
+                f"group {name!r}: placed by rule 'xyz-host-cell' from each parameter's x and y, "
+                "one dot per pilot point on the cell that contains it, not a value for every cell"
+            )
         if mapped < total:
             counts = _classify_unplaced(candidate_cell, candidate_layer, valid, rejections)
             notes.append(_shortfall_note(name, rule, mapped, total, counts))

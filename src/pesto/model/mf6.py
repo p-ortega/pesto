@@ -160,8 +160,13 @@ class Mf6Adapter:
             top_arr, botm_arr = None, None
         if botm_arr is not None and botm_arr.shape[1] != ncpl:
             top_arr, botm_arr = None, None
+        # The render mesh is float32, which moves an edge by up to half a metre
+        # at real northings; placement uses the grid's own float64 vertices,
+        # copied per cell in the same order fan_polygons uses.
+        verts = np.asarray(grid.verts, dtype=np.float64)
+        positions = np.concatenate([verts[np.asarray(list(cell), dtype=np.int64)] for cell in grid.iverts])
         return Geometry(
-            positions=mesh.positions,
+            positions=positions,
             cell_index=mesh.cell_index,
             indices=mesh.indices,
             top=top_arr,

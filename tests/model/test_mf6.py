@@ -409,3 +409,22 @@ def test_locate_par_places_a_parameter_by_its_coordinates_on_a_structured_grid(t
     cells = adapter.locate_par(par)
     assert cells.layer.tolist() == [1]
     assert cells.cell.tolist() == [2 * 4 + 1]  # bottom row (row 2), column 1
+
+
+def test_locate_par_keeps_full_precision_at_real_world_northings(tmp_path):
+    # At ~7e6 m a float32 cell edge can sit half a metre off; placement must
+    # use the grid's own float64 vertices. Rows are 50 m; the edge between
+    # row 0 (top) and row 1 sits 100 m above the origin.
+    from pesto.model.mf6 import Mf6Adapter
+
+    yorigin = 6977951.34
+    adapter = Mf6Adapter(
+        write_dis_grb(tmp_path / "g.grb", nlay=1, nrow=3, ncol=4, delr=50.0, delc=50.0, xorigin=0.0, yorigin=yorigin)
+    )
+    edge = yorigin + 100.0
+    par = pd.DataFrame(
+        {"pargp": ["pp", "pp"], "x": [25.0, 25.0], "y": [edge + 0.1, edge - 0.1]},
+        index=pd.Index(["above", "below"], name="parnme"),
+    )
+    cells = adapter.locate_par(par)
+    assert cells.cell.tolist() == [0, 4]
