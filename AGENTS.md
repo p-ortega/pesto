@@ -118,12 +118,16 @@ shows in the Statistic menu; the Params panel's notes scroll in their own box; a
 the review's seven deferred minors (stale memo and index sources, `..` names, factor files
 outside the run folder, points-file ties, z with no elevations, the binary readout).
 
+On a grid file with an offset or rotation, a group's x/y are tried both as given (the
+map's real-world frame) and as grid coordinates moved by the file's offset and rotation.
+The reading that lands on the grid wins, with a note when the points were moved; when both
+land, the group is refused as `frame_unclear`. No bench grid has an offset, so this is
+covered by tests only.
+
 Still open:
 
 - On escondida layer 30, large outer cells that each hold many `iid.k` points draw as one
   wide striped band.
-- Pilot-point x/y are never reconciled with a grid's origin or rotation. Every bench grid
-  has neither, so nothing on this machine shows it; the user chooses the frame.
 - The review's last minor: `idomain` from the grid file could answer "in the model"
   instead of the finite-value rule.
 

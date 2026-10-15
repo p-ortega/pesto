@@ -64,13 +64,19 @@ class Geometry:
     carries them. ``positions`` is ``(n_vert, 2)``, ``cell_index`` is
     ``(n_vert,)``, ``indices`` is the ``(n_tri * 3,)`` triangle list, ``top``
     is ``(ncpl,)`` and ``botm`` is ``(nlay, ncpl)``; the last two are
-    ``None`` on a grid with no elevations, which places nothing by ``z``."""
+    ``None`` on a grid with no elevations, which places nothing by ``z``.
+    ``positions`` are real-world coordinates; ``xoff``, ``yoff`` and
+    ``angrot`` (degrees, counter-clockwise) are the grid file's own offset
+    and rotation, kept so x/y given in grid coordinates can be moved too."""
 
     positions: np.ndarray
     cell_index: np.ndarray
     indices: np.ndarray
     top: np.ndarray | None
     botm: np.ndarray | None
+    xoff: float = 0.0
+    yoff: float = 0.0
+    angrot: float = 0.0
 
 
 @dataclass(frozen=True)

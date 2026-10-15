@@ -72,13 +72,14 @@ UNPLACED_REASONS: tuple[tuple[str, str], ...] = (
     ("too_large", "carried a value too large to turn into a cell number"),
     ("outside_grid", "sat outside every cell or layer of the grid"),
     ("no_elevations", "carried a z, but the grid file has no elevations to compare it with"),
+    ("frame_unclear", "could be read both as real-world and as grid coordinates, so pesto cannot tell which cell holds it"),
     ("unknown", "could not be placed and pesto could not tell why"),
 )
 """The locked wording of every reason a parameter can go unplaced, and the
 order its clauses appear in a shortfall note -- one place, so a reason
 cannot drift between the code that counts it and the sentence that says it.
 ``unknown`` is a structural remainder: every known way a cell or layer can
-come out unusable is named by one of the eight causes ahead of it, and this
+come out unusable is named by one of the nine causes ahead of it, and this
 last one exists so a future producer of an unusable value cannot silently
 break the counts."""
 
@@ -128,7 +129,10 @@ class _Rejections:
     too_large: np.ndarray
     outside_grid: np.ndarray
     no_elevations: np.ndarray
+    frame_unclear: np.ndarray
     columns_not_whole: list[str]
+    # True when x/y were read as grid coordinates and moved onto the grid.
+    moved_from_grid_frame: bool = False
 
     @classmethod
     def blank(cls, n: int) -> "_Rejections":
@@ -140,6 +144,7 @@ class _Rejections:
             too_large=np.zeros(n, dtype=bool),
             outside_grid=np.zeros(n, dtype=bool),
             no_elevations=np.zeros(n, dtype=bool),
+            frame_unclear=np.zeros(n, dtype=bool),
             columns_not_whole=[],
         )
 
@@ -305,14 +310,35 @@ def _candidate_ij_single_layer(block: pd.DataFrame, shape: GridShape):
     return _combine_cell(i, shape.ncol, j), layer, rejections
 
 
+def _pick_frame(geometry, x, y, located, finite, rejections):
+    """On a grid with an offset or rotation, also read x/y as grid
+    coordinates. Use whichever reading lands on the grid; when both do,
+    refuse every point rather than guess."""
+    angle = np.radians(geometry.angrot)
+    gx = geometry.xoff + x * np.cos(angle) - y * np.sin(angle)
+    gy = geometry.yoff + x * np.sin(angle) + y * np.cos(angle)
+    moved = locate_points(geometry, gx, gy)
+    as_given, as_grid = (located >= 0).any(), (moved >= 0).any()
+    if as_given and as_grid:
+        rejections.frame_unclear |= finite
+        return np.full_like(located, -1)
+    if as_grid:
+        rejections.moved_from_grid_frame = True
+        return moved
+    return located
+
+
 def _candidate_xyz_host_cell(block: pd.DataFrame, shape: GridShape, pattern, geometry):
     if geometry is None or not {"x", "y"}.issubset(block.columns):
         return None
     rejections = _Rejections.blank(len(block))
     x = _numeric_real(block, "x", rejections)
     y = _numeric_real(block, "y", rejections)
+    finite = np.isfinite(x) & np.isfinite(y)
     located = locate_points(geometry, x, y)
-    rejections.outside_grid |= (located < 0) & np.isfinite(x) & np.isfinite(y)
+    if geometry.xoff or geometry.yoff or geometry.angrot:
+        located = _pick_frame(geometry, x, y, located, finite, rejections)
+    rejections.outside_grid |= (located < 0) & finite & ~rejections.frame_unclear
     cell = np.where(located >= 0, located, np.nan).astype(np.float64)
     if "z" in block.columns and block["z"].notna().any():
         z = _numeric_real(block, "z", rejections)
@@ -386,6 +412,7 @@ def _resolve_group(
             | rejections.no_layer_in_name
             | rejections.outside_grid
             | rejections.no_elevations
+            | rejections.frame_unclear
         )
         valid = _valid_mask(cell, layer, shape)
         if valid.any():
@@ -399,6 +426,7 @@ def _resolve_group(
                 and (
                     rejections.outside_grid.any()
                     or rejections.no_elevations.any()
+                    or rejections.frame_unclear.any()
                     or rejections.no_layer_in_name.any()
                 )
             )
@@ -459,6 +487,7 @@ def _classify_unplaced(
         "too_large": rejections.too_large,
         "outside_grid": rejections.outside_grid,
         "no_elevations": rejections.no_elevations,
+        "frame_unclear": rejections.frame_unclear,
     }
     counts: list[tuple[str, int]] = []
     assigned = np.zeros(len(unplaced), dtype=bool)
@@ -594,6 +623,12 @@ def resolve(
             notes.append(
                 f"group {name!r}: placed by rule 'xyz-host-cell' from each parameter's x and y, "
                 "one dot per pilot point on the cell that contains it, not a value for every cell"
+            )
+        if rule == "xyz-host-cell" and mapped > 0 and rejections.moved_from_grid_frame:
+            notes.append(
+                f"group {name!r}: x and y were read as grid coordinates and moved by the grid file's "
+                f"offset ({geometry.xoff:g}, {geometry.yoff:g}) and rotation ({geometry.angrot:g} degrees), "
+                "because only that reading puts the points on the grid"
             )
         if mapped < total:
             counts = _classify_unplaced(candidate_cell, candidate_layer, valid, rejections)
