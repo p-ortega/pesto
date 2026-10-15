@@ -1013,7 +1013,7 @@ def test_the_reason_counts_in_a_note_add_up_to_every_parameter_that_was_not_plac
     assert sum(counts) == group.total - group.mapped
 
 
-def test_the_unplaced_reasons_table_lists_eight_reasons_in_a_fixed_order():
+def test_the_unplaced_reasons_table_lists_nine_reasons_in_a_fixed_order():
     assert tuple(key for key, _ in UNPLACED_REASONS) == (
         "out_of_range",
         "not_whole",
@@ -1022,6 +1022,7 @@ def test_the_unplaced_reasons_table_lists_eight_reasons_in_a_fixed_order():
         "no_layer_in_name",
         "too_large",
         "outside_grid",
+        "no_elevations",
         "unknown",
     )
 
@@ -1047,6 +1048,17 @@ def test_xyz_host_cell_places_points_by_x_y_and_z():
     assert result.layer.tolist() == [0, 1, -1]
     assert result.groups[0] == GroupResolution(group="pp", rule="xyz-host-cell", mapped=2, total=3)
     assert any("1 sat outside every cell or layer of the grid" in n for n in result.notes)
+
+
+def test_a_z_on_a_grid_with_no_elevations_is_named_as_such_not_as_outside_the_grid():
+    shape = GridShape(ncpl=4, nlay=2, nrow=None, ncol=None)
+    par = _par_frame({"pargp": ["pp"], "x": [0.5], "y": [0.5], "z": [9.0]}, parnme=["a"])
+    flat = _geometry(4, 2)
+    flat = Geometry(flat.positions, flat.cell_index, flat.indices, top=None, botm=None)
+    result = resolve(par, shape, geometry=flat)
+    assert result.cell.tolist() == [-1]
+    assert any("1 carried a z, but the grid file has no elevations to compare it with" in n for n in result.notes)
+    assert not any("sat outside every cell" in n for n in result.notes)
 
 
 def test_xyz_host_cell_takes_the_layer_from_the_group_name_when_there_is_no_z():

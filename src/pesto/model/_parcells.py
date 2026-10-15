@@ -71,13 +71,14 @@ UNPLACED_REASONS: tuple[tuple[str, str], ...] = (
     ("no_layer_in_name", "carried no layer number in its name"),
     ("too_large", "carried a value too large to turn into a cell number"),
     ("outside_grid", "sat outside every cell or layer of the grid"),
+    ("no_elevations", "carried a z, but the grid file has no elevations to compare it with"),
     ("unknown", "could not be placed and pesto could not tell why"),
 )
 """The locked wording of every reason a parameter can go unplaced, and the
 order its clauses appear in a shortfall note -- one place, so a reason
 cannot drift between the code that counts it and the sentence that says it.
 ``unknown`` is a structural remainder: every known way a cell or layer can
-come out unusable is named by one of the seven causes ahead of it, and this
+come out unusable is named by one of the eight causes ahead of it, and this
 last one exists so a future producer of an unusable value cannot silently
 break the counts."""
 
@@ -126,6 +127,7 @@ class _Rejections:
     no_layer_in_name: np.ndarray
     too_large: np.ndarray
     outside_grid: np.ndarray
+    no_elevations: np.ndarray
     columns_not_whole: list[str]
 
     @classmethod
@@ -137,6 +139,7 @@ class _Rejections:
             no_layer_in_name=np.zeros(n, dtype=bool),
             too_large=np.zeros(n, dtype=bool),
             outside_grid=np.zeros(n, dtype=bool),
+            no_elevations=np.zeros(n, dtype=bool),
             columns_not_whole=[],
         )
 
@@ -314,7 +317,11 @@ def _candidate_xyz_host_cell(block: pd.DataFrame, shape: GridShape, pattern, geo
     if "z" in block.columns and block["z"].notna().any():
         z = _numeric_real(block, "z", rejections)
         found = layer_from_z(geometry, located, z)
-        rejections.outside_grid |= (found < 0) & (located >= 0) & np.isfinite(z)
+        missed = (found < 0) & (located >= 0) & np.isfinite(z)
+        if geometry.top is None or geometry.botm is None:
+            rejections.no_elevations |= missed
+        else:
+            rejections.outside_grid |= missed
         layer = np.where(found >= 0, found, np.nan).astype(np.float64)
     else:
         layer = _layer_from_names(block, pattern, rejections)
@@ -378,6 +385,7 @@ def _resolve_group(
             | rejections.not_whole
             | rejections.no_layer_in_name
             | rejections.outside_grid
+            | rejections.no_elevations
         )
         valid = _valid_mask(cell, layer, shape)
         if valid.any():
@@ -388,7 +396,11 @@ def _resolve_group(
             or rejections.too_large.any()
             or (
                 rule == "xyz-host-cell"
-                and (rejections.outside_grid.any() or rejections.no_layer_in_name.any())
+                and (
+                    rejections.outside_grid.any()
+                    or rejections.no_elevations.any()
+                    or rejections.no_layer_in_name.any()
+                )
             )
         )
         if fires_fallback and fallback is None:
@@ -446,6 +458,7 @@ def _classify_unplaced(
         "no_layer_in_name": rejections.no_layer_in_name,
         "too_large": rejections.too_large,
         "outside_grid": rejections.outside_grid,
+        "no_elevations": rejections.no_elevations,
     }
     counts: list[tuple[str, int]] = []
     assigned = np.zeros(len(unplaced), dtype=bool)
