@@ -13,6 +13,7 @@ from typing import Callable
 from pesto.bench.measure import (
     cache_size,
     machine_facts,
+    observation_facts,
     read_floor_for,
     run_facts,
     source_reads,
@@ -26,7 +27,12 @@ from pesto.bench.report import (
     verdict,
     write_result_json,
 )
-from pesto.bench.serve import BenchServer, measure_values, page_iteration
+from pesto.bench.serve import (
+    BenchServer,
+    measure_reopen_share,
+    measure_values,
+    pick_browser_targets,
+)
 from pesto.ingest.runner import ingest_run
 
 _AS_FOUND = "ingest-1"
@@ -73,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=_VALUES_SAMPLES,
         help=f"grid/values requests timed per kind (default {_VALUES_SAMPLES})",
+    )
+    parser.add_argument(
+        "--obs-probe",
+        action="store_true",
+        help=(
+            "Also time one read of the lowest-numbered observation ensemble file (information "
+            "only, not part of ingest). Loads that whole file into memory."
+        ),
     )
     return parser
 
@@ -125,6 +139,7 @@ def run_bench(
     *,
     ingest: Callable[..., object] | None = None,
     measure_server: bool = True,
+    obs_probe: bool = False,
     values_samples: int = _VALUES_SAMPLES,
 ) -> BenchResult:
     run = Path(run_dir).resolve()
@@ -160,15 +175,21 @@ def run_bench(
 
     verdicts = [verdict("cache_ratio", measured, "x", note)]
     server_result = None
+    targets = None
     if measure_server:
-        print(f"pesto bench: timing grid/values on {run.name}", file=sys.stderr)
+        print(f"pesto bench: timing the server on {run.name}", file=sys.stderr)
         with BenchServer(warm_dir, run) as server:
-            iteration, iteration_note = page_iteration(server)
-            values = measure_values(server, iteration, values_samples, iteration_note)
-            server_result = ServerMeasures(started_seconds=server.started_seconds, values=values)
+            # Reopen goes first, on a server that has only just started.
+            share = measure_reopen_share(server)
+            targets = pick_browser_targets(server)
+            values = measure_values(server, targets.iteration, values_samples, targets.iteration_note)
+            server_result = ServerMeasures(
+                started_seconds=server.started_seconds, reopen_share=share, values=values
+            )
         verdicts += _values_verdicts(values)
     else:
         verdicts += _values_verdicts(None)
+    observations = observation_facts(run, obs_probe)
 
     return BenchResult(
         pesto_version=_version(),
@@ -187,6 +208,8 @@ def run_bench(
         cache_size=size,
         verdicts=verdicts,
         server=server_result,
+        browser_targets=targets,
+        observations=observations,
     )
 
 
@@ -213,7 +236,11 @@ def main(argv: list[str]) -> int:
 
     try:
         result = run_bench(
-            args.run, args.cache_dir, args.json, values_samples=args.values_samples
+            args.run,
+            args.cache_dir,
+            args.json,
+            obs_probe=args.obs_probe,
+            values_samples=args.values_samples,
         )
     except KeyboardInterrupt:
         print(
