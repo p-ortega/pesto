@@ -28,6 +28,7 @@ import re
 import secrets
 import string
 import sys
+from collections import Counter
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
@@ -141,8 +142,14 @@ async def list_roots(request: Request) -> JSONResponse:
     fs_ids: dict[str, Path] = request.app.state.fs_ids
     roots: list[dict[str, object]] = []
 
-    for recent in read_recent_runs():
-        roots.append(_entry(fs_ids, recent, recent.name))
+    recents = read_recent_runs()
+    name_counts = Counter(recent.name for recent in recents)
+    for recent in recents:
+        # A parent folder's name, never a path, keeps same-named runs apart.
+        label = recent.name
+        if name_counts[label] > 1:
+            label = f"{recent.name} (in {recent.parent.name})"
+        roots.append(_entry(fs_ids, recent, label))
 
     roots.append(_entry(fs_ids, Path.home(), "Home"))
 
