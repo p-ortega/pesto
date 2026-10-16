@@ -184,6 +184,22 @@ describe('renderParamsPanel', () => {
     expect(el.textContent).toContain('par_ens')
     expect(el.textContent).toContain('one realization dropped')
   })
+
+  it('lets Tab reach each scrolling list, so a keyboard user can scroll it', async () => {
+    const el = mount()
+    vi.spyOn(client, 'runMeta').mockResolvedValue(parTableBuffer(BASIC_COLUMNS))
+    renderParamsPanel(el, {
+      unmapped: [{ group: 'G9', note: null }],
+      artifactNotes: [{ artifact: 'par_ens', reason: 'one realization dropped' }],
+    })
+
+    await vi.waitFor(() => {
+      expect(el.querySelectorAll('.scroll-pane').length).toBe(3)
+    })
+    const panes = [...el.querySelectorAll<HTMLElement>('.scroll-pane')]
+    for (const pane of panes) expect(pane.tabIndex).toBe(0)
+    expect(panes.map((p) => p.getAttribute('aria-label')).sort()).toEqual(['Notes', 'Parameter table', 'Unmapped groups'])
+  })
 })
 
 describe('the status bar carries real figures (Task 3)', () => {

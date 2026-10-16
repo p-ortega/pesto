@@ -48,10 +48,8 @@ void main() {
 // The outline pass draws only the ring edges belonging to cells marked
 // inactive by setInactive -- never a fill. The colour is a uniform the
 // caller sets from a resolved token; no colour value is written here.
-// It also draws the selection ring (drawSelection), which shares this same
-// program and uniform. u_color carries alpha because --hairline is
-// authored at 10% opacity (WINDOWS.md #12); --accent has no alpha of its
-// own, so the selection ring always draws at alpha 1.
+// u_color carries alpha because --hairline is authored at 10% opacity
+// (WINDOWS.md #12).
 const OUTLINE_VERTEX = `#version 300 es
 in vec2 a_pos;
 uniform mat3 u_matrix;
@@ -67,6 +65,36 @@ out vec4 fragColor;
 
 void main() {
   fragColor = u_color;
+}`
+
+// The selection ring is drawn as screen-space quads, one per cell edge,
+// because WebGL2 only promises 1px lines. Each quad runs past both ends of
+// its edge by the half width so corners close without a notch.
+const RING_VERTEX = `#version 300 es
+in vec2 a_a;
+in vec2 a_b;
+in vec2 a_corner;   // x: 0 at a, 1 at b; y: -1 or 1 across the edge
+uniform mat3 u_matrix;
+uniform vec2 u_viewport;
+uniform float u_halfWidth;
+
+void main() {
+  vec2 pa = (u_matrix * vec3(a_a, 1.0)).xy * 0.5 * u_viewport;
+  vec2 pb = (u_matrix * vec3(a_b, 1.0)).xy * 0.5 * u_viewport;
+  vec2 d = pb - pa;
+  d = length(d) > 0.0 ? normalize(d) : vec2(1.0, 0.0);
+  vec2 n = vec2(-d.y, d.x);
+  vec2 p = mix(pa, pb, a_corner.x) + (a_corner.x * 2.0 - 1.0) * d * u_halfWidth + n * a_corner.y * u_halfWidth;
+  gl_Position = vec4(p / (0.5 * u_viewport), 0.0, 1.0);
+}`
+
+const RING_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+out vec4 fragColor;
+
+void main() {
+  fragColor = vec4(u_color, 1.0);
 }`
 
 // D-06's contested mark: a fine diagonal stripe at 22.5 degrees over a
@@ -206,7 +234,9 @@ export class MeshLayer {
   private footprintMask: Uint8Array | null = null
   private footprintColor: [number, number, number] = [0, 0, 0]
 
+  private ringProgram!: WebGLProgram
   private selectionVao!: WebGLVertexArrayObject
+  private selectionVerts!: WebGLBuffer
   private selectionElements!: WebGLBuffer
   private selectionCount = 0
 
@@ -232,6 +262,7 @@ export class MeshLayer {
   private contestedFillColor: [number, number, number] = [0, 0, 0]
   private selectedCell: number | null = null
   private accentColor: [number, number, number] = [0, 0, 0]
+  private haloColor: [number, number, number] = [1, 1, 1]
 
   constructor(gl: WebGL2RenderingContext, mesh: MeshData) {
     this.gl = gl
@@ -322,15 +353,24 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.footprintElements)
     gl.bindVertexArray(null)
 
-    // The ring pass shares the outline program (position in, one flat
-    // colour out) with its own VAO and index buffer, so a selection never
-    // needs a third shader.
+    this.ringProgram = gl.createProgram()!
+    gl.attachShader(this.ringProgram, compile(gl, gl.VERTEX_SHADER, RING_VERTEX))
+    gl.attachShader(this.ringProgram, compile(gl, gl.FRAGMENT_SHADER, RING_FRAGMENT))
+    gl.linkProgram(this.ringProgram)
+    if (!gl.getProgramParameter(this.ringProgram, gl.LINK_STATUS)) {
+      throw new Error(`ring program failed to link: ${gl.getProgramInfoLog(this.ringProgram)}`)
+    }
+
+    // Six floats per vertex: the edge's two ends, then the corner.
     this.selectionVao = gl.createVertexArray()!
     gl.bindVertexArray(this.selectionVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
-    const selectionPosLoc = gl.getAttribLocation(this.outlineProgram, 'a_pos')
-    gl.enableVertexAttribArray(selectionPosLoc)
-    gl.vertexAttribPointer(selectionPosLoc, 2, gl.FLOAT, false, 0, 0)
+    this.selectionVerts = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.selectionVerts)
+    for (const [name, offset] of [['a_a', 0], ['a_b', 2], ['a_corner', 4]] as const) {
+      const loc = gl.getAttribLocation(this.ringProgram, name)
+      gl.enableVertexAttribArray(loc)
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 24, offset * 4)
+    }
     this.selectionElements = gl.createBuffer()!
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
     gl.bindVertexArray(null)
@@ -508,28 +548,42 @@ export class MeshLayer {
   }
 
   /** Which cell carries the selection ring, over whatever of the four
-   *  marks that cell already has -- `null` removes it. Rebuilds the ring
-   *  pass's line-list index buffer from that one cell's ring, the same way
-   *  `setInactive` builds the hairline's. */
+   *  marks that cell already has -- `null` removes it. Builds one quad
+   *  per edge of that cell's ring. */
   setSelected(cellId: number | null): void {
     this.selectedCell = cellId
     const { gl } = this
-    const edges: number[] = []
+    const pos = this.mesh.positions
+    const verts: number[] = []
+    const indices: number[] = []
     const ring = cellId !== null ? this.rings[cellId] : null
     if (ring) {
       const [start, count] = ring
       for (let i = 0; i < count; i++) {
-        edges.push(start + i, start + ((i + 1) % count))
+        const a = start + i
+        const b = start + ((i + 1) % count)
+        const base = verts.length / 6
+        for (const [t, side] of [[0, -1], [0, 1], [1, -1], [1, 1]]) {
+          verts.push(pos[2 * a], pos[2 * a + 1], pos[2 * b], pos[2 * b + 1], t, side)
+        }
+        indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
       }
     }
-    this.selectionCount = edges.length
+    this.selectionCount = indices.length
+    gl.bindVertexArray(this.selectionVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.selectionVerts)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW)
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(edges), gl.DYNAMIC_DRAW)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indices), gl.DYNAMIC_DRAW)
+    gl.bindVertexArray(null)
   }
 
-  /** `--accent`, resolved the same way as the hairline and stripe colours. */
-  setAccentColor(rgb: [number, number, number]): void {
+  /** `--accent`, resolved the same way as the hairline and stripe colours,
+   *  and the light halo drawn under the selection ring so it reads on dark
+   *  cells as well as light ones. */
+  setAccentColor(rgb: [number, number, number], halo: [number, number, number] = [1, 1, 1]): void {
     this.accentColor = rgb
+    this.haloColor = halo
   }
 
   /** `xy` is x, y pairs in the same coordinates as the mesh; `values` is
@@ -668,18 +722,25 @@ export class MeshLayer {
   private drawSelection(): void {
     if (this.selectionCount === 0) return
     const { gl } = this
-    gl.useProgram(this.outlineProgram)
+    const program = this.ringProgram
+    const dpr = globalThis.devicePixelRatio || 1
+    gl.useProgram(program)
     gl.bindVertexArray(this.selectionVao)
-    gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
-    // --accent carries no alpha of its own, so the ring always draws opaque.
-    gl.uniform4f(
-      gl.getUniformLocation(this.outlineProgram, 'u_color'),
-      this.accentColor[0],
-      this.accentColor[1],
-      this.accentColor[2],
-      1,
+    gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
+    gl.uniform2f(
+      gl.getUniformLocation(program, 'u_viewport'),
+      gl.drawingBufferWidth || 1,
+      gl.drawingBufferHeight || 1,
     )
-    gl.drawElements(gl.LINES, this.selectionCount, gl.UNSIGNED_INT, 0)
+    // Half widths in device pixels: a 2.5px accent band inside a 5px halo.
+    for (const [halfWidth, c] of [
+      [2.5, this.haloColor],
+      [1.25, this.accentColor],
+    ] as const) {
+      gl.uniform1f(gl.getUniformLocation(program, 'u_halfWidth'), halfWidth * dpr)
+      gl.uniform3f(gl.getUniformLocation(program, 'u_color'), c[0], c[1], c[2])
+      gl.drawElements(gl.TRIANGLES, this.selectionCount, gl.UNSIGNED_INT, 0)
+    }
     gl.bindVertexArray(null)
   }
 
@@ -712,6 +773,7 @@ export class MeshLayer {
     gl.deleteProgram(this.outlineProgram)
     gl.deleteProgram(this.contestedProgram)
     gl.deleteProgram(this.pointsProgram)
+    gl.deleteProgram(this.ringProgram)
     gl.deleteVertexArray(this.vao)
     gl.deleteVertexArray(this.outlineVao)
     gl.deleteVertexArray(this.contestedVao)
@@ -723,6 +785,7 @@ export class MeshLayer {
     gl.deleteBuffer(this.elementsBuffer)
     gl.deleteBuffer(this.outlineElements)
     gl.deleteBuffer(this.contestedElements)
+    gl.deleteBuffer(this.selectionVerts)
     gl.deleteBuffer(this.selectionElements)
     gl.deleteBuffer(this.footprintElements)
     gl.deleteBuffer(this.pointsPosBuffer)

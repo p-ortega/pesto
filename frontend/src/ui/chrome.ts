@@ -263,3 +263,10 @@ export function renderNotice(el: HTMLElement, opts: RenderNoticeOptions): void {
 
   el.appendChild(notice)
 }
+
+// A scroll pane must take focus, or a keyboard user cannot scroll it at all.
+export function makeFocusable(pane: HTMLElement, name: string): void {
+  pane.tabIndex = 0
+  pane.setAttribute('role', 'region')
+  pane.setAttribute('aria-label', name)
+}

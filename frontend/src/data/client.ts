@@ -354,6 +354,7 @@ export interface ViewState {
   limitsMode: 'robust' | 'minmax' | 'manual'
   group: string | null
   stat: string
+  layer: number | null
 }
 
 interface ViewStateWire {
@@ -364,6 +365,7 @@ interface ViewStateWire {
   limits_mode: 'robust' | 'minmax' | 'manual'
   group: string | null
   stat: string
+  layer?: number | null
 }
 
 function toViewState(raw: unknown): ViewState {
@@ -376,6 +378,7 @@ function toViewState(raw: unknown): ViewState {
     limitsMode: wire.limits_mode,
     group: wire.group,
     stat: wire.stat,
+    layer: wire.layer ?? null,
   }
 }
 
@@ -388,6 +391,7 @@ function toViewStateWire(state: ViewState): ViewStateWire {
     limits_mode: state.limitsMode,
     group: state.group,
     stat: state.stat,
+    layer: state.layer,
   }
 }
 

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
 from pesto.api.prefs import read_view_state, write_view_state
@@ -84,6 +84,7 @@ class ViewState(BaseModel):
     limits_mode: Literal["robust", "minmax", "manual"] = "robust"
     group: str | None = None
     stat: str = "value"
+    layer: int | None = Field(default=None, ge=0)
 
 
 @router.get("/view")
