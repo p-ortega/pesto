@@ -12,7 +12,10 @@ from pesto.bench.limits import SPEED_LIMITS, passes
 
 MIN_NET_SMALL_SECONDS = 2.0
 GROWTH_REALIZATIONS = 100
-GROWTH_SMALL_PARAMETERS = 50_000
+GROWTH_SMALL_PARAMETERS = 125_000
+# The 06-06 baseline: 50,000 parameters took 1.6 s over the fixed cost, which was too little to judge.
+BASELINE_NET_SECONDS_PER_PARAMETER = 1.6 / 50_000
+GROWTH_NET_MARGIN = 2.0
 GROWTH_FIXED_PARAMETERS = 20
 VALUES_SAMPLES = 300
 
@@ -50,6 +53,18 @@ def test_net_growth_ratio_arithmetic():
     assert net_growth_ratio(fixed=6.0, small=10.0, large=30.0) == 6.0
 
 
+def growth_case_sizes() -> tuple[int, int]:
+    """Parameter counts of the small and the large growth case, the large one data-factor times bigger."""
+    return GROWTH_SMALL_PARAMETERS, GROWTH_SMALL_PARAMETERS * int(SPEED_LIMITS.ingest_growth_data_factor)
+
+
+def test_growth_cases_keep_the_ratio_rule_and_the_small_case_is_sized_to_clear_the_floor():
+    small, large = growth_case_sizes()
+
+    assert large == small * SPEED_LIMITS.ingest_growth_data_factor
+    assert small * BASELINE_NET_SECONDS_PER_PARAMETER >= GROWTH_NET_MARGIN * MIN_NET_SMALL_SECONDS
+
+
 def _timed_synthetic_ingest(tmp_path, label, n_par):
     run_dir = tmp_path / label
     run_dir.mkdir()
@@ -61,8 +76,9 @@ def _timed_synthetic_ingest(tmp_path, label, n_par):
 def test_ingest_growth_4x_data_under_10x_time_net_of_fixed_cost(tmp_path):
     factor = int(SPEED_LIMITS.ingest_growth_data_factor)
     fixed = _timed_synthetic_ingest(tmp_path, "fixed", GROWTH_FIXED_PARAMETERS)
-    small = _timed_synthetic_ingest(tmp_path, "small", GROWTH_SMALL_PARAMETERS)
-    large = _timed_synthetic_ingest(tmp_path, "large", GROWTH_SMALL_PARAMETERS * factor)
+    small_parameters, large_parameters = growth_case_sizes()
+    small = _timed_synthetic_ingest(tmp_path, "small", small_parameters)
+    large = _timed_synthetic_ingest(tmp_path, "large", large_parameters)
     print(f"\ningest seconds: fixed {fixed:.1f}, small {small:.1f}, large {large:.1f}")
     try:
         ratio = net_growth_ratio(fixed, small, large)
