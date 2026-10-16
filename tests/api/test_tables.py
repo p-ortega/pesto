@@ -139,6 +139,37 @@ def test_no_columns_gives_the_whole_table_as_before(tmp_path):
     assert table.column_names == _PAR_COLUMNS
 
 
+def test_the_parameter_table_is_served_without_the_observation_file(tmp_path):
+    app, token = _open_run(tmp_path)
+    (CacheLayout(root=tmp_path).control / "obs.parquet").unlink()
+
+    for query in ({}, {"columns": "parnme,pargp"}):
+        response = _get(app, token, "/api/run/meta", kind="par", **query)
+        assert response.status_code == 200, query
+
+
+def test_the_observation_table_is_served_without_the_parameter_file(tmp_path):
+    app, token = _open_run(tmp_path)
+    (CacheLayout(root=tmp_path).control / "par.parquet").unlink()
+
+    response = _get(app, token, "/api/run/meta", kind="obs")
+
+    assert response.status_code == 200
+
+
+def test_a_notes_file_at_another_cache_version_is_refused_with_502_and_no_path(tmp_path):
+    app, token = _open_run(tmp_path)
+    notes_path = CacheLayout(root=tmp_path).control / "notes.json"
+    payload = json.loads(notes_path.read_text())
+    payload["cache_version"] = CACHE_VERSION + 1
+    notes_path.write_text(json.dumps(payload))
+
+    response = _get(app, token, "/api/run/meta", kind="par", columns="parnme")
+
+    assert response.status_code == 502
+    assert str(tmp_path) not in response.text
+
+
 def test_the_response_media_type_is_the_arrow_stream_type_never_json(tmp_path):
     app, token = _open_run(tmp_path)
     response = _get(app, token, "/api/run/meta", kind="par")

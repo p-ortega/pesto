@@ -17,7 +17,7 @@ from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import WrittenArtifact
 from pesto.ingest.control import ControlTables, read_control
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.tables import load_control_tables, write_control
+from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
 from .fixtures import write_control_file
 
@@ -228,3 +228,82 @@ def test_write_control_never_touches_the_run_directory(tmp_path):
     after = _snapshot(run_dir)
 
     assert after == before
+
+
+def test_load_control_table_returns_only_the_asked_columns_with_the_full_tables_values(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+    full = load_control_tables(layout)
+    assert not isinstance(full, ReadFailure)
+
+    result = load_control_table(layout, "par", ["parnme", "pargp"])
+
+    assert not isinstance(result, ReadFailure)
+    table, notes = result
+    assert table.column_names == ["parnme", "pargp"]
+    for name in table.column_names:
+        assert table.column(name).to_pylist() == full.par[name].astype(object).tolist()
+    assert notes == full.notes
+
+
+def test_load_control_table_without_columns_returns_every_column_in_file_order(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+
+    result = load_control_table(layout, "obs", None)
+
+    assert not isinstance(result, ReadFailure)
+    table, _ = result
+    assert table.column_names == list(tables.obs.columns)
+
+
+def test_load_control_table_for_par_does_not_need_the_observation_file(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+    (layout.control / "obs.parquet").unlink()
+
+    result = load_control_table(layout, "par", None)
+
+    assert not isinstance(result, ReadFailure)
+    assert result[0].num_rows == len(_PAR_NAMES)
+
+
+def test_load_control_table_refuses_a_column_the_file_does_not_have_naming_it(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+
+    result = load_control_table(layout, "par", ["parnme", "nope"])
+
+    assert isinstance(result, ReadFailure)
+    assert "nope" in result.reason
+
+
+def test_load_control_table_gives_the_same_failures_as_load_control_tables(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    assert isinstance(load_control_table(layout, "par", None), ReadFailure)
+
+    tables = _control_tables(tmp_path)
+    write_control(tables, layout)
+    notes_path = layout.control / "notes.json"
+    good = notes_path.read_text()
+
+    notes_path.write_text("not json{{{")
+    unreadable = load_control_table(layout, "par", None)
+    assert isinstance(unreadable, ReadFailure)
+    assert unreadable.reason == load_control_tables(layout).reason
+
+    notes_path.write_text("[1, 2]")
+    wrong_shape = load_control_table(layout, "par", None)
+    assert isinstance(wrong_shape, ReadFailure)
+    assert wrong_shape.reason == load_control_tables(layout).reason
+
+    payload = json.loads(good)
+    payload["cache_version"] = CACHE_VERSION + 1
+    notes_path.write_text(json.dumps(payload))
+    foreign = load_control_table(layout, "par", None)
+    assert isinstance(foreign, ReadFailure)
+    assert foreign.reason == load_control_tables(layout).reason

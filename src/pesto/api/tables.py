@@ -21,7 +21,7 @@ from starlette.responses import Response
 from pesto.api.problem import problem, problem_from_failure
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.tables import load_control_tables
+from pesto.ingest.tables import UnknownColumn, load_control_table
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -71,7 +71,7 @@ async def get_run_meta(
     request: Request, kind: Literal["par", "obs"], columns: str | None = None
 ) -> Response:
     """Serve the control file's parameter or observation table as an Arrow
-    stream, column order exactly as ``load_control_tables`` read it back.
+    stream, column order exactly as the cache file holds it.
 
     ``kind`` is a closed set typed as a ``Literal``, so an unknown value is
     rejected by FastAPI's own validation handler as a 422 problem body
@@ -97,25 +97,19 @@ async def get_run_meta(
             )
 
     layout = CacheLayout(root=Path(cache_root))
-    tables = load_control_tables(layout)
-    if isinstance(tables, ReadFailure):
-        return problem_from_failure(502, tables)
-
-    import pyarrow as pa
-
-    df = tables.par if kind == "par" else tables.obs
-    if wanted is not None:
-        missing = [name for name in wanted if name not in df.columns]
-        if missing:
+    result = load_control_table(layout, kind, wanted)
+    if isinstance(result, ReadFailure):
+        if isinstance(result, UnknownColumn):
             return problem(
                 422,
                 "a requested column is not in the table",
                 artifact=f"meta/{kind}",
-                detail=f"the {kind} table has no column named {missing[0]!r}",
+                detail=result.reason,
             )
-        df = df[[name for name in df.columns if name in wanted]]
-    table = pa.Table.from_pandas(df, preserve_index=False)
-    return arrow_response(table, notes=tables.notes)
+        return problem_from_failure(502, result)
+
+    table, notes = result
+    return arrow_response(table, notes=notes)
 
 
 @router.get("/reals")
