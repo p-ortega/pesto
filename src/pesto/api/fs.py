@@ -34,7 +34,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-from pesto.api.prefs import read_last_run, write_last_run
+from pesto.api.prefs import read_recent_runs, write_last_run
 from pesto.api.problem import problem, redact_paths
 from pesto.cache.layout import for_run
 from pesto.ingest.discover import _ENS_EXTS, _ITER_TOKEN, _MACOS_RESOURCE_FORK_PREFIX
@@ -141,9 +141,8 @@ async def list_roots(request: Request) -> JSONResponse:
     fs_ids: dict[str, Path] = request.app.state.fs_ids
     roots: list[dict[str, object]] = []
 
-    last_run = read_last_run()
-    if last_run is not None:
-        roots.append(_entry(fs_ids, last_run, last_run.name))
+    for recent in read_recent_runs():
+        roots.append(_entry(fs_ids, recent, recent.name))
 
     roots.append(_entry(fs_ids, Path.home(), "Home"))
 

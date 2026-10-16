@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from pesto.api import fs as fs_module
 from pesto.api.app import create_app
 from pesto.api.fs import is_run_directory
-from pesto.api.prefs import read_last_run, write_last_run
+from pesto.api.prefs import read_last_run, read_recent_runs, write_last_run
 
 BASE_URL = "http://127.0.0.1"
 
@@ -526,6 +526,35 @@ def test_roots_prepends_the_last_opened_directory(
     roots = _get(_client(app), token, "/api/fs/roots").json()
 
     assert roots[0]["name"] == "deep"
+
+
+def _open_through_picker(client: TestClient, token: str, run_dir: Path) -> None:
+    roots = _get(client, token, "/api/fs/roots").json()
+    home_id = next(e["id"] for e in roots if e["name"] == "Home")
+    # Walk from Home down to the run folder, one listing per level.
+    current_id = home_id
+    for part in run_dir.relative_to(Path.home()).parts:
+        current_id = _id_for(client, token, current_id, part)
+    assert _post(client, token, "/api/fs/open", {"id": current_id}).status_code == 200
+
+
+def test_roots_list_recently_opened_runs_newest_first_above_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runs = [tmp_path / "bench" / name for name in ("one", "two", "three")]
+    for run in runs:
+        _make_run(run)
+
+    app, token = create_app()
+    client = _client(app)
+    for run in runs:
+        _open_through_picker(client, token, run)
+
+    fresh_app, fresh_token = create_app()
+    roots = _get(_client(fresh_app), fresh_token, "/api/fs/roots").json()
+
+    assert [e["name"] for e in roots[:4]] == ["three", "two", "one", "Home"]
 
 
 # --- The one real-benchmark case ------------------------------------------

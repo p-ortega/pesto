@@ -25,47 +25,81 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_STORE_VERSION = 1
+from pesto.cache._atomic import write_atomic_text
+
+_STORE_VERSION = 2
+_MAX_RECENT_RUNS = 5
 
 
 def _store_path() -> Path:
     return Path.home() / ".cache" / "pesto" / "last_run.json"
 
 
-def read_last_run() -> Path | None:
-    """Return the last directory recorded, or ``None`` for any reason at all."""
+def read_recent_runs() -> list[Path]:
+    """Return the recent run folders, newest first, or an empty list for any
+    reason at all. Old one-path files read as a one-entry list.
+    """
     try:
         raw = _store_path().read_text(encoding="utf-8")
     except OSError:
-        return None
+        return []
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return None
+        return []
 
-    if not isinstance(data, dict) or data.get("version") != _STORE_VERSION:
-        return None
+    if not isinstance(data, dict):
+        return []
 
-    recorded = data.get("path")
-    if not isinstance(recorded, str):
-        return None
+    version = data.get("version")
+    if version == 1:
+        entries = [data.get("path")]
+    elif version == _STORE_VERSION:
+        entries = data.get("paths")
+        if not isinstance(entries, list):
+            return []
+    else:
+        return []
 
-    recorded_path = Path(recorded)
-    return recorded_path if recorded_path.is_dir() else None
+    recent: list[Path] = []
+    seen: set[Path] = set()
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        candidate = Path(entry)
+        if not candidate.is_dir():
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        recent.append(candidate)
+        if len(recent) == _MAX_RECENT_RUNS:
+            break
+    return recent
+
+
+def read_last_run() -> Path | None:
+    """Return the newest recent run, or ``None`` for any reason at all."""
+    recent = read_recent_runs()
+    return recent[0] if recent else None
 
 
 def write_last_run(path: Path) -> None:
-    """Record ``path`` as the last directory opened.
+    """Move ``path`` to the front of the recent runs, keeping at most five.
 
     Never raises -- a failed write just means the next launch starts with
-    no remembered directory, which is a worse first screen, not a broken one.
+    fewer remembered runs, which is a worse first screen, not a broken one.
     """
+    resolved = path.resolve()
+    others = [p for p in read_recent_runs() if p.resolve() != resolved]
+    runs = [resolved, *others][:_MAX_RECENT_RUNS]
+    body = json.dumps({"version": _STORE_VERSION, "paths": [str(p) for p in runs]})
     store = _store_path()
-    body = json.dumps({"version": _STORE_VERSION, "path": str(path.resolve())})
     try:
         store.parent.mkdir(parents=True, exist_ok=True)
-        store.write_text(body, encoding="utf-8")
+        write_atomic_text(store, body)
     except OSError:
         return
 
