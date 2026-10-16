@@ -401,15 +401,6 @@ describe('params-panel.ts (WINDOWS.md #13)', () => {
     }
     const ipc = tableToIPC(tableFromArrays(columns), 'stream')
     const bytes = ipc.buffer.slice(ipc.byteOffset, ipc.byteOffset + ipc.byteLength) as ArrayBuffer
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        arrayBuffer: async () => bytes,
-        headers: { get: () => null },
-      })),
-    )
     const el = document.createElement('div')
     document.body.appendChild(el)
     renderParamsPanel(el, {
@@ -418,6 +409,7 @@ describe('params-panel.ts (WINDOWS.md #13)', () => {
         { group: 'G3', note: 'no placement rule matched the control file' },
       ],
       artifactNotes: [{ artifact: 'par_ens/head', reason: 'group obs2 excluded' }],
+      parTable: Promise.resolve(bytes),
     })
     for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
     expectNoRunTogetherText(el, 'params-panel.ts renderParamsPanel')

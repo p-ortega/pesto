@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 //
 // The Params panel (D-09/E8): the windowed parameter table, the unmapped
-// list and the per-artifact notes. `runMeta` is mocked so every test
-// controls exactly what the panel's own fetch resolves or rejects with.
+// list and the per-artifact notes. The parameter table answer is handed
+// in, so every test controls exactly what the panel resolves or rejects with.
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderParamsPanel } from '../src/ui/params-panel'
 import { ApiError, type IngestState } from '../src/data/client'
-import * as client from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
 
 vi.mock('../src/gl/context', () => ({
@@ -70,8 +69,7 @@ describe('renderParamsPanel', () => {
 
   it('shows exactly one muted "Loading parameters…" line during the first fetch, no skeleton rows', () => {
     const el = mount()
-    vi.spyOn(client, 'runMeta').mockReturnValue(new Promise(() => {}))
-    renderParamsPanel(el, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(el, { unmapped: [], artifactNotes: [], parTable: new Promise(() => {}) })
 
     expect(el.textContent).toContain('Loading parameters…')
     expect(el.querySelectorAll('.param-row').length).toBe(0)
@@ -79,10 +77,10 @@ describe('renderParamsPanel', () => {
 
   it('names the artifact and the reason in place of the table when the fetch fails', async () => {
     const el = mount()
-    vi.spyOn(client, 'runMeta').mockRejectedValue(
+    const parTable = Promise.reject(
       new ApiError({ type: 'about:blank', title: 'bad read', status: 502, artifact: 'meta', detail: 'the control file is not readable' }),
     )
-    renderParamsPanel(el, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(el, { unmapped: [], artifactNotes: [], parTable })
 
     await vi.waitFor(() => {
       expect(el.textContent).toContain('The parameter table could not be read')
@@ -102,8 +100,7 @@ describe('renderParamsPanel', () => {
       parubnd: Array.from({ length: n }, () => 1),
       partrans: Array.from({ length: n }, () => 'none'),
     }
-    vi.spyOn(client, 'runMeta').mockResolvedValue(parTableBuffer(columns))
-    renderParamsPanel(el, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(el, { unmapped: [], artifactNotes: [], parTable: Promise.resolve(parTableBuffer(columns)) })
 
     await vi.waitFor(() => {
       expect(el.querySelector('.scroll-pane')).not.toBeNull()
@@ -127,8 +124,7 @@ describe('renderParamsPanel', () => {
 
   it('a parameter with no recorded bounds shows an em dash, never a zero', async () => {
     const el = mount()
-    vi.spyOn(client, 'runMeta').mockResolvedValue(parTableBuffer(BASIC_COLUMNS))
-    renderParamsPanel(el, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(el, { unmapped: [], artifactNotes: [], parTable: Promise.resolve(parTableBuffer(BASIC_COLUMNS)) })
 
     await vi.waitFor(() => {
       expect(el.querySelectorAll('.param-row').length).toBe(2)
@@ -140,15 +136,13 @@ describe('renderParamsPanel', () => {
 
   it('reads every column by field name, proven by reversing the column order', async () => {
     const forward = mount()
-    vi.spyOn(client, 'runMeta').mockResolvedValueOnce(parTableBuffer(BASIC_COLUMNS))
-    renderParamsPanel(forward, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(forward, { unmapped: [], artifactNotes: [], parTable: Promise.resolve(parTableBuffer(BASIC_COLUMNS)) })
     await vi.waitFor(() => expect(forward.querySelectorAll('.param-row').length).toBe(2))
     const forwardText = Array.from(forward.querySelectorAll('.param-row')).map((r) => r.textContent)
 
     const reversedColumns = Object.fromEntries(Object.entries(BASIC_COLUMNS).reverse())
     const reversed = mount()
-    vi.spyOn(client, 'runMeta').mockResolvedValueOnce(parTableBuffer(reversedColumns))
-    renderParamsPanel(reversed, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(reversed, { unmapped: [], artifactNotes: [], parTable: Promise.resolve(parTableBuffer(reversedColumns)) })
     await vi.waitFor(() => expect(reversed.querySelectorAll('.param-row').length).toBe(2))
     const reversedText = Array.from(reversed.querySelectorAll('.param-row')).map((r) => r.textContent)
 
@@ -158,10 +152,10 @@ describe('renderParamsPanel', () => {
   it('truncates a long parameter or group name and carries the full string in a title', async () => {
     const el = mount()
     const longName = 'p'.repeat(200)
-    vi.spyOn(client, 'runMeta').mockResolvedValue(
+    const parTable = Promise.resolve(
       parTableBuffer({ parnme: [longName], pargp: ['G1'], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
     )
-    renderParamsPanel(el, { unmapped: [], artifactNotes: [] })
+    renderParamsPanel(el, { unmapped: [], artifactNotes: [], parTable })
 
     await vi.waitFor(() => {
       expect(el.querySelectorAll('.param-row').length).toBe(1)
@@ -173,10 +167,10 @@ describe('renderParamsPanel', () => {
 
   it('lists the unmapped groups and the per-artifact notes passed through, never rebuilt independently', () => {
     const el = mount()
-    vi.spyOn(client, 'runMeta').mockReturnValue(new Promise(() => {}))
     renderParamsPanel(el, {
       unmapped: [{ group: 'G9', note: 'a recorded placement note' }],
       artifactNotes: [{ artifact: 'par_ens', reason: 'one realization dropped' }],
+      parTable: new Promise(() => {}),
     })
 
     expect(el.textContent).toContain('1 group unmapped')
@@ -187,10 +181,10 @@ describe('renderParamsPanel', () => {
 
   it('lets Tab reach each scrolling list, so a keyboard user can scroll it', async () => {
     const el = mount()
-    vi.spyOn(client, 'runMeta').mockResolvedValue(parTableBuffer(BASIC_COLUMNS))
     renderParamsPanel(el, {
       unmapped: [{ group: 'G9', note: null }],
       artifactNotes: [{ artifact: 'par_ens', reason: 'one realization dropped' }],
+      parTable: Promise.resolve(parTableBuffer(BASIC_COLUMNS)),
     })
 
     await vi.waitFor(() => {

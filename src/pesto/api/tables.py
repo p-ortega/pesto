@@ -67,17 +67,34 @@ def arrow_response(
 
 
 @router.get("/meta")
-async def get_run_meta(request: Request, kind: Literal["par", "obs"]) -> Response:
+async def get_run_meta(
+    request: Request, kind: Literal["par", "obs"], columns: str | None = None
+) -> Response:
     """Serve the control file's parameter or observation table as an Arrow
     stream, column order exactly as ``load_control_tables`` read it back.
 
     ``kind`` is a closed set typed as a ``Literal``, so an unknown value is
     rejected by FastAPI's own validation handler as a 422 problem body
     before this function ever runs -- there is no branch here to write.
+
+    ``columns`` is an optional comma-separated list. Only those columns are
+    sent, in the table's own order. An empty name or one the table does not
+    have is refused with a 422 naming it, never dropped.
     """
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
         return problem(409, "no run is open")
+
+    wanted: list[str] | None = None
+    if columns is not None:
+        wanted = columns.split(",")
+        if any(name == "" for name in wanted):
+            return problem(
+                422,
+                "a requested column name is empty",
+                artifact=f"meta/{kind}",
+                detail="columns holds an empty name",
+            )
 
     layout = CacheLayout(root=Path(cache_root))
     tables = load_control_tables(layout)
@@ -87,6 +104,16 @@ async def get_run_meta(request: Request, kind: Literal["par", "obs"]) -> Respons
     import pyarrow as pa
 
     df = tables.par if kind == "par" else tables.obs
+    if wanted is not None:
+        missing = [name for name in wanted if name not in df.columns]
+        if missing:
+            return problem(
+                422,
+                "a requested column is not in the table",
+                artifact=f"meta/{kind}",
+                detail=f"the {kind} table has no column named {missing[0]!r}",
+            )
+        df = df[[name for name in df.columns if name in wanted]]
     table = pa.Table.from_pandas(df, preserve_index=False)
     return arrow_response(table, notes=tables.notes)
 

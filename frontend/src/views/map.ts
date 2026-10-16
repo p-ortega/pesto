@@ -21,9 +21,10 @@ import { renderDivider } from '../ui/divider'
 import { renderParamsPanel } from '../ui/params-panel'
 import {
   classifyCells,
-  fetchParIdentities,
+  fetchParTable,
   fetchParmap,
   joinBlockToIdentity,
+  parseParIdentities,
   type CellClass,
   type ParIdentity,
 } from '../data/parmap'
@@ -1427,11 +1428,15 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       })
     }
 
+    // One request for the parameter table, shared with the Params panel.
+    const parmapRequest = fetchParmap(iteration)
+    const parTable = fetchParTable()
+    parTable.catch(() => {})
     let parmap: Int32Array
     let identities: ParIdentity[]
     try {
-      parmap = await fetchParmap(iteration)
-      identities = await fetchParIdentities()
+      parmap = await parmapRequest
+      identities = parseParIdentities(await parTable)
     } catch (error) {
       addNotice(mapNotice, {
         title: 'The parameter table could not be read',
@@ -1498,7 +1503,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         tone: 'info',
       })
       paintPicker({ kind: 'none-drawable', unmapped })
-      renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes })
+      renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes, parTable })
       canvas.remove()
       return
     }
@@ -1519,7 +1524,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     drawnGroup =
       wasVisitedBefore && drawable.includes(restoredView!.group!) ? restoredView!.group! : drawable[0]
     paintPicker({ kind: 'ready', drawable, interpolated, unmapped, selected: drawnGroup })
-    renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes })
+    renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes, parTable })
 
     const realNames = await fetchRealNames(iteration)
 

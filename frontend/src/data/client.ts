@@ -214,8 +214,9 @@ export async function gridPointXy(iteration: number): Promise<Float32Array | nul
 // The raw Arrow stream bytes for /meta -- parsing (tableFromIPC, getChild
 // by field name) is data/parmap.ts's job, the D-05 join's first use of
 // apache-arrow.
-export async function runMeta(kind: 'par' | 'obs'): Promise<ArrayBuffer> {
-  const { buffer } = await apiGetBytes(`/api/run/meta?kind=${kind}`)
+export async function runMeta(kind: 'par' | 'obs', columns?: readonly string[]): Promise<ArrayBuffer> {
+  const wanted = columns === undefined ? '' : `&columns=${columns.map(encodeURIComponent).join(',')}`
+  const { buffer } = await apiGetBytes(`/api/run/meta?kind=${kind}${wanted}`)
   return buffer
 }
 
