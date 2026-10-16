@@ -15,6 +15,7 @@ import builtins
 import json
 import os
 import secrets
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,7 @@ from fastapi.testclient import TestClient
 from pesto.api import fs as fs_module
 from pesto.api.app import create_app
 from pesto.api.fs import is_run_directory
-from pesto.api.prefs import read_last_run, write_last_run
+from pesto.api.prefs import read_last_run, read_recent_runs, write_last_run
 
 BASE_URL = "http://127.0.0.1"
 
@@ -526,6 +527,222 @@ def test_roots_prepends_the_last_opened_directory(
     roots = _get(_client(app), token, "/api/fs/roots").json()
 
     assert roots[0]["name"] == "deep"
+
+
+def _open_through_picker(client: TestClient, token: str, run_dir: Path) -> None:
+    roots = _get(client, token, "/api/fs/roots").json()
+    home_id = next(e["id"] for e in roots if e["name"] == "Home")
+    # Walk from Home down to the run folder, one listing per level.
+    current_id = home_id
+    for part in run_dir.relative_to(Path.home()).parts:
+        current_id = _id_for(client, token, current_id, part)
+    assert _post(client, token, "/api/fs/open", {"id": current_id}).status_code == 200
+
+
+def test_roots_list_recently_opened_runs_newest_first_above_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runs = [tmp_path / "bench" / name for name in ("one", "two", "three")]
+    for run in runs:
+        _make_run(run)
+
+    app, token = create_app()
+    client = _client(app)
+    for run in runs:
+        _open_through_picker(client, token, run)
+
+    fresh_app, fresh_token = create_app()
+    roots = _get(_client(fresh_app), fresh_token, "/api/fs/roots").json()
+
+    assert [e["name"] for e in roots[:4]] == ["three", "two", "one", "Home"]
+
+
+def _make_dirs(parent: Path, names: list[str]) -> list[Path]:
+    made = []
+    for name in names:
+        folder = parent / name
+        folder.mkdir(parents=True)
+        made.append(folder)
+    return made
+
+
+def _store_body(home: Path) -> dict:
+    return json.loads((home / ".cache" / "pesto" / "last_run.json").read_text())
+
+
+def test_six_writes_keep_five_newest_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runs = _make_dirs(tmp_path / "runs", [f"r{i}" for i in range(6)])
+    for run in runs:
+        write_last_run(run)
+
+    assert read_recent_runs() == [r.resolve() for r in reversed(runs[1:])]
+
+
+def test_writing_a_listed_run_moves_it_to_the_top(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    a, b, c = _make_dirs(tmp_path / "runs", ["a", "b", "c"])
+    for run in (a, b, c, a):
+        write_last_run(run)
+
+    assert read_recent_runs() == [a.resolve(), c.resolve(), b.resolve()]
+
+
+def test_a_symlink_to_a_listed_run_counts_as_the_same_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    a, b = _make_dirs(tmp_path / "runs", ["a", "b"])
+    link = tmp_path / "runs" / "link_to_a"
+    link.symlink_to(a, target_is_directory=True)
+    for run in (a, b, link):
+        write_last_run(run)
+
+    assert read_recent_runs() == [a.resolve(), b.resolve()]
+
+
+def test_an_old_one_path_file_reads_as_a_one_entry_list_and_upgrades_on_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    old, new = _make_dirs(tmp_path / "runs", ["old", "new"])
+    store = tmp_path / ".cache" / "pesto" / "last_run.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(json.dumps({"version": 1, "path": str(old)}))
+
+    assert read_recent_runs() == [old.resolve()]
+
+    write_last_run(new)
+
+    assert _store_body(tmp_path) == {
+        "version": 2,
+        "paths": [str(new.resolve()), str(old.resolve())],
+    }
+
+
+def test_a_wrong_version_or_non_json_store_reads_as_no_recents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = tmp_path / ".cache" / "pesto" / "last_run.json"
+    store.parent.mkdir(parents=True)
+
+    store.write_text(json.dumps({"version": 99, "paths": [str(tmp_path)]}))
+    assert read_recent_runs() == []
+
+    store.write_text("not json at all")
+    assert read_recent_runs() == []
+
+
+def test_a_hand_edited_store_reads_as_at_most_five_real_folders_in_file_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folders = _make_dirs(tmp_path / "runs", [f"f{i}" for i in range(7)])
+    entries: list[object] = [str(folders[0]), 42, str(tmp_path / "gone")]
+    entries += [str(f) for f in folders[1:]]
+    store = tmp_path / ".cache" / "pesto" / "last_run.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(json.dumps({"version": 2, "paths": entries}))
+
+    assert read_recent_runs() == folders[:5]
+
+
+def test_a_recorded_run_deleted_afterwards_is_not_listed_in_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    keep, doomed = _make_dirs(tmp_path / "runs", ["keep", "doomed"])
+    write_last_run(keep)
+    write_last_run(doomed)
+    doomed.rmdir()
+
+    app, token = create_app()
+    roots = _get(_client(app), token, "/api/fs/roots").json()
+
+    assert [e["name"] for e in roots[:2]] == ["keep", "Home"]
+    assert "doomed" not in [e["name"] for e in roots]
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="roots differ on Windows")
+def test_roots_with_no_recents_are_home_then_slash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app, token = create_app()
+    roots = _get(_client(app), token, "/api/fs/roots").json()
+
+    assert [e["name"] for e in roots] == ["Home", "/"]
+
+
+def test_same_named_recents_are_told_apart_by_parent_name_and_leak_no_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (first,) = _make_dirs(tmp_path / "a", ["run"])
+    (second,) = _make_dirs(tmp_path / "b", ["run"])
+    write_last_run(first)
+    write_last_run(second)
+
+    app, token = create_app()
+    roots = _get(_client(app), token, "/api/fs/roots").json()
+
+    assert [e["name"] for e in roots[:3]] == ["run (in b)", "run (in a)", "Home"]
+    for entry in roots:
+        assert set(entry) == {"id", "name", "is_run", "reason"}
+        assert str(tmp_path) not in entry["name"]
+
+
+def test_open_answers_200_when_the_recents_store_cannot_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if _IS_ROOT:
+        pytest.skip("chmod has no effect for root")
+    home = tmp_path / "home"
+    run = home / "a_run"
+    run.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    app, token = create_app()
+    client = _client(app)
+    run_id = _id_for(client, token, _home_id(client, token), "a_run")
+
+    home.chmod(0o500)
+    try:
+        response = _post(client, token, "/api/fs/open", {"id": run_id})
+        write_last_run(run)
+    finally:
+        home.chmod(0o755)
+
+    assert response.status_code == 200
+
+
+def test_the_store_is_written_through_a_temp_file_and_leaves_no_litter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (run,) = _make_dirs(tmp_path / "runs", ["a"])
+    write_last_run(run)
+
+    assert [p.name for p in (tmp_path / ".cache" / "pesto").iterdir()] == ["last_run.json"]
+
+
+def test_a_command_line_open_does_not_record_a_recent_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pesto.launch import prepare_run
+
+    home = tmp_path / "home"
+    home.mkdir()
+    run = tmp_path / "a_run"
+    run.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    prepare_run(run, cache_override=tmp_path / "cache")
+
+    assert not (home / ".cache" / "pesto" / "last_run.json").exists()
 
 
 # --- The one real-benchmark case ------------------------------------------
