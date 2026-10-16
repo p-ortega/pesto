@@ -1,10 +1,11 @@
-"""Server-side memory of the last directory opened, and of how each run's
+"""Server-side memory of the last five runs opened, and of how each run's
 map was left (D-11).
 
-So a picker's first listing on the next launch can start where the user
-left off, without the browser ever holding a real path. The store never
+So a picker's first listing on the next launch can list the recent runs
+above Home, newest first, without the browser ever holding a real path.
+An old one-path file still reads, as a one-entry list. The store never
 raises: a missing, unreadable, non-JSON, wrong-version or non-dict file,
-and a recorded path that no longer exists, all read back as ``None``.
+and a recorded path that is no longer a folder, all read back as nothing.
 Forgetting where the user was is a convenience regression, not a reason to
 fail an unrelated request, so a failed write is dropped the same quiet way.
 
