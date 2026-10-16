@@ -26,6 +26,17 @@ describe('renderGroupPicker', () => {
     expect(el.querySelector('button')).toBeNull()
   })
 
+  it('lets Tab reach the unmapped list, so a keyboard user can scroll it', () => {
+    const el = mount()
+    renderGroupPicker(el, {
+      state: { kind: 'ready', interpolated: [], drawable: ['G1'], unmapped: [{ group: 'G3', note: null }], selected: 'G1' },
+      onGroupChange: vi.fn(),
+    })
+    const list = el.querySelector('.unmapped-list') as HTMLElement
+    expect(list.tabIndex).toBe(0)
+    expect(list.getAttribute('aria-label')).toBe('Unmapped groups')
+  })
+
   it('reads "1 group unmapped" at one and "{N} groups unmapped" above one', () => {
     const oneEl = mount()
     renderGroupPicker(oneEl, {

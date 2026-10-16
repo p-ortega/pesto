@@ -88,6 +88,8 @@ const TWO_CELLS = {
   indices: new Uint32Array([0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2]),
 }
 const viewWrites: Array<Record<string, unknown>> = []
+// What a reload finds saved; null means the run was never opened before.
+let savedView: Record<string, unknown> | null = null
 
 function stubFetch(): void {
   kMode = 'plain'
@@ -96,6 +98,7 @@ function stubFetch(): void {
   ppMode = 'none'
   meshMode = 'one'
   viewWrites.length = 0
+  savedView = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -168,6 +171,7 @@ function stubFetch(): void {
             viewWrites.push(body)
             return respond({ status: 200, body })
           }
+          if (savedView !== null) return respond({ status: 200, body: savedView })
           throw new Error('no saved view')
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
@@ -375,6 +379,29 @@ describe('a group placed by x/y draws as dots', () => {
     choose(root, 'k')
     await vi.waitFor(() => expect(legendText(root)).toContain('2 points on this layer'))
     expect(layerInput.value).toBe('1')
-    await vi.waitFor(() => expect(viewWrites.at(-1)?.group).toBe('k'), { timeout: 2000 })
+    // Earlier tests' maps can still write, so look for this one's write rather than the last.
+    await vi.waitFor(() => expect(viewWrites.some((w) => w.group === 'k' && w.layer === 1)).toBe(true), {
+      timeout: 2000,
+    })
+  })
+
+  const SAVED = { divider: 0.7, colormap: 'viridis', reverse: false, scale: 'linear', limits_mode: 'robust', stat: 'value' }
+
+  it('reopens on the saved layer when it still holds some of the dots', async () => {
+    const root = await mounted(() => {
+      layerMode = 'split'
+      savedView = { ...SAVED, group: 'k', layer: 1 }
+    })
+    await vi.waitFor(() => expect(legendText(root)).toContain('1 points on this layer'))
+    expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
+  })
+
+  it('reopens on the layer holding the dots when the saved layer holds none', async () => {
+    const root = await mounted(() => {
+      layerMode = 'k-on-1'
+      savedView = { ...SAVED, group: 'k', layer: 0 }
+    })
+    await vi.waitFor(() => expect(legendText(root)).toContain('2 points on this layer'))
+    expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
   })
 })

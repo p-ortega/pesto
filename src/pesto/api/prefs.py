@@ -80,6 +80,7 @@ _VIEW_STATE_DEFAULTS: dict = {
     "limits_mode": "robust",
     "group": None,
     "stat": "value",
+    "layer": None,
 }
 
 

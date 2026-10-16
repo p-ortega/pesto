@@ -95,6 +95,7 @@ const RESTORED_VIEW = {
   limits_mode: 'robust',
   group: 'G1',
   stat: 'value',
+  layer: null as number | null,
 }
 
 function bytesOf(view: ArrayBufferView): Uint8Array {
@@ -244,5 +245,39 @@ describe('a restored statistic', () => {
     expect(valueUrls.at(-1)).toContain('stat=mean')
     expect((root.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement).value).toBe('mean')
     expect((root.querySelector('input[aria-label="Realization"]') as HTMLInputElement).disabled).toBe(true)
+  })
+})
+
+describe('a restored layer', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    RESTORED_VIEW.layer = null
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  async function openedOn(saved: number | null): Promise<HTMLElement> {
+    RESTORED_VIEW.layer = saved
+    stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+    return root
+  }
+
+  it('opens on the layer the run was left on', async () => {
+    const root = await openedOn(1)
+    expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
+  })
+
+  it('opens on layer 0 when the saved layer is past the bottom of the grid', async () => {
+    const root = await openedOn(9)
+    expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('0')
   })
 })

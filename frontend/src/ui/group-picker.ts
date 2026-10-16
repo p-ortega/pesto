@@ -3,7 +3,7 @@
 // that does not is still named, behind a count and a disclosure rather
 // than hundreds of dead inline entries on a 99%-unmapped run.
 
-import { renderNotice } from './chrome'
+import { makeFocusable, renderNotice } from './chrome'
 
 export interface UnmappedGroup {
   group: string
@@ -69,6 +69,7 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
 
     const list = document.createElement('div')
     list.classList.add('scroll-pane', 'unmapped-list')
+    makeFocusable(list, 'Unmapped groups')
     renderUnmappedRows(list, opts.state.unmapped)
     el.appendChild(list)
     return
@@ -104,7 +105,8 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
   const list = document.createElement('div')
   list.style.display = 'none'
   list.classList.add('scroll-pane', 'unmapped-list')
-    renderUnmappedRows(list, unmapped)
+  makeFocusable(list, 'Unmapped groups')
+  renderUnmappedRows(list, unmapped)
   el.appendChild(list)
 
   toggle.addEventListener('click', () => {

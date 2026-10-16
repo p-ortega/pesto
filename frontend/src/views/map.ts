@@ -420,6 +420,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       limitsMode: committed.limitsMode,
       group: drawnGroup,
       stat: committed.stat,
+      layer: committed.layer,
     }
   }
 
@@ -597,9 +598,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer?.setContestedColors([ir, ig, ib], [gr, gg, gb])
     // --surface is lighter than --page-plane in the light theme, so it would not show as a shade there.
     layer?.setFootprintColor([gr, gg, gb])
-    layer?.setAccentColor([ar, ag, ab])
-    // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
+    // The selection halo is whichever of page and ink is lighter, so it is near-white in both themes.
     const [pr, pg, pb] = readColorToken('--page-plane')
+    const halo: [number, number, number] = pr + pg + pb > ir + ig + ib ? [pr, pg, pb] : [ir, ig, ib]
+    layer?.setAccentColor([ar, ag, ab], halo)
+    // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
     layer?.setPointRingColor([pr, pg, pb])
   }
 
@@ -929,9 +932,9 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       onThemeChange: (choice: ThemeChoice) => {
         setTheme(choice)
         paintHeader()
-        // --hairline resolves differently under each data-theme value, so
+        // --model-edge resolves differently under each data-theme value, so
         // it is re-read here exactly like --page-plane is, never cached.
-        layer?.setHairlineColor(readColorToken('--hairline'))
+        layer?.setHairlineColor(readColorToken('--model-edge'))
         applyThemeColors()
         redraw()
       },
@@ -983,7 +986,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
     contextLost = false
     layer?.reupload()
-    layer?.setHairlineColor(readColorToken('--hairline'))
+    layer?.setHairlineColor(readColorToken('--model-edge'))
     applyThemeColors()
     if (camera) layer?.setMatrix(camera.matrix())
     redraw()
@@ -1518,7 +1521,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer = new MeshLayer(gl.gl, meshGeom)
     layer.setColormap('viridis')
     layer.setInactive(drawnInactiveMask())
-    layer.setHairlineColor(readColorToken('--hairline'))
+    layer.setHairlineColor(readColorToken('--model-edge'))
     applyThemeColors()
 
     fitCanvasToFrame()
@@ -1553,9 +1556,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         tone: 'info',
       })
     }
+    const savedLayer = wasVisitedBefore ? restoredView!.layer : null
     committed = {
       iteration,
-      layer: interpolatedEntry(drawnGroup)?.layer ?? 0,
+      layer: interpolatedEntry(drawnGroup)?.layer ?? (savedLayer !== null && savedLayer < mesh.nlay ? savedLayer : 0),
       stat: initialStat,
       realization: initialRealization,
       colormap: wasVisitedBefore ? restoredColormap(restoredView!.colormap) : 'viridis',
@@ -1565,6 +1569,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       limitsMode: wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust',
       manualLimits: null,
     }
+    // A saved layer holding none of a dot group's dots gives way to the layer that does.
+    committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
 
     // Placed before pickerEl, not appended at the end: the controls come
     // first in the top-left cluster, both visually (flex column) and in

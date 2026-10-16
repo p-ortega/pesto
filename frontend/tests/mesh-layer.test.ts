@@ -237,26 +237,33 @@ describe('MeshLayer', () => {
     expect(calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'TRIANGLES').length).toBe(1)
   })
 
-  it('setSelected draws an accent ring over whatever mark the cell already has, and setSelected(null) removes it', () => {
+  it('setSelected draws a light halo then an accent band over the cell, and setSelected(null) removes it', () => {
     const { gl, calls } = createRecordingGl()
     const layer = new MeshLayer(gl, threeCellMesh())
-    layer.setAccentColor([0.2, 0.4, 0.6])
+    layer.setAccentColor([0.2, 0.4, 0.6], [0.9, 0.9, 0.9])
     layer.setSelected(1)
+    calls.length = 0
     layer.draw()
 
-    const ringDraws = calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'LINES')
-    expect(ringDraws.length).toBe(1)
-    // Cell 1's ring is 4 vertices -> 4 edges -> 8 line-list indices.
-    expect(ringDraws[0].args[1]).toBe(8)
-    // The selection ring shares the outline program's now-vec4 u_color, but
-    // --accent carries no alpha, so it always draws opaque.
-    const ringColor = calls.filter((c) => c.method === 'uniform4f').at(-1)
-    expect(ringColor?.args.slice(1)).toEqual([0.2, 0.4, 0.6, 1])
+    // The fill pass is one TRIANGLES draw; the ring adds two more.
+    const triDraws = calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'TRIANGLES')
+    expect(triDraws.length).toBe(3)
+    // Cell 1's ring is 4 edges -> 4 quads -> 24 indices.
+    expect(triDraws[1].args[1]).toBe(24)
+    expect(triDraws[2].args[1]).toBe(24)
+    expect(calls.some((c) => c.method === 'drawElements' && c.args[0] === 'LINES')).toBe(false)
+    const colors = calls.filter((c) => c.method === 'uniform3f').slice(-2).map((c) => c.args.slice(1))
+    expect(colors).toEqual([
+      [0.9, 0.9, 0.9],
+      [0.2, 0.4, 0.6],
+    ])
+    const widths = calls.filter((c) => c.method === 'uniform1f').slice(-2).map((c) => c.args[1] as number)
+    expect(widths[0]).toBeGreaterThan(widths[1])
 
     calls.length = 0
     layer.setSelected(null)
     layer.draw()
-    expect(calls.some((c) => c.method === 'drawElements' && c.args[0] === 'LINES')).toBe(false)
+    expect(calls.filter((c) => c.method === 'drawElements' && c.args[0] === 'TRIANGLES').length).toBe(1)
   })
 
   it('re-reads the stripe and accent colours from whatever was last set, so a theme change can re-read them', () => {
@@ -268,20 +275,17 @@ describe('MeshLayer', () => {
     layer.setContestedColors([0.1, 0.1, 0.1], [0.9, 0.9, 0.9])
     layer.setAccentColor([0.2, 0.2, 0.2])
     layer.draw()
-    const stripeCalls1 = calls.filter((c) => c.method === 'uniform3f')
-    expect(stripeCalls1.some((c) => c.args.slice(1).every((v, i) => v === [0.1, 0.1, 0.1][i]))).toBe(true)
-    // Accent shares the outline program's vec4 u_color (opaque, alpha 1).
-    const accentCalls1 = calls.filter((c) => c.method === 'uniform4f')
-    expect(accentCalls1.some((c) => c.args.slice(1).every((v, i) => v === [0.2, 0.2, 0.2, 1][i]))).toBe(true)
+    const has3 = (rgb: number[]) =>
+      calls.filter((c) => c.method === 'uniform3f').some((c) => c.args.slice(1).every((v, i) => v === rgb[i]))
+    expect(has3([0.1, 0.1, 0.1])).toBe(true)
+    expect(has3([0.2, 0.2, 0.2])).toBe(true)
 
     calls.length = 0
     layer.setContestedColors([0.7, 0.7, 0.7], [0.3, 0.3, 0.3])
     layer.setAccentColor([0.8, 0.8, 0.8])
     layer.draw()
-    const stripeCalls2 = calls.filter((c) => c.method === 'uniform3f')
-    expect(stripeCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.7, 0.7, 0.7][i]))).toBe(true)
-    const accentCalls2 = calls.filter((c) => c.method === 'uniform4f')
-    expect(accentCalls2.some((c) => c.args.slice(1).every((v, i) => v === [0.8, 0.8, 0.8, 1][i]))).toBe(true)
+    expect(has3([0.7, 0.7, 0.7])).toBe(true)
+    expect(has3([0.8, 0.8, 0.8])).toBe(true)
   })
 })
 

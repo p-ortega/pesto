@@ -58,7 +58,7 @@ describe('renderDivider', () => {
       // Fire-and-forget, exactly as the view wires it -- a rejection here
       // must never throw back into the divider's own event handler.
       void client
-        .writeViewState({ divider: fraction, colormap: 'viridis', reverse: false, scale: 'linear', limitsMode: 'robust', group: null, stat: 'value' })
+        .writeViewState({ divider: fraction, colormap: 'viridis', reverse: false, scale: 'linear', limitsMode: 'robust', group: null, stat: 'value', layer: null })
         .catch(() => {})
     })
     renderDivider(divider, { container, before, after, initialFraction: 0.5, onCommit })

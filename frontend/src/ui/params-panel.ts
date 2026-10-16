@@ -8,7 +8,7 @@
 
 import { tableFromIPC } from 'apache-arrow'
 import { ApiError, runMeta } from '../data/client'
-import { renderNotice } from './chrome'
+import { makeFocusable, renderNotice } from './chrome'
 import type { UnmappedGroup } from './group-picker'
 
 export interface ParamsPanelOptions {
@@ -139,6 +139,7 @@ function renderTable(host: HTMLElement, rows: ParamRow[]): void {
   // The pane's height comes from the frame (style.css `.params-table`);
   // VIEWPORT_HEIGHT is only renderVisible's fallback before layout.
   scrollPane.style.position = 'relative'
+  makeFocusable(scrollPane, 'Parameter table')
 
   const spacer = document.createElement('div')
   spacer.style.position = 'relative'
@@ -187,6 +188,7 @@ function renderUnmappedSection(el: HTMLElement, unmapped: UnmappedGroup[]): void
   // unmapped groups, and they must not push the table off the panel.
   const list = document.createElement('div')
   list.classList.add('scroll-pane')
+  makeFocusable(list, 'Unmapped groups')
   for (const entry of unmapped) {
     const row = document.createElement('div')
     row.classList.add('label', 'truncate')
@@ -203,6 +205,7 @@ function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: 
   if (notes.length === 0) return
   const section = document.createElement('div')
   section.classList.add('params-notes', 'scroll-pane')
+  makeFocusable(section, 'Notes')
   for (const note of notes) {
     const row = document.createElement('div')
     row.classList.add('label', 'wrap-note')

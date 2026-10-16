@@ -24,6 +24,7 @@ const THEMED_TOKENS = [
   '--gridline',
   '--axis',
   '--hairline',
+  '--model-edge',
   '--accent',
 ]
 const STATUS_TOKENS = ['--status-good', '--status-warning', '--status-serious', '--status-critical']

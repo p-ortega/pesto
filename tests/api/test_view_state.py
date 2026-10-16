@@ -26,6 +26,7 @@ DEFAULT_STATE = {
     "limits_mode": "robust",
     "group": None,
     "stat": "value",
+    "layer": None,
 }
 
 
@@ -176,6 +177,24 @@ def test_put_view_stores_the_body_and_a_later_get_returns_it(tmp_path, monkeypat
 
     get_response = client.get("/api/run/view")
     assert get_response.json()["scale"] == "log10"
+
+
+def test_a_store_written_before_the_layer_field_reads_back_with_no_layer(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    old = {key: value for key, value in DEFAULT_STATE.items() if key != "layer"}
+    write_view_state(cache_root, {**old, "group": "G1"})
+
+    assert read_view_state(cache_root) == {**DEFAULT_STATE, "group": "G1"}
+
+
+def test_put_view_keeps_the_layer_and_refuses_a_negative_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+
+    assert client.put("/api/run/view", json={**DEFAULT_STATE, "layer": 2}).status_code == 200
+    assert client.get("/api/run/view").json()["layer"] == 2
+    assert client.put("/api/run/view", json={**DEFAULT_STATE, "layer": -1}).status_code == 422
 
 
 def test_the_put_body_has_no_field_that_could_carry_a_filesystem_path():
