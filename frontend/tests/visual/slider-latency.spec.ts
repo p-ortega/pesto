@@ -18,7 +18,7 @@ import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { isSoftwareRenderer, parseBenchResult, stripToken, type BenchTarget } from './bench-json'
+import { isSoftwareRenderer, parseBenchResult, stripToken, summarize, type BenchTarget } from './bench-json'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..')
@@ -26,6 +26,7 @@ const BUILT_INDEX = path.join(REPO_ROOT, 'src', 'pesto', 'static', 'index.html')
 const DEFAULT_OUT_DIR = path.join(REPO_ROOT, 'frontend', 'test-results', 'slider-latency')
 
 const FRAME_TIMEOUT_MS = 5000
+const SETUP_TIMEOUT_MS = 60_000
 const SCHEMA_VERSION = 1
 const PROJECT_NAMES = ['chromium', 'chromium-gpu']
 const GPU_PROJECT = 'chromium-gpu'
@@ -305,6 +306,111 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
+interface ControlInfo {
+  present: boolean
+  disabled: boolean
+  value: string
+  checked: boolean
+  min: number
+  max: number
+  options: Array<{ value: string; disabled: boolean }>
+}
+
+async function controlInfo(page: Page, selector: string): Promise<ControlInfo> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLInputElement | HTMLSelectElement | null
+    if (!el) return { present: false, disabled: true, value: '', checked: false, min: 0, max: 0, options: [] }
+    const options =
+      el instanceof HTMLSelectElement ? Array.from(el.options).map((o) => ({ value: o.value, disabled: o.disabled })) : []
+    const input = el instanceof HTMLInputElement ? el : null
+    return {
+      present: true,
+      disabled: el.disabled,
+      value: el.value,
+      checked: input?.checked ?? false,
+      min: input ? Number(input.min) : 0,
+      max: input ? Number(input.max) : 0,
+      options,
+    }
+  }, selector)
+}
+
+const SEL = {
+  group: 'select[aria-label="Parameter group"]',
+  layer: 'input[aria-label="Layer"]',
+  statistic: 'select[aria-label="Statistic"]',
+  realization: 'input[aria-label="Realization"]',
+  colormap: 'select[aria-label="Colormap"]',
+  reverse: 'input[aria-label="Reverse colormap"]',
+  scale: 'select[aria-label="Value scale"]',
+  limits: 'select[aria-label="Limits"]',
+}
+
+// One move that waits for its frame, to put a control where a later
+// measurement needs it. It waits much longer than a timed move: the first draw
+// of a group can include loading the science libraries. Gives the delay in ms,
+// or null when no frame arrived.
+async function setControl(page: Page, selector: string, step: MoveStep): Promise<number | null> {
+  const { delays } = await timeMoves(page, { selector, steps: [step], timeoutMs: SETUP_TIMEOUT_MS, gapMs: 60 })
+  return delays.length === 1 ? delays[0] : null
+}
+
+// Python's urllib quote with safe="" keeps these and nothing else but letters and digits (cache/layout.py pp_field).
+function quoteLikeCache(name: string): string {
+  return encodeURIComponent(name).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+}
+
+function pilotFieldFolder(cacheDir: string, group: string): string {
+  return path.join(cacheDir, 'grid', 'pp', 'fields', quoteLikeCache(group))
+}
+
+interface SliderRow {
+  control: string
+  kind: 'fetch' | 'no_fetch'
+  moves: number
+  p50_ms: number | null
+  p95_ms: number | null
+  max_ms: number | null
+  timeouts: number
+  speed_limit_ms: number
+  status: 'pass' | 'miss' | 'not judged' | 'skipped'
+  note: string
+}
+
+function skippedRow(control: string, kind: SliderRow['kind'], limit: number, reason: string): SliderRow {
+  return { control, kind, moves: 0, p50_ms: null, p95_ms: null, max_ms: null, timeouts: 0, speed_limit_ms: limit, status: 'skipped', note: `skipped: ${reason}` }
+}
+
+// Strictly under the limit passes; any move whose frame never came is a miss.
+function measuredRow(
+  control: string,
+  kind: SliderRow['kind'],
+  limit: number,
+  delays: number[],
+  timeouts: number,
+  judged: boolean,
+  judgedNote: string,
+): SliderRow {
+  const s = summarize(delays)
+  const timeoutNote = timeouts > 0 ? `${timeouts} move(s) had no frame within ${FRAME_TIMEOUT_MS / 1000} s` : ''
+  let status: SliderRow['status'] = 'not judged'
+  let note = [judgedNote, timeoutNote].filter((n) => n !== '').join('; ')
+  if (judged) {
+    const miss = timeouts > 0 || s.p95 === null || s.p95 >= limit
+    status = miss ? 'miss' : 'pass'
+    note = miss
+      ? [s.p95 !== null && s.p95 >= limit ? `p95 ${s.p95.toFixed(1)} ms is not under ${limit} ms` : '', timeoutNote].filter((n) => n !== '').join('; ')
+      : `p95 is under ${limit} ms (nearest rank over single moves)`
+  }
+  return { control, kind, moves: delays.length + timeouts, p50_ms: s.p50, p95_ms: s.p95, max_ms: s.max, timeouts, speed_limit_ms: limit, status, note }
+}
+
+// Steps through a select's usable options, one move each, starting after the current one.
+function cycleSteps(values: string[], current: string, count: number): MoveStep[] {
+  const start = Math.max(values.indexOf(current), 0)
+  return Array.from({ length: count }, (_, i) => ({ value: values[(start + 1 + i) % values.length] }))
+}
+
 // What gets written. Each target fills its own entry, and the whole file is
 // rewritten as soon as a number exists, before any assertion runs.
 interface Results {
@@ -400,6 +506,8 @@ for (const target of TARGETS) {
     let cacheDir = target.cacheDir
     let scratch = ''
     let sliderServer: Launched | null = null
+    // Read before any test in this describe opens the page, so earlier draws cannot warm it unseen.
+    let ppFolderExistedAtStart = false
 
     function settle(testInfo: TestInfo): boolean {
       const verdict = judging(target, testInfo.project.name, facts)
@@ -420,6 +528,7 @@ for (const target of TARGETS) {
         if (!existsSync(runDir)) throw new Error(`${target.label}: the run folder ${runDir} does not exist`)
         if (!existsSync(cacheDir)) throw new Error(`${target.label}: the scratch cache ${cacheDir} does not exist; run pesto bench first`)
       }
+      if (target.pilotPoint !== null) ppFolderExistedAtStart = existsSync(pilotFieldFolder(cacheDir, target.pilotPoint.group))
     })
 
     test.afterAll(async ({}, testInfo) => {
@@ -462,30 +571,277 @@ for (const target of TARGETS) {
       expect.soft(status, `${target.label}: median first load ${firstMedian.toFixed(0)} ms against ${limitMs} ms`).not.toBe('miss')
     })
 
-    test(`slider: realization, which fetches (${target.mode})`, async ({ page }, testInfo) => {
-      const server = await launchPesto(runDir, cacheDir, mkdtempSync(path.join(scratch, 'home-')))
-      sliderServer = server
+    const bench = target.mode === 'bench'
+    const sliderRows: SliderRow[] = []
+    record.sliders = sliderRows
+    const setup: Record<string, unknown> = {
+      group: null,
+      layer: null,
+      iteration: target.iteration,
+      note: 'the page draws the run\'s first iteration; the bench iteration is recorded here, not selected',
+    }
+    record.setup = setup
+
+    // A fresh page on the slider server, with the statistic back on a single
+    // realization and the heaviest group on its layer (D-12).
+    async function openForSliders(page: Page, testInfo: TestInfo): Promise<void> {
+      if (!sliderServer) sliderServer = await launchPesto(runDir, cacheDir, mkdtempSync(path.join(scratch, 'home-')))
       await installProbes(page)
-      await page.goto(server.url)
+      await page.goto(sliderServer.url)
       await drawnAt(page)
       facts = await gpuFacts(page)
-      const count = Number(await page.locator('input[aria-label="Realization"]').getAttribute('max')) + 1
-      const moves = target.mode === 'bench' ? 200 : 10
-      const steps: MoveStep[] = []
-      for (let i = 0; i < moves; i += 1) steps.push({ value: String((i + 1) % count) })
-      const { delays, timeouts } = await timeMoves(page, {
-        selector: 'input[aria-label="Realization"]',
-        steps,
-        timeoutMs: FRAME_TIMEOUT_MS,
-        gapMs: 60,
-        selectionFromLabel: true,
-      })
       settle(testInfo)
-      record.realization_delays_ms = delays
+
+      const stat = await controlInfo(page, SEL.statistic)
+      if (stat.present && stat.value !== 'value') await setControl(page, SEL.statistic, { value: 'value' })
+
+      if (target.heaviest === null) {
+        setup.note = `no group places on any cell; measured on the page's default group. ${setup.note}`
+        return
+      }
+      const groups = await controlInfo(page, SEL.group)
+      const offered = groups.options.some((o) => o.value === target.heaviest!.group)
+      if (!offered) {
+        setup.note = `the picker does not offer ${target.heaviest.group}; measured on the page's default group. ${setup.note}`
+        return
+      }
+      if (groups.value !== target.heaviest.group) {
+        const drawn = await setControl(page, SEL.group, { value: target.heaviest.group, group: target.heaviest.group })
+        if (drawn === null) setup.note = `no frame within ${SETUP_TIMEOUT_MS / 1000} s after choosing ${target.heaviest.group}. ${setup.note}`
+      }
+      const layer = await controlInfo(page, SEL.layer)
+      if (!layer.disabled && Number(layer.value) !== target.heaviest.layer) {
+        const drawn = await setControl(page, SEL.layer, { value: String(target.heaviest.layer), layer: target.heaviest.layer })
+        if (drawn === null) setup.note = `no frame within ${SETUP_TIMEOUT_MS / 1000} s after moving to layer ${target.heaviest.layer}. ${setup.note}`
+      }
+      setup.group = target.heaviest.group
+      setup.layer = target.heaviest.layer
+    }
+
+    test(`slider: realization and statistic, which fetch (${target.mode})`, async ({ page }, testInfo) => {
+      await openForSliders(page, testInfo)
+      const limit = target.limits.fetchP95Ms
+      const judged = settle(testInfo)
+      const judgedNote = String(record.judged_note)
+
+      const real = await controlInfo(page, SEL.realization)
+      if (!real.present || real.disabled || real.max < 1) {
+        sliderRows.push(skippedRow('Realization', 'fetch', limit, !real.present ? 'the control is not on the page' : real.disabled ? 'the control is disabled (one realization, or a statistic other than value)' : 'fewer than two realizations'))
+      } else {
+        const count = real.max + 1
+        const current = Number(real.value)
+        const moves = bench ? 200 : 10
+        const steps: MoveStep[] = Array.from({ length: moves }, (_, i) => ({ value: String((current + 1 + i) % count) }))
+        const { delays, timeouts } = await timeMoves(page, {
+          selector: SEL.realization,
+          steps,
+          timeoutMs: FRAME_TIMEOUT_MS,
+          gapMs: 60,
+          selectionFromLabel: true,
+        })
+        sliderRows.push(measuredRow('Realization', 'fetch', limit, delays, timeouts, judged, judgedNote))
+      }
       flush(testInfo.project.name, target.label, record, facts)
-      expect(timeouts).toBe(0)
-      expect(delays).toHaveLength(moves)
-      for (const d of delays) expect(typeof d).toBe('number')
+
+      const stat = await controlInfo(page, SEL.statistic)
+      const aggregates = stat.options.filter((o) => !o.disabled && o.value !== 'value').map((o) => o.value)
+      if (!stat.present || stat.disabled || aggregates.length < 2) {
+        sliderRows.push(skippedRow('Statistic', 'fetch', limit, !stat.present ? 'the control is not on the page' : stat.disabled ? 'the control is disabled' : 'fewer than two statistics other than value'))
+      } else {
+        const moves = bench ? 100 : 7
+        const steps: MoveStep[] = Array.from({ length: moves }, (_, i) => {
+          const value = aggregates[i % aggregates.length]
+          return { value, selection: value }
+        })
+        const { delays, timeouts } = await timeMoves(page, { selector: SEL.statistic, steps, timeoutMs: FRAME_TIMEOUT_MS, gapMs: 60 })
+        sliderRows.push(measuredRow('Statistic', 'fetch', limit, delays, timeouts, judged, judgedNote))
+        await setControl(page, SEL.statistic, { value: 'value' })
+      }
+      flush(testInfo.project.name, target.label, record, facts)
+
+      for (const row of sliderRows) {
+        expect.soft(row.timeouts, `${target.label}: ${row.control} had moves with no frame`).toBe(0)
+        expect.soft(row.status, `${target.label}: ${row.control} ${row.note}`).not.toBe('miss')
+      }
+    })
+
+    test(`slider: layer, colormap, reverse, value scale and limits, which only draw (${target.mode})`, async ({ page }, testInfo) => {
+      await openForSliders(page, testInfo)
+      const limit = target.limits.noFetchP95Ms
+      const judged = settle(testInfo)
+      const judgedNote = String(record.judged_note)
+      const before = sliderRows.length
+      const moves = (benchMoves: number, syntheticMoves: number) => (bench ? benchMoves : syntheticMoves)
+
+      async function selectControl(control: string, selector: string, count: number, skip: (info: ControlInfo, usable: string[]) => string | null): Promise<void> {
+        const info = await controlInfo(page, selector)
+        const usable = info.options.filter((o) => !o.disabled && o.value !== 'manual').map((o) => o.value)
+        const why = !info.present ? 'the control is not on the page' : info.disabled ? 'the control is disabled' : skip(info, usable)
+        if (why !== null) {
+          sliderRows.push(skippedRow(control, 'no_fetch', limit, why))
+          return
+        }
+        const { delays, timeouts } = await timeMoves(page, {
+          selector,
+          steps: cycleSteps(usable, info.value, count),
+          timeoutMs: FRAME_TIMEOUT_MS,
+          gapMs: 40,
+        })
+        sliderRows.push(measuredRow(control, 'no_fetch', limit, delays, timeouts, judged, judgedNote))
+        await setControl(page, selector, { value: info.value })
+      }
+      const fewerThanTwo = (info: ControlInfo, usable: string[]) => (usable.length < 2 ? 'fewer than two usable options' : null)
+
+      const layer = await controlInfo(page, SEL.layer)
+      if (!layer.present || layer.disabled || layer.max <= layer.min) {
+        sliderRows.push(skippedRow('Layer', 'no_fetch', limit, !layer.present ? 'the control is not on the page' : layer.disabled ? 'the control is disabled (a one-layer grid)' : 'fewer than two layers'))
+      } else {
+        const here = Number(layer.value)
+        const other = here < layer.max ? here + 1 : here - 1
+        const steps: MoveStep[] = Array.from({ length: moves(100, 6) }, (_, i) => {
+          const to = i % 2 === 0 ? other : here
+          return { value: String(to), layer: to }
+        })
+        const { delays, timeouts } = await timeMoves(page, { selector: SEL.layer, steps, timeoutMs: FRAME_TIMEOUT_MS, gapMs: 40 })
+        sliderRows.push(measuredRow('Layer', 'no_fetch', limit, delays, timeouts, judged, judgedNote))
+        if (Number(await page.locator(SEL.layer).inputValue()) !== here) await setControl(page, SEL.layer, { value: String(here), layer: here })
+      }
+
+      await selectControl('Colormap', SEL.colormap, moves(50, 6), fewerThanTwo)
+
+      const reverse = await controlInfo(page, SEL.reverse)
+      if (!reverse.present || reverse.disabled) {
+        sliderRows.push(skippedRow('Reverse colormap', 'no_fetch', limit, !reverse.present ? 'the control is not on the page' : 'the control is disabled'))
+      } else {
+        const steps: MoveStep[] = Array.from({ length: moves(50, 6) }, (_, i) => ({ value: String((i % 2 === 0) !== reverse.checked) }))
+        const { delays, timeouts } = await timeMoves(page, { selector: SEL.reverse, steps, timeoutMs: FRAME_TIMEOUT_MS, gapMs: 40 })
+        sliderRows.push(measuredRow('Reverse colormap', 'no_fetch', limit, delays, timeouts, judged, judgedNote))
+        const now = await controlInfo(page, SEL.reverse)
+        if (now.checked !== reverse.checked) await setControl(page, SEL.reverse, { value: String(reverse.checked) })
+      }
+
+      await selectControl('Value scale', SEL.scale, moves(50, 6), fewerThanTwo)
+      await selectControl('Limits', SEL.limits, moves(50, 6), fewerThanTwo)
+      flush(testInfo.project.name, target.label, record, facts)
+
+      for (const row of sliderRows.slice(before)) {
+        expect.soft(row.timeouts, `${target.label}: ${row.control} had moves with no frame`).toBe(0)
+        expect.soft(row.status, `${target.label}: ${row.control} ${row.note}`).not.toBe('miss')
+      }
+    })
+
+    test(`slider: a fast realization drag, information only (${target.mode})`, async ({ page }, testInfo) => {
+      await openForSliders(page, testInfo)
+      const real = await controlInfo(page, SEL.realization)
+      if (!real.present || real.disabled || real.max < 1) {
+        record.drag = { moves: 0, values_requests: 0, note: 'skipped: the realization control is disabled or has fewer than two realizations' }
+        flush(testInfo.project.name, target.label, record, facts)
+        return
+      }
+      const drag = await page.evaluate(
+        async ({ selector, moves, gapMs, timeoutMs }) => {
+          const el = document.querySelector(selector) as HTMLInputElement
+          const frames = (window as unknown as { __pestoFrames: Array<{ t: number; selection: string }> }).__pestoFrames
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+          const count = Number(el.max) + 1
+          const current = Number(el.value)
+          performance.clearResourceTimings()
+          performance.setResourceTimingBufferSize(2000)
+          frames.length = 0
+          let want = ''
+          for (let i = 0; i < moves; i += 1) {
+            setter.call(el, String((current + 1 + i) % count))
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+            want = (el.parentElement?.querySelector('.tabular-nums')?.textContent ?? '').trim()
+            await new Promise((r) => setTimeout(r, gapMs))
+          }
+          const t0 = performance.now()
+          while (!frames.some((f) => f.selection === want)) {
+            if (performance.now() - t0 > timeoutMs) return { arrived: false }
+            await new Promise((r) => requestAnimationFrame(r))
+          }
+          return { arrived: true }
+        },
+        { selector: SEL.realization, moves: 30, gapMs: 16, timeoutMs: FRAME_TIMEOUT_MS },
+      )
+      await page.waitForTimeout(300)
+      const valuesRequests = await page.evaluate(
+        () => performance.getEntriesByType('resource').filter((e) => e.name.includes('/api/run/grid/values')).length,
+      )
+      record.drag = {
+        moves: 30,
+        values_requests: valuesRequests,
+        note: `information only; moves 16 ms apart are coalesced to one animation frame with one fetch in flight, newest wins${drag.arrived ? '' : '; the last move\'s frame never arrived within 5 s'}`,
+      }
+      flush(testInfo.project.name, target.label, record, facts)
+      expect.soft(drag.arrived, `${target.label}: the last move of the drag never reached a frame`).toBe(true)
+    })
+
+    test('slider: pilot-point field, cold sweep then repeat sweep', async ({ page }, testInfo) => {
+      const pilot = target.pilotPoint
+      if (pilot === null) {
+        record.pilot_point = { skipped: 'skipped: this run has no interpolable pilot-point group' }
+        flush(testInfo.project.name, target.label, record, facts)
+        test.skip(true, 'this run has no interpolable pilot-point group')
+        return
+      }
+      // Looked at before the page draws anything here, and again at the start of this check.
+      const folder = pilotFieldFolder(cacheDir, pilot.group)
+      const memoExisted = ppFolderExistedAtStart || existsSync(folder)
+
+      await openForSliders(page, testInfo)
+      const limit = target.limits.fetchP95Ms
+      const judged = settle(testInfo)
+      const groups = await controlInfo(page, SEL.group)
+      if (!groups.options.some((o) => o.value === pilot.group)) {
+        record.pilot_point = { skipped: `skipped: the picker does not offer ${pilot.group}` }
+        flush(testInfo.project.name, target.label, record, facts)
+        test.skip(true, `the picker does not offer ${pilot.group}`)
+        return
+      }
+      // The first draw of the group is reported beside the sweeps: it can carry one-off costs such as loading the science libraries.
+      const firstDraw = groups.value !== pilot.group ? await setControl(page, SEL.group, { value: pilot.group, group: pilot.group }) : null
+
+      const real = await controlInfo(page, SEL.realization)
+      if (!real.present || real.disabled || real.max < 1) {
+        record.pilot_point = { group: pilot.group, skipped: 'skipped: the realization control is disabled or has fewer than two realizations' }
+        flush(testInfo.project.name, target.label, record, facts)
+        return
+      }
+      const last = Math.min(real.max, bench ? 100 : 2)
+      const sweep = Array.from({ length: last }, (_, i) => ({ value: String(i + 1) }))
+      const run = () => timeMoves(page, { selector: SEL.realization, steps: sweep, timeoutMs: FRAME_TIMEOUT_MS, gapMs: 60, selectionFromLabel: true })
+
+      const cold = await run()
+      const repeat = await run()
+      const coldSummary = summarize(cold.delays)
+      const repeatRow = measuredRow('pilot-point repeat sweep', 'fetch', limit, repeat.delays, repeat.timeouts, judged, String(record.judged_note))
+      record.pilot_point = {
+        group: pilot.group,
+        first_draw_ms: firstDraw,
+        cold: {
+          moves: cold.delays.length + cold.timeouts,
+          p50_ms: coldSummary.p50,
+          p95_ms: coldSummary.p95,
+          max_ms: coldSummary.max,
+          cold: !memoExisted,
+          note: memoExisted
+            ? 'the field memo already held this group, so this sweep is not cold'
+            : 'first compute of each realization\'s field; reported, not judged (D-17)',
+        },
+        repeat: {
+          moves: repeatRow.moves,
+          p50_ms: repeatRow.p50_ms,
+          p95_ms: repeatRow.p95_ms,
+          max_ms: repeatRow.max_ms,
+          speed_limit_ms: limit,
+          status: repeatRow.status,
+          note: repeatRow.note,
+        },
+      }
+      flush(testInfo.project.name, target.label, record, facts)
+      expect.soft(cold.timeouts + repeat.timeouts, `${target.label}: pilot-point sweep moves with no frame`).toBe(0)
+      expect.soft(repeatRow.status, `${target.label}: pilot-point repeat sweep ${repeatRow.note}`).not.toBe('miss')
     })
   })
 }
