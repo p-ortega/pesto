@@ -16,6 +16,7 @@ import {
 } from '../data/client'
 import { hasPosition, isPointGroup, pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
 import { inactiveLandingNotes, layerActiveMask, referencedMask } from '../data/domain'
+import { frameLogInstalled, markFrame } from '../perf'
 import { renderDivider } from '../ui/divider'
 import { renderParamsPanel } from '../ui/params-panel'
 import {
@@ -582,6 +583,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (contextLost) return
     clearCanvas()
     layer?.draw()
+    if (frameLogInstalled()) {
+      // finish() makes the stamp wait for the GPU, so the delay covers the drawn frame.
+      ctx?.gl.finish()
+      markFrame({ selection: selectionLabel(committed), layer: committed.layer, group: drawnGroup })
+    }
   }
 
   // The stripe (--ink-primary over the neutral --gridline fill) and the
