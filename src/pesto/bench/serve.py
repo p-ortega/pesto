@@ -161,11 +161,15 @@ class BenchServer:
         return Timed(status, len(body), seconds), body
 
 
-def _realization_names(body: bytes) -> list[str]:
+def _realization_names(body: bytes) -> list[str] | None:
+    """The realization names in an answer, or None when the answer cannot be read as that table."""
     import pyarrow as pa
 
-    table = pa.ipc.open_stream(body).read_all()
-    return [str(name) for name in table.column("realization").to_pylist()]
+    try:
+        table = pa.ipc.open_stream(body).read_all()
+        return [str(name) for name in table.column("realization").to_pylist()]
+    except (pa.ArrowException, KeyError):
+        return None
 
 
 def page_iteration(server: BenchServer) -> tuple[int, str]:
@@ -212,7 +216,12 @@ def measure_values(
         )
     else:
         names = _realization_names(body)
-        if not names:
+        if names is None:
+            notes.append(
+                "realization: the realization answer has no readable realization column, "
+                "so this kind is not measured"
+            )
+        elif not names:
             notes.append("realization: the run lists no realization names, so this kind is not measured")
         else:
             paths = [f"{base}&realization={quote(names[i % len(names)], safe='')}" for i in range(samples)]
@@ -270,6 +279,8 @@ def measure_reopen_share(server: BenchServer, iteration: int | None = None) -> R
                 has_idomain = False
         elif path == "/api/run/reals" and timed.status == 200:
             names = _realization_names(body)
+            if names is None:
+                notes.append("the realization answer has no readable realization column; the values request used stat=mean")
             realization = names[0] if names else None
 
     failed = [item for item in requests if item.status != 200]
@@ -311,12 +322,16 @@ def _pilot_point_target(server: BenchServer) -> tuple[PilotPointTarget | None, s
     timed, body = server.get("/api/run/grid/pp")
     if timed.status != 200:
         return None, f"no pilot-point index ({_problem_reason(timed, body)})", set()
-    groups = json.loads(body).get("groups", [])
-    names = {g["group"] for g in groups}
-    if not groups:
-        return None, "the run has no interpolable pilot-point group", names
-    best = min(groups, key=lambda g: (-int(g["n_pp"]), str(g["group"])))
-    return PilotPointTarget(str(best["group"]), int(best["layer"]), int(best["n_pp"])), "", names
+    try:
+        groups = json.loads(body).get("groups", [])
+        names = {g["group"] for g in groups}
+        if not groups:
+            return None, "the run has no interpolable pilot-point group", names
+        best = min(groups, key=lambda g: (-int(g["n_pp"]), str(g["group"])))
+        target = PilotPointTarget(str(best["group"]), int(best["layer"]), int(best["n_pp"]))
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        return None, f"the pilot-point index answer could not be read ({type(exc).__name__}: {exc})", set()
+    return target, "", names
 
 
 def _heaviest_target(
@@ -342,7 +357,10 @@ def _heaviest_target(
         )
     import pyarrow as pa
 
-    table = pa.ipc.open_stream(fetched["par table"]).read_all()
+    try:
+        table = pa.ipc.open_stream(fetched["par table"]).read_all()
+    except pa.ArrowException as exc:
+        return None, f"the parameter table answer could not be read ({exc}), so no heaviest group is named"
     if "pargp" not in table.column_names:
         return None, "the parameter table has no pargp column, so no heaviest group is named"
     pargp = table.column("pargp").to_pylist()

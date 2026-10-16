@@ -219,6 +219,27 @@ def test_no_group_on_any_cell_gives_a_null_heaviest_and_a_reason(server: BenchSe
     assert targets.heaviest_note == "no parameter group places on any cell"
 
 
+def test_a_pilot_point_index_of_the_wrong_shape_gives_a_reason_not_a_crash(server: BenchServer) -> None:
+    for body in (b"not json", json.dumps({"groups": [{"group": "G"}]}).encode(), json.dumps([1]).encode()):
+        wrapped = _Wrapped(server, {"/api/run/grid/pp": (200, body)})
+        targets = pick_browser_targets(wrapped)  # type: ignore[arg-type]
+        assert targets.pilot_point is None
+        assert "could not be read" in targets.pilot_point_note
+        assert targets.heaviest is not None
+
+
+def test_a_realization_answer_without_the_realization_column_is_noted_not_raised(
+    server: BenchServer,
+) -> None:
+    wrapped = _Wrapped(server, {"/api/run/reals": (200, _arrow({"name": ["a"]}))})
+    values = measure_values(wrapped, 0, 5)  # type: ignore[arg-type]
+    assert values.realization is None
+    assert any(n.startswith("realization:") and "no readable realization column" in n for n in values.notes)
+    assert values.statistic is not None
+    share = measure_reopen_share(wrapped)  # type: ignore[arg-type]
+    assert "no readable realization column" in share.note
+
+
 def _arrow(columns: dict[str, list]) -> bytes:
     import pyarrow as pa
 

@@ -193,6 +193,8 @@ class BenchResult:
     server: ServerMeasures | None = None
     browser_targets: BrowserTargets | None = None
     observations: ObservationFacts | None = None
+    # Why the server stage gave nothing, when it raised; None when it ran or was turned off.
+    server_failure: str | None = None
     schema_version: int = SCHEMA_VERSION
     tool: str = TOOL
 
@@ -361,6 +363,8 @@ def format_table(result: BenchResult) -> str:
         )
         lines.append(f"  note: {floor.note}")
 
+    for note in result.notes:
+        lines.append(f"note: {note}")
     lines.extend(_server_lines(result))
     lines.extend(_target_lines(result))
     lines.extend(_observation_lines(result))
