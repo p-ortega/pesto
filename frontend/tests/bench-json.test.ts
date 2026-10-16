@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isSoftwareRenderer,
+  judgedResultsBlocker,
   nearestRankP95,
   parseBenchResult,
   stripToken,
@@ -109,5 +110,26 @@ describe('stripToken', () => {
 
   it('removes a token that is the only parameter', () => {
     expect(stripToken('http://127.0.0.1:8765/?token=abc')).toBe('http://127.0.0.1:8765/')
+  })
+})
+
+describe('judgedResultsBlocker', () => {
+  const file = (runs: Record<string, unknown>) => JSON.stringify({ run_id: '2026-10-09T10:00:00Z', runs })
+
+  it('keeps a file with a judged run in it, naming the run id', () => {
+    const why = judgedResultsBlocker(file({ forecast: { judged: true }, other: { judged: false } }))
+    expect(why).toContain('judged results')
+    expect(why).toContain('2026-10-09T10:00:00Z')
+  })
+
+  it('lets a file with only unjudged runs be replaced', () => {
+    expect(judgedResultsBlocker(file({ synthetic: { judged: false } }))).toBeNull()
+    expect(judgedResultsBlocker(file({}))).toBeNull()
+  })
+
+  it('keeps a file it cannot read or understand', () => {
+    expect(judgedResultsBlocker('{ not json')).toContain('not valid JSON')
+        expect(judgedResultsBlocker('null')).toContain('not a results file')
+    expect(judgedResultsBlocker(JSON.stringify({ runs: 5 }))).toContain('not readable')
   })
 })

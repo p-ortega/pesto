@@ -9,7 +9,8 @@
 //   `pesto bench` built for it. Without it the synthetic run is measured as a
 //   mechanism check and nothing is judged.
 // PESTO_SLIDER_OUT_DIR: where slider-<project>.json goes. An existing results
-//   file there is refused, never overwritten.
+//   file there is refused, never overwritten. In the default folder a file
+//   with judged results (or one that cannot be read) is refused the same way.
 
 import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -18,7 +19,7 @@ import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { isSoftwareRenderer, parseBenchResult, stripToken, summarize, type BenchTarget } from './bench-json'
+import { isSoftwareRenderer, judgedResultsBlocker, parseBenchResult, stripToken, summarize, type BenchTarget } from './bench-json'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..')
@@ -91,17 +92,34 @@ const TARGETS = loadTargets()
 
 const OUT_DIR = process.env.PESTO_SLIDER_OUT_DIR ? resolveFromRoot(process.env.PESTO_SLIDER_OUT_DIR) : DEFAULT_OUT_DIR
 
+// Only a file that can be read and has no judged run in it may be replaced.
+function earlierFileBlocksReplacing(file: string): string | null {
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    return `${file} exists and cannot be read (${(error as Error).message})`
+  }
+  const why = judgedResultsBlocker(text)
+  return why === null ? null : `${file} ${why}`
+}
+
 // Playwright loads this file in its main process first and in each worker
 // after, and a worker inherits the id. The refusal runs once, in the first
-// load, before any result of this run exists.
+// load, before any result of this run exists. In a folder the user named,
+// any earlier file is refused; in the default folder, one with judged
+// numbers in it (or one that cannot be read) is.
 if (process.env.PESTO_SLIDER_RUN_ID === undefined) {
   process.env.PESTO_SLIDER_RUN_ID = new Date().toISOString()
-  if (process.env.PESTO_SLIDER_OUT_DIR) {
-    for (const project of PROJECT_NAMES) {
-      const file = path.join(OUT_DIR, `slider-${project}.json`)
-      if (existsSync(file)) {
-        throw new Error(`${file} already exists; choose a new PESTO_SLIDER_OUT_DIR, earlier results are never overwritten`)
-      }
+  for (const project of PROJECT_NAMES) {
+    const file = path.join(OUT_DIR, `slider-${project}.json`)
+    if (!existsSync(file)) continue
+    if (process.env.PESTO_SLIDER_OUT_DIR) {
+      throw new Error(`${file} already exists; choose a new PESTO_SLIDER_OUT_DIR, earlier results are never overwritten`)
+    }
+    const blocked = earlierFileBlocksReplacing(file)
+    if (blocked !== null) {
+      throw new Error(`${blocked}; move or rename it, or set PESTO_SLIDER_OUT_DIR to a new folder, earlier results are never overwritten`)
     }
   }
 }

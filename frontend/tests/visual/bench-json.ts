@@ -140,3 +140,23 @@ export function stripToken(url: string): string {
   parsed.searchParams.delete('token')
   return absolute ? parsed.toString() : parsed.pathname + parsed.search + parsed.hash
 }
+
+/**
+ * Why the text of an earlier slider results file must not be replaced, or null
+ * when it may be. A file that is not valid JSON, or has any judged run in it,
+ * is kept: when the answer cannot be told, it is no.
+ */
+export function judgedResultsBlocker(text: string): string | null {
+  let doc: unknown
+  try {
+    doc = JSON.parse(text)
+  } catch (error) {
+    return `exists and is not valid JSON (${(error as Error).message})`
+  }
+  if (typeof doc !== 'object' || doc === null) return 'exists and is not a results file'
+  const { run_id: runId, runs } = doc as { run_id?: unknown; runs?: unknown }
+  if (runs === undefined) return null
+  if (typeof runs !== 'object' || runs === null) return 'exists and its runs are not readable'
+  const judged = Object.values(runs).some((run) => (run as { judged?: unknown } | null)?.judged === true)
+  return judged ? `holds judged results from an earlier run (run id ${String(runId)})` : null
+}
