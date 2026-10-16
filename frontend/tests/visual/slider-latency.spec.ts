@@ -508,6 +508,7 @@ for (const target of TARGETS) {
     let sliderServer: Launched | null = null
     // Read before any test in this describe opens the page, so earlier draws cannot warm it unseen.
     let ppFolderExistedAtStart = false
+    let reopenMiss: string | null = null
 
     function settle(testInfo: TestInfo): boolean {
       const verdict = judging(target, testInfo.project.name, facts)
@@ -568,7 +569,8 @@ for (const target of TARGETS) {
           : String(record.judged_note),
       }
       flush(testInfo.project.name, target.label, record, facts)
-      expect.soft(status, `${target.label}: median first load ${firstMedian.toFixed(0)} ms against ${limitMs} ms`).not.toBe('miss')
+      // The miss fails the check in the last test of this describe. Failing here would skip this run's slider tests, because they run in serial mode.
+      reopenMiss = status === 'miss' ? `${target.label}: median first load ${firstMedian.toFixed(0)} ms against ${limitMs} ms` : null
     })
 
     const bench = target.mode === 'bench'
@@ -842,6 +844,12 @@ for (const target of TARGETS) {
       flush(testInfo.project.name, target.label, record, facts)
       expect.soft(cold.timeouts + repeat.timeouts, `${target.label}: pilot-point sweep moves with no frame`).toBe(0)
       expect.soft(repeatRow.status, `${target.label}: pilot-point repeat sweep ${repeatRow.note}`).not.toBe('miss')
+    })
+
+    // Last on purpose: a failure here cannot skip any other test of this run.
+    test(`reopen: verdict against the speed limit, after the slider tests (${target.mode})`, async () => {
+      test.skip(!('reopen' in record), 'the reopen measurement was not part of this run')
+      expect(reopenMiss, 'reopen missed its speed limit').toBeNull()
     })
   })
 }
