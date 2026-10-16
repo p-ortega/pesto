@@ -3,21 +3,45 @@
 from __future__ import annotations
 
 import os
+import platform
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
+
+import numpy as np
 
 from pesto.bench.report import (
     ArtifactTiming,
     CacheSize,
     IngestTiming,
+    LatencySummary,
+    ReadFloor,
     RunFacts,
     SourceFile,
+    SourceRead,
 )
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.discover import discover
 from pesto.ingest.runner import Progress, plan_artifacts
+
+try:
+    import resource
+except ImportError:  # Windows has no resource module
+    resource = None  # type: ignore[assignment]
+
+_READ_CHUNK = 8 * 1024 * 1024
+_NO_OBSERVATIONS = "parameters only, observation ensemble not present"
+_NO_CPU = "CPU time is not available on this platform"
+_FLOOR_NOTE = (
+    "read straight after two ingests, so the files were likely in memory; "
+    "above about 3,000 MB/s they did not come from the disk (an assumption, "
+    "not something this run proved)"
+)
+_READS_NOTE = (
+    "counted from the artifact plan: each artifact that names a source reads it "
+    "once in its worker and once more to checksum it"
+)
 
 
 def _size(path: Path) -> int:
@@ -31,6 +55,9 @@ def run_facts(run_dir: Path) -> RunFacts:
         k for k in keys if isinstance(k, str)
     )
     obs = [SourceFile(name=path.name, bytes=_size(path)) for path in layout.obs_ens.values()]
+    notes = list(layout.notes)
+    if not obs:
+        notes.append(_NO_OBSERVATIONS)
     resolved = Path(run_dir).resolve()
     return RunFacts(
         path=str(resolved),
@@ -39,20 +66,48 @@ def run_facts(run_dir: Path) -> RunFacts:
         obs_ensembles=obs,
         grid=layout.grid.name if layout.grid is not None else None,
         factor_files=len(layout.factor_files),
-        notes=list(layout.notes),
+        notes=notes,
     )
+
+
+def _planned(run_dir: Path, cache_dir: Path):
+    return plan_artifacts(discover(run_dir), CacheLayout(root=Path(cache_dir)))
+
+
+def _source_paths(run_dir: Path, cache_dir: Path) -> list[Path]:
+    seen: dict[Path, None] = {}
+    for artifact in _planned(run_dir, cache_dir):
+        for source in artifact.sources:
+            seen.setdefault(Path(source).resolve(), None)
+    return list(seen)
 
 
 def source_files(run_dir: Path, cache_dir: Path) -> list[SourceFile]:
     """Each source file the artifact plan names, once, however many artifacts name it."""
-    planned = plan_artifacts(discover(run_dir), CacheLayout(root=Path(cache_dir)))
-    seen: dict[Path, SourceFile] = {}
-    for artifact in planned:
+    return [SourceFile(name=p.name, bytes=_size(p)) for p in _source_paths(run_dir, cache_dir)]
+
+
+def source_reads(run_dir: Path, cache_dir: Path) -> list[SourceRead]:
+    counts: dict[Path, int] = {}
+    for artifact in _planned(run_dir, cache_dir):
         for source in artifact.sources:
-            resolved = Path(source).resolve()
-            if resolved not in seen:
-                seen[resolved] = SourceFile(name=resolved.name, bytes=_size(resolved))
-    return list(seen.values())
+            path = Path(source).resolve()
+            counts[path] = counts.get(path, 0) + 2
+    return [SourceRead(name=p.name, bytes=_size(p), reads_implied=n) for p, n in counts.items()]
+
+
+def source_reads_note() -> str:
+    return _READS_NOTE
+
+
+def _children_cpu() -> float:
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
+
+
+def _own_cpu() -> float:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
 
 
 def time_ingest(
@@ -61,35 +116,71 @@ def time_ingest(
     label: str,
     ingest: Callable[..., object],
 ) -> IngestTiming:
+    has_cpu = resource is not None
     rows: list[Progress] = []
-    start = time.perf_counter()
-    ingest(run_dir, cache_root=cache_dir, on_progress=rows.append)
-    wall = time.perf_counter() - start
+    # Workers' CPU time at each row, so one artifact's share is a difference of two.
+    children_at: list[float] = []
 
-    finals = [row for row in rows if row.state != "started"]
-    worker = sum(row.seconds for row in finals if row.state in ("ok", "failed"))
-    artifacts = [
-        ArtifactTiming(
-            name=row.artifact,
-            state=row.state,
-            seconds=row.seconds,
-            cpu_seconds=None,
-            source_bytes=row.source_bytes,
-            written_bytes=row.written_bytes,
-            reason=row.reason,
+    def on_progress(row: Progress) -> None:
+        rows.append(row)
+        children_at.append(_children_cpu() if has_cpu else 0.0)
+
+    cpu_before = (_children_cpu() + _own_cpu()) if has_cpu else 0.0
+    start = time.perf_counter()
+    ingest(run_dir, cache_root=cache_dir, on_progress=on_progress)
+    wall = time.perf_counter() - start
+    cpu = (_children_cpu() + _own_cpu() - cpu_before) if has_cpu else None
+
+    artifacts: list[ArtifactTiming] = []
+    started_at: dict[str, float] = {}
+    worker = 0.0
+    skipped = 0
+    for row, children in zip(rows, children_at):
+        if row.state == "started":
+            started_at[row.artifact] = children
+            continue
+        if row.state == "skipped":
+            skipped += 1
+        if row.state in ("ok", "failed"):
+            worker += row.seconds
+        artifact_cpu = None
+        if has_cpu and row.artifact in started_at:
+            artifact_cpu = children - started_at.pop(row.artifact)
+        artifacts.append(
+            ArtifactTiming(
+                name=row.artifact,
+                state=row.state,
+                seconds=row.seconds,
+                cpu_seconds=artifact_cpu,
+                source_bytes=row.source_bytes,
+                written_bytes=row.written_bytes,
+                reason=row.reason,
+            )
         )
-        for row in finals
-    ]
+
+    notes: list[str] = []
+    if not has_cpu:
+        notes.append(_NO_CPU)
+    if skipped:
+        notes.append(
+            f"{skipped} artifacts were skipped as fresh, so this ingest did not re-read them"
+        )
+    wait = wall - cpu if cpu is not None else None
+    if wait is not None and wait < 0:
+        notes.append(
+            "CPU time is above wall time because the workers used several cores, "
+            "so waiting time is below zero"
+        )
     return IngestTiming(
         label=label,
         cache_dir=str(cache_dir),
         wall_seconds=wall,
         worker_seconds=worker,
         outside_worker_seconds=wall - worker,
-        cpu_seconds=None,
-        wait_seconds=None,
+        cpu_seconds=cpu,
+        wait_seconds=wait,
         artifacts=artifacts,
-        notes=[],
+        notes=notes,
     )
 
 
@@ -109,4 +200,52 @@ def cache_size(run_dir: Path, cache_dir: Path) -> CacheSize:
         source_bytes=source_total,
         ratio=on_disk / source_total if source_total > 0 else None,
         sources=sources,
+    )
+
+
+def read_floor(files: Sequence[Path]) -> ReadFloor:
+    """How fast the source bytes read once, start to end, in one pass."""
+    total = 0
+    start = time.perf_counter()
+    for path in files:
+        with open(path, "rb") as handle:
+            while chunk := handle.read(_READ_CHUNK):
+                total += len(chunk)
+    seconds = time.perf_counter() - start
+    rate = total / 1e6 / seconds if seconds > 0 and total > 0 else None
+    return ReadFloor(bytes=total, seconds=seconds, mb_per_second=rate, note=_FLOOR_NOTE)
+
+
+def read_floor_for(run_dir: Path, cache_dir: Path) -> ReadFloor:
+    return read_floor(_source_paths(run_dir, cache_dir))
+
+
+def _memory_bytes() -> int | None:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def machine_facts() -> dict[str, object]:
+    return {
+        "platform": platform.platform() or "unknown",
+        "machine": platform.machine() or "unknown",
+        "cpu_count": os.cpu_count() or "unknown",
+        "memory_bytes": _memory_bytes(),
+        "python": platform.python_version() or "unknown",
+    }
+
+
+def percentile_summary(samples: Sequence[float]) -> LatencySummary | None:
+    if len(samples) == 0:
+        return None
+    values = np.asarray(samples, dtype=float)
+    p50, p95 = np.percentile(values, [50, 95], method="higher")
+    return LatencySummary(
+        count=len(values),
+        first_seconds=float(values[0]),
+        p50_seconds=float(p50),
+        p95_seconds=float(p95),
+        max_seconds=float(values.max()),
     )

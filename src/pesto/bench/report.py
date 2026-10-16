@@ -187,10 +187,20 @@ def format_table(result: BenchResult) -> str:
         lines.append(
             f"Ingest, {ingest.label}: wall {_seconds(ingest.wall_seconds)}, "
             f"workers {_seconds(ingest.worker_seconds)}, "
-            f"outside workers {_seconds(ingest.outside_worker_seconds)}"
+            f"outside workers {_seconds(ingest.outside_worker_seconds)}, "
+            f"CPU {_seconds(ingest.cpu_seconds)}, "
+            f"waiting {_seconds(ingest.wait_seconds)}"
         )
         for note in ingest.notes:
             lines.append(f"  note: {note}")
+
+    floor = result.read_floor
+    if floor is not None:
+        rate = "n/a" if floor.mb_per_second is None else f"{floor.mb_per_second:,.0f} MB/s"
+        lines.append(
+            f"Read floor: {_megabytes(floor.bytes)} read once in {_seconds(floor.seconds)} ({rate})"
+        )
+        lines.append(f"  note: {floor.note}")
 
     cache = result.cache_size
     ratio = "n/a" if cache.ratio is None else f"{cache.ratio:.2f}x"

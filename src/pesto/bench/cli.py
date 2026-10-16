@@ -10,7 +10,15 @@ from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
-from pesto.bench.measure import cache_size, run_facts, time_ingest
+from pesto.bench.measure import (
+    cache_size,
+    machine_facts,
+    read_floor_for,
+    run_facts,
+    source_reads,
+    source_reads_note,
+    time_ingest,
+)
 from pesto.bench.report import (
     BenchResult,
     format_table,
@@ -114,6 +122,7 @@ def run_bench(
     print(f"pesto bench: ingesting {run.name} (warm, straight after)", file=sys.stderr)
     second = time_ingest(run, warm_dir, "warm (straight after)", ingest)
 
+    floor = read_floor_for(run, warm_dir)
     size = cache_size(run, warm_dir)
     failed = [a.name for a in second.artifacts if a.state == "failed"]
     if size.ratio is None:
@@ -130,7 +139,7 @@ def run_bench(
     return BenchResult(
         pesto_version=_version(),
         measured_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        machine={},
+        machine=machine_facts(),
         run=facts,
         cache={
             "parent_dir": str(parent),
@@ -138,9 +147,9 @@ def run_bench(
             "warm_dir": str(warm_dir),
         },
         ingests=[first, second],
-        read_floor=None,
-        source_reads=None,
-        source_reads_note="",
+        read_floor=floor,
+        source_reads=source_reads(run, warm_dir),
+        source_reads_note=source_reads_note(),
         cache_size=size,
         verdicts=[verdict("cache_ratio", measured, "x", note)],
     )
