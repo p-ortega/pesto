@@ -15,7 +15,7 @@ import type { RunConfig } from '../src/views/map'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
-    gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 },
+    gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), finish: vi.fn(), COLOR_BUFFER_BIT: 0 },
     onLost: vi.fn(),
     onRestored: vi.fn(),
   })),
@@ -575,5 +575,65 @@ describe('the redraw path', () => {
     layerInput.dispatchEvent(new Event('input'))
 
     expect(vi.mocked(scaleLimits).mock.calls.length).toBe(callsAfterLoad)
+  })
+
+  describe('the frame log', () => {
+    afterEach(() => {
+      delete window.__pestoFrames
+    })
+
+    async function glFinishSpy(): Promise<ReturnType<typeof vi.fn>> {
+      const { createContext } = await import('../src/gl/context')
+      const made = vi.mocked(createContext).mock.results[0].value as { gl: { finish: ReturnType<typeof vi.fn> } }
+      return made.gl.finish
+    }
+
+    it('stamps every drawn frame with its time, selection, layer and group, and waits for the GPU', async () => {
+      const values = fields()
+      stubEnvironment((query) => ({ status: 200, bytes: bytesOf(values[query.get('realization') ?? 'base']) }))
+      stubRaf()
+      window.__pestoFrames = []
+
+      const { mountMap } = await import('../src/views/map')
+      const root = mountFreshRoot()
+      mountMap(root, { config: CONFIG, state: baseState() })
+      await vi.waitFor(() => {
+        expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+      })
+
+      const log = window.__pestoFrames!
+      expect(log.length).toBeGreaterThan(0)
+      const first = log[log.length - 1]
+      expect(typeof first.t).toBe('number')
+      expect(first.selection).toBe('base')
+      expect(statusBarText(root)).toContain(first.selection)
+      expect(first.layer).toBe(0)
+      expect(first.group).toBe('G1')
+
+      const before = log.length
+      const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      layerInput.value = '1'
+      layerInput.dispatchEvent(new Event('input'))
+      expect(log.length).toBe(before + 1)
+      expect(log[log.length - 1].layer).toBe(1)
+
+      expect(await glFinishSpy()).toHaveBeenCalledTimes(log.length)
+    })
+
+    it('records nothing and calls nothing extra when no test installed the log', async () => {
+      const values = fields()
+      stubEnvironment((query) => ({ status: 200, bytes: bytesOf(values[query.get('realization') ?? 'base']) }))
+      stubRaf()
+
+      const { mountMap } = await import('../src/views/map')
+      const root = mountFreshRoot()
+      mountMap(root, { config: CONFIG, state: baseState() })
+      await vi.waitFor(() => {
+        expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+      })
+
+      expect(window.__pestoFrames).toBeUndefined()
+      expect(await glFinishSpy()).not.toHaveBeenCalled()
+    })
   })
 })
