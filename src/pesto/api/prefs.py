@@ -69,9 +69,12 @@ def read_recent_runs() -> list[Path]:
         if not isinstance(entry, str):
             continue
         candidate = Path(entry)
-        if not candidate.is_dir():
+        try:
+            if not candidate.is_dir():
+                continue
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
             continue
-        resolved = candidate.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -93,15 +96,15 @@ def write_last_run(path: Path) -> None:
     Never raises -- a failed write just means the next launch starts with
     fewer remembered runs, which is a worse first screen, not a broken one.
     """
-    resolved = path.resolve()
-    others = [p for p in read_recent_runs() if p.resolve() != resolved]
-    runs = [resolved, *others][:_MAX_RECENT_RUNS]
-    body = json.dumps({"version": _STORE_VERSION, "paths": [str(p) for p in runs]})
-    store = _store_path()
     try:
+        resolved = path.resolve()
+        others = [p for p in read_recent_runs() if p.resolve() != resolved]
+        runs = [resolved, *others][:_MAX_RECENT_RUNS]
+        body = json.dumps({"version": _STORE_VERSION, "paths": [str(p) for p in runs]})
+        store = _store_path()
         store.parent.mkdir(parents=True, exist_ok=True)
         write_atomic_text(store, body)
-    except OSError:
+    except (OSError, RuntimeError):
         return
 
 
