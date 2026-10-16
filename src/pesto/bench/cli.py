@@ -176,17 +176,27 @@ def run_bench(
     verdicts = [verdict("cache_ratio", measured, "x", note)]
     server_result = None
     targets = None
+    server_failure = None
+    notes: list[str] = []
     if measure_server:
         print(f"pesto bench: timing the server on {run.name}", file=sys.stderr)
-        with BenchServer(warm_dir, run) as server:
-            # Reopen goes first, on a server that has only just started.
-            share = measure_reopen_share(server)
-            targets = pick_browser_targets(server)
-            values = measure_values(server, targets.iteration, values_samples, targets.iteration_note)
-            server_result = ServerMeasures(
-                started_seconds=server.started_seconds, reopen_share=share, values=values
-            )
-        verdicts += _values_verdicts(values)
+        try:
+            with BenchServer(warm_dir, run) as server:
+                # Reopen goes first, on a server that has only just started.
+                share = measure_reopen_share(server)
+                targets = pick_browser_targets(server)
+                values = measure_values(server, targets.iteration, values_samples, targets.iteration_note)
+                server_result = ServerMeasures(
+                    started_seconds=server.started_seconds, reopen_share=share, values=values
+                )
+            verdicts += _values_verdicts(values)
+        except Exception as exc:
+            # The two ingests took minutes; their numbers are kept and the server rows say why they are empty.
+            server_result = None
+            targets = None
+            server_failure = f"{type(exc).__name__}: {exc}"
+            notes.append(f"the server stage failed, so its rows are not measured: {server_failure}")
+            verdicts += _values_verdicts(None, f"the server stage failed: {server_failure}")
     else:
         verdicts += _values_verdicts(None)
     observations = observation_facts(run, obs_probe)
@@ -207,18 +217,20 @@ def run_bench(
         source_reads_note=source_reads_note(),
         cache_size=size,
         verdicts=verdicts,
+        notes=notes,
+        server_failure=server_failure,
         server=server_result,
         browser_targets=targets,
         observations=observations,
     )
 
 
-def _values_verdicts(values):
+def _values_verdicts(values, off_reason: str = _STAGE_OFF):
     rows = []
     for kind, label in (("realization", "grid/values p95, realization"), ("statistic", "grid/values p95, statistic")):
         summary = getattr(values, kind) if values is not None else None
         if values is None:
-            note = _STAGE_OFF
+            note = off_reason
         else:
             note = next((n for n in values.notes if n.startswith(f"{kind}:")), "")
         measured = summary.p95_seconds if summary is not None else None
@@ -254,7 +266,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(format_table(result))
-    # The result is written only now, after every stage finished.
+    # The result is written only now, after the stages ran or failed.
     if os.path.lexists(args.json):
         print(f"pesto bench: {args.json} appeared while measuring; result not written", file=sys.stderr)
         return 2
@@ -262,5 +274,12 @@ def main(argv: list[str]) -> int:
         write_result_json(args.json, result)
     except Exception as exc:
         print(f"pesto bench: could not write the result: {exc}", file=sys.stderr)
+        return 1
+    if result.server_failure is not None:
+        print(
+            f"pesto bench: could not finish: the server stage failed ({result.server_failure}); "
+            f"the ingest numbers are in {args.json}",
+            file=sys.stderr,
+        )
         return 1
     return 0

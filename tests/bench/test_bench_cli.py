@@ -208,3 +208,37 @@ def test_a_bench_that_could_not_finish_names_the_error_and_writes_no_result(
     assert bench(run_dir, tmp_path / "scratch", out) == 1
     assert "could not finish: the disk went away" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_a_failing_server_stage_still_writes_the_ingest_numbers_and_exits_1(
+    run_dir: Path, tmp_path: Path, ingest_calls: list[Path], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Quiet:
+        started_seconds = 0.0
+
+        def __init__(self, *_args: object) -> None: ...
+        def __enter__(self) -> "Quiet":
+            return self
+        def __exit__(self, *_exc: object) -> None: ...
+
+    def boom(_server: object) -> None:
+        raise KeyError("group")
+
+    monkeypatch.setattr("pesto.bench.cli.BenchServer", Quiet)
+    monkeypatch.setattr("pesto.bench.cli.measure_reopen_share", boom)
+    out = tmp_path / "out.json"
+
+    assert bench(run_dir, tmp_path / "scratch", out) == 1
+
+    err = capsys.readouterr().err
+    assert "could not finish" in err and "server stage failed" in err
+    body = json.loads(out.read_text())
+    assert len(body["ingests"]) == 2
+    assert body["server"] is None and body["browser_targets"] is None
+    assert "KeyError" in body["server_failure"]
+    rows = {item["speed_limit"]: item for item in body["verdicts"]}
+    for name in ("grid/values p95, realization", "grid/values p95, statistic"):
+        assert rows[name]["status"] == "not measured"
+        assert "server stage failed" in rows[name]["note"]
+    assert any("server stage failed" in note for note in body["notes"])
