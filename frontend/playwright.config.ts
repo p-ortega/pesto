@@ -11,6 +11,9 @@ export default defineConfig({
   testDir: 'tests/visual',
   timeout: 10 * 60 * 1000,
   retries: 0,
+  // One worker: the two projects share one cache folder and one machine, so they must never run together.
+  workers: 1,
+  fullyParallel: false,
   reporter: 'list',
   // Playwright empties its output folder at the start of every run; the slider
   // check writes its results to test-results/slider-latency/, so keep them apart.
