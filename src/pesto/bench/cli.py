@@ -21,14 +21,28 @@ from pesto.bench.measure import (
 )
 from pesto.bench.report import (
     BenchResult,
+    ServerMeasures,
     format_table,
     verdict,
     write_result_json,
 )
+from pesto.bench.serve import BenchServer, measure_values, page_iteration
 from pesto.ingest.runner import ingest_run
 
 _AS_FOUND = "ingest-1"
 _WARM = "ingest-2"
+_VALUES_SAMPLES = 300
+_STAGE_OFF = "the server stage was turned off"
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Where to write the result; the file must not exist yet",
+    )
+    parser.add_argument(
+        "--values-samples",
+        type=_positive_int,
+        default=_VALUES_SAMPLES,
+        help=f"grid/values requests timed per kind (default {_VALUES_SAMPLES})",
     )
     return parser
 
@@ -104,6 +124,8 @@ def run_bench(
     json_path: Path,
     *,
     ingest: Callable[..., object] | None = None,
+    measure_server: bool = True,
+    values_samples: int = _VALUES_SAMPLES,
 ) -> BenchResult:
     run = Path(run_dir).resolve()
     parent = Path(cache_parent).resolve()
@@ -136,6 +158,18 @@ def run_bench(
     else:
         measured, note = size.ratio, ""
 
+    verdicts = [verdict("cache_ratio", measured, "x", note)]
+    server_result = None
+    if measure_server:
+        print(f"pesto bench: timing grid/values on {run.name}", file=sys.stderr)
+        with BenchServer(warm_dir, run) as server:
+            iteration, iteration_note = page_iteration(server)
+            values = measure_values(server, iteration, values_samples, iteration_note)
+            server_result = ServerMeasures(started_seconds=server.started_seconds, values=values)
+        verdicts += _values_verdicts(values)
+    else:
+        verdicts += _values_verdicts(None)
+
     return BenchResult(
         pesto_version=_version(),
         measured_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -151,8 +185,22 @@ def run_bench(
         source_reads=source_reads(run, warm_dir),
         source_reads_note=source_reads_note(),
         cache_size=size,
-        verdicts=[verdict("cache_ratio", measured, "x", note)],
+        verdicts=verdicts,
+        server=server_result,
     )
+
+
+def _values_verdicts(values):
+    rows = []
+    for kind, label in (("realization", "grid/values p95, realization"), ("statistic", "grid/values p95, statistic")):
+        summary = getattr(values, kind) if values is not None else None
+        if values is None:
+            note = _STAGE_OFF
+        else:
+            note = next((n for n in values.notes if n.startswith(f"{kind}:")), "")
+        measured = summary.p95_seconds if summary is not None else None
+        rows.append(verdict("values_p95_seconds", measured, "s", note, label=label))
+    return rows
 
 
 def main(argv: list[str]) -> int:
@@ -164,7 +212,9 @@ def main(argv: list[str]) -> int:
         return 2
 
     try:
-        result = run_bench(args.run, args.cache_dir, args.json)
+        result = run_bench(
+            args.run, args.cache_dir, args.json, values_samples=args.values_samples
+        )
     except KeyboardInterrupt:
         print(
             "pesto bench: interrupted; no result written; the caches made so far "
