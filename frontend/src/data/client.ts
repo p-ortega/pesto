@@ -214,9 +214,19 @@ export async function gridPointXy(iteration: number): Promise<Float32Array | nul
 // The raw Arrow stream bytes for /meta -- parsing (tableFromIPC, getChild
 // by field name) is data/parmap.ts's job, the D-05 join's first use of
 // apache-arrow.
-export async function runMeta(kind: 'par' | 'obs', columns?: readonly string[]): Promise<ArrayBuffer> {
-  const wanted = columns === undefined ? '' : `&columns=${columns.map(encodeURIComponent).join(',')}`
-  const { buffer } = await apiGetBytes(`/api/run/meta?kind=${kind}${wanted}`)
+// `columns` must all exist (the server answers 422 naming one that does not);
+// `optionalColumns` that the table lacks are left out and named in the
+// server's X-Pesto-Absent-Columns header.
+export async function runMeta(
+  kind: 'par' | 'obs',
+  columns?: readonly string[],
+  optionalColumns?: readonly string[],
+): Promise<ArrayBuffer> {
+  const list = (name: string, names?: readonly string[]) =>
+    names === undefined ? '' : `&${name}=${names.map(encodeURIComponent).join(',')}`
+  const { buffer } = await apiGetBytes(
+    `/api/run/meta?kind=${kind}${list('columns', columns)}${list('optional_columns', optionalColumns)}`,
+  )
   return buffer
 }
 

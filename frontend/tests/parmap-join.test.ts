@@ -149,4 +149,20 @@ describe('fetchParIdentities', () => {
       { parnme: 'p2', pargp: 'G2', partrans: 'none' },
     ])
   })
+
+  it('gives a null partrans, not a failure, when the table has no partrans column', async () => {
+    const bytes = tableToIPC(tableFromArrays({ parnme: ['p1'], pargp: ['G1'] }), 'stream')
+    const client = await import('../src/data/client')
+    vi.mocked(client.runMeta).mockResolvedValue(bytes.buffer as ArrayBuffer)
+
+    expect(await fetchParIdentities()).toEqual([{ parnme: 'p1', pargp: 'G1', partrans: null }])
+  })
+
+  it('still refuses a table with no parnme or pargp column', async () => {
+    const bytes = tableToIPC(tableFromArrays({ parnme: ['p1'] }), 'stream')
+    const client = await import('../src/data/client')
+    vi.mocked(client.runMeta).mockResolvedValue(bytes.buffer as ArrayBuffer)
+
+    await expect(fetchParIdentities()).rejects.toThrow('parnme or pargp')
+  })
 })

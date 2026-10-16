@@ -9,19 +9,24 @@ import { gridParmap, runMeta } from './client'
 export interface ParIdentity {
   parnme: string
   pargp: string
-  partrans: string
+  /** null when the stored table has no partrans column; the scale then defaults to linear. */
+  partrans: string | null
 }
 
 export async function fetchParmap(iteration: number): Promise<Int32Array> {
   return gridParmap(iteration)
 }
 
-// Every column the map and the Params panel read from the parameter table.
-export const PAR_TABLE_COLUMNS = ['parnme', 'pargp', 'parlbnd', 'parubnd', 'partrans'] as const
+// The columns the map cannot draw without; the server refuses the request if one is missing.
+export const PAR_TABLE_COLUMNS = ['parnme', 'pargp'] as const
+
+// Columns the Params panel and the scale default read when the run has them.
+// The server names any it lacks in X-Pesto-Absent-Columns and the panel shows dashes.
+export const PAR_TABLE_OPTIONAL_COLUMNS = ['parlbnd', 'parubnd', 'partrans'] as const
 
 /** One request for the parameter table, only the columns the page reads. */
 export function fetchParTable(): Promise<ArrayBuffer> {
-  return runMeta('par', PAR_TABLE_COLUMNS)
+  return runMeta('par', PAR_TABLE_COLUMNS, PAR_TABLE_OPTIONAL_COLUMNS)
 }
 
 /**
@@ -36,8 +41,8 @@ export function parseParIdentities(buffer: ArrayBuffer): ParIdentity[] {
   const parnme = table.getChild('parnme')
   const pargp = table.getChild('pargp')
   const partrans = table.getChild('partrans')
-  if (!parnme || !pargp || !partrans) {
-    throw new Error('the parameter table is missing parnme, pargp or partrans')
+  if (!parnme || !pargp) {
+    throw new Error('the parameter table is missing parnme or pargp')
   }
 
   const out: ParIdentity[] = new Array(table.numRows)
@@ -45,7 +50,7 @@ export function parseParIdentities(buffer: ArrayBuffer): ParIdentity[] {
     out[i] = {
       parnme: String(parnme.get(i)),
       pargp: String(pargp.get(i)),
-      partrans: String(partrans.get(i)),
+      partrans: partrans ? String(partrans.get(i)) : null,
     }
   }
   return out

@@ -6,7 +6,7 @@
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PAR_TABLE_COLUMNS } from '../src/data/parmap'
+import { PAR_TABLE_COLUMNS, PAR_TABLE_OPTIONAL_COLUMNS } from '../src/data/parmap'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
 import { createRecordingGl } from './support/recording-gl'
@@ -77,7 +77,7 @@ function metaHeader(dtype: string): Record<string, string> {
   return { 'X-Pesto-Meta': JSON.stringify({ dtype }) }
 }
 
-function stubEnvironment(metaStatus: number): string[] {
+function stubEnvironment(metaStatus: number, parTable: Uint8Array = PAR_TABLE): string[] {
   const metaUrls: string[] = []
   vi.stubGlobal(
     'fetch',
@@ -108,7 +108,7 @@ function stubEnvironment(metaStatus: number): string[] {
           return respond({ status: 200, bytes: bytesOf(PARMAP) })
         case '/api/run/meta':
           return metaStatus === 200
-            ? respond({ status: 200, bytes: PAR_TABLE })
+            ? respond({ status: 200, bytes: parTable })
             : respond({ status: metaStatus, body: { title: 'the control file is not readable', status: metaStatus } })
         case '/api/run/grid/cells/cell':
           return respond({ status: 200, bytes: bytesOf(CELL_ARRAY) })
@@ -145,7 +145,7 @@ describe('one parameter table request per mounted map', () => {
     vi.clearAllMocks()
   })
 
-  it('asks /api/run/meta once, naming every column in PAR_TABLE_COLUMNS, and the panel shows its rows', async () => {
+  it('asks /api/run/meta once, naming the required and the optional columns, and the panel shows its rows', async () => {
     const metaUrls = stubEnvironment(200)
     const { mountMap } = await import('../src/views/map')
     const root = mountFreshRoot()
@@ -157,9 +157,27 @@ describe('one parameter table request per mounted map', () => {
     })
 
     expect(metaUrls).toHaveLength(1)
-    const columns = new URL(metaUrls[0], 'http://127.0.0.1').searchParams.get('columns')
-    expect(columns?.split(',')).toEqual([...PAR_TABLE_COLUMNS])
-    expect(new URL(metaUrls[0], 'http://127.0.0.1').searchParams.get('kind')).toBe('par')
+    const params = new URL(metaUrls[0], 'http://127.0.0.1').searchParams
+    expect(params.get('columns')?.split(',')).toEqual([...PAR_TABLE_COLUMNS])
+    expect(params.get('optional_columns')?.split(',')).toEqual([...PAR_TABLE_OPTIONAL_COLUMNS])
+    expect(params.get('kind')).toBe('par')
+  })
+
+  it('still draws, and the panel shows dashes, when the table has no bounds or partrans column', async () => {
+    const bare = tableToIPC(tableFromArrays({ parnme: ['p0', 'p1'], pargp: ['G1', 'G1'] }), 'stream')
+    const metaUrls = stubEnvironment(200, bare)
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+      expect(root.querySelectorAll('.param-row').length).toBe(2)
+    })
+
+    expect(metaUrls).toHaveLength(1)
+    expect(root.textContent).not.toContain('The parameter table could not be read')
+    expect(root.querySelector('.param-row')?.textContent).toContain('—')
   })
 
   it('still asks once when the request fails, and the map says the table could not be read', async () => {

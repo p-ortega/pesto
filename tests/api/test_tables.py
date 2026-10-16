@@ -132,6 +132,61 @@ def test_columns_with_an_empty_name_is_refused(tmp_path):
         assert response.headers["content-type"] == "application/problem+json"
 
 
+def _drop_par_columns(tmp_path: Path, *names: str) -> None:
+    """Rewrite the stored parameter table without the named columns."""
+    path = CacheLayout(root=tmp_path).control / "par.parquet"
+    frame = pd.read_parquet(path)
+    frame.drop(columns=list(names)).to_parquet(path)
+
+
+def test_optional_columns_that_are_present_come_back_with_no_absent_header(tmp_path):
+    app, token = _open_run(tmp_path)
+    response = _get(
+        app, token, "/api/run/meta", kind="par",
+        columns="parnme,pargp", optional_columns="parlbnd,parubnd,partrans",
+    )
+
+    assert response.status_code == 200
+    table = pa.ipc.open_stream(response.content).read_all()
+    assert table.column_names == ["parnme", "pargp", "partrans", "parlbnd", "parubnd"]
+    assert "x-pesto-absent-columns" not in response.headers
+
+
+def test_a_missing_optional_column_is_left_out_and_named_in_header_and_notes(tmp_path):
+    app, token = _open_run(tmp_path)
+    _drop_par_columns(tmp_path, "parlbnd", "parubnd")
+    response = _get(
+        app, token, "/api/run/meta", kind="par",
+        columns="parnme,pargp", optional_columns="parlbnd,parubnd,partrans",
+    )
+
+    assert response.status_code == 200
+    table = pa.ipc.open_stream(response.content).read_all()
+    assert table.column_names == ["parnme", "pargp", "partrans"]
+    assert json.loads(response.headers["x-pesto-absent-columns"]) == ["parlbnd", "parubnd"]
+    notes = json.loads(response.headers["x-pesto-notes"])
+    assert any("parlbnd" in n for n in notes) and any("parubnd" in n for n in notes)
+
+
+def test_a_missing_required_column_is_still_refused_even_with_optional_columns(tmp_path):
+    app, token = _open_run(tmp_path)
+    response = _get(
+        app, token, "/api/run/meta", kind="par",
+        columns="parnme,nope", optional_columns="parlbnd",
+    )
+
+    assert response.status_code == 422
+    assert "nope" in response.json()["detail"]
+
+
+def test_an_optional_column_with_an_empty_name_is_refused(tmp_path):
+    app, token = _open_run(tmp_path)
+    response = _get(app, token, "/api/run/meta", kind="par", columns="parnme", optional_columns="parlbnd,")
+
+    assert response.status_code == 422
+    assert "optional_columns" in response.json()["detail"]
+
+
 def test_no_columns_gives_the_whole_table_as_before(tmp_path):
     app, token = _open_run(tmp_path)
     table = pa.ipc.open_stream(_get(app, token, "/api/run/meta", kind="par").content).read_all()
