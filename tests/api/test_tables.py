@@ -93,6 +93,52 @@ def test_observation_table_round_trips_the_same_way(tmp_path):
     assert table.column_names == ["obsnme", "obgnme", "weight"]
 
 
+def test_columns_returns_only_those_columns_with_the_full_tables_values(tmp_path):
+    app, token = _open_run(tmp_path)
+    full = pa.ipc.open_stream(_get(app, token, "/api/run/meta", kind="par").content).read_all()
+    response = _get(app, token, "/api/run/meta", kind="par", columns="partrans,parnme")
+
+    assert response.status_code == 200
+    table = pa.ipc.open_stream(response.content).read_all()
+    # The table's own order wins over the order the caller listed them in.
+    assert table.column_names == ["parnme", "partrans"]
+    assert table.column("parnme").to_pylist() == full.column("parnme").to_pylist()
+    assert table.column("partrans").to_pylist() == full.column("partrans").to_pylist()
+
+
+def test_columns_keeps_the_notes_header(tmp_path):
+    app, token = _open_run(tmp_path, notes=("a repaired column",))
+    response = _get(app, token, "/api/run/meta", kind="par", columns="parnme")
+
+    assert json.loads(response.headers["x-pesto-notes"]) == ["a repaired column"]
+
+
+def test_columns_naming_an_unknown_column_is_refused_naming_it(tmp_path):
+    app, token = _open_run(tmp_path)
+    response = _get(app, token, "/api/run/meta", kind="par", columns="parnme,nope")
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == "application/problem+json"
+    assert "nope" in response.json()["detail"]
+    assert str(tmp_path) not in response.text
+
+
+def test_columns_with_an_empty_name_is_refused(tmp_path):
+    app, token = _open_run(tmp_path)
+
+    for value in ("", "parnme,", ",parnme", "parnme,,pargp"):
+        response = _get(app, token, "/api/run/meta", kind="par", columns=value)
+        assert response.status_code == 422, value
+        assert response.headers["content-type"] == "application/problem+json"
+
+
+def test_no_columns_gives_the_whole_table_as_before(tmp_path):
+    app, token = _open_run(tmp_path)
+    table = pa.ipc.open_stream(_get(app, token, "/api/run/meta", kind="par").content).read_all()
+
+    assert table.column_names == _PAR_COLUMNS
+
+
 def test_the_response_media_type_is_the_arrow_stream_type_never_json(tmp_path):
     app, token = _open_run(tmp_path)
     response = _get(app, token, "/api/run/meta", kind="par")

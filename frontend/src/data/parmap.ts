@@ -16,14 +16,21 @@ export async function fetchParmap(iteration: number): Promise<Int32Array> {
   return gridParmap(iteration)
 }
 
+// Every column the map and the Params panel read from the parameter table.
+export const PAR_TABLE_COLUMNS = ['parnme', 'pargp', 'parlbnd', 'parubnd', 'partrans'] as const
+
+/** One request for the parameter table, only the columns the page reads. */
+export function fetchParTable(): Promise<ArrayBuffer> {
+  return runMeta('par', PAR_TABLE_COLUMNS)
+}
+
 /**
- * Reads `/meta?kind=par` and returns one identity per control-table row, in
- * control-file order. Columns are read by field name, never by a numbered
+ * Returns one identity per control-table row, in control-file order, from a
+ * parameter table answer. Columns are read by field name, never by a numbered
  * position, because the control table's column order is the control
  * file's own order and nothing sorts it.
  */
-export async function fetchParIdentities(): Promise<ParIdentity[]> {
-  const buffer = await runMeta('par')
+export function parseParIdentities(buffer: ArrayBuffer): ParIdentity[] {
   const table = tableFromIPC(new Uint8Array(buffer))
 
   const parnme = table.getChild('parnme')
@@ -42,6 +49,11 @@ export async function fetchParIdentities(): Promise<ParIdentity[]> {
     }
   }
   return out
+}
+
+/** Asks for the parameter table and returns its identities. */
+export async function fetchParIdentities(): Promise<ParIdentity[]> {
+  return parseParIdentities(await fetchParTable())
 }
 
 /**

@@ -7,7 +7,7 @@
 // `progress.ts` already do for their own screens.
 
 import { tableFromIPC } from 'apache-arrow'
-import { ApiError, runMeta } from '../data/client'
+import { ApiError } from '../data/client'
 import { makeFocusable, renderNotice } from './chrome'
 import type { UnmappedGroup } from './group-picker'
 
@@ -17,6 +17,9 @@ export interface ParamsPanelOptions {
   unmapped: UnmappedGroup[]
   /** Every ingest artifact that left a recorded note, name and reason. */
   artifactNotes: { artifact: string; reason: string }[]
+  /** The one parameter table request the map made; the panel reads its answer
+   *  instead of asking again. */
+  parTable: Promise<ArrayBuffer>
 }
 
 interface ParamRow {
@@ -241,7 +244,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): vo
   loading.textContent = 'Loading parameters…'
   tableHost.appendChild(loading)
 
-  void runMeta('par').then(
+  void opts.parTable.then(
     (buffer) => {
       let rows: ParamRow[]
       try {
