@@ -13,6 +13,14 @@ from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # Only a first argument of exactly "bench" is the measuring command, so
+    # `pesto <path>` parses as before. Imported here to keep this module light.
+    if raw[:1] == ["bench"]:
+        from pesto.bench.cli import main as bench_main
+
+        return bench_main(raw[1:])
+
     parser = argparse.ArgumentParser(prog="pesto")
     parser.add_argument(
         "path",
@@ -31,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Put this run's cache here instead of choosing automatically",
     )
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
 
     cache_override = args.cache_dir
     if cache_override is not None and str(cache_override) == "":
