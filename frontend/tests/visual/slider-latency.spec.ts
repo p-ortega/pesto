@@ -27,6 +27,7 @@ const DEFAULT_OUT_DIR = path.join(REPO_ROOT, 'frontend', 'test-results', 'slider
 
 const FRAME_TIMEOUT_MS = 5000
 const SETUP_TIMEOUT_MS = 60_000
+const OUTPUT_TAIL_BYTES = 16_384
 const SCHEMA_VERSION = 1
 const PROJECT_NAMES = ['chromium', 'chromium-gpu']
 const GPU_PROJECT = 'chromium-gpu'
@@ -135,23 +136,34 @@ async function launchPesto(runDir: string, cacheDir: string, fakeHome: string): 
   const url = await new Promise<string>((resolve, reject) => {
     let buffer = ''
     let stderrBuffer = ''
+    let settled = false
+    // Output is kept only until the URL is read, and only its tail, so a chatty server cannot grow it.
+    const keepTail = (text: string) => text.slice(-OUTPUT_TAIL_BYTES)
+    const fail = (message: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (proc.exitCode === null) proc.kill()
+      reject(new Error(message))
+    }
     const timer = setTimeout(() => {
-      reject(new Error(`timed out waiting for "pesto serving" on stdout. stderr so far: ${stderrBuffer}`))
+      fail(`timed out waiting for "pesto serving" on stdout. stderr so far: ${stderrBuffer}`)
     }, 60_000)
     proc.stdout?.on('data', (chunk) => {
-      buffer += chunk.toString('utf8')
+      if (settled) return
+      buffer = keepTail(buffer + chunk.toString('utf8'))
       const match = buffer.match(/pesto serving (\S+)/)
       if (match) {
+        settled = true
         clearTimeout(timer)
         resolve(match[1])
       }
     })
     proc.stderr?.on('data', (chunk) => {
-      stderrBuffer += chunk.toString('utf8')
+      if (!settled) stderrBuffer = keepTail(stderrBuffer + chunk.toString('utf8'))
     })
     proc.on('exit', (code) => {
-      clearTimeout(timer)
-      reject(new Error(`pesto exited (code ${code}) before printing its serving URL: ${stderrBuffer}`))
+      fail(`pesto exited (code ${code}) before printing its serving URL: ${stderrBuffer}`)
     })
   })
   return { proc, url }
