@@ -11,8 +11,10 @@ repair.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 import pandas as pd
 
@@ -22,6 +24,9 @@ from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.choices import Ambiguity
 from pesto.ingest.control import ControlTables
 from pesto.ingest.failures import ReadFailure
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 
 def _write_parquet_atomic(df: pd.DataFrame, target: Path) -> int:
@@ -96,6 +101,43 @@ def write_control(tables: ControlTables, layout: CacheLayout) -> WrittenArtifact
         )
 
 
+@dataclass(frozen=True)
+class UnknownColumn(ReadFailure):
+    """A column was asked for that the table file does not have. A caller
+    can tell this apart from an unreadable file: the request was wrong."""
+
+
+def _read_notes_json(notes_path: Path) -> dict | ReadFailure:
+    """Read ``notes.json`` and check its shape and ``cache_version``, the one
+    place both table readers do it."""
+    try:
+        raw = json.loads(notes_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return ReadFailure(
+            name="control",
+            path=str(notes_path),
+            reason=f"failed to read {notes_path.name}: {exc}",
+        )
+
+    if not isinstance(raw, dict):
+        return ReadFailure(
+            name="control",
+            path=str(notes_path),
+            reason=f"{notes_path.name} is not a JSON object",
+        )
+
+    if raw.get("cache_version") != CACHE_VERSION:
+        return ReadFailure(
+            name="control",
+            path=str(notes_path),
+            reason=(
+                f"{notes_path.name} was written at cache_version "
+                f"{raw.get('cache_version')!r}, this reader expects {CACHE_VERSION}"
+            ),
+        )
+    return raw
+
+
 def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
     """Read the control tables back from ``layout.control``.
 
@@ -126,31 +168,9 @@ def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
             name="control", path=str(obs_path), reason=f"failed to read {obs_path.name}: {exc}"
         )
 
-    try:
-        raw = json.loads(notes_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        return ReadFailure(
-            name="control",
-            path=str(notes_path),
-            reason=f"failed to read {notes_path.name}: {exc}",
-        )
-
-    if not isinstance(raw, dict):
-        return ReadFailure(
-            name="control",
-            path=str(notes_path),
-            reason=f"{notes_path.name} is not a JSON object",
-        )
-
-    if raw.get("cache_version") != CACHE_VERSION:
-        return ReadFailure(
-            name="control",
-            path=str(notes_path),
-            reason=(
-                f"{notes_path.name} was written at cache_version "
-                f"{raw.get('cache_version')!r}, this reader expects {CACHE_VERSION}"
-            ),
-        )
+    raw = _read_notes_json(notes_path)
+    if isinstance(raw, ReadFailure):
+        return raw
 
     try:
         par_groups = tuple(raw.get("par_groups", ()))
@@ -182,3 +202,49 @@ def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
         notes=notes,
         ambiguities=ambiguities,
     )
+
+
+def load_control_table(
+    layout: CacheLayout, kind: str, columns: Sequence[str] | None = None
+) -> "tuple[pa.Table, tuple[str, ...]] | ReadFailure":
+    """Read one control table, and only the asked columns, plus the notes.
+
+    The parameter table of a large run is read without touching the
+    observation file, which can hold millions of rows. ``notes.json`` gets
+    the same shape and ``cache_version`` checks ``load_control_tables``
+    applies. A column the file does not have is a ``ReadFailure`` naming it.
+    """
+    import pyarrow.parquet as pq
+
+    path = layout.control / f"{kind}.parquet"
+    notes_path = layout.control / "notes.json"
+    wanted = None if columns is None else list(columns)
+
+    try:
+        have = pq.read_schema(path).names
+        missing = [name for name in wanted or () if name not in have]
+        if missing:
+            return UnknownColumn(
+                name="control",
+                path=str(path),
+                reason=f"{path.name} has no column named {missing[0]!r}",
+            )
+        # The file's own column order, whatever order the caller listed them in.
+        table = pq.read_table(path, columns=None if wanted is None else [c for c in have if c in wanted])
+    except Exception as exc:
+        return ReadFailure(
+            name="control", path=str(path), reason=f"failed to read {path.name}: {exc}"
+        )
+
+    raw = _read_notes_json(notes_path)
+    if isinstance(raw, ReadFailure):
+        return raw
+    try:
+        notes = tuple(raw.get("notes", ()))
+    except TypeError as exc:
+        return ReadFailure(
+            name="control",
+            path=str(notes_path),
+            reason=f"{notes_path.name} has an unexpected shape: {exc}",
+        )
+    return table, notes
