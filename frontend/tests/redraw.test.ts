@@ -620,6 +620,38 @@ describe('the redraw path', () => {
       expect(await glFinishSpy()).toHaveBeenCalledTimes(log.length)
     })
 
+    it('stamps the colormap, reverse and limits a frame was drawn with, so a move matches only its own frame', async () => {
+      const values = fields()
+      stubEnvironment((query) => ({ status: 200, bytes: bytesOf(values[query.get('realization') ?? 'base']) }))
+      stubRaf()
+      window.__pestoFrames = []
+
+      const { mountMap } = await import('../src/views/map')
+      const root = mountFreshRoot()
+      mountMap(root, { config: CONFIG, state: baseState() })
+      await vi.waitFor(() => {
+        expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+      })
+      const log = window.__pestoFrames!
+      const loaded = log[log.length - 1]
+      expect(loaded).toMatchObject({ colormap: 'viridis', reverse: false, limits: 'robust' })
+
+      const colormap = root.querySelector('select[aria-label="Colormap"]') as HTMLSelectElement
+      colormap.value = 'magma'
+      colormap.dispatchEvent(new Event('change', { bubbles: true }))
+      expect(log[log.length - 1]).toMatchObject({ colormap: 'magma', reverse: false, limits: 'robust' })
+
+      const reverse = root.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement
+      reverse.checked = true
+      reverse.dispatchEvent(new Event('change', { bubbles: true }))
+      expect(log[log.length - 1]).toMatchObject({ colormap: 'magma', reverse: true })
+
+      const limits = root.querySelector('select[aria-label="Limits"]') as HTMLSelectElement
+      limits.value = 'minmax'
+      limits.dispatchEvent(new Event('change', { bubbles: true }))
+      expect(log[log.length - 1]).toMatchObject({ reverse: true, limits: 'minmax' })
+    })
+
     it('records nothing and calls nothing extra when no test installed the log', async () => {
       const values = fields()
       stubEnvironment((query) => ({ status: 200, bytes: bytesOf(values[query.get('realization') ?? 'base']) }))

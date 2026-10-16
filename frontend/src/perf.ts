@@ -4,6 +4,12 @@ export interface FrameStamp {
   selection: string
   layer: number
   group: string | null
+  // The colormap, reverse, scale and limits mode the frame was drawn with, so a
+  // test can tell which control move a frame belongs to.
+  colormap?: string
+  reverse?: boolean
+  scale?: string
+  limits?: string
 }
 
 declare global {
