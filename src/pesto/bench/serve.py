@@ -15,12 +15,57 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+import numpy as np
+
 from pesto.bench.measure import percentile_summary
-from pesto.bench.report import LatencySummary, ValuesLatency
+from pesto.bench.report import (
+    BrowserTargets,
+    HeaviestTarget,
+    LatencySummary,
+    PilotPointTarget,
+    ReopenShare,
+    RouteTiming,
+    ValuesLatency,
+)
 
 _START_WAIT_SECONDS = 30.0
 _STOP_WAIT_SECONDS = 10.0
 _NO_FIRST_ITERATION = "config has no first_iteration; used 0 as the page does"
+
+# The requests the page makes on open, in its order (main.ts boot, then map.ts loadAndDraw).
+# {i} is the iteration; the idomain request is made only when the mesh says it has one.
+OPEN_ROUTES = (
+    "/api/run/config",
+    "/api/run/ingest/state",
+    "/api/run/view",
+    "/api/run/grid/mesh",
+    "/api/run/grid/mesh/positions",
+    "/api/run/grid/mesh/cell_index",
+    "/api/run/grid/mesh/indices",
+    "/api/run/grid/mesh/idomain",
+    "/api/run/grid/parmap",
+    "/api/run/meta",
+    "/api/run/grid/pp",
+    "/api/run/grid/cells/cell",
+    "/api/run/grid/cells/layer",
+    "/api/run/grid/cells/xy",
+    "/api/run/reals",
+    "/api/run/grid/values",
+)
+_ITERATION_ROUTES = frozenset(
+    {
+        "/api/run/grid/parmap",
+        "/api/run/grid/cells/cell",
+        "/api/run/grid/cells/layer",
+        "/api/run/grid/cells/xy",
+        "/api/run/reals",
+    }
+)
+_SHARE_NOTE = (
+    "server share: one request per route on a server that has just started; "
+    "the browser check shows the page's real request pattern"
+)
+_IDOMAIN_NOTE = "the idomain request was skipped because the mesh reports no idomain, as the page does"
 
 
 @dataclass(frozen=True)
@@ -126,14 +171,7 @@ def _realization_names(body: bytes) -> list[str]:
 def page_iteration(server: BenchServer) -> tuple[int, str]:
     """The iteration the page draws: config first_iteration, else 0 with a note."""
     timed, body = server.get("/api/run/config")
-    if timed.status == 200:
-        try:
-            first = json.loads(body).get("first_iteration")
-        except ValueError:
-            first = None
-        if isinstance(first, int) and not isinstance(first, bool):
-            return first, ""
-    return 0, _NO_FIRST_ITERATION
+    return _iteration_from(timed.status, body)
 
 
 def _time_kind(
@@ -189,3 +227,150 @@ def measure_values(
         notes.append(note)
 
     return ValuesLatency(iteration=iteration, realization=realization, statistic=statistic, notes=notes)
+
+
+def _route(path: str, iteration: int, realization: str | None) -> str:
+    if path == "/api/run/meta":
+        return "/api/run/meta?kind=par"
+    if path == "/api/run/grid/values":
+        who = f"realization={quote(realization, safe='')}" if realization is not None else "stat=mean"
+        return f"{path}?iteration={iteration}&{who}"
+    if path in _ITERATION_ROUTES:
+        return f"{path}?iteration={iteration}"
+    return path
+
+
+def measure_reopen_share(server: BenchServer, iteration: int | None = None) -> ReopenShare:
+    """One request per route the page asks for on open, in the page's order.
+
+    Meant to run right after the server starts. With no iteration given, the
+    first iteration comes from the config answer, as it does for the page.
+    """
+    notes = [_SHARE_NOTE]
+    requests: list[RouteTiming] = []
+    has_idomain = True
+    realization: str | None = None
+    current = iteration if iteration is not None else 0
+
+    for path in OPEN_ROUTES:
+        if path == "/api/run/grid/mesh/idomain" and not has_idomain:
+            notes.append(_IDOMAIN_NOTE)
+            continue
+        route = _route(path, current, realization)
+        timed, body = server.get(route)
+        requests.append(RouteTiming(route, timed.status, timed.bytes, timed.seconds))
+        if path == "/api/run/config" and iteration is None:
+            current, note = _iteration_from(timed.status, body)
+            if note:
+                notes.append(note)
+        elif path == "/api/run/grid/mesh" and timed.status == 200:
+            try:
+                has_idomain = bool(json.loads(body).get("has_idomain", False))
+            except ValueError:
+                has_idomain = False
+        elif path == "/api/run/reals" and timed.status == 200:
+            names = _realization_names(body)
+            realization = names[0] if names else None
+
+    failed = [item for item in requests if item.status != 200]
+    if failed:
+        listed = ", ".join(f"{item.route.split('?')[0]} ({item.status})" for item in failed)
+        notes.append(f"{len(failed)} request(s) did not answer 200: {listed}")
+    return ReopenShare(
+        requests=requests,
+        total_seconds=sum(item.seconds for item in requests),
+        note="; ".join(notes),
+    )
+
+
+def _iteration_from(status: int, body: bytes) -> tuple[int, str]:
+    if status != 200:
+        return 0, f"config could not be read (status {status}); used 0 as the page does"
+    try:
+        first = json.loads(body).get("first_iteration")
+    except (ValueError, AttributeError):
+        first = None
+    if isinstance(first, int) and not isinstance(first, bool):
+        return first, ""
+    return 0, _NO_FIRST_ITERATION
+
+
+def _int32(body: bytes) -> np.ndarray:
+    return np.frombuffer(body, dtype="<i4")
+
+
+def _problem_reason(timed: Timed, body: bytes) -> str:
+    try:
+        title = json.loads(body).get("title")
+    except (ValueError, AttributeError):
+        title = None
+    return f"status {timed.status}" + (f": {title}" if isinstance(title, str) else "")
+
+
+def _pilot_point_target(server: BenchServer) -> tuple[PilotPointTarget | None, str, set[str]]:
+    timed, body = server.get("/api/run/grid/pp")
+    if timed.status != 200:
+        return None, f"no pilot-point index ({_problem_reason(timed, body)})", set()
+    groups = json.loads(body).get("groups", [])
+    names = {g["group"] for g in groups}
+    if not groups:
+        return None, "the run has no interpolable pilot-point group", names
+    best = min(groups, key=lambda g: (-int(g["n_pp"]), str(g["group"])))
+    return PilotPointTarget(str(best["group"]), int(best["layer"]), int(best["n_pp"])), "", names
+
+
+def _heaviest_target(
+    server: BenchServer, iteration: int, interpolated: set[str]
+) -> tuple[HeaviestTarget | None, str]:
+    base = f"?iteration={iteration}"
+    fetched = {}
+    for label, path in (
+        ("parmap", f"/api/run/grid/parmap{base}"),
+        ("cell", f"/api/run/grid/cells/cell{base}"),
+        ("layer", f"/api/run/grid/cells/layer{base}"),
+        ("par table", "/api/run/meta?kind=par"),
+    ):
+        timed, body = server.get(path)
+        if timed.status != 200:
+            return None, f"could not read the {label} ({_problem_reason(timed, body)}), so no heaviest group is named"
+        fetched[label] = body
+    parmap, cell, layer = (_int32(fetched[k]) for k in ("parmap", "cell", "layer"))
+    if not (len(parmap) == len(cell) == len(layer)):
+        return None, (
+            f"the parmap ({len(parmap)}), cell ({len(cell)}) and layer ({len(layer)}) "
+            "arrays differ in length, so no heaviest group is named"
+        )
+    import pyarrow as pa
+
+    table = pa.ipc.open_stream(fetched["par table"]).read_all()
+    if "pargp" not in table.column_names:
+        return None, "the parameter table has no pargp column, so no heaviest group is named"
+    pargp = table.column("pargp").to_pylist()
+
+    seen: dict[tuple[str, int], set[int]] = {}
+    for control, c, lay in zip(parmap.tolist(), cell.tolist(), layer.tolist()):
+        if c < 0 or lay < 0 or not 0 <= control < len(pargp):
+            continue
+        group = str(pargp[control])
+        if group in interpolated:
+            continue
+        seen.setdefault((group, lay), set()).add(c)
+    if not seen:
+        return None, "no parameter group places on any cell"
+    group, lay = min(seen, key=lambda key: (-len(seen[key]), key[0], key[1]))
+    return HeaviestTarget(group, lay, len(seen[(group, lay)])), ""
+
+
+def pick_browser_targets(server: BenchServer) -> BrowserTargets:
+    """The iteration the page draws, its heaviest group and layer, and the biggest pilot-point group."""
+    iteration, iteration_note = page_iteration(server)
+    pilot_point, pilot_note, interpolated = _pilot_point_target(server)
+    heaviest, heaviest_note = _heaviest_target(server, iteration, interpolated)
+    return BrowserTargets(
+        iteration=iteration,
+        iteration_note=iteration_note,
+        heaviest=heaviest,
+        heaviest_note=heaviest_note,
+        pilot_point=pilot_point,
+        pilot_point_note=pilot_note,
+    )

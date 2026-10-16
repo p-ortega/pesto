@@ -119,8 +119,8 @@ class ValuesLatency:
 @dataclass(frozen=True)
 class ServerMeasures:
     started_seconds: float
+    reopen_share: ReopenShare
     values: ValuesLatency
-    reopen_share: ReopenShare | None = None
 
 
 @dataclass(frozen=True)
@@ -247,11 +247,18 @@ def _ms(value: float) -> str:
     return f"{value * 1000:,.1f} ms"
 
 
-def _values_lines(result: BenchResult) -> list[str]:
+def _server_lines(result: BenchResult) -> list[str]:
     server = result.server
     if server is None:
         return []
     lines = [f"Server: started in {_seconds(server.started_seconds)}"]
+    share = server.reopen_share
+    lines.append(f"Reopen, server share: {_seconds(share.total_seconds)} over {len(share.requests)} requests")
+    for item in share.requests:
+        lines.append(
+            f"  {item.route.split('?')[0]}: {item.status}, {_megabytes(item.bytes)}, {_ms(item.seconds)}"
+        )
+    lines.append(f"  note: {share.note}")
     values = server.values
     lines.append(f"grid/values, iteration {values.iteration}:")
     for kind in ("realization", "statistic"):
@@ -265,6 +272,50 @@ def _values_lines(result: BenchResult) -> list[str]:
             f"max {_ms(summary.max_seconds)}"
         )
     for note in values.notes:
+        lines.append(f"  note: {note}")
+    return lines
+
+
+def _target_lines(result: BenchResult) -> list[str]:
+    targets = result.browser_targets
+    if targets is None:
+        return []
+    lines = [f"Browser targets (iteration {targets.iteration}):"]
+    if targets.iteration_note:
+        lines.append(f"  note: {targets.iteration_note}")
+    heavy = targets.heaviest
+    lines.append(
+        f"  heaviest: group {heavy.group}, layer {heavy.layer}, {heavy.cells} cells"
+        if heavy is not None
+        else f"  heaviest: none ({targets.heaviest_note})"
+    )
+    pilot = targets.pilot_point
+    lines.append(
+        f"  pilot points: group {pilot.group}, layer {pilot.layer}, {pilot.n_pp} points"
+        if pilot is not None
+        else f"  pilot points: none ({targets.pilot_point_note})"
+    )
+    return lines
+
+
+def _observation_lines(result: BenchResult) -> list[str]:
+    facts = result.observations
+    if facts is None:
+        return []
+    lines = [f"Observation ingest: {facts.ingest}"]
+    for item in facts.files:
+        lines.append(f"  {item.name}: {_megabytes(item.bytes)}")
+    probe = facts.probe
+    if probe is not None:
+        raw = "n/a" if probe.raw_read_seconds is None else _seconds(probe.raw_read_seconds)
+        parsed = "n/a" if probe.from_binary_seconds is None else _seconds(probe.from_binary_seconds)
+        shape = "n/a" if probe.shape is None else f"{probe.shape[0]} x {probe.shape[1]}"
+        lines.append(
+            f"  probe of {probe.file} ({_megabytes(probe.bytes)}): raw read {raw}, "
+            f"pyemu read {parsed}, shape {shape}"
+        )
+        lines.append(f"    {probe.note}")
+    for note in facts.notes:
         lines.append(f"  note: {note}")
     return lines
 
@@ -310,7 +361,9 @@ def format_table(result: BenchResult) -> str:
         )
         lines.append(f"  note: {floor.note}")
 
-    lines.extend(_values_lines(result))
+    lines.extend(_server_lines(result))
+    lines.extend(_target_lines(result))
+    lines.extend(_observation_lines(result))
 
     cache = result.cache_size
     ratio = "n/a" if cache.ratio is None else f"{cache.ratio:.2f}x"

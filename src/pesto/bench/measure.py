@@ -15,6 +15,8 @@ from pesto.bench.report import (
     CacheSize,
     IngestTiming,
     LatencySummary,
+    ObservationFacts,
+    ObservationProbe,
     ReadFloor,
     RunFacts,
     SourceFile,
@@ -24,6 +26,7 @@ from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.discover import discover
 from pesto.ingest.runner import Progress, plan_artifacts
+from pesto.warm import load_pyemu
 
 try:
     import resource
@@ -38,6 +41,10 @@ _FLOOR_NOTE = (
     "above about 3,000 MB/s they did not come from the disk (an assumption, "
     "not something this run proved)"
 )
+_INGEST_STATEMENT = "not implemented in M0"
+_NO_OBS_FILES = "no observation ensemble present"
+_PROBE_NOT_RUN = "not run (pass --obs-probe to time one observation file)"
+_PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
     "counted from the artifact plan: each artifact that names a source reads it "
     "once in its worker and once more to checksum it"
@@ -248,4 +255,70 @@ def percentile_summary(samples: Sequence[float]) -> LatencySummary | None:
         p50_seconds=float(p50),
         p95_seconds=float(p95),
         max_seconds=float(values.max()),
+    )
+
+
+def _obs_files(run_dir: Path) -> list[tuple[int | str, Path]]:
+    found = discover(run_dir).obs_ens
+    keys = sorted(k for k in found if isinstance(k, int)) + sorted(k for k in found if isinstance(k, str))
+    return [(key, found[key]) for key in keys]
+
+
+def _probe_file(path: Path) -> ObservationProbe:
+    """Time one read-only pass over the file, then one pyemu read of it."""
+    size = _size(path)
+    raw_seconds: float | None = None
+    raw_rate: float | None = None
+    from_binary_seconds: float | None = None
+    shape: list[int] | None = None
+    note = _PROBE_LABEL
+    try:
+        start = time.perf_counter()
+        with open(path, "rb") as handle:
+            while handle.read(_READ_CHUNK):
+                pass
+        raw_seconds = time.perf_counter() - start
+        raw_rate = size / 1e6 / raw_seconds if raw_seconds > 0 and size > 0 else None
+
+        pyemu = load_pyemu()
+        start = time.perf_counter()
+        matrix = pyemu.Matrix.from_binary(str(path))
+        from_binary_seconds = time.perf_counter() - start
+        shape = [len(matrix.row_names), len(matrix.col_names)]
+    except Exception as exc:
+        note = f"probe failed: {exc}; {_PROBE_LABEL}"
+    return ObservationProbe(
+        file=path.name,
+        bytes=size,
+        raw_read_seconds=raw_seconds,
+        raw_mb_per_second=raw_rate,
+        from_binary_seconds=from_binary_seconds,
+        shape=shape,
+        note=note,
+    )
+
+
+def observation_facts(run_dir: Path, probe: bool) -> ObservationFacts:
+    """What M0 does with observation ensembles (nothing), and what is on disk.
+
+    The probe only reads: it opens one file with "rb" and makes one pyemu read.
+    """
+    files = _obs_files(run_dir)
+    notes: list[str] = []
+    probed: ObservationProbe | None = None
+    if not files:
+        notes.append(_NO_OBS_FILES)
+    elif not probe:
+        notes.append(_PROBE_NOT_RUN)
+    else:
+        numbered = [path for key, path in files if isinstance(key, int)]
+        if numbered:
+            probed = _probe_file(numbered[0])
+        else:
+            notes.append("no numbered iteration to probe")
+    return ObservationFacts(
+        ingest=_INGEST_STATEMENT,
+        files=[SourceFile(name=path.name, bytes=_size(path)) for _key, path in files],
+        probe=probed,
+        notes=notes,
     )
