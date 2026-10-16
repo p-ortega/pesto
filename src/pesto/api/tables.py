@@ -12,6 +12,7 @@ empty table presented as the whole answer.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -34,6 +35,7 @@ def arrow_response(
     *,
     notes: tuple[str, ...] = (),
     cache_control: str = "no-store",
+    absent_columns: Sequence[str] = (),
 ) -> Response:
     """Serialise ``table`` to an Arrow IPC *stream* and wrap it in a response.
 
@@ -47,6 +49,10 @@ def arrow_response(
     the first place a person can see them, so they travel on as the
     ``X-Pesto-Notes`` header -- a JSON array of strings -- rather than
     stopping here. The header is omitted entirely when there are none.
+
+    ``absent_columns`` are optional columns the caller asked for and the table
+    does not have; they go out as ``X-Pesto-Absent-Columns``, a JSON array,
+    omitted when empty.
     """
     import pyarrow as pa
 
@@ -58,6 +64,8 @@ def arrow_response(
     headers = {"Cache-Control": cache_control}
     if notes:
         headers["X-Pesto-Notes"] = json.dumps(list(notes))
+    if absent_columns:
+        headers["X-Pesto-Absent-Columns"] = json.dumps(list(absent_columns))
 
     return Response(
         content=sink.getvalue().to_pybytes(),
@@ -68,7 +76,10 @@ def arrow_response(
 
 @router.get("/meta")
 async def get_run_meta(
-    request: Request, kind: Literal["par", "obs"], columns: str | None = None
+    request: Request,
+    kind: Literal["par", "obs"],
+    columns: str | None = None,
+    optional_columns: str | None = None,
 ) -> Response:
     """Serve the control file's parameter or observation table as an Arrow
     stream, column order exactly as the cache file holds it.
@@ -80,24 +91,33 @@ async def get_run_meta(
     ``columns`` is an optional comma-separated list. Only those columns are
     sent, in the table's own order. An empty name or one the table does not
     have is refused with a 422 naming it, never dropped.
+
+    ``optional_columns`` is the same kind of list, but a name the table does
+    not have is not an error: it is left out, and the names left out come
+    back in the ``X-Pesto-Absent-Columns`` header (a JSON array) and as a
+    note, so a missing optional column is never silent.
     """
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
         return problem(409, "no run is open")
 
     wanted: list[str] | None = None
-    if columns is not None:
-        wanted = columns.split(",")
-        if any(name == "" for name in wanted):
+    optional: list[str] | None = None
+    for label, raw in (("columns", columns), ("optional_columns", optional_columns)):
+        if raw is not None and any(name == "" for name in raw.split(",")):
             return problem(
                 422,
                 "a requested column name is empty",
                 artifact=f"meta/{kind}",
-                detail="columns holds an empty name",
+                detail=f"{label} holds an empty name",
             )
+    if columns is not None:
+        wanted = columns.split(",")
+    if optional_columns is not None:
+        optional = optional_columns.split(",")
 
     layout = CacheLayout(root=Path(cache_root))
-    result = load_control_table(layout, kind, wanted)
+    result = load_control_table(layout, kind, wanted, optional)
     if isinstance(result, ReadFailure):
         if isinstance(result, UnknownColumn):
             return problem(
@@ -109,7 +129,8 @@ async def get_run_meta(
         return problem_from_failure(502, result)
 
     table, notes = result
-    return arrow_response(table, notes=notes)
+    absent = [name for name in optional or () if name not in table.column_names]
+    return arrow_response(table, notes=notes, absent_columns=absent)
 
 
 @router.get("/reals")

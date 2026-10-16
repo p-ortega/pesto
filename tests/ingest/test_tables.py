@@ -282,6 +282,32 @@ def test_load_control_table_refuses_a_column_the_file_does_not_have_naming_it(tm
     assert "nope" in result.reason
 
 
+def test_load_control_table_leaves_out_a_missing_optional_column_and_says_so(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+    par_path = layout.control / "par.parquet"
+    pd.read_parquet(par_path).drop(columns=["pargp"]).to_parquet(par_path)
+
+    result = load_control_table(layout, "par", ["parnme"], ["pargp"])
+
+    assert not isinstance(result, ReadFailure)
+    table, notes = result
+    assert table.column_names == ["parnme"]
+    assert any("'pargp'" in note and "optional" in note for note in notes)
+
+
+def test_load_control_table_still_refuses_a_missing_required_column_beside_optional_ones(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+
+    result = load_control_table(layout, "par", ["parnme", "nope"], ["pargp"])
+
+    assert isinstance(result, ReadFailure)
+    assert "nope" in result.reason
+
+
 def test_load_control_table_gives_the_same_failures_as_load_control_tables(tmp_path):
     layout = CacheLayout(root=tmp_path / ".pesto")
     assert isinstance(load_control_table(layout, "par", None), ReadFailure)

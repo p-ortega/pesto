@@ -205,20 +205,28 @@ def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
 
 
 def load_control_table(
-    layout: CacheLayout, kind: str, columns: Sequence[str] | None = None
+    layout: CacheLayout,
+    kind: str,
+    columns: Sequence[str] | None = None,
+    optional_columns: Sequence[str] | None = None,
 ) -> "tuple[pa.Table, tuple[str, ...]] | ReadFailure":
     """Read one control table, and only the asked columns, plus the notes.
 
     The parameter table of a large run is read without touching the
     observation file, which can hold millions of rows. ``notes.json`` gets
     the same shape and ``cache_version`` checks ``load_control_tables``
-    applies. A column the file does not have is a ``ReadFailure`` naming it.
+    applies. A column in ``columns`` that the file does not have is a
+    ``ReadFailure`` naming it. A column in ``optional_columns`` that the file
+    does not have is left out of the table and named in a returned note, so
+    the caller can tell it was asked for and not found.
     """
     import pyarrow.parquet as pq
 
     path = layout.control / f"{kind}.parquet"
     notes_path = layout.control / "notes.json"
     wanted = None if columns is None else list(columns)
+    optional = None if optional_columns is None else list(optional_columns)
+    absent: list[str] = []
 
     try:
         have = pq.read_schema(path).names
@@ -229,8 +237,13 @@ def load_control_table(
                 path=str(path),
                 reason=f"{path.name} has no column named {missing[0]!r}",
             )
+        absent = [name for name in optional or () if name not in have]
+        keep = set(wanted or ()) | set(optional or ())
         # The file's own column order, whatever order the caller listed them in.
-        table = pq.read_table(path, columns=None if wanted is None else [c for c in have if c in wanted])
+        table = pq.read_table(
+            path,
+            columns=None if wanted is None and optional is None else [c for c in have if c in keep],
+        )
     except Exception as exc:
         return ReadFailure(
             name="control", path=str(path), reason=f"failed to read {path.name}: {exc}"
@@ -247,4 +260,8 @@ def load_control_table(
             path=str(notes_path),
             reason=f"{notes_path.name} has an unexpected shape: {exc}",
         )
+    notes += tuple(
+        f"{path.name} has no column {name!r}; it was asked for as optional and is not in the answer"
+        for name in absent
+    )
     return table, notes
