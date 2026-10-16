@@ -46,4 +46,4 @@ enable-by-default = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: touches real fixture data outside the repository"]
+markers = ["slow: touches real fixture data outside the repository, or runs a long synthetic timing"]
