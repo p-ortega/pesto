@@ -240,6 +240,11 @@ interface MoveStep {
   selection?: string
   layer?: number
   group?: string
+  // The draw-only controls: the frame must have been drawn with this value.
+  colormap?: string
+  reverse?: boolean
+  scale?: string
+  limits?: string
 }
 
 interface MovePlan {
@@ -252,13 +257,27 @@ interface MovePlan {
 }
 
 // One move at a time: set the control, then wait frame by frame for a stamp
-// at or after the move that shows what the move asked for.
+// at or after the move that shows what the move asked for. Every move names
+// something its own frame must carry, so a frame still in flight from an
+// earlier move is never counted as the answer.
 async function timeMoves(page: Page, plan: MovePlan): Promise<{ delays: number[]; timeouts: number }> {
   return page.evaluate(async (p) => {
     const el = document.querySelector(p.selector) as HTMLInputElement | HTMLSelectElement | null
     if (!el) throw new Error(`no control matches ${p.selector}`)
-    const frames = (window as unknown as { __pestoFrames: Array<{ t: number; selection: string; layer: number; group: string | null }> })
-      .__pestoFrames
+    const frames = (
+      window as unknown as {
+        __pestoFrames: Array<{
+          t: number
+          selection: string
+          layer: number
+          group: string | null
+          colormap?: string
+          reverse?: boolean
+          scale?: string
+          limits?: string
+        }>
+      }
+    ).__pestoFrames
     const isRange = el instanceof HTMLInputElement && el.type === 'range'
     const isCheckbox = el instanceof HTMLInputElement && el.type === 'checkbox'
     const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
@@ -282,7 +301,11 @@ async function timeMoves(page: Page, plan: MovePlan): Promise<{ delays: number[]
             f.t >= t0 &&
             (want === undefined || f.selection === want) &&
             (step.layer === undefined || f.layer === step.layer) &&
-            (step.group === undefined || f.group === step.group),
+            (step.group === undefined || f.group === step.group) &&
+            (step.colormap === undefined || f.colormap === step.colormap) &&
+            (step.reverse === undefined || f.reverse === step.reverse) &&
+            (step.scale === undefined || f.scale === step.scale) &&
+            (step.limits === undefined || f.limits === step.limits),
         )
         if (found) {
           hit = found.t - t0
@@ -675,7 +698,13 @@ for (const target of TARGETS) {
       const before = sliderRows.length
       const moves = (benchMoves: number, syntheticMoves: number) => (bench ? benchMoves : syntheticMoves)
 
-      async function selectControl(control: string, selector: string, count: number, skip: (info: ControlInfo, usable: string[]) => string | null): Promise<void> {
+      async function selectControl(
+        control: string,
+        selector: string,
+        field: 'colormap' | 'scale' | 'limits',
+        count: number,
+        skip: (info: ControlInfo, usable: string[]) => string | null,
+      ): Promise<void> {
         const info = await controlInfo(page, selector)
         const usable = info.options.filter((o) => !o.disabled && o.value !== 'manual').map((o) => o.value)
         const why = !info.present ? 'the control is not on the page' : info.disabled ? 'the control is disabled' : skip(info, usable)
@@ -685,12 +714,12 @@ for (const target of TARGETS) {
         }
         const { delays, timeouts } = await timeMoves(page, {
           selector,
-          steps: cycleSteps(usable, info.value, count),
+          steps: cycleSteps(usable, info.value, count).map((step) => ({ ...step, [field]: step.value })),
           timeoutMs: FRAME_TIMEOUT_MS,
           gapMs: 40,
         })
         sliderRows.push(measuredRow(control, 'no_fetch', limit, delays, timeouts, judged, judgedNote))
-        await setControl(page, selector, { value: info.value })
+        await setControl(page, selector, { value: info.value, [field]: info.value })
       }
       const fewerThanTwo = (info: ControlInfo, usable: string[]) => (usable.length < 2 ? 'fewer than two usable options' : null)
 
@@ -709,21 +738,24 @@ for (const target of TARGETS) {
         if (Number(await page.locator(SEL.layer).inputValue()) !== here) await setControl(page, SEL.layer, { value: String(here), layer: here })
       }
 
-      await selectControl('Colormap', SEL.colormap, moves(50, 6), fewerThanTwo)
+      await selectControl('Colormap', SEL.colormap, 'colormap', moves(50, 6), fewerThanTwo)
 
       const reverse = await controlInfo(page, SEL.reverse)
       if (!reverse.present || reverse.disabled) {
         sliderRows.push(skippedRow('Reverse colormap', 'no_fetch', limit, !reverse.present ? 'the control is not on the page' : 'the control is disabled'))
       } else {
-        const steps: MoveStep[] = Array.from({ length: moves(50, 6) }, (_, i) => ({ value: String((i % 2 === 0) !== reverse.checked) }))
+        const steps: MoveStep[] = Array.from({ length: moves(50, 6) }, (_, i) => {
+          const checked = (i % 2 === 0) !== reverse.checked
+          return { value: String(checked), reverse: checked }
+        })
         const { delays, timeouts } = await timeMoves(page, { selector: SEL.reverse, steps, timeoutMs: FRAME_TIMEOUT_MS, gapMs: 40 })
         sliderRows.push(measuredRow('Reverse colormap', 'no_fetch', limit, delays, timeouts, judged, judgedNote))
         const now = await controlInfo(page, SEL.reverse)
-        if (now.checked !== reverse.checked) await setControl(page, SEL.reverse, { value: String(reverse.checked) })
+        if (now.checked !== reverse.checked) await setControl(page, SEL.reverse, { value: String(reverse.checked), reverse: reverse.checked })
       }
 
-      await selectControl('Value scale', SEL.scale, moves(50, 6), fewerThanTwo)
-      await selectControl('Limits', SEL.limits, moves(50, 6), fewerThanTwo)
+      await selectControl('Value scale', SEL.scale, 'scale', moves(50, 6), fewerThanTwo)
+      await selectControl('Limits', SEL.limits, 'limits', moves(50, 6), fewerThanTwo)
       flush(testInfo.project.name, target.label, record, facts)
 
       for (const row of sliderRows.slice(before)) {

@@ -587,7 +587,15 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     if (frameLogInstalled()) {
       // finish() makes the stamp wait for the GPU, so the delay covers the drawn frame.
       ctx?.gl.finish()
-      markFrame({ selection: selectionLabel(committed), layer: committed.layer, group: drawnGroup })
+      markFrame({
+        selection: selectionLabel(committed),
+        layer: committed.layer,
+        group: drawnGroup,
+        colormap: committed.colormap,
+        reverse: committed.reverseColormap,
+        scale: committed.scale,
+        limits: committed.limitsMode,
+      })
     }
   }
 
