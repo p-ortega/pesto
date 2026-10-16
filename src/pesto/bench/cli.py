@@ -163,7 +163,27 @@ def main(argv: list[str]) -> int:
         print(f"pesto bench: {reason}", file=sys.stderr)
         return 2
 
-    result = run_bench(args.run, args.cache_dir, args.json)
+    try:
+        result = run_bench(args.run, args.cache_dir, args.json)
+    except KeyboardInterrupt:
+        print(
+            "pesto bench: interrupted; no result written; the caches made so far "
+            f"are in {Path(args.cache_dir).resolve()}",
+            file=sys.stderr,
+        )
+        return 130
+    except Exception as exc:
+        print(f"pesto bench: could not finish: {exc}", file=sys.stderr)
+        return 1
+
     print(format_table(result))
-    write_result_json(args.json, result)
+    # The result is written only now, after every stage finished.
+    if os.path.lexists(args.json):
+        print(f"pesto bench: {args.json} appeared while measuring; result not written", file=sys.stderr)
+        return 2
+    try:
+        write_result_json(args.json, result)
+    except Exception as exc:
+        print(f"pesto bench: could not write the result: {exc}", file=sys.stderr)
+        return 1
     return 0

@@ -21,7 +21,14 @@ def main(argv: list[str] | None = None) -> int:
 
         return bench_main(raw[1:])
 
-    parser = argparse.ArgumentParser(prog="pesto")
+    parser = argparse.ArgumentParser(
+        prog="pesto",
+        epilog=(
+            "To measure a run against pesto's speed limits, use "
+            "`pesto bench RUN --cache-dir DIR --json FILE`. A run folder named "
+            "bench must be given as ./bench."
+        ),
+    )
     parser.add_argument(
         "path",
         nargs="?",
