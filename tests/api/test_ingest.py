@@ -880,8 +880,28 @@ def test_an_unwritable_folder_with_no_old_cache_does_not_refuse_the_start(tmp_pa
     assert response.status_code == 202
 
 
-def test_a_folder_outside_the_home_directory_is_shown_as_given(tmp_path, monkeypatch):
+def test_a_folder_outside_the_home_directory_shows_only_its_last_two_parts(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    elsewhere = tmp_path / "elsewhere"
+    elsewhere = tmp_path / "Scratch" / "cache"
 
-    assert _display_folder(elsewhere) == str(elsewhere)
+    assert _display_folder(elsewhere) == "…/Scratch/cache"
+
+
+def test_a_short_folder_outside_the_home_directory_still_hides_its_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    assert _display_folder(Path("/cache")) == "…/cache"
+    assert _display_folder(Path("/Volumes/cache")) == "…/cache"
+
+
+def test_the_state_never_sends_an_absolute_cache_folder(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    cache_root = tmp_path / "Scratch" / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    app, token = _app_for(run_dir, cache_root)
+
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+
+    assert response.json()["rewrite"]["folder"] == "…/Scratch/cache"
+    assert str(tmp_path) not in response.text
