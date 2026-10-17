@@ -93,7 +93,7 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function createParameterFieldSource(opts: { runId: string }): ParameterFieldSource {
+export function createParameterFieldSource(opts: { runId: string | null }): ParameterFieldSource {
   const slot = new LatestWins<Float32Array>()
   const iterationSlot = new LatestWins<IterationData>()
 

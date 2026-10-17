@@ -129,6 +129,23 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`
 }
 
+/** The iteration the map opens on, and a note to show when the run's configuration did not name it. */
+export function openingIteration(config: RunConfig | null, state: IngestState): { iteration: number; note: string | null } {
+  if (config !== null && config.first_iteration !== null) return { iteration: config.first_iteration, note: null }
+  const ingested = iterationsFrom(state)
+  if (ingested.length > 0) {
+    const first = ingested[0]
+    return {
+      iteration: first,
+      note: `The run's configuration does not name it, so the map opens on iteration ${first}, the lowest one with a parameter ensemble.`,
+    }
+  }
+  return {
+    iteration: 0,
+    note: "Neither the run's configuration nor the ingest names an iteration, so the map tries iteration 0.",
+  }
+}
+
 function formatSeconds(seconds: number): string {
   return `${seconds.toFixed(1)} s`
 }
@@ -1629,7 +1646,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   async function loadAndDraw(gl: GlContext): Promise<void> {
-    const iteration = opts.config?.first_iteration ?? 0
+    const opening = openingIteration(opts.config, opts.state)
+    const iteration = opening.iteration
+    if (opening.note !== null) {
+      addNotice(mapNotice, { title: 'The first iteration was not recorded', detail: opening.note, tone: 'info' })
+    }
 
     // The shell started this read ahead of the mesh/parmap fetches and owns
     // the divider; the restored choices are read once the groups are known.

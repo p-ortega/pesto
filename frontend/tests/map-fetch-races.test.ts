@@ -255,6 +255,7 @@ async function mountedWith(
   store: SelectionStore,
   stub: Stub = newStub(),
   artifacts: ArtifactRow[] = TWO_ITERATIONS,
+  config: RunConfig = CONFIG,
 ): Promise<{ root: HTMLElement; stub: Stub }> {
   stubEnvironment(stub)
   vi.stubGlobal(
@@ -267,7 +268,7 @@ async function mountedWith(
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
-  mountMap(root, { config: CONFIG, state: stateWith(artifacts), store })
+  mountMap(root, { config, state: stateWith(artifacts), store })
   await vi.waitFor(() => {
     expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
   })
@@ -586,5 +587,46 @@ describe('the wait while a new iteration loads its tables', () => {
     expect(statusText(root)).not.toContain('loading iteration')
     clickAtWorld(canvas, 0.5, 0.5)
     expect(Array.from(store.get().cells)).toEqual([0])
+  })
+})
+
+describe('a run whose configuration does not name its first iteration', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function noticeText(root: HTMLElement): string {
+    return root.querySelector('[data-testid="map-notices"]')?.textContent ?? ''
+  }
+
+  it('opens on the lowest ingested iteration and says so', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store, newStub(), [artifact('par_ens/3')], { ...CONFIG, first_iteration: null })
+
+    expect(stub.valuesCalls[0]?.iteration).toBe('3')
+    expect(store.get().iteration).toBe(3)
+    expect(noticeText(root)).toContain('first iteration was not recorded')
+    expect(noticeText(root)).toContain('iteration 3')
+  })
+
+  it('says it is only trying iteration 0 when nothing names an iteration', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store, newStub(), [], { ...CONFIG, first_iteration: null })
+
+    expect(stub.valuesCalls[0]?.iteration).toBe('0')
+    expect(noticeText(root)).toContain('first iteration was not recorded')
+    expect(noticeText(root)).toContain('iteration 0')
+  })
+
+  it('says nothing when the configuration names it', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+
+    expect(noticeText(root)).not.toContain('first iteration')
   })
 })

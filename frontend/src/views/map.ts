@@ -13,7 +13,7 @@ import { renderDivider } from '../ui/divider'
 import { renderNotice } from '../ui/chrome'
 import { renderParamsPanel, type ParamsPanelHandle } from '../ui/params-panel'
 import { renderTabs } from '../ui/tabs'
-import { mountMapView, type MapViewFields, type MapViewHandle, type RunConfig } from './map-view'
+import { mountMapView, openingIteration, type MapViewFields, type MapViewHandle, type RunConfig } from './map-view'
 import { createParameterFieldSource } from './parameter-field-source'
 
 // WINDOWS.md #10: this parser lives outside views/ because style-frame.test.ts
@@ -66,10 +66,12 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   root.appendChild(panel)
   root.appendChild(statusBar)
 
-  const runId = opts.state.runId ?? opts.config?.case ?? 'run'
+  // The store's run id only tells two runs apart; the field source keys its requests on the real id or none.
+  const storeRunId = opts.state.runId ?? opts.config?.case ?? 'run'
   const store =
-    opts.store ?? createSelectionStore({ initial: emptySelection(runId, opts.config?.first_iteration ?? 0) })
-  const source = createParameterFieldSource({ runId })
+    opts.store ??
+    createSelectionStore({ initial: emptySelection(storeRunId, openingIteration(opts.config, opts.state).iteration) })
+  const source = createParameterFieldSource({ runId: opts.state.runId ?? null })
 
   // D-11: the divider fraction and the map's colour/scale/group choices
   // persist per run, server-side. Every write is debounced onto one timer,
