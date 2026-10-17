@@ -1,5 +1,6 @@
 import { tableFromIPC } from 'apache-arrow'
 import { authHeaders } from '../auth/token'
+import { activeRunId, runUrl } from './run'
 
 export interface ProblemDetails {
   type: string
@@ -53,8 +54,12 @@ async function handleResponse(response: Response): Promise<unknown> {
   return readJson(response)
 }
 
-export async function apiGet(route: string): Promise<unknown> {
-  const response = await fetch(route, { headers: authHeaders() })
+export interface FetchOptions {
+  signal?: AbortSignal
+}
+
+export async function apiGet(route: string, opts?: FetchOptions): Promise<unknown> {
+  const response = await fetch(route, { headers: authHeaders(), signal: opts?.signal })
   return handleResponse(response)
 }
 
@@ -86,8 +91,8 @@ export interface BytesResult {
 // returns the parsed X-Pesto-Meta header blob_response attaches -- present
 // on every numeric route (mesh buffers, parmap, values, cells), absent on
 // the Arrow-stream routes, which carry their shape in the stream itself.
-export async function apiGetBytes(route: string): Promise<BytesResult> {
-  const response = await fetch(route, { headers: authHeaders() })
+export async function apiGetBytes(route: string, opts?: FetchOptions): Promise<BytesResult> {
+  const response = await fetch(route, { headers: authHeaders(), signal: opts?.signal })
   if (!response.ok) {
     const problem = (await readJson(response)) as ProblemDetails
     throw new ApiError(problem)
@@ -180,11 +185,15 @@ export interface GridValuesQuery {
 // D-05 (inherited): layer is never sent here -- ValuesQuery forbids it,
 // and layer selection is filtered client-side out of the whole field this
 // returns.
-export async function gridValues(query: GridValuesQuery): Promise<Float32Array> {
-  const params = new URLSearchParams({ iteration: String(query.iteration) })
-  if (query.stat !== undefined) params.set('stat', query.stat)
-  if (query.realization !== undefined) params.set('realization', query.realization)
-  const { buffer } = await apiGetBytes(`/api/run/grid/values?${params.toString()}`)
+export async function gridValues(query: GridValuesQuery, opts?: FetchOptions): Promise<Float32Array> {
+  const { buffer } = await apiGetBytes(
+    runUrl(activeRunId(), '/api/run/grid/values', {
+      iteration: query.iteration,
+      stat: query.stat,
+      realization: query.realization,
+    }),
+    opts,
+  )
   return new Float32Array(buffer)
 }
 
