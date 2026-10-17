@@ -666,3 +666,24 @@ describe('a pilot-point index that cannot be read', () => {
     expect(noticeText(root)).not.toContain('pilot-point index')
   })
 })
+
+describe('the iteration notices for assistive technology', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('sit in a status region, so a switch that leaves the map empty is announced', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+    const drawn = root.querySelector('[data-testid="iteration-drawn-notice"]') as HTMLElement
+    const selected = root.querySelector('[data-testid="iteration-selected-notice"]') as HTMLElement
+
+    expect(drawn.closest('[role="status"]')).not.toBeNull()
+    expect(selected.closest('[role="status"]')).not.toBeNull()
+  })
+})

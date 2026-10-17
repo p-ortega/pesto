@@ -217,6 +217,13 @@ export function renderSelectionControls(
     )
   }
 
+  // The label and what assistive technology hears always agree, and neither is ever a position.
+  function showReal(): void {
+    const name = realMissing ? null : (realNames[Number(realInput.value)] ?? null)
+    realValue.textContent = name ?? '—'
+    realInput.setAttribute('aria-valuetext', name ?? (realNames.length === 0 ? 'names not recorded' : 'none picked'))
+  }
+
   function updateRealDisabled(): void {
     realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
   }
@@ -229,13 +236,13 @@ export function renderSelectionControls(
     realInput.step = '1'
     realInput.value = '0'
     updateRealDisabled()
-    realValue.textContent = realNames[0] ?? '—'
+    showReal()
   } else {
     realInput.min = '0'
     realInput.max = '0'
     realInput.value = '0'
     realInput.disabled = true
-    realValue.textContent = '—'
+    showReal()
     warningLine = document.createElement('div')
     warningLine.classList.add('label')
     warningLine.style.color = 'var(--status-warning)'
@@ -394,8 +401,7 @@ export function renderSelectionControls(
 
   realInput.addEventListener('input', () => {
     realMissing = false
-    const index = Number(realInput.value)
-    realValue.textContent = realNames[index] ?? '—'
+    showReal()
     opts.onSelectionChange(currentSelection())
   })
 
@@ -404,7 +410,7 @@ export function renderSelectionControls(
   realInput.addEventListener('click', () => {
     if (!realMissing || realNames.length === 0) return
     realMissing = false
-    realValue.textContent = realNames[Number(realInput.value)] ?? '—'
+    showReal()
     opts.onSelectionChange(currentSelection())
   })
 
@@ -500,6 +506,7 @@ export function renderSelectionControls(
         }
         warningLine.textContent = text
         realMissing = true
+        showReal()
         return null
       }
       warningLine?.remove()
@@ -513,11 +520,11 @@ export function renderSelectionControls(
       updateRealDisabled()
       if (index < 0) {
         realMissing = true
-        realValue.textContent = '—'
+        showReal()
         return null
       }
       realInput.value = String(index)
-      realValue.textContent = realNames[index]
+      showReal()
       return index
     },
   }
