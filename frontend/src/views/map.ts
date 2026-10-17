@@ -5,33 +5,20 @@
 
 import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import {
-  gridCells,
   gridIdomain,
   gridMesh,
   gridMeshBuffer,
-  gridPointXy,
   readViewState,
   writeViewState,
 } from '../data/client'
-import { hasPosition, isPointGroup, pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
-import { inactiveLandingNotes, layerActiveMask, referencedMask } from '../data/domain'
+import { pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
+import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { frameLogInstalled, markFrame } from '../perf'
 import { renderDivider } from '../ui/divider'
 import { renderParamsPanel } from '../ui/params-panel'
-import {
-  classifyCells,
-  fetchParTable,
-  fetchParmap,
-  joinBlockToIdentity,
-  parseParIdentities,
-  type CellClass,
-  type ParIdentity,
-} from '../data/parmap'
-import { fetchRealNames } from '../data/reals'
+import type { CellClass, ParIdentity } from '../data/parmap'
 import {
   EMPTY_PP_INDEX,
-  classifyFieldCells,
-  fetchPpIndex,
   fieldContributors,
   type Contributor,
   type PpGroupInfo,
@@ -50,7 +37,7 @@ import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend } from '../ui/legend'
-import { renderGroupPicker, type GroupPickerState, type UnmappedGroup } from '../ui/group-picker'
+import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick } from '../ui/readout'
 import {
   prefersReducedMotion,
@@ -62,7 +49,18 @@ import {
   type RenderNoticeOptions,
 } from '../ui/chrome'
 import { currentTheme, setTheme, type ThemeChoice } from '../ui/theme'
-import { createParameterFieldSource } from './parameter-field-source'
+import {
+  activeMask,
+  computeGroupPlacement,
+  computePerCell as computePerCellFor,
+  createParameterFieldSource,
+  dotLayerFor as dotLayerForGroup,
+  drawsAsPoints as drawsAsPointsFor,
+  footprintMask,
+  interpolatedEntry as findInterpolatedEntry,
+  partransForGroup,
+  type MaskCache,
+} from './parameter-field-source'
 
 // MAP-08: how long a lost context is given to come back on its own before
 // this falls to the unrecoverable designed state. Not specified by any
@@ -172,73 +170,6 @@ function renderBlockedCapabilities(container: HTMLElement, state: IngestState): 
       })
     }
   }
-}
-
-// D-07: a group is drawable when at least one of its block rows places on
-// a real cell (cell !== -1, Phase 3's own -1 sentinel for "no rule
-// matched"); every other group in the control table is unmapped. The map
-// block carries only the parameters that placed, so a group none of whose
-// parameters placed never appears in it at all -- on a real PstFrom run
-// that is nearly every group -- which is why the groups are read from the
-// control table, which lists every parameter, and only the placed set from
-// the block. Order is first-seen in control-file order. The recorded
-// placement note (ParCells.notes) is not exposed by any route today, so
-// every unmapped entry carries `note: null` and falls back to the "no
-// placement rule matched" copy -- a real gap, not a silent guess.
-function computeGroupPlacement(
-  identities: ParIdentity[],
-  joined: Array<ParIdentity | null>,
-  cells: Int32Array,
-  ppIndex: PpIndex,
-): { drawable: string[]; unmapped: UnmappedGroup[]; interpolated: string[] } {
-  const order: string[] = []
-  const seen = new Set<string>()
-  for (const identity of identities) {
-    if (!seen.has(identity.pargp)) {
-      seen.add(identity.pargp)
-      order.push(identity.pargp)
-    }
-  }
-  const placed = new Set<string>()
-  for (let i = 0; i < joined.length; i++) {
-    const identity = joined[i]
-    if (identity !== null && cells[i] >= 0) placed.add(identity.pargp)
-  }
-  // An interpolated group draws as a field even when no parameter of it
-  // places on a cell; a group the index refused carries the index's reason.
-  const interpolated = new Set(ppIndex.groups.map((g) => g.group))
-  const refused = new Map(ppIndex.not_interpolable.map((r) => [r.group, r.reason]))
-  const drawable: string[] = []
-  const unmapped: UnmappedGroup[] = []
-  for (const group of order) {
-    if (placed.has(group) || interpolated.has(group)) {
-      drawable.push(group)
-    } else {
-      const reason = refused.get(group)
-      unmapped.push({ group, note: reason === undefined ? null : `${group} — ${reason}` })
-    }
-  }
-  return { drawable, unmapped, interpolated: drawable.filter((g) => interpolated.has(g)) }
-}
-
-// The drawn group's own partrans, read straight from the D-05 join --
-// never a positional guess. A group with no identified row (never reached
-// while drawnGroup itself came from this same join) returns null, which
-// the scale default treats as linear.
-function partransForGroup(
-  joined: Array<ParIdentity | null>,
-  group: string,
-  identities: ParIdentity[] = [],
-): string | null {
-  for (const identity of joined) {
-    if (identity !== null && identity.pargp === group) return identity.partrans
-  }
-  // A pilot-point group need not sit in the map block at all; the control
-  // table still names its partrans.
-  for (const identity of identities) {
-    if (identity.pargp === group) return identity.partrans
-  }
-  return null
 }
 
 // D-11's restored view state carries plain strings from a JSON file on
@@ -449,7 +380,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let currentPoints: DrawnPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
   // Held as a block row, not a dot index, since a layer change changes which dots are drawn.
   let selectedPointRow: number | null = null
-  let referenced: Uint8Array | null = null
+  const maskCache: MaskCache = { referenced: null }
   let drawnGroup: string | null = null
   // Interpolated pilot-point groups. `fieldKind` says what rawFullField
   // holds: block rows from /values, or one value per cell from /field.
@@ -469,13 +400,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const contributorsMemo = new Map<number, Contributor[] | { failed: string }>()
 
   function interpolatedEntry(group: string | null): PpGroupInfo | null {
-    return ppIndex.groups.find((g) => g.group === group) ?? null
+    return findInterpolatedEntry(ppIndex, group)
   }
 
-  // An interpolated group draws its field even when its points carry an x/y.
   function drawsAsPoints(): boolean {
-    if (fieldKind !== 'block' || drawnGroup === null || interpolatedEntry(drawnGroup) !== null) return false
-    return isPointGroup(joined, pointXy, drawnGroup)
+    return drawsAsPointsFor(fieldKind, drawnGroup, ppIndex, joined, pointXy)
   }
 
   function clearSelection(): void {
@@ -485,13 +414,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     layer?.setSelectedPoint(null)
   }
 
-  // In the model on one layer: the idomain when the grid has one, else any
-  // cell a block row names, at any layer (the mesh notes say which).
   function activeMaskFor(layerIndex: number): Uint8Array {
-    const nCells = mesh?.nCells ?? 0
-    if (idomain !== null) return layerActiveMask(idomain, nCells, layerIndex)
-    if (referenced === null) referenced = referencedMask(cellArray, nCells)
-    return referenced.slice()
+    return activeMask(idomain, cellArray, mesh?.nCells ?? 0, layerIndex, maskCache)
   }
 
   // A cell drawn with a value on this layer is never outlined, whatever the mask says.
@@ -898,17 +822,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     scheduleViewWrite()
   }
 
-  // A dot group picked on a layer holding none of its dots opens on the lowest layer that does.
   function dotLayerFor(group: string): number | null {
-    if (interpolatedEntry(group) !== null || !isPointGroup(joined, pointXy, group)) return null
-    let lowest: number | null = null
-    for (let row = 0; row < joined.length; row++) {
-      if (joined[row]?.pargp !== group || pointXy === null || !hasPosition(pointXy, row)) continue
-      const l = layerArray[row]
-      if (l === committed.layer) return null
-      if (l >= 0 && (lowest === null || l < lowest)) lowest = l
-    }
-    return lowest
+    return dotLayerForGroup(group, { ppIndex, joined, pointXy, layerArray, currentLayer: committed.layer })
   }
 
   // D-12/MAP-10: the chips capability, not the config object, decides
@@ -1007,69 +922,22 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     paintStatusBar()
   })
 
-  // Reprojects a full block-order field into grid-cell order, filtered to
-  // one layer and the drawn group, from classifyCells' own D-06
-  // classification -- a contested cell gets no value at all (NaN; the
-  // stripe is its only mark) rather than the last-seen row's value.
-  function computePerCell(
-    field: Float32Array,
-    layerIndex: number,
-  ): { perCell: Float32Array; contested: number; noValue: number; classes: CellClass[] } {
-    const nCells = mesh?.nCells ?? 0
-    const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
-    if (fieldKind === 'cell' && entry !== null) {
-      const active = activeMaskFor(layerIndex)
-      // The field is drawn only on its own layer, so only there does a value put a cell in the model.
-      if (layerIndex === entry.layer) {
-        for (let c = 0; c < active.length; c++) {
-          if (Number.isFinite(field[c])) active[c] = 1
-        }
-      }
-      const { classes, noValueCount } = classifyFieldCells(field, active, entry.layer, layerIndex)
-      const perCell = new Float32Array(nCells).fill(Number.NaN)
-      for (let c = 0; c < nCells; c++) {
-        if (classes[c].kind === 'interpolated') perCell[c] = field[c]
-      }
-      return { perCell, contested: 0, noValue: noValueCount, classes }
-    }
-    if (drawsAsPoints()) {
-      // The dots carry the values; a cell only says which of the group's rows it hosts.
-      const hosted = new Map<number, number[]>()
-      for (let row = 0; row < joined.length; row++) {
-        const c = cellArray[row]
-        if (joined[row]?.pargp !== drawnGroup || layerArray[row] !== layerIndex || c < 0 || c >= nCells) continue
-        const rows = hosted.get(c)
-        if (rows) rows.push(row)
-        else hosted.set(c, [row])
-      }
-      const active = activeMaskFor(layerIndex)
-      const classes: CellClass[] = []
-      let noValue = 0
-      for (let c = 0; c < nCells; c++) {
-        const rows = hosted.get(c)
-        if (rows) classes.push({ kind: 'points', rows })
-        else if (active[c]) classes.push({ kind: 'no-parameter' })
-        else classes.push({ kind: 'outside-model' })
-        if (!rows && active[c]) noValue += 1
-      }
-      return { perCell: new Float32Array(nCells).fill(Number.NaN), contested: 0, noValue, classes }
-    }
-    const { classes, contestedCount, noValueCount } = classifyCells(
+  function computePerCell(field: Float32Array, layerIndex: number) {
+    return computePerCellFor({
+      field,
+      layerIndex,
+      nCells: mesh?.nCells ?? 0,
+      fieldKind,
+      fieldGroup,
+      drawnGroup,
+      ppIndex,
       joined,
       cellArray,
       layerArray,
-      drawnGroup ?? '',
-      layerIndex,
-      activeMaskFor(layerIndex),
-    )
-    const perCell = new Float32Array(nCells).fill(Number.NaN)
-    for (let c = 0; c < nCells; c++) {
-      const cls = classes[c]
-      if (cls.kind === 'valued') {
-        perCell[c] = field[cls.row]
-      }
-    }
-    return { perCell, contested: contestedCount, noValue: noValueCount, classes }
+      pointXy,
+      idomain,
+      maskCache,
+    })
   }
 
   // A layer change never fetches -- the client already holds the whole
@@ -1096,16 +964,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     // whatever currentClasses now says, never a stale copy.
     updateReadout()
     return { contested, noValue }
-  }
-
-  // Under dots no cell carries a value, so this quiet fill is what shows the model's shape.
-  function footprintMask(classes: CellClass[]): Uint8Array {
-    const mask = new Uint8Array(classes.length)
-    for (let c = 0; c < classes.length; c++) {
-      const kind = classes[c].kind
-      mask[c] = kind === 'points' || kind === 'no-parameter' ? 1 : 0
-    }
-    return mask
   }
 
   // Each dot reads the same scaled field the fill does, so log scale and its refusal apply alike.
@@ -1339,20 +1197,15 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
 
   // A failed or misshapen read draws every group as cells, with a notice saying why.
   async function readPointXy(iteration: number): Promise<Float32Array | null> {
-    let reason: string
-    try {
-      const xy = await gridPointXy(iteration)
-      if (xy === null || xy.length === 2 * cellArray.length) return xy
-      reason = `It has ${xy.length} values, not the ${2 * cellArray.length} the map block needs (an x and a y per row).`
-    } catch (error) {
-      reason = describeError(error)
+    const { xy, problem } = await source.loadPointXy(iteration, cellArray.length)
+    if (problem !== null) {
+      addNotice(mapNotice, {
+        title: 'Point positions could not be read',
+        detail: `${problem} Groups placed by x/y draw as the cells their points sit in.`,
+        tone: 'serious',
+      })
     }
-    addNotice(mapNotice, {
-      title: 'Point positions could not be read',
-      detail: `${reason} Groups placed by x/y draw as the cells their points sit in.`,
-      tone: 'serious',
-    })
-    return null
+    return xy
   }
 
   async function loadAndDraw(gl: GlContext): Promise<void> {
@@ -1432,14 +1285,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }
 
     // One request for the parameter table, shared with the Params panel.
-    const parmapRequest = fetchParmap(iteration)
-    const parTable = fetchParTable()
-    parTable.catch(() => {})
-    let parmap: Int32Array
+    let parTable: Promise<ArrayBuffer>
     let identities: ParIdentity[]
     try {
-      parmap = await parmapRequest
-      identities = parseParIdentities(await parTable)
+      const tables = await source.loadParameterTables(iteration)
+      parTable = tables.parTable
+      identities = tables.identities
+      joined = tables.joined
     } catch (error) {
       addNotice(mapNotice, {
         title: 'The parameter table could not be read',
@@ -1450,18 +1302,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       canvas.remove()
       return
     }
-    joined = joinBlockToIdentity(parmap, identities)
     allIdentities = identities
-    // A run with no pilot points has no index; that is not an error.
-    try {
-      ppIndex = await fetchPpIndex()
-    } catch {
-      ppIndex = EMPTY_PP_INDEX
-    }
+    ppIndex = await source.loadPpIndex()
 
     try {
-      cellArray = await gridCells('cell', iteration)
-      layerArray = await gridCells('layer', iteration)
+      const cells = await source.loadCells(iteration)
+      cellArray = cells.cell
+      layerArray = cells.layer
     } catch (error) {
       const { artifact, reason } = problemArtifactAndReason(error)
       addNotice(mapNotice, {
@@ -1529,7 +1376,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     paintPicker({ kind: 'ready', drawable, interpolated, unmapped, selected: drawnGroup })
     renderParamsPanel(paramsPanelHost, { unmapped, artifactNotes, parTable })
 
-    const realNames = await fetchRealNames(iteration)
+    const realNames = await source.loadRealNames(iteration)
 
     meshGeom = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
     layer = new MeshLayer(gl.gl, meshGeom)

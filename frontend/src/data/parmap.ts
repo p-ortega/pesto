@@ -4,7 +4,7 @@
 // partrans come from inside the file, never from where the row sits.
 
 import { tableFromIPC } from 'apache-arrow'
-import { gridParmap, runMeta } from './client'
+import { gridParmap, runMeta, type FetchOptions } from './client'
 
 export interface ParIdentity {
   parnme: string
@@ -13,8 +13,8 @@ export interface ParIdentity {
   partrans: string | null
 }
 
-export async function fetchParmap(iteration: number): Promise<Int32Array> {
-  return gridParmap(iteration)
+export async function fetchParmap(iteration: number, opts?: FetchOptions): Promise<Int32Array> {
+  return gridParmap(iteration, opts)
 }
 
 // The columns the map cannot draw without; the server refuses the request if one is missing.
@@ -25,8 +25,8 @@ export const PAR_TABLE_COLUMNS = ['parnme', 'pargp'] as const
 export const PAR_TABLE_OPTIONAL_COLUMNS = ['parlbnd', 'parubnd', 'partrans'] as const
 
 /** One request for the parameter table, only the columns the page reads. */
-export function fetchParTable(): Promise<ArrayBuffer> {
-  return runMeta('par', PAR_TABLE_COLUMNS, PAR_TABLE_OPTIONAL_COLUMNS)
+export function fetchParTable(opts?: FetchOptions): Promise<ArrayBuffer> {
+  return runMeta('par', PAR_TABLE_COLUMNS, PAR_TABLE_OPTIONAL_COLUMNS, opts)
 }
 
 /**
