@@ -141,6 +141,8 @@ interface Stub {
   held: Map<string, Promise<void>>
   savedView: Record<string, unknown> | null
   puts: Record<string, unknown>[]
+  /** When set, the pilot-point index answers with this problem instead of the index. */
+  ppProblem: { status: number; title: string; detail: string } | null
 }
 
 function bytesOf(view: ArrayBufferView): Uint8Array {
@@ -185,6 +187,7 @@ function stubEnvironment(stub: Stub): void {
         case '/api/run/meta':
           return respond({ status: 200, bytes: PAR_TABLE })
         case '/api/run/grid/pp':
+          if (stub.ppProblem !== null) return respond({ status: stub.ppProblem.status, body: stub.ppProblem })
           return respond({ status: 200, body: PP_INDEX })
         case '/api/run/grid/parmap':
           await wait(`tables${iteration}`, false)
@@ -228,7 +231,7 @@ function stubEnvironment(stub: Stub): void {
 }
 
 function newStub(): Stub {
-  return { valuesCalls: [], fieldCalls: [], held: new Map(), savedView: null, puts: [] }
+  return { valuesCalls: [], fieldCalls: [], held: new Map(), savedView: null, puts: [], ppProblem: null }
 }
 
 // Holds every answer named `name` until the returned function is called.
@@ -628,5 +631,38 @@ describe('a run whose configuration does not name its first iteration', () => {
     const { root } = await mountedWith(store)
 
     expect(noticeText(root)).not.toContain('first iteration')
+  })
+})
+
+describe('a pilot-point index that cannot be read', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function noticeText(root: HTMLElement): string {
+    return root.querySelector('[data-testid="map-notices"]')?.textContent ?? ''
+  }
+
+  it.each([404, 500])('says so, with the reason, when the index answers %i', async (status) => {
+    const stub = newStub()
+    stub.ppProblem = { status, title: 'pp_index could not be read', detail: 'failed to read pp_index.json: no such file' }
+    const { root } = await mountedWith(manualStore(), stub)
+
+    expect(noticeText(root)).toContain('The pilot-point index could not be read')
+    expect(noticeText(root)).toContain('failed to read pp_index.json: no such file')
+    // With no index, the group it would have interpolated is not offered as one.
+    const options = Array.from(root.querySelectorAll('[aria-label="Parameter group"] option')).map((o) => o.textContent)
+    expect(options.some((text) => text?.includes('pp'))).toBe(false)
+  })
+
+  it('says nothing when the index reads', async () => {
+    const { root } = await mountedWith(manualStore())
+
+    expect(noticeText(root)).not.toContain('pilot-point index')
   })
 })

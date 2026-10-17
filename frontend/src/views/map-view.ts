@@ -1728,7 +1728,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     allIdentities = identities
-    ppIndex = await source.loadPpIndex()
+    const pp = await source.loadPpIndex()
+    ppIndex = pp.index
+    if (pp.problem !== null) {
+      addNotice(mapNotice, {
+        title: 'The pilot-point index could not be read',
+        detail: `${pp.problem} Pilot-point groups are not drawn as interpolated fields.`,
+        tone: 'serious',
+      })
+    }
 
     try {
       const cells = await source.loadCells(iteration)
