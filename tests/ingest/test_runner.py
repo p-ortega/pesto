@@ -443,7 +443,11 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
 
     planned = {a.name: a for a in plan_artifacts(run, layout)}
 
-    assert set(planned["par_ens/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert set(planned["par_ens/0"].sources) == {
+        str(run.par_ens[0]),
+        str(run.pst_path),
+        str(run.grid),
+    }
     assert set(planned["par_agg/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
     assert planned["control"].sources == (str(run.pst_path),)
     assert planned["grid"].sources == (str(run.grid),)
@@ -466,6 +470,9 @@ def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
     assert "par_cell" not in names
     config = next(a for a in planned if a.name == "config")
     assert config.sources == (str(run.pst_path),)
+    par_ens = next(a for a in planned if a.name == "par_ens/0")
+    assert set(par_ens.sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert not any(note.startswith("par_cell:") for note in estimate_bytes(run).notes)
 
 
 def test_ingest_run_writes_every_artifact_kind_and_each_reads_back_through_its_own_reader(
@@ -641,6 +648,7 @@ def test_estimate_bytes_sizes_every_artifact_without_opening_a_source_file(tmp_p
     # own size carries no signal about its external tables -- so it is
     # named in notes instead of appearing in per_artifact.
     assert names == {"par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "grid", "config"}
+    assert any(note.startswith("par_cell:") for note in estimate.notes)
     assert any("control" in note for note in estimate.notes)
 
 
@@ -896,8 +904,11 @@ def test_a_whole_run_ingest_with_every_source_present_records_two_sources_and_fa
     manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
 
     for name, artifact in manifest.artifacts.items():
-        if name.startswith("par_ens/") or name.startswith("par_agg/"):
+        if name.startswith("par_agg/"):
             assert len(artifact.sources) == 2, (name, artifact.sources)
+        if name.startswith("par_ens/"):
+            # The ensemble and the control file, and the grid its map block follows.
+            assert len(artifact.sources) == 3, (name, artifact.sources)
         if name not in _GRID_BOUND:  # the synthetic fixture's grid always fails
             assert artifact.state == "ok", (name, artifact.reason)
 

@@ -373,3 +373,78 @@ def test_resolving_the_cached_table_equals_resolving_the_fresh_control_table(
         assert group in control_groups
 
     assert snapshot(pl253_run) == before
+
+
+# ---------------------------------------------------------------------------
+# a grid edit makes par_cell and par_ens stale
+# ---------------------------------------------------------------------------
+
+
+def _planned_sources(run_dir: Path, layout: CacheLayout) -> dict[str, tuple[str, ...]]:
+    from pesto.ingest.discover import discover
+    from pesto.ingest.runner import plan_artifacts
+
+    return {a.name: a.sources for a in plan_artifacts(discover(run_dir), layout)}
+
+
+def test_the_ensemble_lists_the_grid_file_as_a_source_and_the_summary_does_not(tmp_path):
+    run_dir = write_synthetic_run(tmp_path / "run")
+    sources = _planned_sources(run_dir, for_run(run_dir))
+
+    grid = str(run_dir / "synthetic.grb")
+    assert grid in sources["par_ens/0"]
+    assert grid in sources["par_cell"]
+    assert grid not in sources["par_agg/0"]
+
+
+def test_rewriting_the_grid_bytes_makes_par_cell_and_par_ens_stale(tmp_path):
+    run_dir = write_synthetic_run(tmp_path / "run")
+    layout = for_run(run_dir)
+    sources = _planned_sources(run_dir, layout)
+    manifest = Manifest.load(layout)
+    assert manifest.is_stale("par_cell", layout, sources["par_cell"]) is False
+    assert manifest.is_stale("par_ens/0", layout, sources["par_ens/0"]) is False
+
+    (run_dir / "synthetic.grb").write_bytes(b"a different grid file\n")
+
+    assert manifest.is_stale("par_cell", layout, sources["par_cell"]) is True
+    assert manifest.is_stale("par_ens/0", layout, sources["par_ens/0"]) is True
+    assert manifest.is_stale("par_agg/0", layout, sources["par_agg/0"]) is False
+
+
+def test_touching_the_grid_file_keeps_par_cell_and_par_ens_fresh(tmp_path):
+    import os
+
+    run_dir = write_synthetic_run(tmp_path / "run")
+    layout = for_run(run_dir)
+    sources = _planned_sources(run_dir, layout)
+    manifest = Manifest.load(layout)
+    grid = run_dir / "synthetic.grb"
+
+    stat = grid.stat()
+    os.utime(grid, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+
+    assert manifest.is_stale("par_cell", layout, sources["par_cell"]) is False
+    assert manifest.is_stale("par_ens/0", layout, sources["par_ens/0"]) is False
+
+
+def test_a_failed_par_cell_leaves_the_ensemble_ok_with_an_empty_map_block_and_a_note(tmp_path):
+    from pesto.ingest.runner import ingest_run
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    # make_run writes a placeholder grid file flopy cannot parse.
+    make_run(run_dir, iterations=(0,))
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["par_cell"].state == "failed"
+    assert manifest.artifacts["par_ens/0"].state == "ok"
+    sidecar = json.loads((CacheLayout(root=cache_root).ens / "par_0.json").read_text())
+    assert sidecar["blocks"][0]["n_par"] == 0
+    assert any(
+        n.startswith("cell resolution failed, so the map block is empty:")
+        for n in sidecar["notes"]
+    )
+    assert not (cache_root / "grid" / "par_cell.parquet").exists()
