@@ -307,3 +307,20 @@ def test_a_real_run_at_a_northing_near_7e6_is_off_by_no_more_than_float32_roundi
     half_step = np.spacing(np.abs(mesh.positions).max()) / 2
     assert half_step < 5e-3
     assert np.abs(world - geometry.positions).max() <= half_step
+
+
+def test_a_mesh_built_without_an_origin_is_refused_not_placed_at_zero():
+    """A missing origin would turn world coordinates into float32 under (0, 0),
+    the half-metre error Phase 7 fixed, and write_mesh would store it as fact."""
+    from pesto.model import MeshBuffers
+
+    with pytest.raises(TypeError, match="origin"):
+        MeshBuffers(
+            positions=np.zeros((3, 2), dtype=np.float32),
+            cell_index=np.zeros(3, dtype=np.float32),
+            indices=np.arange(3, dtype=np.uint32),
+            n_cells=1,
+            nlay=1,
+            bounds=(0.0, 0.0, 0.0, 0.0),
+            crs=None,
+        )
