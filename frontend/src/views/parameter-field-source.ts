@@ -71,6 +71,8 @@ export interface ParameterFieldSource {
    * returned for drawing. A real failure of the newest call is thrown.
    */
   fetchField(request: FieldRequest): Promise<FieldAnswer>
+  /** Aborts the field fetch that is out, if any; its answer comes back stale. */
+  cancelField(): void
   /** The parmap and the parameter table are requested together, in that order. */
   loadParameterTables(iteration: number, signal?: AbortSignal): Promise<ParameterTables>
   /** A run with no pilot points has no index; that is not an error. */
@@ -160,7 +162,11 @@ export function createParameterFieldSource(opts: { runId: string }): ParameterFi
     return answer.stale ? { stale: true } : { stale: false, data: answer.value }
   }
 
-  return { fetchField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
+  function cancelField(): void {
+    slot.cancel()
+  }
+
+  return { fetchField, cancelField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
 }
 
 export interface UnmappedEntry {
