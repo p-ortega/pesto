@@ -14,7 +14,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, Literal
 
 import pandas as pd
 
@@ -138,8 +138,14 @@ def _read_notes_json(notes_path: Path) -> dict | ReadFailure:
     return raw
 
 
-def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
+def load_control_tables(
+    layout: CacheLayout, obs: Literal["full", "schema"] = "full"
+) -> ControlTables | ReadFailure:
     """Read the control tables back from ``layout.control``.
+
+    With ``obs="schema"`` the observation table comes back with its real
+    columns and dtypes but zero rows, so a worker that never looks at
+    observations does not read millions of them.
 
     An absent file, an unreadable one, a parquet file pyarrow refuses, a
     ``notes.json`` of the wrong shape, and a ``notes.json`` written at a
@@ -162,7 +168,12 @@ def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
         )
 
     try:
-        obs = pd.read_parquet(obs_path)
+        if obs == "schema":
+            import pyarrow.parquet as pq
+
+            obs_frame = pq.read_schema(obs_path).empty_table().to_pandas()
+        else:
+            obs_frame = pd.read_parquet(obs_path)
     except Exception as exc:
         return ReadFailure(
             name="control", path=str(obs_path), reason=f"failed to read {obs_path.name}: {exc}"
@@ -195,7 +206,7 @@ def load_control_tables(layout: CacheLayout) -> ControlTables | ReadFailure:
 
     return ControlTables(
         par=par,
-        obs=obs,
+        obs=obs_frame,
         par_groups=par_groups,
         obs_groups=obs_groups,
         source_path=source_path,

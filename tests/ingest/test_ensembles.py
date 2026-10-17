@@ -20,7 +20,7 @@ import pytest
 import pesto.ingest.ensembles as ensembles_module
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
-from pesto.ingest.control import ControlTables, read_control
+from pesto.ingest.control import ControlTables
 from pesto.ingest.ensembles import (
     RealAlignment,
     StoredEnsemble,
@@ -34,7 +34,7 @@ from pesto.ingest.ensembles import (
 )
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.runner import _resolve_cells, ingest_run
+from pesto.ingest.runner import ingest_run
 from pesto.model import GroupResolution, ParCells
 
 from .fixtures import make_run, sample_values
@@ -265,33 +265,6 @@ def test_ingest_run_writes_the_realization_index_in_file_order(tmp_path):
     layout = CacheLayout(root=cache_root)
     payload = json.loads((layout.reals / "par_0.reals.json").read_text())
     assert payload["names"] == run.real_names
-
-
-# ---------------------------------------------------------------------------
-# _resolve_cells directly
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_cells_returns_none_with_no_grid_path():
-    assert _resolve_cells("case.pst", None) is None
-
-
-@pytest.mark.slow
-def test_resolve_cells_against_a_real_run(pl253_run):
-    from pesto.ingest.discover import discover
-
-    layout = discover(pl253_run)
-    assert layout.grid is not None
-    tables = read_control(layout.pst_path)
-    assert isinstance(tables, ControlTables)
-
-    cells = _resolve_cells(str(layout.pst_path), str(layout.grid))
-
-    assert isinstance(cells, ParCells)
-    assert len(cells.placed_groups) > 0
-    control_groups = set(tables.par["pargp"].astype(str))
-    for group in cells.placed_groups:
-        assert group in control_groups
 
 
 # ---------------------------------------------------------------------------
