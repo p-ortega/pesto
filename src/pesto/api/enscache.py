@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
@@ -86,6 +87,117 @@ def get_stored(state, cache_root: Path | str, iteration: int) -> "StoredEnsemble
     return result
 
 
+@dataclass(frozen=True)
+class BlockCells:
+    """The map block's cell, layer and position per row, in block order,
+    joined by parameter name from ``par_cell``. ``xy`` is flat float32 pairs
+    relative to the mesh origin, or ``None`` when no row has a position."""
+
+    cell: np.ndarray
+    layer: np.ndarray
+    xy: np.ndarray | None
+
+
+def _block_cells_memo(state) -> dict[tuple[str, int], BlockCells]:
+    memo = getattr(state, "block_cells_memo", None)
+    if memo is None:
+        memo = {}
+        state.block_cells_memo = memo
+    return memo
+
+
+def _par_cell_failure(reason: str, layout: CacheLayout) -> ReadFailure:
+    return ReadFailure(name="par_cell", path=str(layout.grid / "par_cell.parquet"), reason=reason)
+
+
+def _build_block_cells(
+    stored: "StoredEnsemble", layout: CacheLayout, iteration: int
+) -> BlockCells | ReadFailure:
+    from pesto.ingest.mesh import load_mesh_origin
+    from pesto.ingest.parcell import load_par_cell
+
+    permutation = map_permutation(stored)
+    if permutation is None:
+        return _par_cell_failure(
+            f"no map-block permutation was recorded for iteration {iteration}, so its "
+            f"rows cannot be named",
+            layout,
+        )
+    # par_names is in control order; the permutation turns it into block order.
+    names = [stored.par_names[int(i)] for i in permutation]
+    table = load_par_cell(layout)
+    if isinstance(table, ReadFailure):
+        return table
+
+    table_names = pd.Index(table.parnme)
+    if not table_names.is_unique:
+        repeated = table_names[table_names.duplicated()][0]
+        return _par_cell_failure(
+            f"par_cell names {repeated!r} more than once, so a parameter name cannot be "
+            f"joined to one cell",
+            layout,
+        )
+
+    idx = table_names.get_indexer(names)
+    missing = np.flatnonzero(idx < 0)
+    if missing.size:
+        count = int(missing.size)
+        noun = "parameter" if count == 1 else "parameters"
+        verb = "is" if count == 1 else "are"
+        return _par_cell_failure(
+            f"{count} map-block {noun} of iteration {iteration} {verb} not in par_cell; "
+            f"the first is {names[int(missing[0])]!r}",
+            layout,
+        )
+
+    cell = table.cell[idx].astype("<i4")
+    layer = table.layer[idx].astype("<i4")
+
+    x, y = table.x[idx], table.y[idx]
+    if not np.isfinite(x).any():
+        return BlockCells(cell=cell, layer=layer, xy=None)
+
+    origin = load_mesh_origin(layout)
+    if isinstance(origin, ReadFailure):
+        return origin
+    ox, oy = origin
+    xy = np.column_stack([x - ox, y - oy]).astype("<f4").reshape(-1)
+    return BlockCells(cell=cell, layer=layer, xy=xy)
+
+
+def get_block_cells(
+    state, cache_root: Path | str, iteration: int
+) -> BlockCells | ReadFailure:
+    """The cell, layer and origin-relative position of every map-block row of
+    ``iteration``, looked up in ``par_cell`` by parameter name.
+
+    A name that ``par_cell`` lacks, or lists twice, is a refusal; no row is
+    ever matched by position. The result is memoised until the manifest
+    reports ``par_cell``, ``par_ens/{iteration}`` or ``grid`` stale, and
+    ``invalidate`` drops it. A failure is never memoised.
+    """
+    memo = _block_cells_memo(state)
+    key = (str(cache_root), iteration)
+    layout = CacheLayout(root=Path(cache_root))
+    manifest = Manifest.load(layout)
+    names = ("par_cell", f"par_ens/{iteration}", "grid")
+
+    entry = memo.get(key)
+    if entry is not None and not any(manifest.is_stale(n, layout) for n in names):
+        return entry
+
+    stored = get_stored(state, cache_root, iteration)
+    if isinstance(stored, ReadFailure):
+        return stored
+    result = _build_block_cells(stored, layout, iteration)
+    if isinstance(result, ReadFailure):
+        memo.pop(key, None)
+        return result
+
+    memo[key] = result
+    return result
+
+
 def map_permutation(stored: "StoredEnsemble") -> np.ndarray | None:
     """The map block's slice of the recorded control-to-block permutation:
     ``stored.block_to_control[:n_map]``, where ``n_map`` is
@@ -119,12 +231,12 @@ def invalidate(state, cache_root: Path | str, iteration: int | None = None) -> N
     ``iteration`` is ``None``. Plan 05-07's ingest routes call this after an
     ingest finishes, so a re-ingest is visible immediately without waiting
     for the next request's own staleness check."""
-    memo = getattr(state, "ens_memo", None)
-    if not memo:
-        return
     root_key = str(cache_root)
-    if iteration is None:
-        for key in [k for k in memo if k[0] == root_key]:
-            del memo[key]
-    else:
-        memo.pop((root_key, iteration), None)
+    for memo in (getattr(state, "ens_memo", None), getattr(state, "block_cells_memo", None)):
+        if not memo:
+            continue
+        if iteration is None:
+            for key in [k for k in memo if k[0] == root_key]:
+                del memo[key]
+        else:
+            memo.pop((root_key, iteration), None)

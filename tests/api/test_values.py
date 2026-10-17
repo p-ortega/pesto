@@ -26,13 +26,14 @@ import pesto.api.enscache as enscache
 import pesto.ingest.ensembles as ensembles_module
 from pesto.api.app import create_app
 from pesto.api.blob import cache_tag
-from pesto.cache.layout import CacheLayout
-from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
+from pesto.cache.layout import CACHE_VERSION, CacheLayout
+from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint, WrittenArtifact
 from pesto.ingest.aggregate import write_par_agg
 from pesto.ingest.control import ControlTables
 from pesto.ingest.ensembles import load_stored, read_map_row, write_par_ensemble
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.parcell import write_par_cell
 from pesto.model import GroupResolution, ParCells
 
 BASE_URL = "http://127.0.0.1"
@@ -160,6 +161,10 @@ def _write_case(
     )
     assert isinstance(ens_result, WrittenArtifact), ens_result
 
+    if cells:
+        cell_result = write_par_cell(_cells(point_xy), tables.par, layout)
+        assert isinstance(cell_result, WrittenArtifact), cell_result
+
     agg_result = None
     if write_agg:
         agg_result = write_par_agg(data, tables, iteration=iteration, layout=layout)
@@ -183,8 +188,35 @@ def _write_manifest(layout: CacheLayout, run_dir: Path, entries) -> Manifest:
             manifest.mark_ok(
                 f"par_agg/{iteration}", sources=[fingerprint], files=agg_result.files
             )
+    _record_from_disk(manifest, layout, "par_cell", ("par_cell.parquet", "par_cell.json"), fingerprint)
+    _record_from_disk(manifest, layout, "grid", ("mesh.json",), fingerprint)
     manifest.save(layout)
     return manifest
+
+
+def _record_from_disk(manifest, layout, name, filenames, fingerprint) -> None:
+    """Record an artifact the test wrote by hand, with sizes read off disk,
+    when its files are there."""
+    paths = [layout.grid / f for f in filenames]
+    if not all(p.exists() for p in paths):
+        return
+    files = [CacheFile(path=str(p.relative_to(layout.root)), bytes=p.stat().st_size) for p in paths]
+    manifest.mark_ok(name, sources=[fingerprint], files=files)
+
+
+def _write_mesh_origin(layout: CacheLayout, ox: float, oy: float) -> None:
+    """A mesh.json holding only what the xy frame needs: the origin."""
+    layout.grid.mkdir(parents=True, exist_ok=True)
+    (layout.grid / "mesh.json").write_text(
+        json.dumps({"cache_version": CACHE_VERSION, "origin": [ox, oy]})
+    )
+
+
+def _rename_in_par_cell(layout: CacheLayout, old: str, new: str) -> None:
+    path = layout.grid / "par_cell.parquet"
+    frame = pd.read_parquet(path)
+    frame["parnme"] = frame["parnme"].replace({old: new})
+    frame.to_parquet(path)
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +342,7 @@ def test_the_cell_and_layer_arrays_match_a_values_payload_length(tmp_path):
     np.testing.assert_array_equal(np.frombuffer(layer_resp.content, dtype="<i4"), [1, 1])
 
 
-def test_an_ensemble_with_no_recorded_cell_mapping_returns_404_from_the_cells_route(tmp_path):
+def test_an_iteration_with_no_par_cell_returns_404_from_the_cells_route(tmp_path):
     layout, ens2, agg2, _data, _tables = _write_case(tmp_path, iteration=2, cells=False)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -320,10 +352,47 @@ def test_an_ensemble_with_no_recorded_cell_mapping_returns_404_from_the_cells_ro
     response = client.get("/api/run/grid/cells/cell", params={"iteration": 2})
 
     assert response.status_code == 404
-    assert response.json()["artifact"] == "par_ens/2"
+    assert response.json()["artifact"] == "par_cell"
 
 
-def test_cells_xy_serves_the_point_positions_in_block_order(tmp_path):
+def test_an_empty_map_block_has_no_cell_mapping_to_serve(tmp_path):
+    layout, ens5, agg5, _data, _tables = _write_case(tmp_path, iteration=5, mappable=frozenset())
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(5, ens5, agg5)])
+    client = _opened_client(layout)
+
+    response = client.get("/api/run/grid/cells/cell", params={"iteration": 5})
+
+    assert response.status_code == 404
+    assert response.json()["title"] == "no cell mapping was recorded for that iteration"
+    assert response.json()["artifact"] == "par_ens/5"
+
+
+def test_cells_xy_is_relative_to_the_mesh_origin_in_block_order(tmp_path):
+    ox, oy = 500000.25, 4000000.5
+    xy = np.full((N_PAR, 2), np.nan)
+    xy[3] = [ox + 11.5, oy + 22.5]
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path, point_xy=xy)
+    _write_mesh_origin(layout, ox, oy)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    response = client.get("/api/run/grid/cells/xy", params={"iteration": 0})
+
+    assert response.status_code == 200
+    assert _meta(response)["order"] == "block"
+    pairs = np.frombuffer(response.content, dtype="<f4").reshape(-1, 2)
+    assert pairs.shape == (N_MAP, 2)
+    # par3 is the second map-block row; par1 has no position.
+    assert np.isnan(pairs[0]).all()
+    absolute = pairs[1].astype(np.float64) + [ox, oy]
+    np.testing.assert_allclose(absolute, [ox + 11.5, oy + 22.5], atol=1e-3)
+
+
+def test_cells_xy_without_a_recorded_origin_is_a_refusal_not_zero(tmp_path):
     xy = np.full((N_PAR, 2), np.nan)
     xy[3] = [11.5, 22.5]
     layout, ens0, agg0, _data, _tables = _write_case(tmp_path, point_xy=xy)
@@ -334,11 +403,8 @@ def test_cells_xy_serves_the_point_positions_in_block_order(tmp_path):
 
     response = client.get("/api/run/grid/cells/xy", params={"iteration": 0})
 
-    assert response.status_code == 200
-    stored = load_stored(0, layout)
-    np.testing.assert_array_equal(np.frombuffer(response.content, dtype="<f4"), stored.xy)
-    row = np.frombuffer(response.content, dtype="<f4").reshape(-1, 2)[int(stored.control_to_block[3])]
-    np.testing.assert_array_equal(row, [11.5, 22.5])
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "grid"
 
 
 def test_cells_xy_is_a_404_naming_the_absence_when_no_points_were_recorded(tmp_path):
@@ -351,7 +417,109 @@ def test_cells_xy_is_a_404_naming_the_absence_when_no_points_were_recorded(tmp_p
     response = client.get("/api/run/grid/cells/xy", params={"iteration": 0})
 
     assert response.status_code == 404
-    assert "no point positions were recorded" in response.json()["title"]
+    assert response.json()["title"] == "no point positions were recorded for that iteration"
+
+
+def test_a_map_block_name_missing_from_par_cell_is_a_refusal_naming_it(tmp_path):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    _rename_in_par_cell(layout, "par3", "par3_renamed")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    for which in ("cell", "layer", "xy"):
+        response = client.get(f"/api/run/grid/cells/{which}", params={"iteration": 0})
+        assert response.status_code == 404, which
+        body = response.json()
+        assert body["artifact"] == "par_cell"
+        assert "1 map-block parameter of iteration 0 is not in par_cell" in body["detail"]
+        assert "par3" in body["detail"]
+
+
+def test_a_name_repeated_in_par_cell_is_a_refusal(tmp_path):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    _rename_in_par_cell(layout, "par2", "par3")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    response = client.get("/api/run/grid/cells/cell", params={"iteration": 0})
+
+    assert response.status_code == 404
+    assert "more than once" in response.json()["detail"]
+
+
+def test_block_cells_are_memoised_and_rebuilt_when_par_cell_goes_stale(tmp_path, monkeypatch):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    _write_mesh_origin(layout, 0.0, 0.0)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+
+    import pesto.ingest.parcell as parcell_module
+
+    calls: list[int] = []
+    real = parcell_module.load_par_cell
+
+    def _counting(layout_arg):
+        calls.append(1)
+        return real(layout_arg)
+
+    monkeypatch.setattr(parcell_module, "load_par_cell", _counting)
+
+    state = SimpleNamespace()
+    first = enscache.get_block_cells(state, layout.root, 0)
+    second = enscache.get_block_cells(state, layout.root, 0)
+    assert isinstance(first, enscache.BlockCells)
+    assert second is first
+    assert len(calls) == 1
+
+    _rename_in_par_cell(layout, "par3", "par3_renamed")
+    third = enscache.get_block_cells(state, layout.root, 0)
+    assert isinstance(third, ReadFailure)
+    assert len(calls) == 2
+
+
+def test_the_cells_tag_changes_with_par_cell_and_is_honoured_when_sent_back(tmp_path):
+    xy = np.full((N_PAR, 2), np.nan)
+    xy[3] = [11.5, 22.5]
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path, point_xy=xy)
+    _write_mesh_origin(layout, 0.0, 0.0)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    for which in ("cell", "layer", "xy"):
+        first = client.get(f"/api/run/grid/cells/{which}", params={"iteration": 0})
+        tag = first.headers["etag"].strip('"')
+        assert first.headers["cache-control"] == "no-store"
+        again = client.get(f"/api/run/grid/cells/{which}", params={"iteration": 0, "v": tag})
+        assert "immutable" in again.headers["cache-control"]
+
+    manifest = Manifest.load(layout)
+    manifest.artifacts.pop("par_cell")
+    manifest.save(layout)
+    no_tag = client.get("/api/run/grid/cells/cell", params={"iteration": 0})
+    assert "etag" not in no_tag.headers
+
+
+def test_invalidate_drops_the_block_cells_memo(tmp_path):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    _write_mesh_origin(layout, 0.0, 0.0)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+
+    state = SimpleNamespace()
+    first = enscache.get_block_cells(state, layout.root, 0)
+    enscache.invalidate(state, layout.root)
+    second = enscache.get_block_cells(state, layout.root, 0)
+
+    assert isinstance(first, enscache.BlockCells)
+    assert second is not first
 
 
 # ---------------------------------------------------------------------------
