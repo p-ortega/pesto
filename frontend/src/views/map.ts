@@ -3,14 +3,13 @@
 // realization's field into a WebGL2 drawing. This replaces placeholder.ts
 // as the screen every flow in this phase ends at.
 
-import { ApiError, type GridValuesQuery, type IngestState, type MeshInfo, type ViewState } from '../data/client'
+import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import {
   gridCells,
   gridIdomain,
   gridMesh,
   gridMeshBuffer,
   gridPointXy,
-  gridValues,
   readViewState,
   writeViewState,
 } from '../data/client'
@@ -34,7 +33,6 @@ import {
   classifyFieldCells,
   fetchPpIndex,
   fieldContributors,
-  gridField,
   type Contributor,
   type PpGroupInfo,
   type PpIndex,
@@ -64,6 +62,7 @@ import {
   type RenderNoticeOptions,
 } from '../ui/chrome'
 import { currentTheme, setTheme, type ThemeChoice } from '../ui/theme'
+import { createParameterFieldSource } from './parameter-field-source'
 
 // MAP-08: how long a lost context is given to come back on its own before
 // this falls to the unrecoverable designed state. Not specified by any
@@ -400,7 +399,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   }
   let pending: FieldChoice | null = null
   let statusError: string | null = null
-  let requestToken = 0
+  const source = createParameterFieldSource({ runId: opts.state.runId ?? opts.config?.case ?? 'run' })
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
   let controlsHandle: SelectionControlsHandle | null = null
@@ -1256,24 +1255,21 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   }
 
   async function performFetch(selection: FieldChoice): Promise<void> {
-    // Guards the response against a newer request that started before this
-    // one landed -- a superseded answer is dropped silently, never drawn.
-    const token = ++requestToken
-    const query: GridValuesQuery =
-      selection.stat === 'value'
-        ? { iteration: selection.iteration, realization: selection.realization ?? undefined }
-        : { iteration: selection.iteration, stat: selection.stat }
-
     const group = pendingGroup ?? drawnGroup
     const kind: 'block' | 'cell' = interpolatedEntry(group) !== null ? 'cell' : 'block'
     let field: Float32Array
     try {
-      field =
-        kind === 'cell'
-          ? await gridField({ ...query, group: group! })
-          : await gridValues(query)
+      // A newer request aborts this one; its answer comes back stale and is dropped silently, never drawn.
+      const answer = await source.fetchField({
+        iteration: selection.iteration,
+        group: group!,
+        kind,
+        stat: selection.stat,
+        realization: selection.realization,
+      })
+      if (answer.stale) return
+      field = answer.field
     } catch (error) {
-      if (token !== requestToken) return
       const status = error instanceof ApiError ? error.problem.status : 'unknown'
       statusError = `${selectionLabel(selection)} — couldn't load (${status})`
       pending = null
@@ -1288,7 +1284,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       paintStatusBar()
       return
     }
-    if (token !== requestToken) return
     drawnGroup = group
     pendingGroup = null
 
