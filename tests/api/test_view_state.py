@@ -27,6 +27,7 @@ DEFAULT_STATE = {
     "group": None,
     "stat": "value",
     "layer": None,
+    "tab": "params",
 }
 
 
@@ -229,3 +230,62 @@ def test_put_view_whose_write_fails_still_returns_200(tmp_path, monkeypatch):
         assert response.status_code == 200
     finally:
         cache_dir.chmod(0o700)
+
+
+# ---------------------------------------------------------------------------
+# The remembered right-panel tab (D-09)
+# ---------------------------------------------------------------------------
+
+
+def _store_raw_entry(tmp_path, cache_root, entry):
+    store = tmp_path / ".cache" / "pesto" / "view_state.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps({"version": 1, "roots": {str(cache_root.resolve()): entry}}))
+
+
+def test_a_store_written_before_the_tab_field_reads_back_on_params(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    old = {key: value for key, value in DEFAULT_STATE.items() if key != "tab"}
+    _store_raw_entry(tmp_path, cache_root, {**old, "group": "G1"})
+
+    state = read_view_state(cache_root)
+
+    assert state["tab"] == "params"
+    assert state["group"] == "G1"
+
+
+def test_a_stored_obs_tab_reads_back_as_obs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    _store_raw_entry(tmp_path, cache_root, {**DEFAULT_STATE, "tab": "obs"})
+
+    assert read_view_state(cache_root)["tab"] == "obs"
+
+
+@pytest.mark.parametrize("bad", ["nonsense", "", None, 3, ["obs"]])
+def test_a_stored_tab_that_is_not_a_known_tab_reads_back_on_params(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    _store_raw_entry(tmp_path, cache_root, {**DEFAULT_STATE, "tab": bad})
+
+    assert read_view_state(cache_root)["tab"] == "params"
+
+
+def test_put_view_keeps_the_tab_and_refuses_an_unknown_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+
+    assert client.put("/api/run/view", json={**DEFAULT_STATE, "tab": "config"}).status_code == 200
+    assert client.get("/api/run/view").json()["tab"] == "config"
+    assert client.put("/api/run/view", json={**DEFAULT_STATE, "tab": "phi"}).status_code == 422
+    assert client.get("/api/run/view").json()["tab"] == "config"
+
+
+def test_put_view_with_no_tab_stores_params(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+    body = {key: value for key, value in DEFAULT_STATE.items() if key != "tab"}
+
+    assert client.put("/api/run/view", json=body).status_code == 200
+    assert client.get("/api/run/view").json()["tab"] == "params"
