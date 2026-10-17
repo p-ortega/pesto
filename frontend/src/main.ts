@@ -9,6 +9,7 @@
 
 import { forgetToken, hasToken, readTokenOnce } from './auth/token'
 import { apiGet, ApiError, ingestState, type IngestState, type RewriteFacts } from './data/client'
+import { activeRunId, runUrl, setActiveRun } from './data/run'
 import { renderNotice, type RenderNoticeOptions } from './ui/chrome'
 import { mountPicker } from './ui/dir-picker'
 import { formatBytes, mountEstimate, mountProgress } from './ui/progress'
@@ -90,7 +91,7 @@ function renderSessionEnded(): void {
 // decides where to go regardless of this read's own outcome.
 async function loadConfig(): Promise<RunConfig | null> {
   try {
-    return (await apiGet('/api/run/config')) as RunConfig
+    return (await apiGet(runUrl(activeRunId(), '/api/run/config'))) as RunConfig
   } catch {
     return null
   }
@@ -98,6 +99,7 @@ async function loadConfig(): Promise<RunConfig | null> {
 
 function showPicker(): void {
   clearTeardown()
+  setActiveRun(null)
   mountPicker(getRoot(), {
     onOpened: () => {
       void afterRunOpened()
@@ -186,6 +188,7 @@ async function routeByFreshness(config: RunConfig | null): Promise<void> {
   let state: IngestState
   try {
     state = await ingestState()
+    setActiveRun(state.runId ?? null)
   } catch (error) {
     renderBootFailure(error)
     return
@@ -228,6 +231,7 @@ async function afterIngestFinished(): Promise<void> {
   let state: IngestState
   try {
     state = await ingestState()
+    setActiveRun(state.runId ?? null)
   } catch (error) {
     renderBootFailure(error)
     return
@@ -248,7 +252,7 @@ async function boot(): Promise<void> {
 
   let config: RunConfig | null = null
   try {
-    config = (await apiGet('/api/run/config')) as RunConfig
+    config = (await apiGet(runUrl(activeRunId(), '/api/run/config'))) as RunConfig
   } catch (error) {
     if (isTokenRejected(error)) {
       forgetToken()
