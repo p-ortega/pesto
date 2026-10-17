@@ -289,7 +289,7 @@ def test_pesto_model_never_imports_or_calls_a_reprojection_library():
 
 
 @pytest.mark.slow
-def test_a_real_run_at_a_northing_near_7e6_keeps_sub_millimetre_accuracy(disv_run):
+def test_a_real_run_at_a_northing_near_7e6_is_off_by_no_more_than_float32_rounding(disv_run):
     from pesto.model.mf6 import Mf6Adapter
 
     adapter = Mf6Adapter(disv_run / "site_b.disv.grb")
@@ -302,4 +302,8 @@ def test_a_real_run_at_a_northing_near_7e6_keeps_sub_millimetre_accuracy(disv_ru
     ymin, ymax = geometry.positions[:, 1].min(), geometry.positions[:, 1].max()
     assert ymin > 6.9e6 and ymax < 7.1e6
     world = mesh.positions.astype(np.float64) + np.array(mesh.origin)
-    assert np.abs(world - geometry.positions).max() <= 1e-3
+    # One origin cannot beat half a float32 step at the farthest vertex: about 2 mm
+    # on this 86 km mesh, against the 0.2 m an absolute float32 frame gave.
+    half_step = np.spacing(np.abs(mesh.positions).max()) / 2
+    assert half_step < 5e-3
+    assert np.abs(world - geometry.positions).max() <= half_step
