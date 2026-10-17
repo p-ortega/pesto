@@ -1332,6 +1332,17 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       publishChoice(next)
       return
     }
+    if (groupGone !== null && pendingGroup === null) {
+      // The drawn group has nothing in this iteration, whatever the statistic or realization.
+      dropPendingFetch()
+      committed = next
+      drawNothing()
+      renderDrawnNotice()
+      paintStatusBar()
+      scheduleViewWrite()
+      publishChoice(next)
+      return
+    }
     applyChoice(next)
     publishChoice(next)
   }
