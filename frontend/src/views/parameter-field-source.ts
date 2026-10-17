@@ -53,6 +53,17 @@ export interface PointPositions {
   problem: string | null
 }
 
+/** Everything that depends on the iteration, read together for one switch. */
+export interface IterationData {
+  iteration: number
+  tables: ParameterTables
+  cells: { cell: Int32Array; layer: Int32Array }
+  pointXy: PointPositions
+  realNames: RealNamesResult
+}
+
+export type IterationAnswer = { stale: true } | { stale: false; data: IterationData }
+
 export interface ParameterFieldSource {
   /**
    * Fetches one field. A newer call aborts this one, and an answer that
@@ -68,6 +79,12 @@ export interface ParameterFieldSource {
   /** A failed or misshapen read comes back as a problem; the caller says so. */
   loadPointXy(iteration: number, rowCount: number, signal?: AbortSignal): Promise<PointPositions>
   loadRealNames(iteration: number, signal?: AbortSignal): Promise<RealNamesResult>
+  /**
+   * The tables, cell arrays, point positions and realization names of one
+   * iteration, read in that order. A newer call aborts this one and this one
+   * then answers `{ stale: true }`. A failed read is thrown.
+   */
+  loadIteration(iteration: number): Promise<IterationAnswer>
 }
 
 function describeError(error: unknown): string {
@@ -76,6 +93,7 @@ function describeError(error: unknown): string {
 
 export function createParameterFieldSource(opts: { runId: string }): ParameterFieldSource {
   const slot = new LatestWins<Float32Array>()
+  const iterationSlot = new LatestWins<IterationData>()
 
   async function fetchField(request: FieldRequest): Promise<FieldAnswer> {
     const key = fetchKey(opts.runId, request.iteration, request.group, request.kind, request.stat, request.realization)
@@ -131,7 +149,18 @@ export function createParameterFieldSource(opts: { runId: string }): ParameterFi
     return fetchRealNames(iteration, { signal })
   }
 
-  return { fetchField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames }
+  async function loadIteration(iteration: number): Promise<IterationAnswer> {
+    const answer = await iterationSlot.run(fetchKey(opts.runId, 'iteration', iteration), async (signal) => {
+      const tables = await loadParameterTables(iteration, signal)
+      const cells = await loadCells(iteration, signal)
+      const pointXy = await loadPointXy(iteration, cells.cell.length, signal)
+      const realNames = await loadRealNames(iteration, signal)
+      return { iteration, tables, cells, pointXy, realNames }
+    })
+    return answer.stale ? { stale: true } : { stale: false, data: answer.value }
+  }
+
+  return { fetchField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
 }
 
 export interface UnmappedEntry {

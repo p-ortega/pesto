@@ -300,4 +300,91 @@ describe('renderSelectionControls', () => {
     expect((el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement).value).toBe('manual')
     expect(onSelectionChange).not.toHaveBeenCalled()
   })
+
+  describe('after another iteration is shown', () => {
+    const realInput = (el: HTMLElement) => el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    const labelOf = (el: HTMLElement) => realInput(el).nextElementSibling?.textContent
+
+    it('setRealizations moves the slider to the wanted name and returns its new index', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      const index = handle.setRealizations({ ok: true, names: ['r002', 'zz', 'base'] }, 'base')
+
+      expect(index).toBe(2)
+      expect(realInput(el).value).toBe('2')
+      expect(realInput(el).max).toBe('2')
+      expect(labelOf(el)).toBe('base')
+      expect(onSelectionChange).not.toHaveBeenCalled()
+    })
+
+    it('setRealizations returns null and reads "—" when the name is not there', () => {
+      const { el, handle } = mount(THREE_NAMES)
+
+      const index = handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'zzz')
+
+      expect(index).toBeNull()
+      expect(labelOf(el)).toBe('—')
+    })
+
+    it('matches names exactly, with no trimming or case folding', () => {
+      const { handle } = mount(THREE_NAMES)
+      expect(handle.setRealizations({ ok: true, names: ['Base', ' r001'] }, 'base')).toBeNull()
+      expect(handle.setRealizations({ ok: true, names: ['Base', ' r001'] }, 'r001')).toBeNull()
+    })
+
+    it('emits no realization while the wanted one is missing, whatever position the slider holds', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'zzz')
+      onSelectionChange.mockClear()
+
+      const layer = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      layer.value = '1'
+      layer.dispatchEvent(new Event('input'))
+
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ realization: null }))
+    })
+
+    it('names a realization again once the slider is moved, or its thumb clicked', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'zzz')
+      onSelectionChange.mockClear()
+
+      realInput(el).value = '1'
+      realInput(el).dispatchEvent(new Event('input'))
+      expect(onSelectionChange).toHaveBeenLastCalledWith(expect.objectContaining({ realization: 'r001' }))
+
+      handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'zzz')
+      realInput(el).click()
+      expect(onSelectionChange).toHaveBeenLastCalledWith(expect.objectContaining({ realization: 'base' }))
+      expect(labelOf(el)).toBe('base')
+    })
+
+    it('setRealizations with names that were not recorded disables the slider and says why', () => {
+      const { el, handle } = mount(THREE_NAMES)
+
+      const index = handle.setRealizations({ ok: false, iteration: 3, reason: 'none' }, 'base')
+
+      expect(index).toBeNull()
+      expect(realInput(el).disabled).toBe(true)
+      expect(labelOf(el)).toBe('—')
+      expect(el.textContent).toContain("Realization names weren't recorded for iteration 3")
+
+      handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'base')
+      expect(el.textContent).not.toContain("weren't recorded")
+    })
+
+    it('setIteration changes the iteration every later selection carries, and emits nothing', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      handle.setIteration(3)
+      expect(onSelectionChange).not.toHaveBeenCalled()
+
+      const layer = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      layer.value = '1'
+      layer.dispatchEvent(new Event('input'))
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ iteration: 3 }))
+    })
+  })
 })
