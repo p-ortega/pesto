@@ -490,3 +490,54 @@ describe('a statistic or realization change while the drawn group has nothing in
     expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '3', group: null, realization: 'r017', stat: null })
   })
 })
+
+describe('a tab clicked before the map has loaded', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('saves the tab without wiping the map choices the run was left with', async () => {
+    const stub = newStub()
+    stub.savedView = {
+      divider: 0.5,
+      colormap: 'magma',
+      reverse: true,
+      scale: 'log10',
+      limits_mode: 'minmax',
+      group: 'sy',
+      stat: 'q50',
+      layer: 1,
+      tab: 'config',
+    }
+    hold(stub, 'mesh')
+    stubEnvironment(stub)
+    const { mountMap } = await import('../src/views/map')
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountMap(root, { config: CONFIG, state: stateWith(TWO_ITERATIONS), store: manualStore() })
+    const obs = root.querySelector('#tab-obs') as HTMLElement
+    await vi.waitFor(() => expect((root.querySelector('#tab-config') as HTMLElement).getAttribute('aria-selected')).toBe('true'))
+
+    obs.click()
+    // An earlier test's map can still flush a debounced write into this stub; only this page's counts.
+    const ours = () => stub.puts.filter((body) => body.tab === 'obs')
+    await vi.waitFor(() => expect(ours().length).toBe(1), { timeout: 2000 })
+
+    expect(ours()[0]).toMatchObject({
+      colormap: 'magma',
+      reverse: true,
+      scale: 'log10',
+      limits_mode: 'minmax',
+      group: 'sy',
+      stat: 'q50',
+      layer: 1,
+      tab: 'obs',
+    })
+    expect(root.querySelector('canvas[data-drawn="true"]')).toBeNull()
+  })
+})

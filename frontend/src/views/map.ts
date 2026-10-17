@@ -13,7 +13,7 @@ import { renderDivider } from '../ui/divider'
 import { renderNotice } from '../ui/chrome'
 import { renderParamsPanel, type ParamsPanelHandle } from '../ui/params-panel'
 import { renderTabs } from '../ui/tabs'
-import { mountMapView, type MapViewHandle, type RunConfig } from './map-view'
+import { mountMapView, type MapViewFields, type MapViewHandle, type RunConfig } from './map-view'
 import { createParameterFieldSource } from './parameter-field-source'
 
 // WINDOWS.md #10: this parser lives outside views/ because style-frame.test.ts
@@ -28,6 +28,11 @@ export interface MountMapOptions {
   state: IngestState
   /** Only for tests: the store the map view shares. The shell makes its own otherwise. */
   store?: SelectionStore
+}
+
+function savedMapFields(saved: ViewState): MapViewFields {
+  const { colormap, reverse, scale, limitsMode, group, stat, layer } = saved
+  return { colormap, reverse, scale, limitsMode, group, stat, layer }
 }
 
 /**
@@ -83,10 +88,16 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     viewWriteTimer = setTimeout(() => {
       viewWriteTimer = null
       if (mapView === null) return
-      const state: ViewState = { divider: dividerFraction, ...mapView.viewFields(), tab: currentTab }
-      // A failed persist is a convenience regression, not a request failure
-      // (D-11): the on-screen state is never touched, and no error surfaces.
-      void writeViewState(state).catch(() => {})
+      const view = mapView
+      void viewStatePromise.then((saved) => {
+        // Until the map has settled its choices, the saved ones are kept as they were.
+        const fields = view.viewFields() ?? (saved === null ? null : savedMapFields(saved))
+        if (fields === null) return
+        const state: ViewState = { divider: dividerFraction, ...fields, tab: currentTab }
+        // A failed persist is a convenience regression, not a request failure
+        // (D-11): the on-screen state is never touched, and no error surfaces.
+        void writeViewState(state).catch(() => {})
+      })
     }, 400)
   }
 
