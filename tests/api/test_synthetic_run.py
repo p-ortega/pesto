@@ -23,6 +23,7 @@ ROUTES = (
     ("/api/run/grid/values", {"iteration": 0, "realization": "base"}),
     ("/api/run/grid/cells/cell", {"iteration": 0}),
     ("/api/run/grid/cells/layer", {"iteration": 0}),
+    ("/api/run/grid/cells/xy", {"iteration": 0}),
     ("/api/run/grid/parmap", {"iteration": 0}),
     ("/api/run/meta", {"kind": "par"}),
     ("/api/run/reals", {"iteration": 0}),
