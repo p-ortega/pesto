@@ -164,12 +164,17 @@ def _raise_runtime_error(pool):
     raise RuntimeError("dictionary changed size during iteration")
 
 
+# The synthetic fixture's grid file is a placeholder flopy cannot parse, so
+# the two artifacts that read it always fail. Whole-run tests exclude both.
+_GRID_BOUND = ("grid", "par_cell")
+
+
 def _assert_only_par_ens_0_and_grid_are_not_ok(manifest):
-    """``grid`` fails for every synthetic fixture (its file is a placeholder
-    flopy cannot parse) -- excluded here the same way the other whole-run
-    tests in this file exclude it."""
+    """``grid`` and ``par_cell`` fail for every synthetic fixture (its grid
+    file is a placeholder flopy cannot parse) -- excluded here the same way
+    the other whole-run tests in this file exclude them."""
     for name, artifact in manifest.artifacts.items():
-        if name in ("par_ens/0", "grid"):
+        if name == "par_ens/0" or name in _GRID_BOUND:
             continue
         assert artifact.state == "ok", (name, artifact.reason)
 
@@ -402,12 +407,13 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
 
     names = [a.name for a in first]
     assert names == [
+        "control",
+        "grid",
+        "par_cell",
         "par_ens/0",
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
-        "control",
-        "grid",
         "config",
     ]
     assert [a.name for a in second] == names
@@ -437,10 +443,15 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
 
     planned = {a.name: a for a in plan_artifacts(run, layout)}
 
-    assert set(planned["par_ens/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert set(planned["par_ens/0"].sources) == {
+        str(run.par_ens[0]),
+        str(run.pst_path),
+        str(run.grid),
+    }
     assert set(planned["par_agg/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
     assert planned["control"].sources == (str(run.pst_path),)
     assert planned["grid"].sources == (str(run.grid),)
+    assert planned["par_cell"].sources == (str(run.pst_path), str(run.grid))
     assert set(planned["config"].sources) == {str(run.pst_path), str(run.grid)}
 
 
@@ -456,8 +467,12 @@ def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
 
     names = [a.name for a in planned]
     assert "grid" not in names
+    assert "par_cell" not in names
     config = next(a for a in planned if a.name == "config")
     assert config.sources == (str(run.pst_path),)
+    par_ens = next(a for a in planned if a.name == "par_ens/0")
+    assert set(par_ens.sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert not any(note.startswith("par_cell:") for note in estimate_bytes(run).notes)
 
 
 def test_ingest_run_writes_every_artifact_kind_and_each_reads_back_through_its_own_reader(
@@ -475,10 +490,11 @@ def test_ingest_run_writes_every_artifact_kind_and_each_reads_back_through_its_o
     # here. Every other kind is independent of the grid file and must
     # succeed.
     for name, artifact in manifest.artifacts.items():
-        if name == "grid":
+        if name in _GRID_BOUND:
             continue
         assert artifact.state == "ok", (name, artifact.reason)
     assert manifest.artifacts["grid"].state == "failed"
+    assert manifest.artifacts["par_cell"].state == "failed"
 
     layout = CacheLayout(root=cache_root)
 
@@ -531,7 +547,7 @@ def test_config_json_never_carries_ingest_seconds_or_cache_bytes(tmp_path):
     assert "cache_bytes" not in payload
 
 
-def test_an_unreadable_grid_file_fails_only_the_grid_artifact(tmp_path):
+def test_an_unreadable_grid_file_fails_only_the_grid_and_par_cell_artifacts(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     cache_root = tmp_path / "cache"
@@ -542,8 +558,9 @@ def test_an_unreadable_grid_file_fails_only_the_grid_artifact(tmp_path):
 
     assert manifest.artifacts["grid"].state == "failed"
     assert manifest.artifacts["grid"].reason
+    assert manifest.artifacts["par_cell"].state == "failed"
     for name, artifact in manifest.artifacts.items():
-        if name != "grid":
+        if name not in _GRID_BOUND:
             assert artifact.state == "ok", (name, artifact.reason)
 
 # ---------------------------------------------------------------------------
@@ -576,7 +593,7 @@ def test_second_ingest_on_unchanged_directory_writes_nothing_and_skips_everythin
     assert mtimes_before == mtimes_after
     assert all(r.state == "skipped" for r in rows)
     for name, artifact in manifest.artifacts.items():
-        if name != "grid":  # the synthetic fixture's grid always fails
+        if name not in _GRID_BOUND:  # the synthetic fixture's grid always fails
             assert artifact.state == "ok"
 
 
@@ -631,6 +648,7 @@ def test_estimate_bytes_sizes_every_artifact_without_opening_a_source_file(tmp_p
     # own size carries no signal about its external tables -- so it is
     # named in notes instead of appearing in per_artifact.
     assert names == {"par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "grid", "config"}
+    assert any(note.startswith("par_cell:") for note in estimate.notes)
     assert any("control" in note for note in estimate.notes)
 
 
@@ -733,7 +751,7 @@ def test_a_signal_set_after_the_first_ok_artifact_leaves_the_rest_untouched(tmp_
     second_manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=second_rows.append)
 
     for name, artifact in second_manifest.artifacts.items():
-        if name != "grid":
+        if name not in _GRID_BOUND:
             assert artifact.state == "ok", (name, artifact.reason)
 
     redone = [r.artifact for r in second_rows if r.state != "skipped"]
@@ -886,14 +904,19 @@ def test_a_whole_run_ingest_with_every_source_present_records_two_sources_and_fa
     manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
 
     for name, artifact in manifest.artifacts.items():
-        if name.startswith("par_ens/") or name.startswith("par_agg/"):
+        if name.startswith("par_agg/"):
             assert len(artifact.sources) == 2, (name, artifact.sources)
-        if name != "grid":  # the synthetic fixture's grid always fails
+        if name.startswith("par_ens/"):
+            # The ensemble and the control file, and the grid its map block follows.
+            assert len(artifact.sources) == 3, (name, artifact.sources)
+        if name not in _GRID_BOUND:  # the synthetic fixture's grid always fails
             assert artifact.state == "ok", (name, artifact.reason)
 
-    # "grid" is the one pre-existing failure this fixture always produces;
-    # the fingerprinting change introduces no failure beyond it.
-    unexpected_failures = [r for r in rows if r.state == "failed" and r.artifact != "grid"]
+    # "grid" and "par_cell" are the failures this fixture always produces;
+    # the fingerprinting change introduces no failure beyond them.
+    unexpected_failures = [
+        r for r in rows if r.state == "failed" and r.artifact not in _GRID_BOUND
+    ]
     assert unexpected_failures == []
 
 

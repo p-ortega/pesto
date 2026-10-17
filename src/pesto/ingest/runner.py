@@ -31,16 +31,8 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
-from pesto.ingest.tables import write_control
-
-# CellsPayload is what crosses the process boundary in place of a live
-# ParCells: the cell and layer arrays as little-endian int32 bytes plus
-# their shared length, parnme as a list of strings, and the x/y point
-# positions as little-endian float64 bytes (None when absent). Only picklable
-# primitives -- never a CacheLayout, an open file handle, or a live
-# DataFrame -- cross into or out of a worker.
-CellsPayload = tuple[bytes, bytes, int, list[str], bytes | None]
-
+from pesto.ingest.parcell import load_par_cell, write_par_cell
+from pesto.ingest.tables import load_control_tables, write_control
 
 @dataclass(frozen=True)
 class Progress:
@@ -72,7 +64,7 @@ class PlannedArtifact:
     """
 
     name: str
-    kind: str  # "par_ens" | "par_agg" | "control" | "grid" | "pp_factors" | "config"
+    kind: str  # "control" | "grid" | "par_cell" | "par_ens" | "par_agg" | "pp_factors" | "config"
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
@@ -203,76 +195,67 @@ def _reason_for(artifact: str, source: str, exc: BaseException) -> str:
     return f"{artifact}: reading {source} failed -- {exc}"
 
 
-def _resolve_cells(pst_path: str, grid_path: str | None):
-    """Resolve which cell and layer each parameter lands on, for a run
-    that has a grid file. Runs through :func:`_run_isolated` so ``flopy``
-    parses the grid file inside a worker and never in the parent.
-
-    ``None`` means there is no grid file -- an ordinary, early state Phase
-    3 already treats as normal, not a failure. A ``ReadFailure`` from
-    reading the control file or from the adapter's own ``locate_par`` is
-    passed straight back.
-    """
-    if grid_path is None:
-        return None
-    tables = read_control(Path(pst_path))
-    if isinstance(tables, ReadFailure):
-        return tables
-    # Deferred import: nothing under pesto.ingest may name pesto.model at
-    # module level (test_no_ingest_file_imports_anything_from_model). This
-    # function body is exactly where a first-use import belongs.
-    from pesto.model.mf6 import Mf6Adapter
-
-    adapter = Mf6Adapter(Path(grid_path))
-    return adapter.locate_par(tables.par)
+def _control_tables_for(cache_root: str):
+    """The cached control table every worker but ``control`` starts from, with
+    its observation table as column schema only: no worker here reads
+    observation rows, and the table can hold millions of them."""
+    layout = CacheLayout(root=Path(cache_root))
+    return layout, load_control_tables(layout, obs="schema")
 
 
 def _write_par_ens(
     source: str,
-    pst_path: str,
     cache_root: str,
     iteration: int,
-    mappable: list[str],
-    cells_payload: CellsPayload | None = None,
     cell_note: str | None = None,
 ) -> "WrittenArtifact | ReadFailure":
-    """The worker: reads the untrusted control file and ensemble file, then
-    writes the cache artifact. This function runs only inside a process
-    created for it -- the parent process must never parse a run file
-    itself. Only picklable primitives may cross the boundary in or out."""
-    tables = read_control(Path(pst_path))
+    """The worker: reads the untrusted ensemble file against the cached
+    control table, then writes the cache artifact. This function runs only
+    inside a process created for it -- the parent process must never parse a
+    run file itself. Only picklable primitives may cross the boundary in or
+    out.
+
+    ``cell_note``, when the parent gives one, says why there is no cell
+    resolution; the map block is then empty and the note is kept. Otherwise
+    the groups and cells come from the cached ``par_cell`` artifact.
+    """
+    layout, tables = _control_tables_for(cache_root)
     if isinstance(tables, ReadFailure):
         return tables
     data = read_ensemble(Path(source), tables)
     if isinstance(data, ReadFailure):
         return data
+
+    mappable: list[str] = []
+    cells = None
+    if cell_note is None:
+        placed = load_par_cell(layout)
+        if isinstance(placed, ReadFailure):
+            cell_note = f"cell resolution failed, so the map block is empty: {placed.reason}"
+        elif placed.parnme != tuple(str(n) for n in tables.par["parnme"]):
+            cell_note = (
+                "cell resolution failed, so the map block is empty: par_cell names "
+                "do not match the cached control table"
+            )
+        else:
+            # Deferred import: ParCells lives in pesto.model, which pesto.ingest
+            # may never name at module level. Used only as a carrier for the
+            # arrays write_par_ensemble stores beside the map block.
+            from pesto.model import ParCells
+
+            mappable = sorted(placed.placed_groups)
+            cells = ParCells(
+                cell=placed.cell,
+                layer=placed.layer,
+                parnme=placed.parnme,
+                groups=(),
+                summary="",
+                notes=(),
+                point_xy=np.column_stack([placed.x, placed.y]),
+            )
     if cell_note is not None:
         data = replace(data, notes=data.notes + (cell_note,))
 
-    cells = None
-    if cells_payload is not None:
-        cell_bytes, layer_bytes, n, parnme, xy_bytes = cells_payload
-        # Deferred import for the same reason as in _resolve_cells: ParCells
-        # lives in pesto.model, which pesto.ingest may never name at module
-        # level. Reconstructed purely as a carrier for cell/layer arrays --
-        # groups and summary are not needed by write_par_ensemble.
-        from pesto.model import ParCells
-
-        cells = ParCells(
-            cell=np.frombuffer(cell_bytes, dtype="<i4", count=n).copy(),
-            layer=np.frombuffer(layer_bytes, dtype="<i4", count=n).copy(),
-            parnme=tuple(parnme),
-            groups=(),
-            summary="",
-            notes=(),
-            point_xy=(
-                None
-                if xy_bytes is None
-                else np.frombuffer(xy_bytes, dtype="<f8", count=2 * n).reshape(n, 2).copy()
-            ),
-        )
-
-    layout = CacheLayout(root=Path(cache_root))
     return write_par_ensemble(
         data,
         tables,
@@ -284,18 +267,17 @@ def _write_par_ens(
 
 
 def _write_par_agg_artifact(
-    source: str, pst_path: str, cache_root: str, iteration: int
+    source: str, cache_root: str, iteration: int
 ) -> "WrittenArtifact | ReadFailure":
-    """The worker for one iteration's per-parameter summary: reads the same
-    two untrusted files the ensemble worker does, independently, and writes
-    ``agg/par_{iteration}.parquet``."""
-    tables = read_control(Path(pst_path))
+    """The worker for one iteration's per-parameter summary: reads the
+    ensemble file against the cached control table, independently of the
+    ensemble worker, and writes ``agg/par_{iteration}.parquet``."""
+    layout, tables = _control_tables_for(cache_root)
     if isinstance(tables, ReadFailure):
         return tables
     data = read_ensemble(Path(source), tables)
     if isinstance(data, ReadFailure):
         return data
-    layout = CacheLayout(root=Path(cache_root))
     return write_par_agg(data, tables, iteration, layout)
 
 
@@ -309,6 +291,25 @@ def _write_control_artifact(pst_path: str, cache_root: str) -> "WrittenArtifact 
     return write_control(tables, layout)
 
 
+def _write_par_cell_artifact(grid_path: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
+    """The worker for the ``par_cell`` artifact: resolves which cell each
+    parameter sits on from the cached control table, never from the control
+    file, and writes ``grid/par_cell.parquet`` and its sidecar."""
+    layout, tables = _control_tables_for(cache_root)
+    if isinstance(tables, ReadFailure):
+        return tables
+    # The cached table lost its index; the resolver reads names off the index.
+    par = tables.par.set_index("parnme", drop=False)
+    # Deferred import: nothing under pesto.ingest may name pesto.model at
+    # module level (test_no_ingest_file_imports_anything_from_model).
+    from pesto.model.mf6 import Mf6Adapter
+
+    cells = Mf6Adapter(Path(grid_path)).locate_par(par)
+    if isinstance(cells, ReadFailure):
+        return cells
+    return write_par_cell(cells, tables.par, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -316,7 +317,8 @@ def _write_grid_artifact(
     isolation, since it is the one that lets flopy parse the binary grid
     file. Constructs its own :class:`Mf6Adapter` so a malformed ``.grb``
     costs this artifact and never the parent."""
-    # Deferred import for the same reason as in _resolve_cells.
+    # Deferred import: nothing under pesto.ingest may name pesto.model at
+    # module level.
     from pesto.model.mf6 import Mf6Adapter
 
     layout = CacheLayout(root=Path(cache_root))
@@ -325,7 +327,7 @@ def _write_grid_artifact(
 
 
 def _write_pp_factors_artifact(
-    run_dir: str, pst_path: str, grid_path: str | None, cache_root: str
+    run_dir: str, grid_path: str | None, cache_root: str
 ) -> "WrittenArtifact | ReadFailure":
     """The worker for the pp_factors artifact: links every pilot-point
     group to its factor file and writes the index. Needs the grid's shape
@@ -333,11 +335,10 @@ def _write_pp_factors_artifact(
     not interpolable rather than guessing a layer count."""
     from pesto.ingest.ppfactors import PpIndex, build_pp_index, write_pp_index
 
-    layout = CacheLayout(root=Path(cache_root))
-    run = discover(Path(run_dir))
-    tables = read_control(Path(pst_path))
+    layout, tables = _control_tables_for(cache_root)
     if isinstance(tables, ReadFailure):
         return tables
+    run = discover(Path(run_dir))
     par = tables.par.set_index("parnme") if "parnme" in tables.par.columns else tables.par
     if grid_path is None:
         index = PpIndex(
@@ -364,22 +365,20 @@ def _write_config_artifact(
 ) -> "WrittenArtifact | ReadFailure":
     """The worker for the ``config`` artifact: rediscovers the run from
     ``run_dir`` (a line scan, never a saved ``RunLayout`` crossing the
-    boundary) and reads the control file. The first ingested iteration's
-    realization names come from ``reals/par_{first_iteration}.reals.json``,
-    which the ``par_ens`` worker already wrote -- not from an
-    ``EnsembleData`` passed in, which would make ``config`` depend on a
-    value held in the parent rather than on an artifact that has already
-    succeeded. A grid file, when the run has one, is parsed again here
-    through its own :class:`Mf6Adapter` for ``crs()`` -- one more isolated
-    parse of a small binary file, not a departure from this worker's own
-    process boundary.
+    boundary) and reads the cached control table. The first ingested
+    iteration's realization names come from
+    ``reals/par_{first_iteration}.reals.json``, which the ``par_ens`` worker
+    already wrote -- not from an ``EnsembleData`` passed in, which would make
+    ``config`` depend on a value held in the parent rather than on an
+    artifact that has already succeeded. A grid file, when the run has one,
+    is parsed again here through its own :class:`Mf6Adapter` for ``crs()`` --
+    one more isolated parse of a small binary file, not a departure from
+    this worker's own process boundary.
     """
-    run = discover(Path(run_dir))
-    tables = read_control(run.pst_path)
+    layout, tables = _control_tables_for(cache_root)
     if isinstance(tables, ReadFailure):
         return tables
-
-    layout = CacheLayout(root=Path(cache_root))
+    run = discover(Path(run_dir))
 
     first: _RealNamesOnly | None = None
     if first_iteration is not None:
@@ -391,7 +390,8 @@ def _write_config_artifact(
 
     adapter = None
     if run.grid is not None:
-        # Deferred import for the same reason as in _resolve_cells.
+        # Deferred import: nothing under pesto.ingest may name pesto.model at
+        # module level.
         from pesto.model.mf6 import Mf6Adapter
 
         adapter = Mf6Adapter(run.grid)
@@ -443,12 +443,13 @@ def plan_artifacts(
     run: RunLayout, layout: CacheLayout, iterations: Sequence[int] | None = None
 ) -> tuple[PlannedArtifact, ...]:
     """The whole, deterministically ordered list of artifacts one ingest of
-    ``run`` will attempt: an ensemble and a summary for each selected
-    iteration, then ``control``, then ``grid`` when a grid file exists,
-    then ``config``. Iteration artifacts come first in ascending iteration
-    order, ensemble before summary within an iteration -- a caller
-    watching rows go past sees the same sequence every time this is called
-    for the same run and layout.
+    ``run`` will attempt: ``control`` first, so every later worker can read
+    its cached tables; then ``grid`` and ``par_cell`` when a grid file
+    exists; then an ensemble and a summary for each selected iteration in
+    ascending order, ensemble before summary; then ``pp_factors`` when the
+    run carries pilot-point files; then ``config``. A caller watching rows
+    go past sees the same sequence every time this is called for the same
+    run and layout.
 
     ``iterations`` defaults to the first and last numbered iteration,
     exactly as :func:`ingest_run` has always chosen them. When ``noptmax``
@@ -458,11 +459,13 @@ def plan_artifacts(
     and re-reading the file to write the same bytes twice is time spent for
     nothing.
 
-    Each artifact names the source files it depends on: an ensemble and a
-    summary against that iteration's ensemble file and the control file,
+    Each artifact names the source files it depends on: a summary against
+    that iteration's ensemble file and the control file, an ensemble against
+    the same two and, when one exists, the grid file too,
     ``control`` against the control file, ``grid`` against the grid file,
-    and ``config`` against the control file and, when one exists, the grid
-    file too. A run with no grid file plans no ``grid`` artifact, and
+    ``par_cell`` against the control file and the grid file, and ``config``
+    against the control file and, when one exists, the grid file too. A run
+    with no grid file plans no ``grid`` and no ``par_cell`` artifact, and
     ``config`` fingerprints only the control file.
     """
     if iterations is None:
@@ -475,33 +478,7 @@ def plan_artifacts(
     pst_bytes = _stat_size(pst_path)
     grid_path = run.grid
 
-    artifacts: list[PlannedArtifact] = []
-    for iteration in selected:
-        source = run.par_ens.get(iteration)
-        if source is None:
-            continue
-        source_bytes = _stat_size(source) + pst_bytes
-        sources = (str(source), str(pst_path))
-        artifacts.append(
-            PlannedArtifact(
-                name=f"par_ens/{iteration}",
-                kind="par_ens",
-                sources=sources,
-                outputs=(str(layout.par_ens(iteration)),),
-                source_bytes=source_bytes,
-            )
-        )
-        artifacts.append(
-            PlannedArtifact(
-                name=f"par_agg/{iteration}",
-                kind="par_agg",
-                sources=sources,
-                outputs=(str(layout.par_agg(iteration)),),
-                source_bytes=source_bytes,
-            )
-        )
-
-    artifacts.append(
+    artifacts: list[PlannedArtifact] = [
         PlannedArtifact(
             name="control",
             kind="control",
@@ -513,7 +490,7 @@ def plan_artifacts(
             ),
             source_bytes=pst_bytes,
         )
-    )
+    ]
 
     if grid_path is not None:
         grid_bytes = _stat_size(grid_path)
@@ -531,11 +508,52 @@ def plan_artifacts(
                 source_bytes=grid_bytes,
             )
         )
+        artifacts.append(
+            PlannedArtifact(
+                name="par_cell",
+                kind="par_cell",
+                sources=(str(pst_path), str(grid_path)),
+                outputs=(
+                    str(layout.grid / "par_cell.parquet"),
+                    str(layout.grid / "par_cell.json"),
+                ),
+                source_bytes=pst_bytes + grid_bytes,
+            )
+        )
         config_sources = (str(pst_path), str(grid_path))
         config_bytes = pst_bytes + grid_bytes
     else:
         config_sources = (str(pst_path),)
         config_bytes = pst_bytes
+
+    for iteration in selected:
+        source = run.par_ens.get(iteration)
+        if source is None:
+            continue
+        source_bytes = _stat_size(source) + pst_bytes
+        sources = (str(source), str(pst_path))
+        # The map block follows the grid, so an edited grid must make the
+        # ensemble stale too; the summary never looks at cells.
+        ens_sources = sources + ((str(grid_path),) if grid_path is not None else ())
+        ens_bytes = source_bytes + (_stat_size(grid_path) if grid_path is not None else 0)
+        artifacts.append(
+            PlannedArtifact(
+                name=f"par_ens/{iteration}",
+                kind="par_ens",
+                sources=ens_sources,
+                outputs=(str(layout.par_ens(iteration)),),
+                source_bytes=ens_bytes,
+            )
+        )
+        artifacts.append(
+            PlannedArtifact(
+                name=f"par_agg/{iteration}",
+                kind="par_agg",
+                sources=sources,
+                outputs=(str(layout.par_agg(iteration)),),
+                source_bytes=source_bytes,
+            )
+        )
 
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
@@ -713,6 +731,12 @@ def estimate_bytes(
             per_artifact.append(("grid", grid_bytes))
             total += grid_bytes
 
+    if run.grid is not None:
+        notes.append(
+            "par_cell: one row per parameter, whose size follows from the control table "
+            "rather than from any source file's size -- excluded rather than guessed"
+        )
+
     if run.mult2model is not None or run.factor_files:
         notes.append(
             "pp_factors: a small index of pilot-point groups whose size does not follow "
@@ -757,38 +781,58 @@ def _dispatch(
     run_dir: str,
     pst_path: str,
     cache_root: str,
-    mappable: list[str],
-    cells_payload: CellsPayload | None,
     cell_note: str | None,
     grid_path: str | None,
     first_iteration: int | None,
 ) -> tuple[Callable, tuple]:
     """Which worker function runs this artifact, and with what arguments --
-    every argument a string, an int, or a list of strings, so nothing but
-    picklable primitives crosses into the worker."""
+    every argument a string, an int, or ``None``, so nothing but picklable
+    primitives crosses into the worker. Only ``control`` is handed the
+    control file's path; every other worker reads the cached table."""
     if artifact.kind == "par_ens":
         iteration = int(artifact.name.split("/", 1)[1])
-        return _write_par_ens, (
-            artifact.sources[0],
-            pst_path,
-            cache_root,
-            iteration,
-            mappable,
-            cells_payload,
-            cell_note,
-        )
+        return _write_par_ens, (artifact.sources[0], cache_root, iteration, cell_note)
     if artifact.kind == "par_agg":
         iteration = int(artifact.name.split("/", 1)[1])
-        return _write_par_agg_artifact, (artifact.sources[0], pst_path, cache_root, iteration)
+        return _write_par_agg_artifact, (artifact.sources[0], cache_root, iteration)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
         return _write_grid_artifact, (grid_path, cache_root)
+    if artifact.kind == "par_cell":
+        return _write_par_cell_artifact, (grid_path, cache_root)
     if artifact.kind == "pp_factors":
-        return _write_pp_factors_artifact, (run_dir, pst_path, grid_path, cache_root)
+        return _write_pp_factors_artifact, (run_dir, grid_path, cache_root)
     if artifact.kind == "config":
         return _write_config_artifact, (run_dir, cache_root, first_iteration)
     raise ValueError(f"plan_artifacts produced an artifact of unknown kind: {artifact.kind!r}")
+
+
+# Artifacts whose worker reads the cached control table. ``grid`` reads only
+# the grid file and ``control`` is the one that writes the table.
+_CONTROL_DEPENDENTS = frozenset({"par_cell", "par_ens", "par_agg", "pp_factors", "config"})
+
+
+def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
+    """Why ``name`` cannot run: control is not recorded ok. ``None`` when
+    control is fine, so the artifact may go ahead."""
+    control = manifest.artifacts.get("control")
+    if control is not None and control.state == "ok":
+        return None
+    why = control.reason if control is not None and control.reason else None
+    return f"{name} depends on control, which failed: {why or 'it was not read in this ingest'}"
+
+
+def _cell_note_for(manifest: Manifest, planned: Sequence[PlannedArtifact]) -> str | None:
+    """The note an ensemble carries when there is no cell resolution to
+    draw its map block from, or ``None`` when ``par_cell`` is recorded ok."""
+    if not any(a.name == "par_cell" for a in planned):
+        return "no grid file was found for this run, so the map block is empty"
+    cell = manifest.artifacts.get("par_cell")
+    if cell is not None and cell.state == "ok":
+        return None
+    why = cell.reason if cell is not None and cell.reason else "it was not resolved in this ingest"
+    return f"cell resolution failed, so the map block is empty: {why}"
 
 
 def _manifest_totals(manifest: Manifest) -> tuple[float, int]:
@@ -850,30 +894,7 @@ def ingest_run(
     planned = plan_artifacts(run, layout, iterations=selected)
     first_iteration = selected[0] if selected else None
 
-    # Resolved once, ahead of the artifact loop -- every selected iteration
-    # shares the same grid and the same group-to-cell mapping.
     grid_path = str(run.grid) if run.grid is not None else None
-    cells_ok, cells_result = _run_isolated(_resolve_cells, str(run.pst_path), grid_path)
-
-    mappable: list[str] = []
-    cells_payload: CellsPayload | None = None
-    cell_note: str | None = None
-    if not cells_ok:
-        cell_note = f"cell resolution failed, so the map block is empty: {cells_result}"
-    elif cells_result is None:
-        cell_note = "no grid file was found for this run, so the map block is empty"
-    elif isinstance(cells_result, ReadFailure):
-        cell_note = f"cell resolution failed, so the map block is empty: {cells_result.reason}"
-    else:
-        mappable = sorted(cells_result.placed_groups)
-        point_xy = cells_result.point_xy
-        cells_payload = (
-            np.asarray(cells_result.cell, dtype="<i4").tobytes(),
-            np.asarray(cells_result.layer, dtype="<i4").tobytes(),
-            len(cells_result.cell),
-            list(cells_result.parnme),
-            None if point_xy is None else np.asarray(point_xy, dtype="<f8").tobytes(),
-        )
 
     total = len(planned)
     seen_paths: dict[Path, str] = {}
@@ -934,6 +955,29 @@ def ingest_run(
                 )
             continue
 
+        if artifact.kind in _CONTROL_DEPENDENTS:
+            blocked = _control_failure_reason(manifest, artifact.name)
+            if blocked is not None:
+                sources, unfingerprinted = _fingerprint_sources(artifact.sources)
+                if unfingerprinted:
+                    blocked = f"{blocked}; also, {'; '.join(unfingerprinted)}"
+                manifest.mark_failed(artifact.name, blocked, sources=sources)
+                manifest.save(layout)
+                if on_progress is not None:
+                    on_progress(
+                        Progress(
+                            artifact=artifact.name,
+                            state="failed",
+                            index=index,
+                            total=total,
+                            source_bytes=artifact.source_bytes,
+                            written_bytes=0,
+                            seconds=0.0,
+                            reason=blocked,
+                        )
+                    )
+                continue
+
         if on_progress is not None:
             on_progress(
                 Progress(
@@ -952,9 +996,7 @@ def ingest_run(
             str(run_dir),
             str(run.pst_path),
             str(layout.root),
-            mappable,
-            cells_payload,
-            cell_note,
+            _cell_note_for(manifest, planned) if artifact.kind == "par_ens" else None,
             grid_path,
             first_iteration,
         )
