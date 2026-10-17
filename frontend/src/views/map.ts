@@ -10,7 +10,8 @@ import { readViewState, writeViewState } from '../data/client'
 import { emptySelection } from '../state/rules'
 import { createSelectionStore, type SelectionStore } from '../state/selection'
 import { renderDivider } from '../ui/divider'
-import { renderParamsPanel } from '../ui/params-panel'
+import { renderNotice } from '../ui/chrome'
+import { renderParamsPanel, type ParamsPanelHandle } from '../ui/params-panel'
 import { renderTabs } from '../ui/tabs'
 import { mountMapView, type MapViewHandle, type RunConfig } from './map-view'
 import { createParameterFieldSource } from './parameter-field-source'
@@ -89,9 +90,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     }, 400)
   }
 
+  // The Params panel can be rendered more than once; hide and show go to the
+  // latest one.
+  let paramsHandle: ParamsPanelHandle | null = null
+
   const tabs = renderTabs(rightPanelHost, {
     tabs: [
-      { id: 'params', label: 'Params' },
+      { id: 'params', label: 'Params', onShow: () => paramsHandle?.onShow(), onHide: () => paramsHandle?.onHide() },
       { id: 'obs', label: 'Obs' },
       { id: 'config', label: 'Config' },
     ],
@@ -102,6 +107,24 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       scheduleViewWrite()
     },
   })
+
+  // D-08: Obs and Config are clickable and say what will appear there.
+  for (const [id, title, detail] of [
+    [
+      'obs',
+      'Observations will show here',
+      'Spaghetti plots per site with the noise band, and 1:1 and residual plots per group.',
+    ],
+    [
+      'config',
+      'How the run was set up will show here',
+      'Noise, regularization, localization and whether base survived each iteration, each with its source.',
+    ],
+  ]) {
+    const noteHost = tabs.panel(id)
+    noteHost.classList.add('surface')
+    renderNotice(noteHost, { title, detail, tone: 'info' })
+  }
 
   // Started before the map view mounts, so it is the first request the page
   // makes, ahead of the mesh and parmap fetches. A failed read is not
@@ -136,7 +159,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     noticeArea,
     statusBar,
     viewState: viewStatePromise,
-    onPanelFacts: (facts) => renderParamsPanel(tabs.panel('params'), facts),
+    onPanelFacts: (facts) => {
+      paramsHandle = renderParamsPanel(tabs.panel('params'), facts)
+      // A fresh panel starts as shown; tell it if its tab is not the open one.
+      if (tabs.current() !== 'params') paramsHandle.onHide()
+    },
     onViewStateChange: scheduleViewWrite,
   })
 }

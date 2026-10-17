@@ -122,7 +122,10 @@ function appendRowCells(rowEl: HTMLElement, row: ParamRow): void {
 // count holds a thin, absolutely-positioned `rowsHost` that only ever
 // carries the rows a scroll position exposes plus a small overscan --
 // never all of them, however large the run.
-function renderTable(host: HTMLElement, rows: ParamRow[]): void {
+//
+// Returns `redraw`, the same windowing the scroll handler runs, so the panel
+// can recompute the window when it is shown again at its real height.
+function renderTable(host: HTMLElement, rows: ParamRow[], isHidden: () => boolean): () => void {
   host.textContent = ''
 
   // One header row above the windowed table, with the same column rule as
@@ -174,9 +177,13 @@ function renderTable(host: HTMLElement, rows: ParamRow[]): void {
     }
   }
 
-  scrollPane.addEventListener('scroll', renderVisible)
+  // A hidden panel draws nothing; showing it again redraws once.
+  scrollPane.addEventListener('scroll', () => {
+    if (!isHidden()) renderVisible()
+  })
   renderVisible()
   host.appendChild(scrollPane)
+  return renderVisible
 }
 
 function renderUnmappedSection(el: HTMLElement, unmapped: UnmappedGroup[]): void {
@@ -218,6 +225,14 @@ function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: 
   el.appendChild(section)
 }
 
+/** What a tab bar calls when it hides or shows the panel. */
+export interface ParamsPanelHandle {
+  /** Restores the scroll positions and redraws the table for the panel's real height. */
+  onShow(): void
+  /** Remembers the scroll positions and stops scroll-driven redraws. */
+  onHide(): void
+}
+
 /**
  * Fills `el` with the Params panel: the windowed parameter table, the
  * unmapped-group list and the per-artifact notes, in one `.surface` panel.
@@ -225,9 +240,15 @@ function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: 
  * for that fetch -- no skeleton rows, and a failure names the artifact and
  * the reason in place of the table (E8).
  */
-export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): void {
+export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): ParamsPanelHandle {
   el.textContent = ''
   el.classList.add('surface', 'params-panel')
+
+  let hidden = false
+  let redrawTable: (() => void) | null = null
+  // A browser drops the scroll offset of a box that is not displayed, so the
+  // offsets are kept here while the panel is hidden.
+  const savedScroll = new Map<Element, number>()
 
   const title = document.createElement('div')
   title.classList.add('heading')
@@ -254,7 +275,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): vo
         renderFailure(tableHost, artifact, reason)
         return
       }
-      renderTable(tableHost, rows)
+      redrawTable = renderTable(tableHost, rows, () => hidden)
     },
     (error: unknown) => {
       const { artifact, reason } = describeFailure(error)
@@ -264,4 +285,18 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): vo
 
   renderUnmappedSection(el, opts.unmapped)
   renderNotesSection(el, opts.artifactNotes)
+
+  return {
+    onHide() {
+      hidden = true
+      savedScroll.clear()
+      for (const pane of el.querySelectorAll('.scroll-pane')) savedScroll.set(pane, pane.scrollTop)
+    },
+    onShow() {
+      hidden = false
+      for (const [pane, top] of savedScroll) pane.scrollTop = top
+      savedScroll.clear()
+      redrawTable?.()
+    },
+  }
 }

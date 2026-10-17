@@ -220,6 +220,7 @@ body {
 .tabs {
   display: flex;
   flex-direction: column;
+  gap: var(--space-sm);
   min-height: 0;
 }
 
