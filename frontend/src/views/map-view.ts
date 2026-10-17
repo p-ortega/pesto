@@ -25,6 +25,8 @@ import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend } from '../ui/legend'
+import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
+import type { RealNamesResult } from '../data/reals'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick } from '../ui/readout'
 import {
@@ -272,6 +274,17 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const readoutEl = document.createElement('div')
   readoutEl.classList.add('floating-bottom-right')
   topLeftEl.appendChild(pickerEl)
+  // Two notices about the shown iteration. Each is replaced on every switch,
+  // never stacked: the drawn realization or group is missing (D-04), and how
+  // many selected realizations are missing (D-03).
+  const iterationNotes = document.createElement('div')
+  const drawnNoticeEl = document.createElement('div')
+  drawnNoticeEl.setAttribute('data-testid', 'iteration-drawn-notice')
+  const selectedNoticeEl = document.createElement('div')
+  selectedNoticeEl.setAttribute('data-testid', 'iteration-selected-notice')
+  iterationNotes.appendChild(drawnNoticeEl)
+  iterationNotes.appendChild(selectedNoticeEl)
+  mapNotice.appendChild(iterationNotes)
   mapCanvasArea.appendChild(topLeftEl)
   mapCanvasArea.appendChild(canvas)
   mapCanvasArea.appendChild(legendEl)
@@ -332,6 +345,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
   let controlsHandle: SelectionControlsHandle | null = null
+  let toggleHandle: IterationToggleHandle | null = null
+  // The iteration whose tables, cell arrays and names the view holds now.
+  let loadedIteration = 0
+  let realNames: RealNamesResult = { ok: false, iteration: 0, reason: '' }
+  // The realization the user last picked by name. It follows an iteration
+  // switch by name; its slider position never does.
+  let wantedRealization: string | null = null
+  // True while the shown iteration lacks the wanted realization (or recorded no names).
+  let realizationMissing = false
+  // The drawn group, when the shown iteration has nothing to draw for it.
+  let groupGone: string | null = null
+  // A newer iteration switch or field landing makes older fetches drop their answers.
+  let generation = 0
+  let switchSerial = 0
 
   // D-11: the shell saves the divider and these choices together, on one
   // debounced timer. This view only says when one of its choices moved.
@@ -502,6 +529,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         reverse: committed.reverseColormap,
         scale: committed.scale,
         limits: committed.limitsMode,
+        iteration: committed.iteration,
       })
     }
   }
@@ -776,9 +804,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // selection is cleared: the previous readout described a cell in the old
   // group.
   function handleGroupChange(group: string): void {
+    if (realizationMissing && committed.stat === 'value') {
+      // No realization of this iteration is picked, so there is still no field to draw for any group.
+      pendingGroup = null
+      groupGone = null
+      drawnGroup = group
+      drawNothing()
+      renderDrawnNotice()
+      scheduleViewWrite()
+      return
+    }
     // The raw field itself changes when either side of the switch is an
-    // interpolated group, so that switch fetches; block to block stays local.
-    const needsFetch = fieldKind === 'cell' || interpolatedEntry(group) !== null
+    // interpolated group, or when no field is held (the last iteration had
+    // nothing for the old group), so that switch fetches; block to block stays local.
+    const needsFetch = rawFullField === null || fieldKind === 'cell' || interpolatedEntry(group) !== null
     const drawnPartrans = partransForGroup(joined, group, allIdentities)
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
     if (needsFetch) {
@@ -1028,7 +1067,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (committed.limitsMode === 'manual') {
       limits = committed.manualLimits ?? [0, 1]
     } else {
-      const key = `${effectiveScale}:${committed.limitsMode}:${committed.stat}:${drawnGroup ?? ''}`
+      const key = `${committed.iteration}:${effectiveScale}:${committed.limitsMode}:${committed.stat}:${drawnGroup ?? ''}`
       const cached = limitsMemory.get(key)
       if (cached) {
         limits = cached
@@ -1105,6 +1144,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   async function performFetch(selection: FieldChoice): Promise<void> {
     const group = pendingGroup ?? drawnGroup
     const kind: 'block' | 'cell' = interpolatedEntry(group) !== null ? 'cell' : 'block'
+    const startedIn = generation
     let field: Float32Array
     try {
       // A newer request aborts this one; its answer comes back stale and is dropped silently, never drawn.
@@ -1115,9 +1155,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         stat: selection.stat,
         realization: selection.realization,
       })
-      if (answer.stale) return
+      if (answer.stale || startedIn !== generation) return
       field = answer.field
     } catch (error) {
+      if (startedIn !== generation) return
       const status = error instanceof ApiError ? error.problem.status : 'unknown'
       statusError = `${selectionLabel(selection)} — couldn't load (${status})`
       pending = null
@@ -1159,10 +1200,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     rawFieldNonPositiveCount = logIsUsable(field)
     scaledField = null
     scaledFieldScale = null
-    committed = selection
+    // The layer is whatever the store last heard: another view may have moved it while this fetch was out.
+    committed = { ...selection, layer: reported.layer }
     pending = null
     statusError = null
+    groupGone = null
     deriveAndDraw()
+    renderDrawnNotice()
     paintStatusBar()
     scheduleViewWrite()
   }
@@ -1188,6 +1232,21 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   function handleSelectionChange(next: FieldChoice): void {
+    if (next.realization !== null) {
+      wantedRealization = next.realization
+      realizationMissing = false
+    }
+    if (realizationMissing && next.stat === 'value' && next.realization === null) {
+      // Still no realization of this iteration is picked: nothing to fetch, nothing to draw.
+      committed = { ...next, realization: wantedRealization }
+      pending = null
+      drawNothing()
+      renderDrawnNotice()
+      paintStatusBar()
+      scheduleViewWrite()
+      publishChoice(next)
+      return
+    }
     const needsFetch =
       next.stat !== committed.stat ||
       next.realization !== committed.realization ||
@@ -1219,6 +1278,233 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     controlsHandle?.setLayer(layerIndex)
     deriveAndDraw()
     scheduleViewWrite()
+  }
+
+  // Draws no field at all: every cell empty, no dots, no legend, no readout. Used when the
+  // shown iteration has nothing for the drawn realization or group, so that no other
+  // realization, group or the mean is ever drawn in its place.
+  function drawNothing(): void {
+    rawFullField = null
+    fullField = null
+    scaledField = null
+    scaledFieldScale = null
+    currentClasses = []
+    currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
+    clearSelection()
+    renderLegend(legendEl, null)
+    if (layer) {
+      const nCells = mesh?.nCells ?? 0
+      layer.setValues(new Float32Array(nCells).fill(Number.NaN))
+      layer.setPoints(new Float32Array(0), new Float32Array(0))
+      layer.setContested(new Uint8Array(nCells))
+      layer.setFootprint(null)
+      layer.setInactive(drawnInactiveMask())
+      redraw()
+    }
+    updateReadout()
+  }
+
+  // The iteration the shown one replaced, named in the "switch back" advice.
+  let loadedFrom = 0
+
+  // D-04: says why nothing is drawn. Replaced whole, so it never stacks.
+  function renderDrawnNotice(): void {
+    drawnNoticeEl.textContent = ''
+    const shown = committed.iteration
+    const back = `or switch back to iteration ${loadedFrom}.`
+    if (groupGone !== null) {
+      addNotice(drawnNoticeEl, {
+        title: `group ${groupGone} has nothing to draw in iteration ${shown}`,
+        detail: `No field is drawn. Pick another group, ${back}`,
+        tone: 'warning',
+      })
+    }
+    if (realizationMissing && committed.stat === 'value') {
+      if (!realNames.ok) {
+        addNotice(drawnNoticeEl, {
+          title: `realization names were not recorded for iteration ${shown}`,
+          detail: `No field is drawn for a single realization. Pick a statistic, ${back}`,
+          tone: 'warning',
+        })
+      } else if (wantedRealization === null) {
+        addNotice(drawnNoticeEl, {
+          title: `no realization is picked in iteration ${shown}`,
+          detail: 'No field is drawn. Pick a realization from this iteration.',
+          tone: 'warning',
+        })
+      } else {
+        addNotice(drawnNoticeEl, {
+          title: `realization ${wantedRealization} is not in iteration ${shown}`,
+          detail: `No field is drawn. Pick a realization from this iteration, ${back}`,
+          tone: 'warning',
+        })
+      }
+    }
+  }
+
+  // D-03: selected realizations the shown iteration lacks stay in the store; this only counts them.
+  function renderSelectedNotice(): void {
+    selectedNoticeEl.textContent = ''
+    const reals = store.get().reals
+    if (reals === 'all' || reals.size === 0) return
+    const shown = committed.iteration
+    const known = realNames.ok ? new Set(realNames.names) : new Set<string>()
+    const missing = [...reals].filter((name) => !known.has(name))
+    if (missing.length === 0) return
+    // The drawn realization's own line already says it is missing.
+    const drawnLineShown = realizationMissing && committed.stat === 'value'
+    if (drawnLineShown && missing.length === 1 && missing[0] === wantedRealization) return
+    const count = missing.length
+    if (!realNames.ok) {
+      addNotice(selectedNoticeEl, {
+        title: `${count} selected ${count === 1 ? 'realization' : 'realizations'} cannot be matched in iteration ${shown}`,
+        detail: 'Its realization names were not recorded. The selection is kept.',
+        tone: 'info',
+      })
+      return
+    }
+    addNotice(selectedNoticeEl, {
+      title: `${count} selected ${count === 1 ? 'realization is' : 'realizations are'} not in iteration ${shown}`,
+      detail: 'The selection is kept; switching back shows them again.',
+      tone: 'info',
+    })
+  }
+
+  // The Params panel's notes that depend on the shown iteration's own join and cells.
+  function buildArtifactNotes(identities: ParIdentity[]): PanelFacts['artifactNotes'] {
+    // Every artifact the ingest recorded a reason for, named and shown verbatim (CLAUDE.md's
+    // fourth hard rule -- nothing dropped without a trace).
+    const artifactNotes = opts.state.artifacts
+      .filter((artifact): artifact is typeof artifact & { reason: string } => artifact.reason !== null)
+      .map((artifact) => ({ artifact: artifact.name, reason: artifact.reason }))
+    for (const note of mesh?.notes ?? []) artifactNotes.push({ artifact: 'mesh', reason: note })
+    if (idomain !== null && mesh !== null) {
+      for (const note of inactiveLandingNotes(joined, cellArray, layerArray, idomain, mesh.nCells)) {
+        artifactNotes.push({ artifact: 'idomain', reason: note })
+      }
+    }
+    // A pp_factors refusal found before the template named a group is keyed
+    // by its file; it has no group row to sit beside, so it is listed here.
+    const knownGroups = new Set(identities.map((i) => i.pargp))
+    for (const refusal of ppIndex.not_interpolable) {
+      if (!knownGroups.has(refusal.group)) {
+        artifactNotes.push({ artifact: 'pp_factors', reason: `${refusal.group}: ${refusal.reason}` })
+      }
+    }
+    return artifactNotes
+  }
+
+  // D-01 to D-04. The toggle or another view moved the iteration: reload what depends on it,
+  // look the wanted realization up by name in the new list, and either fetch its field or
+  // say why no field is drawn.
+  async function switchIteration(k: number): Promise<void> {
+    const token = ++switchSerial
+    const from = loadedIteration
+    let answer
+    try {
+      answer = await source.loadIteration(k)
+    } catch (error) {
+      if (token !== switchSerial) return
+      addNotice(mapNotice, {
+        title: `Iteration ${k} could not be read`,
+        detail: `${describeError(error)} The map keeps drawing iteration ${from}.`,
+        tone: 'serious',
+      })
+      toggleHandle?.setCurrent(from)
+      store.set({ iteration: from }, 'map')
+      return
+    }
+    if (answer.stale || token !== switchSerial) return
+    const data = answer.data
+
+    // Fetches already out were made for the old iteration's rows; they drop their answers.
+    generation += 1
+    const base: FieldChoice = { ...(pending ?? committed), layer: reported.layer }
+    pending = null
+    statusError = null
+
+    loadedFrom = from
+    loadedIteration = k
+    joined = data.tables.joined
+    allIdentities = data.tables.identities
+    cellArray = data.cells.cell
+    layerArray = data.cells.layer
+    pointXy = data.pointXy.xy
+    if (data.pointXy.problem !== null) {
+      addNotice(mapNotice, {
+        title: 'Point positions could not be read',
+        detail: `${data.pointXy.problem} Groups placed by x/y draw as the cells their points sit in.`,
+        tone: 'serious',
+      })
+    }
+    maskCache.referenced = null
+    realNames = data.realNames
+    // The held field and classes describe the old iteration's rows; none of it may be read now.
+    rawFullField = null
+    fullField = null
+    scaledField = null
+    scaledFieldScale = null
+    currentClasses = []
+    currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
+    selectedPointRow = null
+    layer?.setSelectedPoint(null)
+    contributorsMemo.clear()
+
+    const placement = computeGroupPlacement(data.tables.identities, joined, cellArray, ppIndex)
+    if (pendingGroup !== null && !placement.drawable.includes(pendingGroup)) pendingGroup = null
+    const target = pendingGroup ?? drawnGroup
+    const groupMissing = target === null || !placement.drawable.includes(target)
+    if (placement.drawable.length === 0) {
+      paintPicker({ kind: 'none-drawable', unmapped: placement.unmapped })
+    } else {
+      paintPicker({
+        kind: 'ready',
+        drawable: placement.drawable,
+        interpolated: placement.interpolated,
+        unmapped: placement.unmapped,
+        selected: groupMissing ? '' : target,
+      })
+    }
+    opts.onPanelFacts({
+      unmapped: placement.unmapped,
+      artifactNotes: buildArtifactNotes(data.tables.identities),
+      parTable: data.tables.parTable,
+    })
+
+    controlsHandle?.setIteration(k)
+    const index = controlsHandle?.setRealizations(data.realNames, wantedRealization) ?? null
+    const statIsValue = base.stat === 'value'
+    realizationMissing = index === null
+    groupGone = groupMissing ? target : null
+    committed = { ...base, iteration: k, realization: statIsValue ? wantedRealization : null }
+    reported = { ...reported, iteration: k }
+
+    if ((statIsValue && realizationMissing) || groupMissing) {
+      drawNothing()
+      renderDrawnNotice()
+      renderSelectedNotice()
+      paintStatusBar()
+      scheduleViewWrite()
+      return
+    }
+
+    // A dot group may sit on another layer in this iteration; the first draw makes the same move.
+    const dotLayer = dotLayerForGroup(target, { ppIndex, joined, pointXy, layerArray, currentLayer: committed.layer })
+    if (dotLayer !== null && dotLayer !== committed.layer) {
+      committed = { ...committed, layer: dotLayer }
+      controlsHandle?.setLayer(dotLayer)
+      reported = { ...reported, layer: dotLayer }
+      store.set({ layer: dotLayer }, 'map')
+    }
+    renderDrawnNotice()
+    renderSelectedNotice()
+    scheduleFetch(committed)
+  }
+
+  function followIteration(iteration: number, origins: ReadonlySet<string>): void {
+    if (origins.size === 1 && origins.has('map')) return
+    toggleHandle?.setCurrent(iteration)
+    void switchIteration(iteration)
   }
 
   clearCanvas()
@@ -1336,26 +1622,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     pointXy = await readPointXy(iteration)
 
-    // The Params panel's per-artifact notes: every artifact the ingest
-    // recorded a reason for, named and shown verbatim (CLAUDE.md's fourth
-    // hard rule -- nothing dropped without a trace).
-    const artifactNotes = opts.state.artifacts
-      .filter((artifact): artifact is typeof artifact & { reason: string } => artifact.reason !== null)
-      .map((artifact) => ({ artifact: artifact.name, reason: artifact.reason }))
-    for (const note of mesh.notes) artifactNotes.push({ artifact: 'mesh', reason: note })
-    if (idomain !== null) {
-      for (const note of inactiveLandingNotes(joined, cellArray, layerArray, idomain, mesh.nCells)) {
-        artifactNotes.push({ artifact: 'idomain', reason: note })
-      }
-    }
-    // A pp_factors refusal found before the template named a group is keyed
-    // by its file; it has no group row to sit beside, so it is listed here.
-    const knownGroups = new Set(identities.map((i) => i.pargp))
-    for (const refusal of ppIndex.not_interpolable) {
-      if (!knownGroups.has(refusal.group)) {
-        artifactNotes.push({ artifact: 'pp_factors', reason: `${refusal.group}: ${refusal.reason}` })
-      }
-    }
+    const artifactNotes = buildArtifactNotes(identities)
 
     // D-07: only groups that place on at least one cell are offered; the
     // rest are counted and named behind the picker's own disclosure.
@@ -1390,7 +1657,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     paintPicker({ kind: 'ready', drawable, interpolated, unmapped, selected: drawnGroup })
     opts.onPanelFacts({ unmapped, artifactNotes, parTable })
 
-    const realNames = await source.loadRealNames(iteration)
+    realNames = await source.loadRealNames(iteration)
+    loadedIteration = iteration
+    loadedFrom = iteration
 
     meshGeom = { positions, cellIndex: cellIndexBuf, indices, nCells: mesh.nCells }
     layer = new MeshLayer(gl.gl, meshGeom)
@@ -1412,6 +1681,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // whose names were never recorded, which would only ever fail to load.
     const initialStat = wasVisitedBefore ? restoredStat(restoredView!.stat, realNames.ok) : restoredStat(undefined, realNames.ok)
     const initialRealization = realNames.ok ? (realNames.names[0] ?? null) : null
+    wantedRealization = initialRealization
     // D-03: the scale defaults from the drawn group's own partrans, read
     // through the D-05 join -- matched case-insensitively after trimming,
     // and linear for anything this code has never seen. A restored scale
@@ -1476,11 +1746,30 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     })
     controlsHandle.setLayer(committed.layer)
 
+    // D-01, D-02: one button per ingested iteration, right after the controls; absent below two.
+    const iterations = iterationsFrom(opts.state)
+    if (iterations.length >= 2) {
+      const toggleEl = document.createElement('div')
+      topLeftEl.insertBefore(toggleEl, pickerEl)
+      toggleHandle = renderIterationToggle(toggleEl, {
+        iterations,
+        current: iteration,
+        onChange: (next) => {
+          store.set({ iteration: next }, 'iteration-toggle')
+          toggleHandle?.setCurrent(next)
+        },
+      })
+    }
+
     reported = committed
     store.set(storePatch(committed, null), 'map')
     store.subscribe(
       (selection) => selection.layer,
       (next, _prev, origins) => followForeignLayer(next.layer, origins),
+    )
+    store.subscribe(
+      (selection) => selection.iteration,
+      (next, _prev, origins) => followIteration(next.iteration, origins),
     )
 
     await performFetch(committed)
