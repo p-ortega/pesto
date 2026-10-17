@@ -459,8 +459,9 @@ def plan_artifacts(
     and re-reading the file to write the same bytes twice is time spent for
     nothing.
 
-    Each artifact names the source files it depends on: an ensemble and a
-    summary against that iteration's ensemble file and the control file,
+    Each artifact names the source files it depends on: a summary against
+    that iteration's ensemble file and the control file, an ensemble against
+    the same two and, when one exists, the grid file too,
     ``control`` against the control file, ``grid`` against the grid file,
     ``par_cell`` against the control file and the grid file, and ``config``
     against the control file and, when one exists, the grid file too. A run
@@ -531,13 +532,17 @@ def plan_artifacts(
             continue
         source_bytes = _stat_size(source) + pst_bytes
         sources = (str(source), str(pst_path))
+        # The map block follows the grid, so an edited grid must make the
+        # ensemble stale too; the summary never looks at cells.
+        ens_sources = sources + ((str(grid_path),) if grid_path is not None else ())
+        ens_bytes = source_bytes + (_stat_size(grid_path) if grid_path is not None else 0)
         artifacts.append(
             PlannedArtifact(
                 name=f"par_ens/{iteration}",
                 kind="par_ens",
-                sources=sources,
+                sources=ens_sources,
                 outputs=(str(layout.par_ens(iteration)),),
-                source_bytes=source_bytes,
+                source_bytes=ens_bytes,
             )
         )
         artifacts.append(
@@ -725,6 +730,12 @@ def estimate_bytes(
             grid_bytes = int(grid_source_bytes * _GRID_SOURCE_RATIO)
             per_artifact.append(("grid", grid_bytes))
             total += grid_bytes
+
+    if run.grid is not None:
+        notes.append(
+            "par_cell: one row per parameter, whose size follows from the control table "
+            "rather than from any source file's size -- excluded rather than guessed"
+        )
 
     if run.mult2model is not None or run.factor_files:
         notes.append(
