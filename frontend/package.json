@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "apache-arrow": "^21.2.0"
+    "apache-arrow": "^21.2.0",
+    "flatbush": "^4.6.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
