@@ -23,6 +23,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -33,7 +34,7 @@ from fastapi.testclient import TestClient
 import pesto.ingest.runner as runner_module
 from pesto.api.app import create_app
 from pesto.api.ingest import _display_folder
-from pesto.cache.layout import CACHE_VERSION, CacheLayout
+from pesto.cache.layout import CACHE_VERSION, CacheLayout, run_id_for
 from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint
 from pesto.ingest.discover import discover
 from pesto.ingest.runner import Progress, plan_artifacts
@@ -753,6 +754,78 @@ def test_the_folder_in_the_state_has_the_home_directory_shortened(tmp_path, monk
 
     assert folder == "~/somewhere/cache"
     assert str(tmp_path) not in folder
+
+
+def test_the_rewrite_carries_free_space_and_the_old_cache_size(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2, cache_bytes=4096)
+    app, token = _app_for(run_dir, cache_root)
+
+    rewrite = _state(app, token)["rewrite"]
+
+    assert isinstance(rewrite["free_bytes"], int)
+    assert rewrite["free_bytes"] > 0
+    assert rewrite["old_cache_bytes"] == 4096
+
+
+def test_the_rewrite_says_so_when_the_old_cache_size_was_not_recorded(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2, cache_bytes=None)
+    app, token = _app_for(run_dir, cache_root)
+
+    rewrite = _state(app, token)["rewrite"]
+
+    assert rewrite["old_cache_bytes"] is None
+    assert isinstance(rewrite["free_bytes"], int)
+
+
+def test_the_rewrite_reports_the_free_space_the_disk_answers_with(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    monkeypatch.setattr(
+        "pesto.api.ingest.shutil.disk_usage", lambda path: SimpleNamespace(total=100, used=93, free=7)
+    )
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _state(app, token)["rewrite"]["free_bytes"] == 7
+
+
+def test_the_estimate_and_the_rewrite_measure_free_space_the_same_way(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "not-yet" / "cache"
+    app, token = _app_for(run_dir, cache_root)
+
+    estimate = _client(app).get("/api/run/ingest/estimate", headers={"x-pesto-token": token}).json()
+
+    assert estimate["cache_root_exists"] is False
+    assert estimate["free_bytes"] > 0
+
+
+def test_the_state_carries_a_twelve_character_run_id_that_does_not_change(tmp_path):
+    run_dir = _make_run(tmp_path)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    first = _state(app, token)
+    second = _state(app, token)
+
+    assert len(first["run_id"]) == 12
+    assert first["run_id"] == second["run_id"]
+    assert first["run_id"] == run_id_for(run_dir)
+
+
+def test_two_runs_have_different_run_ids_in_the_state(tmp_path):
+    run_a = _make_run(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    run_b = _make_run(other)
+
+    id_a = _state(*_app_for(run_a, tmp_path / "cache-a"))["run_id"]
+    id_b = _state(*_app_for(run_b, tmp_path / "cache-b"))["run_id"]
+
+    assert id_a != id_b
 
 
 def test_an_old_cache_in_an_unwritable_folder_refuses_the_start_with_409(tmp_path, monkeypatch):

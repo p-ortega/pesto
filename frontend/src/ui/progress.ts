@@ -21,7 +21,7 @@ import { readEvents as readProgressStream, type SseEvent } from '../data/sse'
 import { renderHeader, renderNotice, renderStatusBar, type RenderNoticeOptions } from './chrome'
 import { currentTheme, setTheme, type ThemeChoice } from './theme'
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1024) {
     return `${bytes} B`
   }

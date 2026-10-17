@@ -11,7 +11,7 @@ import { forgetToken, hasToken, readTokenOnce } from './auth/token'
 import { apiGet, ApiError, ingestState, type IngestState, type RewriteFacts } from './data/client'
 import { renderNotice, type RenderNoticeOptions } from './ui/chrome'
 import { mountPicker } from './ui/dir-picker'
-import { mountEstimate, mountProgress } from './ui/progress'
+import { formatBytes, mountEstimate, mountProgress } from './ui/progress'
 import { initTheme } from './ui/theme'
 import { mountMap, type RunConfig } from './views/map'
 
@@ -130,12 +130,28 @@ function whoMadeIt(rewrite: RewriteFacts): string {
 }
 
 function rewriteNotices(rewrite: RewriteFacts): RenderNoticeOptions[] {
-  return [
+  const notices: RenderNoticeOptions[] = [
     {
       title: `This cache was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}). Re-reading the run once.`,
       tone: 'info',
     },
   ]
+  // The rewrite replaces the old files one at a time, so it needs about the
+  // old cache's size. Only warn when both figures are known and space is short.
+  if (
+    rewrite.freeBytes !== null &&
+    rewrite.oldCacheBytes !== null &&
+    rewrite.freeBytes < rewrite.oldCacheBytes
+  ) {
+    notices.push({
+      title: 'Disk space may run short',
+      detail:
+        `The disk has ${formatBytes(rewrite.freeBytes)} free and the old cache used ` +
+        `${formatBytes(rewrite.oldCacheBytes)}. If the space runs out, each artifact that fails says why.`,
+      tone: 'warning',
+    })
+  }
+  return notices
 }
 
 // D-07: an old cache in a folder pesto cannot write to is neither read nor
