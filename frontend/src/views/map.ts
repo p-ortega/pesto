@@ -50,7 +50,7 @@ import { readColorToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld } from '../gl/picking'
-import { renderSelectionControls, type Selection, type SelectionControlsHandle } from '../ui/controls'
+import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend } from '../ui/legend'
 import { renderGroupPicker, type GroupPickerState, type UnmappedGroup } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick } from '../ui/readout'
@@ -265,10 +265,10 @@ function restoredColormap(value: string | undefined): ColormapName {
 
 const KNOWN_STATS = new Set(['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'])
 
-function restoredStat(value: string | undefined, realNamesOk: boolean): Selection['stat'] {
+function restoredStat(value: string | undefined, realNamesOk: boolean): FieldChoice['stat'] {
   if (value !== undefined && KNOWN_STATS.has(value)) {
     if (value === 'value' && !realNamesOk) return 'mean'
-    return value as Selection['stat']
+    return value as FieldChoice['stat']
   }
   return realNamesOk ? 'value' : 'mean'
 }
@@ -386,7 +386,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // A field currently reprojected per cell for the drawn layer -- kept so
   // applyLayer has something to filter without recomputing the transform.
   let fullField: Float32Array | null = null
-  let committed: Selection = {
+  let committed: FieldChoice = {
     iteration: 0,
     layer: 0,
     stat: 'value',
@@ -398,7 +398,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     limitsMode: 'robust',
     manualLimits: null,
   }
-  let pending: Selection | null = null
+  let pending: FieldChoice | null = null
   let statusError: string | null = null
   let requestToken = 0
   let rafScheduled = false
@@ -518,7 +518,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // readout reads this directly rather than reclassifying per click.
   let currentClasses: CellClass[] = []
 
-  function selectionLabel(selection: Selection): string {
+  function selectionLabel(selection: FieldChoice): string {
     return selection.stat === 'value' ? (selection.realization ?? '—') : selection.stat
   }
 
@@ -874,7 +874,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       pendingGroup = group
       // An interpolated group has values on one layer only, so it opens there.
       const nextLayer = interpolatedEntry(group)?.layer ?? dotLayerFor(group) ?? committed.layer
-      const next: Selection = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
+      const next: FieldChoice = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
       controlsHandle?.sync(next)
       controlsHandle?.setLayer(nextLayer)
       clearSelection()
@@ -1242,7 +1242,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // D-13: a realization, statistic or iteration change is coalesced to the
   // next animation frame, so a drag through several positions issues one
   // fetch, for the last selection, rather than one per step.
-  function scheduleFetch(next: Selection): void {
+  function scheduleFetch(next: FieldChoice): void {
     pending = next
     statusError = null
     paintStatusBar()
@@ -1255,7 +1255,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     })
   }
 
-  async function performFetch(selection: Selection): Promise<void> {
+  async function performFetch(selection: FieldChoice): Promise<void> {
     // Guards the response against a newer request that started before this
     // one landed -- a superseded answer is dropped silently, never drawn.
     const token = ++requestToken
@@ -1324,7 +1324,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     scheduleViewWrite()
   }
 
-  function handleSelectionChange(next: Selection): void {
+  function handleSelectionChange(next: FieldChoice): void {
     const needsFetch =
       next.stat !== committed.stat ||
       next.realization !== committed.realization ||
