@@ -364,6 +364,66 @@ describe('the screen router', () => {
       expect(screenText()).not.toMatch(/\/(Users|home)\/\S+/i)
     })
 
+    const GIB = 1024 * 1024 * 1024
+
+    it('warns after the reason line when free space is below the old cache size, naming both', async () => {
+      stubFetch(
+        oldCacheHandlers({
+          found: 2,
+          expected: 3,
+          writable: true,
+          folder: '~/runs/.pesto',
+          free_bytes: 10 * 1024 * 1024,
+          old_cache_bytes: 2 * GIB,
+        }),
+      )
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('Disk space may run short')).toBe(true)
+      })
+      const text = screenText()
+      expect(text.indexOf('Re-reading the run once')).toBeLessThan(text.indexOf('Disk space may run short'))
+      expect(text).toContain('10.0 MB')
+      expect(text).toContain('2.0 GB')
+    })
+
+    it.each([
+      ['free space equal to the old cache size', 100, 100],
+      ['more free space than the old cache size', 100, 10],
+      ['no recorded old cache size', 100, null],
+    ])('adds no space warning with %s', async (_label, free, old) => {
+      stubFetch(
+        oldCacheHandlers({
+          found: 2,
+          expected: 3,
+          writable: true,
+          folder: '~/runs/.pesto',
+          free_bytes: free,
+          old_cache_bytes: old,
+        }),
+      )
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('Re-reading the run once')).toBe(true)
+      })
+      expect(screenHasText('Disk space may run short')).toBe(false)
+    })
+
+    it('adds no space warning when the server sent no free space figure', async () => {
+      stubFetch(oldCacheHandlers({ found: 2, expected: 3, writable: true, folder: '~/runs/.pesto' }))
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('Re-reading the run once')).toBe(true)
+      })
+      expect(screenHasText('Disk space may run short')).toBe(false)
+    })
+
     it('still shows the estimate for a first ingest, when there is no rewrite', async () => {
       const stub = stubFetch(oldCacheHandlers(null))
 
@@ -375,6 +435,43 @@ describe('the screen router', () => {
       expect(screenHasText('Re-reading the run once')).toBe(false)
       expect(stub.calls).not.toContain('POST /api/run/ingest')
     })
+  })
+
+  it('reads the run id and the rewrite sizes from the ingest state, and null when they are missing', async () => {
+    stubFetch({
+      'GET /api/run/ingest/state': () => ({
+        status: 200,
+        body: baseState({
+          run_id: 'abc123def456',
+          rewrite: {
+            found: 2,
+            expected: 3,
+            writable: true,
+            folder: '~/x',
+            free_bytes: 7,
+            old_cache_bytes: null,
+          },
+        }),
+      }),
+    })
+    const { ingestState } = await import('../src/data/client')
+
+    const state = await ingestState()
+
+    expect(state.runId).toBe('abc123def456')
+    expect(state.rewrite).toEqual({
+      found: 2,
+      expected: 3,
+      writable: true,
+      folder: '~/x',
+      freeBytes: 7,
+      oldCacheBytes: null,
+    })
+
+    stubFetch({ 'GET /api/run/ingest/state': () => ({ status: 200, body: baseState() }) })
+    const bare = await ingestState()
+    expect(bare.runId).toBeNull()
+    expect(bare.rewrite).toBeNull()
   })
 
   it('returns to the picker when the estimate is declined', async () => {

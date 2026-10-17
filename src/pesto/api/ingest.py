@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse
 from starlette.responses import StreamingResponse as _EventStreamResponse
 
 from pesto.api.problem import problem, redact_paths
-from pesto.cache.layout import CACHE_VERSION, CacheLayout, probe_writable
+from pesto.cache.layout import CACHE_VERSION, CacheLayout, probe_writable, run_id_for
 from pesto.cache.manifest import Manifest
 
 router = APIRouter(prefix="/api/run/ingest")
@@ -100,6 +100,15 @@ def _display_folder(path: Path) -> str:
     return str(path)
 
 
+def _free_bytes(layout: CacheLayout) -> int:
+    """Free space on the disk the cache lives on, measured at the nearest
+    existing parent when the cache folder itself is not there yet."""
+    probe = layout.root
+    while not probe.exists():
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
 def _rewrite_facts(layout: CacheLayout, manifest: Manifest) -> dict[str, Any] | None:
     """Why an old cache is being re-read, or None when there was no old cache
     (no manifest, or one whose version could not be read, is a first ingest)."""
@@ -110,6 +119,8 @@ def _rewrite_facts(layout: CacheLayout, manifest: Manifest) -> dict[str, Any] | 
         "expected": CACHE_VERSION,
         "writable": probe_writable(layout.root),
         "folder": _display_folder(layout.root),
+        "free_bytes": _free_bytes(layout),
+        "old_cache_bytes": manifest.found_cache_bytes,
     }
 
 
@@ -151,7 +162,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     resolved = _resolve(request)
     if isinstance(resolved, JSONResponse):
         return resolved
-    _run_path, layout, _run, planned, manifest = resolved
+    run_path, layout, _run, planned, manifest = resolved
 
     artifacts_out: list[dict[str, Any]] = []
     fresh = True
@@ -188,6 +199,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
         "rewrite": _rewrite_facts(layout, manifest),
+        "run_id": run_id_for(run_path),
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
@@ -203,10 +215,7 @@ async def get_ingest_estimate(request: Request) -> JSONResponse:
 
     estimate = _size_the_run(run)
 
-    probe = layout.root
-    while not probe.exists():
-        probe = probe.parent
-    free_bytes = shutil.disk_usage(probe).free
+    free_bytes = _free_bytes(layout)
 
     body = {
         "total": estimate.total,
