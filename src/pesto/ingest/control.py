@@ -73,6 +73,37 @@ site that needs it, is the fix for 02-REVIEW.md WR-03; the defect was two
 existence of two policies."""
 
 
+_NO_OBS_ROWS = (
+    "observation rows were not loaded (obs='schema'); only .columns and .dtypes are available"
+)
+
+
+@dataclass(frozen=True, eq=False)
+class ObsSchemaOnly:
+    """The observation table's columns and dtypes with no rows, as handed to
+    workers that never read observations. Counting, walking or indexing it
+    raises, so a later reader cannot mistake it for a run with 0 observations.
+    """
+
+    columns: pd.Index
+    dtypes: pd.Series
+
+    def __len__(self) -> int:
+        raise TypeError(_NO_OBS_ROWS)
+
+    def __iter__(self):
+        raise TypeError(_NO_OBS_ROWS)
+
+    def __getitem__(self, key):
+        raise TypeError(_NO_OBS_ROWS)
+
+    def __getattr__(self, name: str):
+        # Dunder lookups (pickle, copy) must still get the AttributeError they expect.
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise TypeError(f"{_NO_OBS_ROWS}; .{name} was asked for")
+
+
 @dataclass(frozen=True)
 class ControlTables:
     """Parameter and observation tables read from one control file, plus
@@ -89,7 +120,7 @@ class ControlTables:
     """
 
     par: pd.DataFrame
-    obs: pd.DataFrame
+    obs: pd.DataFrame | ObsSchemaOnly
     par_groups: tuple[str, ...]
     obs_groups: tuple[str, ...]
     source_path: Path

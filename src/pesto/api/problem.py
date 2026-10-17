@@ -71,12 +71,17 @@ def problem(
     artifact: str | None = None,
     detail: str | None = None,
     headers: dict[str, str] | None = None,
+    extra: dict[str, object] | None = None,
 ) -> JSONResponse:
+    # ``extra`` is copied in unredacted, so the caller must already have made
+    # it safe; the redaction regex would mangle a "~/..." folder, for one.
     body: dict[str, object] = {"type": "about:blank", "title": title, "status": status_code}
     if artifact is not None:
         body["artifact"] = artifact
     if detail is not None:
         body["detail"] = redact_paths(detail)
+    if extra:
+        body.update({k: v for k, v in extra.items() if k not in body})
 
     response = JSONResponse(
         body,

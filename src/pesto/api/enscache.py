@@ -37,9 +37,37 @@ draw, so a control that would fail is never shown."""
 @dataclass
 class _MemoEntry:
     """One cache root's, one iteration's worth of memo: the opened ensemble
-    plus whatever ``map_permutation`` has derived from it so far."""
+    plus whatever ``map_permutation`` has derived from it so far, and the
+    write identity of what it was read from."""
 
     stored: "StoredEnsemble"
+    identity: tuple
+
+
+def _write_identity(manifest: Manifest, layout: CacheLayout, names) -> tuple:
+    """What changes on every write of the artifacts in ``names``: the
+    recorded source checksums, and each cache file's size and mtime on disk.
+
+    ``is_stale`` alone misses a re-ingest that writes a file of the same size
+    against new, matching sources -- a moved pilot point usually does exactly
+    that -- and a write by another process that never reached the manifest.
+    """
+    identity = []
+    for name in names:
+        artifact = manifest.artifacts.get(name)
+        if artifact is None:
+            identity.append(None)
+            continue
+        files = []
+        for cache_file in artifact.files:
+            try:
+                info = (layout.root / cache_file.path).stat()
+                files.append((cache_file.path, info.st_size, info.st_mtime_ns))
+            except OSError:
+                files.append((cache_file.path, None, None))
+        sources = tuple((s.path, s.checksum) for s in artifact.sources)
+        identity.append((artifact.state, sources, tuple(files)))
+    return tuple(identity)
 
 
 def _memo(state) -> dict[tuple[str, int], _MemoEntry]:
@@ -73,8 +101,9 @@ def get_stored(state, cache_root: Path | str, iteration: int) -> "StoredEnsemble
     manifest = Manifest.load(layout)
     name = f"par_ens/{iteration}"
 
+    identity = _write_identity(manifest, layout, (name,))
     entry = memo.get(key)
-    if entry is not None and not manifest.is_stale(name, layout):
+    if entry is not None and entry.identity == identity and not manifest.is_stale(name, layout):
         return entry.stored
 
     from pesto.ingest.ensembles import load_stored
@@ -83,7 +112,7 @@ def get_stored(state, cache_root: Path | str, iteration: int) -> "StoredEnsemble
     if isinstance(result, ReadFailure):
         return result
 
-    memo[key] = _MemoEntry(stored=result)
+    memo[key] = _MemoEntry(stored=result, identity=identity)
     return result
 
 
@@ -98,7 +127,7 @@ class BlockCells:
     xy: np.ndarray | None
 
 
-def _block_cells_memo(state) -> dict[tuple[str, int], BlockCells]:
+def _block_cells_memo(state) -> dict[tuple[str, int], tuple[tuple, BlockCells]]:
     memo = getattr(state, "block_cells_memo", None)
     if memo is None:
         memo = {}
@@ -173,18 +202,24 @@ def get_block_cells(
 
     A name that ``par_cell`` lacks, or lists twice, is a refusal; no row is
     ever matched by position. The result is memoised until the manifest
-    reports ``par_cell``, ``par_ens/{iteration}`` or ``grid`` stale, and
-    ``invalidate`` drops it. A failure is never memoised.
+    reports ``par_cell``, ``par_ens/{iteration}`` or ``grid`` stale or any of
+    them is written again, and ``invalidate`` drops it. A failure is never
+    memoised.
     """
     memo = _block_cells_memo(state)
     key = (str(cache_root), iteration)
     layout = CacheLayout(root=Path(cache_root))
     manifest = Manifest.load(layout)
     names = ("par_cell", f"par_ens/{iteration}", "grid")
+    identity = _write_identity(manifest, layout, names)
 
     entry = memo.get(key)
-    if entry is not None and not any(manifest.is_stale(n, layout) for n in names):
-        return entry
+    if (
+        entry is not None
+        and entry[0] == identity
+        and not any(manifest.is_stale(n, layout) for n in names)
+    ):
+        return entry[1]
 
     stored = get_stored(state, cache_root, iteration)
     if isinstance(stored, ReadFailure):
@@ -194,7 +229,7 @@ def get_block_cells(
         memo.pop(key, None)
         return result
 
-    memo[key] = result
+    memo[key] = (identity, result)
     return result
 
 

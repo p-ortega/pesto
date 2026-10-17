@@ -521,6 +521,60 @@ def test_invalidate_drops_the_block_cells_memo(tmp_path):
     assert second is not first
 
 
+def _reingest_par_cell_after_a_pst_edit(layout: CacheLayout, run_dir: Path, xy) -> None:
+    """What a later ingest leaves after a .pst edit moved a point: a new
+    par_cell written in place, recorded against the edited .pst. The parquet
+    is usually the same size as before, so a size check cannot see it."""
+    write_par_cell(_cells(xy), _control_tables().par, layout)
+    pst = run_dir / "case.pst"
+    pst.write_text("pcf -- edited to move a pilot point")
+    manifest = Manifest.load(layout)
+    _record_from_disk(
+        manifest, layout, "par_cell", ("par_cell.parquet", "par_cell.json"), SourceFingerprint.of(pst)
+    )
+    manifest.save(layout)
+
+
+def test_block_cells_follow_a_reingest_that_moved_a_point(tmp_path):
+    xy = np.full((N_PAR, 2), np.nan)
+    xy[3] = [11.5, 22.5]
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path, point_xy=xy)
+    _write_mesh_origin(layout, 0.0, 0.0)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+
+    state = SimpleNamespace()
+    before = enscache.get_block_cells(state, layout.root, 0)
+    moved = xy.copy()
+    moved[3] = [261.5, 22.5]
+    _reingest_par_cell_after_a_pst_edit(layout, run_dir, moved)
+    after = enscache.get_block_cells(state, layout.root, 0)
+
+    assert isinstance(before, enscache.BlockCells)
+    assert isinstance(after, enscache.BlockCells)
+    np.testing.assert_allclose(after.xy.reshape(-1, 2)[1], [261.5, 22.5])
+
+
+def test_the_cells_tag_changes_after_a_reingest_that_moved_a_point(tmp_path):
+    xy = np.full((N_PAR, 2), np.nan)
+    xy[3] = [11.5, 22.5]
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path, point_xy=xy)
+    _write_mesh_origin(layout, 0.0, 0.0)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    first = client.get("/api/run/grid/cells/xy", params={"iteration": 0}).headers["etag"]
+    moved = xy.copy()
+    moved[3] = [261.5, 22.5]
+    _reingest_par_cell_after_a_pst_edit(layout, run_dir, moved)
+    second = client.get("/api/run/grid/cells/xy", params={"iteration": 0}).headers["etag"]
+
+    assert second != first
+
+
 # ---------------------------------------------------------------------------
 # Refusals: deferred statistics, layer/group, stat+realization combinations
 # ---------------------------------------------------------------------------
