@@ -111,7 +111,8 @@ export interface MapViewOptions {
 }
 
 export interface MapViewHandle {
-  viewFields(): MapViewFields
+  /** Null until the map has read the saved choices and settled its own; nothing it holds before that was chosen. */
+  viewFields(): MapViewFields | null
 }
 
 function formatBytes(bytes: number): string {
@@ -126,6 +127,23 @@ function formatBytes(bytes: number): string {
     unitIndex += 1
   }
   return `${value.toFixed(1)} ${units[unitIndex]}`
+}
+
+/** The iteration the map opens on, and a note to show when the run's configuration did not name it. */
+export function openingIteration(config: RunConfig | null, state: IngestState): { iteration: number; note: string | null } {
+  if (config !== null && config.first_iteration !== null) return { iteration: config.first_iteration, note: null }
+  const ingested = iterationsFrom(state)
+  if (ingested.length > 0) {
+    const first = ingested[0]
+    return {
+      iteration: first,
+      note: `The run's configuration does not name it, so the map opens on iteration ${first}, the lowest one with a parameter ensemble.`,
+    }
+  }
+  return {
+    iteration: 0,
+    note: "Neither the run's configuration nor the ingest names an iteration, so the map tries iteration 0.",
+  }
 }
 
 function formatSeconds(seconds: number): string {
@@ -278,6 +296,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // never stacked: the drawn realization or group is missing (D-04), and how
   // many selected realizations are missing (D-03).
   const iterationNotes = document.createElement('div')
+  // A switch that leaves the map empty must be heard, not only seen.
+  iterationNotes.setAttribute('role', 'status')
   const drawnNoticeEl = document.createElement('div')
   drawnNoticeEl.setAttribute('data-testid', 'iteration-drawn-notice')
   const selectedNoticeEl = document.createElement('div')
@@ -338,6 +358,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     manualLimits: null,
   }
   let pending: FieldChoice | null = null
+  // What picks the values of the field held (null when none is held) and of
+  // the fetch that is out (null when none is). See fieldKey.
+  let heldKey: string | null = null
+  let inFlightKey: string | null = null
   // The last choice this view put into the store, so a control move writes
   // only the fields it changed.
   let reported: FieldChoice = committed
@@ -359,10 +383,17 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // A newer iteration switch or field landing makes older fetches drop their answers.
   let generation = 0
   let switchSerial = 0
+  // The iteration whose tables are loading. Until they land, the held field
+  // and cells are the old iteration's, so a click would describe the wrong one.
+  let loadingIteration: number | null = null
+
+  // Set once loadAndDraw has put the restored or fresh choices into `committed`.
+  let choicesSettled = false
 
   // D-11: the shell saves the divider and these choices together, on one
   // debounced timer. This view only says when one of its choices moved.
-  function viewFields(): MapViewFields {
+  function viewFields(): MapViewFields | null {
+    if (!choicesSettled) return null
     return {
       colormap: committed.colormap,
       reverse: committed.reverseColormap,
@@ -418,11 +449,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     return drawsAsPointsFor(fieldKind, drawnGroup, ppIndex, joined, pointXy)
   }
 
-  function clearSelection(): void {
+  // The store hears about every ring taken away, so no view keeps a cell or parameter the map no longer shows.
+  function clearSelection(publish = true): void {
     selectedCellId = null
     selectedPointRow = null
     layer?.setSelected(null)
     layer?.setSelectedPoint(null)
+    if (publish) store.set({ cells: new Set(), pars: new Set() }, 'map')
   }
 
   function activeMaskFor(layerIndex: number): Uint8Array {
@@ -461,7 +494,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // that must turn warning-coloured on a failed fetch (D-14) without
   // touching chrome.ts, which this plan does not modify.
   function appendSelectionField(): void {
-    const label = statusError ?? selectionLabel(pending ?? committed)
+    const label =
+      statusError ?? (loadingIteration !== null ? `loading iteration ${loadingIteration}` : selectionLabel(pending ?? committed))
     const field = document.createElement('span')
     const labelEl = document.createElement('span')
     labelEl.textContent = 'Selection'
@@ -612,7 +646,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // camera.screenToWorld then pickAtWorld on a canvas click -- both are
   // null until loadAndDraw lands, so a click before then is a no-op.
   function handleCanvasClick(event: MouseEvent): void {
-    if (!camera || !meshGeom) return
+    if (!camera || !meshGeom || loadingIteration !== null) return
     const rect = canvas.getBoundingClientRect()
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width
     const y = ((event.clientY - rect.top) / rect.height) * canvas.height
@@ -621,14 +655,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const reach = 6 * (window.devicePixelRatio || 1)
     const pointIndex = pickPoint(currentPoints, wx, wy, camera.screenToWorld(x + reach, y)[0] - wx)
     if (pointIndex !== null) {
-      clearSelection()
+      clearSelection(false)
       selectedPointRow = currentPoints.rows[pointIndex]
       layer?.setSelectedPoint(pointIndex)
       redraw()
       updateReadout()
       // The ring and readout are already up; the store hears about it after.
       const name = joined[selectedPointRow]?.parnme
-      store.set(name === undefined ? { cells: new Set() } : { cells: new Set(), pars: new Set([name]) }, 'map')
+      store.set({ cells: new Set(), pars: name === undefined ? new Set() : new Set([name]) }, 'map')
       return
     }
     selectedPointRow = null
@@ -637,7 +671,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setSelected(selectedCellId)
     redraw()
     updateReadout()
-    store.set({ cells: selectedCellId === null ? new Set() : new Set([selectedCellId]) }, 'map')
+    store.set({ cells: selectedCellId === null ? new Set() : new Set([selectedCellId]), pars: new Set() }, 'map')
     if (selectedCellId !== null && currentClasses[selectedCellId]?.kind === 'interpolated') {
       fetchContributors(selectedCellId)
     }
@@ -804,50 +838,46 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // selection is cleared: the previous readout described a cell in the old
   // group.
   function handleGroupChange(group: string): void {
-    if (realizationMissing && committed.stat === 'value') {
+    const latest = pending ?? committed
+    if (realizationMissing && latest.stat === 'value') {
       // No realization of this iteration is picked, so there is still no field to draw for any group.
+      dropPendingFetch()
       pendingGroup = null
       groupGone = null
       drawnGroup = group
       drawNothing()
       renderDrawnNotice()
+      paintStatusBar()
       scheduleViewWrite()
       return
     }
     // The raw field itself changes when either side of the switch is an
     // interpolated group, or when no field is held (the last iteration had
     // nothing for the old group), so that switch fetches; block to block stays local.
-    const needsFetch = rawFullField === null || fieldKind === 'cell' || interpolatedEntry(group) !== null
+    const entry = interpolatedEntry(group)
+    const fieldFollowsGroup = rawFullField === null || fieldKind === 'cell' || entry !== null
     const drawnPartrans = partransForGroup(joined, group, allIdentities)
     const newScale: ValueScale = drawnPartrans?.trim().toLowerCase() === 'log' ? 'log10' : 'linear'
-    if (needsFetch) {
+    // An interpolated group has values on one layer only, so it opens there.
+    const nextLayer = entry?.layer ?? dotLayerFor(group) ?? committed.layer
+    // Built from the newest choice, so a realization still loading is the one asked for.
+    const next: FieldChoice = { ...latest, layer: nextLayer, scale: newScale, scaleInferred: true }
+    if (fieldFollowsGroup) {
       pendingGroup = group
-      // An interpolated group has values on one layer only, so it opens there.
-      const nextLayer = interpolatedEntry(group)?.layer ?? dotLayerFor(group) ?? committed.layer
-      const next: FieldChoice = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
-      controlsHandle?.sync(next)
-      controlsHandle?.setLayer(nextLayer)
-      clearSelection()
-      scheduleFetch(next)
-      updateReadout()
-      publishChoice({ ...reported, layer: nextLayer })
-      return
+    } else {
+      pendingGroup = null
+      drawnGroup = group
     }
-    pendingGroup = null
-    drawnGroup = group
-    const nextLayer = dotLayerFor(group) ?? committed.layer
-    committed = { ...committed, layer: nextLayer, scale: newScale, scaleInferred: true }
     controlsHandle?.setLayer(nextLayer)
     // WINDOWS.md #5: the scale control must show what was just inferred,
     // not whatever it happened to display for the previous group --
-    // deriveAndDraw's own setLogUsability call (below) can still override
-    // this to linear, for a genuinely different reason (the new field has
+    // deriveAndDraw's own setLogUsability call can still override this to
+    // linear, for a genuinely different reason (the new field has
     // non-positive values), so this runs first.
-    controlsHandle?.sync(committed)
+    controlsHandle?.sync(next)
     clearSelection()
-    deriveAndDraw()
+    applyChoice(next, !fieldFollowsGroup)
     updateReadout()
-    scheduleViewWrite()
     publishChoice({ ...reported, layer: nextLayer })
   }
 
@@ -1144,6 +1174,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   async function performFetch(selection: FieldChoice): Promise<void> {
     const group = pendingGroup ?? drawnGroup
     const kind: 'block' | 'cell' = interpolatedEntry(group) !== null ? 'cell' : 'block'
+    const key = fieldKey(selection, group)
+    inFlightKey = key
     const startedIn = generation
     let field: Float32Array
     try {
@@ -1162,6 +1194,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       const status = error instanceof ApiError ? error.problem.status : 'unknown'
       statusError = `${selectionLabel(selection)} — couldn't load (${status})`
       pending = null
+      inFlightKey = null
       if (pendingGroup !== null) {
         // The switch failed: the picker and controls go back to what is drawn.
         pendingGroup = null
@@ -1173,7 +1206,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       paintStatusBar()
       return
     }
-    drawnGroup = group
+    // Only the choice still wanted may draw. A block field holds every
+    // group, so the group drawn is the one picked now, not the one this
+    // fetch started under.
+    const want = pending
+    const landedGroup = pendingGroup ?? drawnGroup
+    if (want === null || fieldKey(want, landedGroup) !== key) return
+    drawnGroup = landedGroup
     pendingGroup = null
 
     // D-01: the raw field lands here, before any scale, layer or group
@@ -1194,15 +1233,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // fetch, which is a real change but not one this fix's verification
     // covers; left as a follow-up rather than folded in silently.
     rawFullField = field
+    heldKey = key
     fieldKind = kind
-    if (fieldGroup !== group || kind === 'block') contributorsMemo.clear()
-    fieldGroup = group
+    if (fieldGroup !== landedGroup || kind === 'block') contributorsMemo.clear()
+    fieldGroup = landedGroup
     rawFieldNonPositiveCount = logIsUsable(field)
     scaledField = null
     scaledFieldScale = null
-    // The layer is whatever the store last heard: another view may have moved it while this fetch was out.
-    committed = { ...selection, layer: reported.layer }
+    // The colour, scale and limits are the newest the controls hold, and the
+    // layer is whatever the store last heard: either may have moved while this fetch was out.
+    committed = { ...want, layer: reported.layer }
     pending = null
+    inFlightKey = null
     statusError = null
     groupGone = null
     deriveAndDraw()
@@ -1231,6 +1273,75 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     reported = choice
   }
 
+  // What picks a field's values. A block field holds every group, so the
+  // group counts only for an interpolated one; the realization counts only for 'value'.
+  function fieldKey(choice: FieldChoice, group: string | null): string {
+    const cell = interpolatedEntry(group) !== null
+    return JSON.stringify([
+      cell ? 'cell' : 'block',
+      cell ? group : null,
+      choice.iteration,
+      choice.stat,
+      choice.stat === 'value' ? choice.realization : null,
+    ])
+  }
+
+  function looksDifferent(a: FieldChoice, b: FieldChoice): boolean {
+    return (
+      a.layer !== b.layer ||
+      a.colormap !== b.colormap ||
+      a.reverseColormap !== b.reverseColormap ||
+      a.scale !== b.scale ||
+      a.scaleInferred !== b.scaleInferred ||
+      a.limitsMode !== b.limitsMode ||
+      a.manualLimits?.[0] !== b.manualLimits?.[0] ||
+      a.manualLimits?.[1] !== b.manualLimits?.[1]
+    )
+  }
+
+  // The fetch out, or about to go out, is for a choice the user has left: it never lands.
+  function dropPendingFetch(): void {
+    if (pending !== null || inFlightKey !== null) {
+      source.cancelField()
+      generation += 1
+      statusError = null
+    }
+    pending = null
+    inFlightKey = null
+  }
+
+  // Draws a new choice from the held field when that field already answers
+  // it, and drops any fetch still out. Otherwise the fetch already out is
+  // kept when it is for the same field, or a new one is made.
+  function applyChoice(next: FieldChoice, groupMoved = false): void {
+    const key = fieldKey(next, pendingGroup ?? drawnGroup)
+    if (rawFullField !== null && key === heldKey) {
+      dropPendingFetch()
+      if (pendingGroup !== null) {
+        drawnGroup = pendingGroup
+        pendingGroup = null
+      }
+      committed = next
+      deriveAndDraw()
+      paintStatusBar()
+      scheduleViewWrite()
+      return
+    }
+    const shown: FieldChoice = { ...next, iteration: committed.iteration, stat: committed.stat, realization: committed.realization }
+    if (rawFullField !== null && pendingGroup === null && (groupMoved || looksDifferent(shown, committed))) {
+      // The held field keeps drawing until the new one lands, in the new colour, scale, limits and layer.
+      committed = shown
+      deriveAndDraw()
+      scheduleViewWrite()
+    }
+    if (pending !== null && inFlightKey === key && !rafScheduled) {
+      pending = next
+      paintStatusBar()
+      return
+    }
+    scheduleFetch(next)
+  }
+
   function handleSelectionChange(next: FieldChoice): void {
     if (next.realization !== null) {
       wantedRealization = next.realization
@@ -1238,8 +1349,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     if (realizationMissing && next.stat === 'value' && next.realization === null) {
       // Still no realization of this iteration is picked: nothing to fetch, nothing to draw.
+      dropPendingFetch()
+      if (pendingGroup !== null) {
+        drawnGroup = pendingGroup
+        pendingGroup = null
+      }
       committed = { ...next, realization: wantedRealization }
-      pending = null
       drawNothing()
       renderDrawnNotice()
       paintStatusBar()
@@ -1247,17 +1362,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       publishChoice(next)
       return
     }
-    const needsFetch =
-      next.stat !== committed.stat ||
-      next.realization !== committed.realization ||
-      next.iteration !== committed.iteration
-    if (needsFetch) {
-      scheduleFetch(next)
-    } else {
+    if (groupGone !== null && pendingGroup === null) {
+      // The drawn group has nothing in this iteration, whatever the statistic or realization.
+      dropPendingFetch()
       committed = next
-      deriveAndDraw()
+      drawNothing()
+      renderDrawnNotice()
+      paintStatusBar()
       scheduleViewWrite()
+      publishChoice(next)
+      return
     }
+    applyChoice(next)
     publishChoice(next)
   }
 
@@ -1285,6 +1401,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // realization, group or the mean is ever drawn in its place.
   function drawNothing(): void {
     rawFullField = null
+    heldKey = null
     fullField = null
     scaledField = null
     scaledFieldScale = null
@@ -1400,11 +1517,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   async function switchIteration(k: number): Promise<void> {
     const token = ++switchSerial
     const from = loadedIteration
+    loadingIteration = k
+    paintStatusBar()
     let answer
     try {
       answer = await source.loadIteration(k)
     } catch (error) {
       if (token !== switchSerial) return
+      loadingIteration = null
+      paintStatusBar()
       addNotice(mapNotice, {
         title: `Iteration ${k} could not be read`,
         detail: `${describeError(error)} The map keeps drawing iteration ${from}.`,
@@ -1415,12 +1536,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (answer.stale || token !== switchSerial) return
+    loadingIteration = null
     const data = answer.data
 
     // Fetches already out were made for the old iteration's rows; they drop their answers.
-    generation += 1
     const base: FieldChoice = { ...(pending ?? committed), layer: reported.layer }
-    pending = null
+    dropPendingFetch()
+    generation += 1
     statusError = null
 
     loadedFrom = from
@@ -1441,6 +1563,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     realNames = data.realNames
     // The held field and classes describe the old iteration's rows; none of it may be read now.
     rawFullField = null
+    heldKey = null
     fullField = null
     scaledField = null
     scaledFieldScale = null
@@ -1525,7 +1648,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   async function loadAndDraw(gl: GlContext): Promise<void> {
-    const iteration = opts.config?.first_iteration ?? 0
+    const opening = openingIteration(opts.config, opts.state)
+    const iteration = opening.iteration
+    if (opening.note !== null) {
+      addNotice(mapNotice, { title: 'The first iteration was not recorded', detail: opening.note, tone: 'info' })
+    }
 
     // The shell started this read ahead of the mesh/parmap fetches and owns
     // the divider; the restored choices are read once the groups are known.
@@ -1603,7 +1730,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     allIdentities = identities
-    ppIndex = await source.loadPpIndex()
+    const pp = await source.loadPpIndex()
+    ppIndex = pp.index
+    if (pp.problem !== null) {
+      addNotice(mapNotice, {
+        title: 'The pilot-point index could not be read',
+        detail: `${pp.problem} Pilot-point groups are not drawn as interpolated fields.`,
+        tone: 'serious',
+      })
+    }
 
     try {
       const cells = await source.loadCells(iteration)
@@ -1716,6 +1851,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     // A saved layer holding none of a dot group's dots gives way to the layer that does.
     committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
+    choicesSettled = true
 
     // Placed before pickerEl, not appended at the end: the controls come
     // first in the top-left cluster, both visually (flex column) and in
@@ -1771,7 +1907,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       (selection) => selection.iteration,
       (next, _prev, origins) => followIteration(next.iteration, origins),
     )
+    // D-03: the count follows the selection whichever view changes it; the iteration
+    // side is redrawn by switchIteration once the new names have landed.
+    store.subscribe(
+      (selection) => selection.reals,
+      () => renderSelectedNotice(),
+    )
 
+    pending = committed
     await performFetch(committed)
     if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
   }

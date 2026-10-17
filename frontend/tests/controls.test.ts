@@ -47,6 +47,34 @@ describe('renderSelectionControls', () => {
     expect(label.textContent).toBe('r001')
   })
 
+  it('tells assistive technology the realization name, never the slider position', () => {
+    const { el, handle } = mount(THREE_NAMES)
+    const slider = el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    expect(slider.getAttribute('aria-valuetext')).toBe('base')
+
+    slider.value = '2'
+    slider.dispatchEvent(new Event('input'))
+    expect(slider.getAttribute('aria-valuetext')).toBe('r002')
+
+    handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'zzz')
+    expect(slider.getAttribute('aria-valuetext')).toBe('none picked')
+
+    slider.click()
+    expect(slider.getAttribute('aria-valuetext')).toBe('base')
+
+    handle.setRealizations({ ok: true, names: ['r001', 'base'] }, 'base')
+    expect(slider.getAttribute('aria-valuetext')).toBe('base')
+
+    handle.setRealizations({ ok: false, iteration: 3, reason: 'none' }, 'base')
+    expect(slider.getAttribute('aria-valuetext')).toBe('names not recorded')
+  })
+
+  it('tells assistive technology the names were not recorded when none were at mount', () => {
+    const { el } = mount({ ok: false, iteration: 4, reason: 'none' })
+    const slider = el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    expect(slider.getAttribute('aria-valuetext')).toBe('names not recorded')
+  })
+
   it('disables the realization slider and states the reason when no names were recorded', () => {
     const notRecorded: RealNamesResult = {
       ok: false,

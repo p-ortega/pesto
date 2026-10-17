@@ -301,6 +301,37 @@ describe('a group placed by x/y draws as dots', () => {
     expect(store.get().cells.size).toBe(0)
   })
 
+  it("takes the dot's parameter out of the store on a later cell click, and both out on a group change", async () => {
+    const store = createSelectionStore({ initial: emptySelection('test_run', 0), schedule: () => {} })
+    const root = await mounted(() => {}, store)
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    const scale = 0.96 * Math.min(canvas.width, canvas.height)
+    const dotX = canvas.width / 2 + scale * (0.75 - 0.5) + 2
+    const clickAt = (clientX: number) => canvas.dispatchEvent(new MouseEvent('click', { clientX, clientY: canvas.height / 2 }))
+
+    clickAt(dotX)
+    expect(Array.from(store.get().pars)).toEqual(['pb'])
+    clickAt(canvas.width / 2)
+    expect(Array.from(store.get().cells)).toEqual([0])
+    expect(store.get().pars.size).toBe(0)
+
+    clickAt(canvas.width / 2)
+    expect(Array.from(store.get().cells)).toEqual([0])
+    choose(root, 'G1')
+    expect(store.get().cells.size).toBe(0)
+
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
+    clickAt(dotX)
+    expect(Array.from(store.get().pars)).toEqual(['pb'])
+    choose(root, 'G1')
+    expect(store.get().pars.size).toBe(0)
+    expect(store.get().cells.size).toBe(0)
+  })
+
   it('a click on the host cell away from its dots says how many sit there, not that none do', async () => {
     const root = await mounted()
     choose(root, 'k')

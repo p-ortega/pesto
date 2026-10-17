@@ -85,6 +85,14 @@ describe('renderIterationToggle', () => {
     expectNoRunTogetherText(el, 'iteration toggle')
   })
 
+  it('names each button with the word Iteration, not only its number', () => {
+    const el = document.createElement('div')
+    renderIterationToggle(el, { iterations: [0, 3], current: 0, onChange: vi.fn() })
+
+    const buttons = Array.from(el.querySelectorAll('button'))
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Iteration 0', 'Iteration 3'])
+  })
+
   it('carries the class the stylesheet uses to mark the pressed iteration', () => {
     const el = document.createElement('div')
     renderIterationToggle(el, { iterations: [0, 1], current: 1, onChange: vi.fn() })
