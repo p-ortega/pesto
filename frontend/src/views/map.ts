@@ -1,15 +1,18 @@
 // The map screen's shell: it builds the frame (header, notice area, the
 // map column, the divider, the right panel, the status bar), owns the
 // selection store, the parameter field source, the divider and the saved view
-// state, and renders the Params panel. The map itself is views/map-view.ts;
-// the two meet only through the store and the callbacks passed below.
+// state, and renders the tabbed right panel (Params, Obs, Config). The map
+// itself is views/map-view.ts; the two meet only through the store and the
+// callbacks passed below.
 
-import type { IngestState, ViewState } from '../data/client'
+import type { IngestState, PanelTab, ViewState } from '../data/client'
 import { readViewState, writeViewState } from '../data/client'
 import { emptySelection } from '../state/rules'
 import { createSelectionStore, type SelectionStore } from '../state/selection'
 import { renderDivider } from '../ui/divider'
-import { renderParamsPanel } from '../ui/params-panel'
+import { renderNotice } from '../ui/chrome'
+import { renderParamsPanel, type ParamsPanelHandle } from '../ui/params-panel'
+import { renderTabs } from '../ui/tabs'
 import { mountMapView, type MapViewHandle, type RunConfig } from './map-view'
 import { createParameterFieldSource } from './parameter-field-source'
 
@@ -42,14 +45,14 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const panel = document.createElement('div')
   panel.classList.add('map-frame')
   // D-09: the map is on the left and always present, not a tab. The divider
-  // splits it from the Params panel rendered into paramsPanelHost.
+  // splits it from the tabbed panel rendered into rightPanelHost.
   const mapColumn = document.createElement('div')
   mapColumn.classList.add('map-column')
   const dividerEl = document.createElement('div')
-  const paramsPanelHost = document.createElement('div')
+  const rightPanelHost = document.createElement('div')
   panel.appendChild(mapColumn)
   panel.appendChild(dividerEl)
-  panel.appendChild(paramsPanelHost)
+  panel.appendChild(rightPanelHost)
   const statusBar = document.createElement('div')
   statusBar.classList.add('status-bar')
 
@@ -70,17 +73,57 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   let dividerFraction = 0.72
   let viewWriteTimer: ReturnType<typeof setTimeout> | null = null
   let mapView: MapViewHandle | null = null
+  // D-09: the last open tab is saved with the divider. A run opened for the
+  // first time starts on Params.
+  let currentTab: PanelTab = 'params'
+  let userPickedTab = false
 
   function scheduleViewWrite(): void {
     if (viewWriteTimer !== null) clearTimeout(viewWriteTimer)
     viewWriteTimer = setTimeout(() => {
       viewWriteTimer = null
       if (mapView === null) return
-      const state: ViewState = { divider: dividerFraction, ...mapView.viewFields() }
+      const state: ViewState = { divider: dividerFraction, ...mapView.viewFields(), tab: currentTab }
       // A failed persist is a convenience regression, not a request failure
       // (D-11): the on-screen state is never touched, and no error surfaces.
       void writeViewState(state).catch(() => {})
     }, 400)
+  }
+
+  // The Params panel can be rendered more than once; hide and show go to the
+  // latest one.
+  let paramsHandle: ParamsPanelHandle | null = null
+
+  const tabs = renderTabs(rightPanelHost, {
+    tabs: [
+      { id: 'params', label: 'Params', onShow: () => paramsHandle?.onShow(), onHide: () => paramsHandle?.onHide() },
+      { id: 'obs', label: 'Obs' },
+      { id: 'config', label: 'Config' },
+    ],
+    initial: currentTab,
+    onSelect: (id) => {
+      userPickedTab = true
+      currentTab = id as PanelTab
+      scheduleViewWrite()
+    },
+  })
+
+  // D-08: Obs and Config are clickable and say what will appear there.
+  for (const [id, title, detail] of [
+    [
+      'obs',
+      'Observations will show here',
+      'Spaghetti plots per site with the noise band, and 1:1 and residual plots per group.',
+    ],
+    [
+      'config',
+      'How the run was set up will show here',
+      'Noise, regularization, localization and whether base survived each iteration, each with its source.',
+    ],
+  ]) {
+    const noteHost = tabs.panel(id)
+    noteHost.classList.add('surface')
+    renderNotice(noteHost, { title, detail, tone: 'info' })
   }
 
   // Started before the map view mounts, so it is the first request the page
@@ -90,10 +133,15 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const viewStatePromise = readViewState().catch((): ViewState | null => null)
   void viewStatePromise.then((viewState) => {
     dividerFraction = viewState?.divider ?? dividerFraction
+    // A tab the user already clicked before the saved state landed wins.
+    if (viewState?.tab !== undefined && !userPickedTab) {
+      currentTab = viewState.tab
+      tabs.select(viewState.tab)
+    }
     renderDivider(dividerEl, {
       container: panel,
       before: mapColumn,
-      after: paramsPanelHost,
+      after: rightPanelHost,
       initialFraction: dividerFraction,
       onCommit: (fraction) => {
         dividerFraction = fraction
@@ -111,7 +159,11 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     noticeArea,
     statusBar,
     viewState: viewStatePromise,
-    onPanelFacts: (facts) => renderParamsPanel(paramsPanelHost, facts),
+    onPanelFacts: (facts) => {
+      paramsHandle = renderParamsPanel(tabs.panel('params'), facts)
+      // A fresh panel starts as shown; tell it if its tab is not the open one.
+      if (tabs.current() !== 'params') paramsHandle.onHide()
+    },
     onViewStateChange: scheduleViewWrite,
   })
 }

@@ -85,6 +85,7 @@ class ViewState(BaseModel):
     group: str | None = None
     stat: str = "value"
     layer: int | None = Field(default=None, ge=0)
+    tab: Literal["params", "obs", "config"] = "params"
 
 
 @router.get("/view")
