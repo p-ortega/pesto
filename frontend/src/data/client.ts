@@ -284,12 +284,51 @@ export interface Capability {
   blockedBy: { artifact: string; reason: string }[]
 }
 
+// Why a cache is being re-read: the version it was made at, the version this
+// pesto writes, whether its folder can be written, that folder with the home
+// directory shortened to ~, the free space there, and the old cache's size
+// (null when the old manifest did not record one).
+export interface RewriteFacts {
+  found: number
+  expected: number
+  writable: boolean
+  folder: string
+  freeBytes: number | null
+  oldCacheBytes: number | null
+}
+
+interface RawRewrite {
+  found: number
+  expected: number
+  writable: boolean
+  folder: string
+  free_bytes?: number | null
+  old_cache_bytes?: number | null
+}
+
+function toRewriteFacts(raw: RawRewrite | null | undefined): RewriteFacts | null {
+  if (!raw) {
+    return null
+  }
+  return {
+    found: raw.found,
+    expected: raw.expected,
+    writable: raw.writable,
+    folder: raw.folder,
+    freeBytes: raw.free_bytes ?? null,
+    oldCacheBytes: raw.old_cache_bytes ?? null,
+  }
+}
+
 export interface IngestState {
   fresh: boolean
   artifacts: ArtifactRow[]
   capabilities: { map: Capability; stats: Capability; chips: Capability }
   ingestSeconds: number | null
   cacheBytes: number | null
+  rewrite?: RewriteFacts | null
+  // The server's short id for the open run; null from a server that sends none.
+  runId?: string | null
 }
 
 export interface IngestEstimate {
@@ -312,6 +351,8 @@ export async function ingestState(): Promise<IngestState> {
     capabilities: { map: unknown; stats: unknown; chips: unknown }
     ingest_seconds: number | null
     cache_bytes: number | null
+    rewrite?: RawRewrite | null
+    run_id?: string | null
   }
   return {
     fresh: raw.fresh,
@@ -323,6 +364,8 @@ export async function ingestState(): Promise<IngestState> {
     },
     ingestSeconds: raw.ingest_seconds,
     cacheBytes: raw.cache_bytes,
+    rewrite: toRewriteFacts(raw.rewrite),
+    runId: raw.run_id ?? null,
   }
 }
 
