@@ -1,5 +1,6 @@
 import { tableFromIPC } from 'apache-arrow'
 import { authHeaders } from '../auth/token'
+import { activeRunId, runUrl } from './run'
 
 export interface ProblemDetails {
   type: string
@@ -53,8 +54,12 @@ async function handleResponse(response: Response): Promise<unknown> {
   return readJson(response)
 }
 
-export async function apiGet(route: string): Promise<unknown> {
-  const response = await fetch(route, { headers: authHeaders() })
+export interface FetchOptions {
+  signal?: AbortSignal
+}
+
+export async function apiGet(route: string, opts?: FetchOptions): Promise<unknown> {
+  const response = await fetch(route, { headers: authHeaders(), signal: opts?.signal })
   return handleResponse(response)
 }
 
@@ -86,8 +91,8 @@ export interface BytesResult {
 // returns the parsed X-Pesto-Meta header blob_response attaches -- present
 // on every numeric route (mesh buffers, parmap, values, cells), absent on
 // the Arrow-stream routes, which carry their shape in the stream itself.
-export async function apiGetBytes(route: string): Promise<BytesResult> {
-  const response = await fetch(route, { headers: authHeaders() })
+export async function apiGetBytes(route: string, opts?: FetchOptions): Promise<BytesResult> {
+  const response = await fetch(route, { headers: authHeaders(), signal: opts?.signal })
   if (!response.ok) {
     const problem = (await readJson(response)) as ProblemDetails
     throw new ApiError(problem)
@@ -122,8 +127,8 @@ export interface MeshInfo {
   notes: string[]
 }
 
-export async function gridMesh(): Promise<MeshInfo> {
-  const raw = (await apiGet('/api/run/grid/mesh')) as {
+export async function gridMesh(opts?: FetchOptions): Promise<MeshInfo> {
+  const raw = (await apiGet(runUrl(activeRunId(), '/api/run/grid/mesh'), opts)) as {
     n_vert: number
     n_tri: number
     n_cells: number
@@ -147,15 +152,18 @@ export async function gridMesh(): Promise<MeshInfo> {
   }
 }
 
-export async function gridIdomain(): Promise<Int32Array> {
-  const { buffer } = await apiGetBytes('/api/run/grid/mesh/idomain')
+export async function gridIdomain(opts?: FetchOptions): Promise<Int32Array> {
+  const { buffer } = await apiGetBytes(runUrl(activeRunId(), '/api/run/grid/mesh/idomain'), opts)
   return new Int32Array(buffer)
 }
 
 export type MeshBufferName = 'positions' | 'cell_index' | 'indices'
 
-export async function gridMeshBuffer(buffer: MeshBufferName): Promise<Float32Array | Int32Array | Uint32Array> {
-  const { buffer: bytes, meta } = await apiGetBytes(`/api/run/grid/mesh/${buffer}`)
+export async function gridMeshBuffer(
+  buffer: MeshBufferName,
+  opts?: FetchOptions,
+): Promise<Float32Array | Int32Array | Uint32Array> {
+  const { buffer: bytes, meta } = await apiGetBytes(runUrl(activeRunId(), `/api/run/grid/mesh/${buffer}`), opts)
   const dtype = meta?.dtype as string | undefined
   if (!dtype) {
     throw new Error(`the ${buffer} buffer arrived with no dtype to read it as`)
@@ -166,8 +174,8 @@ export async function gridMeshBuffer(buffer: MeshBufferName): Promise<Float32Arr
 // D-05: the map block's slice of the block-to-control permutation, raw
 // little-endian i32 -- for block row i, parmap[i] is that row's position
 // in the control-order /meta?kind=par table.
-export async function gridParmap(iteration: number): Promise<Int32Array> {
-  const { buffer } = await apiGetBytes(`/api/run/grid/parmap?iteration=${encodeURIComponent(String(iteration))}`)
+export async function gridParmap(iteration: number, opts?: FetchOptions): Promise<Int32Array> {
+  const { buffer } = await apiGetBytes(runUrl(activeRunId(), '/api/run/grid/parmap', { iteration }), opts)
   return new Int32Array(buffer)
 }
 
@@ -180,29 +188,35 @@ export interface GridValuesQuery {
 // D-05 (inherited): layer is never sent here -- ValuesQuery forbids it,
 // and layer selection is filtered client-side out of the whole field this
 // returns.
-export async function gridValues(query: GridValuesQuery): Promise<Float32Array> {
-  const params = new URLSearchParams({ iteration: String(query.iteration) })
-  if (query.stat !== undefined) params.set('stat', query.stat)
-  if (query.realization !== undefined) params.set('realization', query.realization)
-  const { buffer } = await apiGetBytes(`/api/run/grid/values?${params.toString()}`)
+export async function gridValues(query: GridValuesQuery, opts?: FetchOptions): Promise<Float32Array> {
+  const { buffer } = await apiGetBytes(
+    runUrl(activeRunId(), '/api/run/grid/values', {
+      iteration: query.iteration,
+      stat: query.stat,
+      realization: query.realization,
+    }),
+    opts,
+  )
   return new Float32Array(buffer)
 }
 
-export async function gridCells(which: 'cell' | 'layer', iteration: number): Promise<Int32Array>
-export async function gridCells(which: 'xy', iteration: number): Promise<Float32Array>
-export async function gridCells(which: 'cell' | 'layer' | 'xy', iteration: number): Promise<Int32Array | Float32Array> {
-  const { buffer } = await apiGetBytes(
-    `/api/run/grid/cells/${which}?iteration=${encodeURIComponent(String(iteration))}`,
-  )
+export async function gridCells(which: 'cell' | 'layer', iteration: number, opts?: FetchOptions): Promise<Int32Array>
+export async function gridCells(which: 'xy', iteration: number, opts?: FetchOptions): Promise<Float32Array>
+export async function gridCells(
+  which: 'cell' | 'layer' | 'xy',
+  iteration: number,
+  opts?: FetchOptions,
+): Promise<Int32Array | Float32Array> {
+  const { buffer } = await apiGetBytes(runUrl(activeRunId(), `/api/run/grid/cells/${which}`, { iteration }), opts)
   return which === 'xy' ? new Float32Array(buffer) : new Int32Array(buffer)
 }
 
 const NO_POSITIONS_TITLE = 'no point positions were recorded for that iteration'
 
 // null means the run recorded no x/y positions; any other failure is real.
-export async function gridPointXy(iteration: number): Promise<Float32Array | null> {
+export async function gridPointXy(iteration: number, opts?: FetchOptions): Promise<Float32Array | null> {
   try {
-    return await gridCells('xy', iteration)
+    return await gridCells('xy', iteration, opts)
   } catch (error) {
     if (error instanceof ApiError && error.problem.status === 404 && error.problem.title === NO_POSITIONS_TITLE) {
       return null
@@ -221,17 +235,21 @@ export async function runMeta(
   kind: 'par' | 'obs',
   columns?: readonly string[],
   optionalColumns?: readonly string[],
+  opts?: FetchOptions,
 ): Promise<ArrayBuffer> {
-  const list = (name: string, names?: readonly string[]) =>
-    names === undefined ? '' : `&${name}=${names.map(encodeURIComponent).join(',')}`
   const { buffer } = await apiGetBytes(
-    `/api/run/meta?kind=${kind}${list('columns', columns)}${list('optional_columns', optionalColumns)}`,
+    runUrl(activeRunId(), '/api/run/meta', {
+      kind,
+      columns: columns?.join(','),
+      optional_columns: optionalColumns?.join(','),
+    }),
+    opts,
   )
   return buffer
 }
 
-export async function runReals(iteration: number): Promise<string[]> {
-  const { buffer } = await apiGetBytes(`/api/run/reals?iteration=${encodeURIComponent(String(iteration))}`)
+export async function runReals(iteration: number, opts?: FetchOptions): Promise<string[]> {
+  const { buffer } = await apiGetBytes(runUrl(activeRunId(), '/api/run/reals', { iteration }), opts)
   const table = tableFromIPC(new Uint8Array(buffer))
   const column = table.getChild('realization')
   if (!column) {
@@ -268,6 +286,10 @@ export async function fsOpen(id: string): Promise<OpenResult> {
 // route is read with sse.ts's readEvents, not apiGet -- a progress stream
 // is not one JSON body -- so this module only exposes its URL.
 export const INGEST_EVENTS_URL = '/api/run/ingest/events'
+
+export function ingestEventsUrl(): string {
+  return runUrl(activeRunId(), INGEST_EVENTS_URL)
+}
 
 export interface ArtifactRow {
   name: string
@@ -345,7 +367,7 @@ function toCapability(raw: unknown): Capability {
 }
 
 export async function ingestState(): Promise<IngestState> {
-  const raw = (await apiGet('/api/run/ingest/state')) as {
+  const raw = (await apiGet(runUrl(activeRunId(), '/api/run/ingest/state'))) as {
     fresh: boolean
     artifacts: ArtifactRow[]
     capabilities: { map: unknown; stats: unknown; chips: unknown }
@@ -370,7 +392,7 @@ export async function ingestState(): Promise<IngestState> {
 }
 
 export async function ingestEstimate(): Promise<IngestEstimate> {
-  const raw = (await apiGet('/api/run/ingest/estimate')) as {
+  const raw = (await apiGet(runUrl(activeRunId(), '/api/run/ingest/estimate'))) as {
     total: number
     per_artifact: { name: string; bytes: number }[]
     notes: string[]
@@ -387,11 +409,11 @@ export async function ingestEstimate(): Promise<IngestEstimate> {
 }
 
 export async function ingestStart(): Promise<void> {
-  await apiPost('/api/run/ingest', {})
+  await apiPost(runUrl(activeRunId(), '/api/run/ingest'), {})
 }
 
 export async function ingestCancel(): Promise<void> {
-  await apiPost('/api/run/ingest/cancel', {})
+  await apiPost(runUrl(activeRunId(), '/api/run/ingest/cancel'), {})
 }
 
 // D-11: the per-run view state GET/PUT /api/run/view (src/pesto/api/runs.py)
@@ -450,11 +472,11 @@ function toViewStateWire(state: ViewState): ViewStateWire {
 }
 
 export async function readViewState(): Promise<ViewState> {
-  const raw = await apiGet('/api/run/view')
+  const raw = await apiGet(runUrl(activeRunId(), '/api/run/view'))
   return toViewState(raw)
 }
 
 export async function writeViewState(state: ViewState): Promise<ViewState> {
-  const raw = await apiPut('/api/run/view', toViewStateWire(state))
+  const raw = await apiPut(runUrl(activeRunId(), '/api/run/view'), toViewStateWire(state))
   return toViewState(raw)
 }

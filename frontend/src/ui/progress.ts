@@ -11,9 +11,9 @@
 import {
   ingestCancel,
   ingestEstimate,
+  ingestEventsUrl,
   ingestStart,
   ingestState,
-  INGEST_EVENTS_URL,
   type IngestEstimate,
   type IngestState,
 } from '../data/client'
@@ -422,7 +422,7 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
     }
 
     try {
-      await readProgressStream(INGEST_EVENTS_URL, handleEvent, controller.signal)
+      await readProgressStream(ingestEventsUrl(), handleEvent, controller.signal)
     } catch {
       if (!controller.signal.aborted) {
         addNotice(noticeArea, { title: 'the progress stream was interrupted', tone: 'serious' })

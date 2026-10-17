@@ -5,7 +5,8 @@
 // return type rather than both collapsing to `[]`.
 
 import { tableFromIPC } from 'apache-arrow'
-import { apiGetBytes, ApiError } from './client'
+import { apiGetBytes, ApiError, type FetchOptions } from './client'
+import { activeRunId, runUrl } from './run'
 
 export interface RealNamesFound {
   ok: true
@@ -20,10 +21,10 @@ export interface RealNamesNotRecorded {
 
 export type RealNamesResult = RealNamesFound | RealNamesNotRecorded
 
-export async function fetchRealNames(iteration: number): Promise<RealNamesResult> {
+export async function fetchRealNames(iteration: number, opts?: FetchOptions): Promise<RealNamesResult> {
   let buffer: ArrayBuffer
   try {
-    const result = await apiGetBytes(`/api/run/reals?iteration=${encodeURIComponent(String(iteration))}`)
+    const result = await apiGetBytes(runUrl(activeRunId(), '/api/run/reals', { iteration }), opts)
     buffer = result.buffer
   } catch (error) {
     if (error instanceof ApiError && error.problem.status === 404) {
