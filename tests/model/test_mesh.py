@@ -149,10 +149,60 @@ def test_bounds_are_derived_from_the_shipped_float32_positions_not_the_float64_i
         float(mesh.positions[:, 1].max()),
     )
     xmin, xmax, ymin, ymax = mesh.bounds
-    assert xmin == pytest.approx(1.0)
+    assert mesh.origin != (0.0, 0.0)
+    assert xmin + mesh.origin[0] == pytest.approx(1.0)
     for x, y in mesh.positions.tolist():
         assert xmin <= x <= xmax
         assert ymin <= y <= ymax
+
+
+def _block_of_unit_cells(x0, y0, n=3):
+    """An n x n block of 1 m square cells with its lower-left corner at (x0, y0)."""
+    xs = x0 + np.arange(n + 1, dtype=np.float64)
+    ys = y0 + np.arange(n + 1, dtype=np.float64)
+    gx, gy = np.meshgrid(xs, ys)
+    verts = np.column_stack([gx.ravel(), gy.ravel()])
+    iverts = []
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            iverts.append([a, a + 1, a + n + 2, a + n + 1])
+    return verts, iverts
+
+
+def test_positions_plus_origin_keep_sub_millimetre_accuracy_at_a_real_northing():
+    """Whole metres are exact in float32 below 2**24, so the corner is
+    non-round on purpose: a round one would hide the error."""
+    verts, iverts = _block_of_unit_cells(712345.137, 7019873.291)
+
+    mesh = fan_polygons(verts, iverts)
+
+    ox, oy = mesh.origin
+    world = mesh.positions.astype(np.float64) + np.array([ox, oy])
+    expected = np.concatenate([verts[np.asarray(c)] for c in iverts])
+    assert np.abs(world - expected).max() <= 1e-3
+    # The same vertices cast straight to float32 miss by far more, so the
+    # check above can see the error it guards against.
+    plain = verts.astype(np.float32).astype(np.float64)
+    assert np.abs(plain - verts).max() > 0.05
+
+
+def test_the_origin_is_the_float64_centre_of_the_vertex_bounds():
+    verts = np.array([[10.0, 20.0], [14.0, 20.0], [14.0, 26.0], [10.0, 26.0]])
+
+    mesh = fan_polygons(verts, [[0, 1, 2, 3]])
+
+    assert mesh.origin == (12.0, 23.0)
+    assert mesh.bounds == (-2.0, 2.0, -3.0, 3.0)
+
+
+def test_a_grid_whose_vertices_sit_at_one_point_gets_a_finite_origin_and_empty_bounds():
+    verts = np.array([[5.5, 6.5], [5.5, 6.5], [5.5, 6.5]])
+
+    mesh = fan_polygons(verts, [[0, 1, 2]])
+
+    assert mesh.origin == (5.5, 6.5)
+    assert mesh.bounds == (0.0, 0.0, 0.0, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +262,14 @@ def test_a_rotated_offset_grid_reports_bounds_matching_the_transformed_geometry(
         tmp_path / "rotated.disv.grb", xorigin=1000.0, yorigin=2000.0, angrot=30.0
     )
 
-    origin_bounds = Mf6Adapter(at_origin).grid_mesh().bounds
-    rotated_bounds = Mf6Adapter(rotated_and_offset).grid_mesh().bounds
+    def world_bounds(path):
+        mesh = Mf6Adapter(path).grid_mesh()
+        xmin, xmax, ymin, ymax = mesh.bounds
+        ox, oy = mesh.origin
+        return (xmin + ox, xmax + ox, ymin + oy, ymax + oy)
+
+    origin_bounds = world_bounds(at_origin)
+    rotated_bounds = world_bounds(rotated_and_offset)
 
     assert rotated_bounds != origin_bounds
     # Offset alone would shift bounds by exactly (1000, 1000, 2000, 2000);
@@ -230,3 +286,20 @@ def test_pesto_model_never_imports_or_calls_a_reprojection_library():
     assert "pyproj" not in source
     for forbidden in ("to_crs", "set_crs", "reproject"):
         assert forbidden not in source
+
+
+@pytest.mark.slow
+def test_a_real_run_at_a_northing_near_7e6_keeps_sub_millimetre_accuracy(pl253_run):
+    from pesto.model.mf6 import Mf6Adapter
+
+    adapter = Mf6Adapter(pl253_run / "pl253.disv.grb")
+
+    mesh = adapter.grid_mesh()
+    geometry = adapter.geometry()
+
+    assert not isinstance(mesh, ReadFailure)
+    assert not isinstance(geometry, ReadFailure)
+    ymin, ymax = geometry.positions[:, 1].min(), geometry.positions[:, 1].max()
+    assert ymin > 6.9e6 and ymax < 7.1e6
+    world = mesh.positions.astype(np.float64) + np.array(mesh.origin)
+    assert np.abs(world - geometry.positions).max() <= 1e-3

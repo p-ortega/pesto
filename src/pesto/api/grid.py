@@ -49,6 +49,7 @@ async def get_mesh(request: Request) -> JSONResponse:
         "nlay": mesh.nlay,
         "bounds": list(mesh.bounds),
         "crs": mesh.crs,
+        "origin": list(mesh.origin),
         "buffers": {
             "positions": {"dtype": mesh.positions.dtype.str, "count": int(mesh.positions.size)},
             "cell_index": {

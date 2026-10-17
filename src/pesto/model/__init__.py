@@ -45,7 +45,8 @@ class MeshBuffers:
     float32 (a per-vertex attribute naming which cell that vertex belongs
     to), and ``indices`` is the ``(n_tri * 3,)`` uint32 triangle list.
     Vertices are duplicated per cell -- a shared vertex cannot carry a
-    per-cell value. ``bounds`` is ``(xmin, xmax, ymin, ymax)``.
+    per-cell value. ``bounds`` is ``(xmin, xmax, ymin, ymax)``, in the same
+    frame as ``positions``: both are relative to ``origin``.
     """
 
     positions: np.ndarray
@@ -55,6 +56,7 @@ class MeshBuffers:
     nlay: int
     bounds: tuple[float, float, float, float]
     crs: str | None
+    origin: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -178,15 +180,21 @@ def fan_polygons(
     is refused as unreadable before this function is ever called -- see
     ``Mf6Adapter._grid_or_failure`` -- so this function does not check for
     that case and does not invent a bounds value for an empty mesh.
+
+    ``positions`` and ``bounds`` are relative to ``origin``, the float64
+    centre of the vertex bounds; add it back in float64 for world coordinates.
     """
     verts = np.asarray(verts, dtype=np.float64)
+    ox = float((verts[:, 0].min() + verts[:, 0].max()) / 2.0)
+    oy = float((verts[:, 1].min() + verts[:, 1].max()) / 2.0)
+    shift = np.array([ox, oy], dtype=np.float64)
     positions = np.empty((sum(len(cell) for cell in iverts), 2), dtype=np.float32)
     cell_index = np.empty(positions.shape[0], dtype=np.float32)
     triangles: list[np.ndarray] = []
     offset = 0
     for cell_number, cell in enumerate(iverts):
         count = len(cell)
-        positions[offset : offset + count] = verts[np.asarray(cell, dtype=np.int64)]
+        positions[offset : offset + count] = verts[np.asarray(cell, dtype=np.int64)] - shift
         cell_index[offset : offset + count] = cell_number
         if count >= 3:
             fan = np.empty((count - 2, 3), dtype=np.uint32)
@@ -213,4 +221,5 @@ def fan_polygons(
             float(positions[:, 1].max()),
         ),
         crs=crs,
+        origin=(ox, oy),
     )

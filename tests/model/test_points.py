@@ -20,7 +20,7 @@ def _row_of_unit_squares(n: int, nlay: int = 2) -> Geometry:
     top = np.full(n, 10.0)
     botm = np.array([[10.0 - 5.0 * (k + 1)] * n for k in range(nlay)])
     return Geometry(
-        positions=mesh.positions,
+        positions=mesh.positions.astype(np.float64) + np.array(mesh.origin),
         cell_index=mesh.cell_index,
         indices=mesh.indices,
         top=top,

@@ -16,7 +16,13 @@ import pytest
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import WrittenArtifact
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.mesh import load_idomain, load_mesh, write_grid_from_adapter, write_mesh
+from pesto.ingest.mesh import (
+    load_idomain,
+    load_mesh,
+    load_mesh_origin,
+    write_grid_from_adapter,
+    write_mesh,
+)
 from pesto.model import GridShape, MeshBuffers, fan_polygons
 
 
@@ -160,6 +166,39 @@ def test_load_mesh_on_mesh_json_with_no_cache_version_key_returns_a_read_failure
     result = load_mesh(layout)
 
     assert isinstance(result, ReadFailure)
+
+
+def test_the_origin_is_written_to_mesh_json_and_read_back_exactly(tmp_path):
+    verts = np.array([[712345.137, 7019873.291], [712346.137, 7019873.291], [712346.137, 7019874.291]])
+    mesh = fan_polygons(verts, [[0, 1, 2]])
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    write_mesh(mesh, _shape(), layout)
+
+    payload = json.loads((layout.grid / "mesh.json").read_text())
+    loaded = load_mesh(layout)
+
+    assert payload["origin"] == list(mesh.origin)
+    assert isinstance(loaded, MeshBuffers)
+    assert loaded.origin == mesh.origin
+    assert load_mesh_origin(layout) == mesh.origin
+
+
+def test_a_mesh_json_without_origin_is_refused_not_read_as_zero(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    write_mesh(_mesh(), _shape(), layout)
+    mesh_json_path = layout.grid / "mesh.json"
+    payload = json.loads(mesh_json_path.read_text())
+    del payload["origin"]
+    mesh_json_path.write_text(json.dumps(payload))
+
+    result = load_mesh(layout)
+    origin = load_mesh_origin(layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "unexpected shape" in result.reason
+    assert isinstance(origin, ReadFailure)
 
 
 def test_write_grid_from_adapter_with_no_adapter_returns_none_and_writes_nothing(tmp_path):
