@@ -235,16 +235,18 @@ async def start_ingest(request: Request) -> JSONResponse:
     run_path, layout, _run, _planned, manifest = resolved
 
     # D-07: an old cache that cannot be replaced is refused, never read as if
-    # it were current and never left half rewritten.
+    # it were current and never left half rewritten. The folder goes in its own
+    # field because redacting the detail would cut "~/a/b" down to "~b".
     if manifest.found_cache_version is not None and not probe_writable(layout.root):
         return problem(
             409,
             "the cache is out of date and cannot be rewritten here",
             detail=(
-                f"the cache in {_display_folder(layout.root)} was made at cache version "
-                f"{manifest.found_cache_version} and pesto cannot write to that folder; "
+                f"the cache was made at cache version {manifest.found_cache_version} and "
+                "pesto cannot write to its folder; "
                 "open the run again with --cache-dir set to a folder that can be written"
             ),
+            extra={"folder": _display_folder(layout.root)},
         )
 
     existing: _IngestState | None = getattr(request.app.state, "ingest", None)
