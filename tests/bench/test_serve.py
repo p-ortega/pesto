@@ -25,6 +25,7 @@ from pesto.bench.serve import (
     OPEN_ROUTES,
     BenchServer,
     Timed,
+    _route,
     measure_reopen_share,
     measure_values,
     page_iteration,
@@ -179,6 +180,12 @@ def test_reopen_share_has_one_timing_per_route_in_the_pages_order(server: BenchS
     assert share.total_seconds == pytest.approx(sum(item.seconds for item in share.requests))
     assert "server share" in share.note
     assert "idomain" in share.note  # the page skips it when the mesh has none, and the note says so
+
+
+def test_the_meta_route_carries_the_pages_own_column_lists() -> None:
+    assert _route("/api/run/meta", 0, None) == (
+        "/api/run/meta?kind=par&columns=parnme,pargp&optional_columns=parlbnd,parubnd,partrans"
+    )
 
 
 def test_reopen_share_names_no_token(synthetic: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -28,6 +28,10 @@ from pesto.bench.report import (
     ValuesLatency,
 )
 
+# Must equal the lists in frontend/src/data/parmap.ts; tests/bench/test_par_columns_match.py checks it.
+PAR_TABLE_COLUMNS = ("parnme", "pargp")
+PAR_TABLE_OPTIONAL_COLUMNS = ("parlbnd", "parubnd", "partrans")
+
 _START_WAIT_SECONDS = 30.0
 _STOP_WAIT_SECONDS = 10.0
 _NO_FIRST_ITERATION = "config has no first_iteration; used 0 as the page does"
@@ -238,9 +242,16 @@ def measure_values(
     return ValuesLatency(iteration=iteration, realization=realization, statistic=statistic, notes=notes)
 
 
+def _names(names: tuple[str, ...]) -> str:
+    return ",".join(quote(name, safe="") for name in names)
+
+
 def _route(path: str, iteration: int, realization: str | None) -> str:
     if path == "/api/run/meta":
-        return "/api/run/meta?kind=par"
+        return (
+            f"/api/run/meta?kind=par&columns={_names(PAR_TABLE_COLUMNS)}"
+            f"&optional_columns={_names(PAR_TABLE_OPTIONAL_COLUMNS)}"
+        )
     if path == "/api/run/grid/values":
         who = f"realization={quote(realization, safe='')}" if realization is not None else "stat=mean"
         return f"{path}?iteration={iteration}&{who}"
