@@ -56,7 +56,8 @@ class MeshBuffers:
     nlay: int
     bounds: tuple[float, float, float, float]
     crs: str | None
-    origin: tuple[float, float] = (0.0, 0.0)
+    # No default: a missing origin must fail, never quietly become (0, 0).
+    origin: tuple[float, float]
 
 
 @dataclass(frozen=True)
