@@ -22,7 +22,7 @@ import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type 
 import { readColorToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
-import { pickAtWorld } from '../gl/picking'
+import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend } from '../ui/legend'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
@@ -542,8 +542,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
             kind: 'point',
             row: pointRow,
             layer: committed.layer,
-            x: pointXy[2 * pointRow],
-            y: pointXy[2 * pointRow + 1],
+            x: pointXy[2 * pointRow] + (mesh?.origin[0] ?? 0),
+            y: pointXy[2 * pointRow + 1] + (mesh?.origin[1] ?? 0),
             selectionLabel: selectionLabel(committed),
           }
         : selectedCellId !== null && classification
@@ -1484,6 +1484,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
 
     await performFetch(committed)
+    if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
+  }
+
+  // Built in idle time after the first draw, so the first click does not pay for it.
+  function schedulePickIndex(drawn: MeshData): void {
+    const build = () => preparePickIndex(drawn)
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(build)
+    else setTimeout(build, 0)
   }
   return { viewFields }
 }

@@ -121,10 +121,20 @@ export interface MeshInfo {
   nCells: number
   nlay: number
   bounds: [number, number, number, number]
+  /** Subtracted from the vertex positions before they were sent; [0, 0] when the body had none. */
+  origin: [number, number]
   crs: string | null
   tag: string | null
   hasIdomain: boolean
   notes: string[]
+}
+
+function readOrigin(raw: unknown): [number, number] {
+  if (raw === undefined || raw === null) return [0, 0]
+  if (Array.isArray(raw) && raw.length === 2 && raw.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+    return [raw[0], raw[1]]
+  }
+  throw new Error(`the mesh answered an origin that is not a pair of numbers: ${JSON.stringify(raw)}`)
 }
 
 export async function gridMesh(opts?: FetchOptions): Promise<MeshInfo> {
@@ -134,6 +144,7 @@ export async function gridMesh(opts?: FetchOptions): Promise<MeshInfo> {
     n_cells: number
     nlay: number
     bounds: [number, number, number, number]
+    origin?: [number, number]
     crs: string | null
     tag: string | null
     has_idomain?: boolean
@@ -145,6 +156,7 @@ export async function gridMesh(opts?: FetchOptions): Promise<MeshInfo> {
     nCells: raw.n_cells,
     nlay: raw.nlay,
     bounds: raw.bounds,
+    origin: readOrigin(raw.origin),
     crs: raw.crs,
     tag: raw.tag,
     hasIdomain: raw.has_idomain ?? false,

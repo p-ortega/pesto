@@ -82,7 +82,7 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   if (opts.pick.kind === 'point') {
     const { row, layer, x, y, selectionLabel } = opts.pick
     appendRow(el, row, opts.joined, opts.field)
-    // Positions are float32 copies of real-world coordinates, good to about a metre at large northings.
+    // x and y reach this module in world coordinates; the map view adds the mesh origin back.
     appendLine(el, `x ${x.toFixed(0)}, y ${y.toFixed(0)} · layer ${layer} · ${selectionLabel}`, 'label')
     return
   }
