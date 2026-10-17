@@ -12,7 +12,7 @@ import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import { iterationsFrom, renderIterationToggle } from '../src/ui/iteration-toggle'
 import type { RunConfig } from '../src/views/map'
-import { expectNoRunTogetherText } from './support/run-together'
+import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -136,7 +136,7 @@ const TWO_ITERATIONS = [artifact('par_ens/0'), artifact('par_ens/3'), artifact('
 
 // Two unit cells side by side, one layer. Groups hk (rows 0 and 1) and sy
 // (row 2) both place in iteration 0; iteration 3's map block has no sy row.
-const MESH_BODY = { n_vert: 8, n_tri: 4, n_cells: 2, nlay: 1, bounds: [0, 2, 0, 1], crs: null, tag: 'iter' }
+const MESH_BODY = { n_vert: 8, n_tri: 4, n_cells: 2, nlay: 2, bounds: [0, 2, 0, 1], crs: null, tag: 'iter' }
 const POSITIONS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 2, 0, 2, 1, 1, 1])
 const CELL_INDEX = new Float32Array([0, 0, 0, 0, 1, 1, 1, 1])
 const INDICES = new Uint32Array([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7])
@@ -448,5 +448,284 @@ describe('switching the iteration', () => {
     frames.splice(0).forEach((cb) => cb(0))
     await vi.waitFor(() => expect(instance.setValues.mock.calls.length).toBeGreaterThan(before))
     expect(Array.from(instance.setValues.mock.calls.at(-1)?.[0] as Float32Array)).toEqual([70, 80])
+  })
+})
+
+
+function drawnNotice(root: HTMLElement): string {
+  return root.querySelector('[data-testid="iteration-drawn-notice"]')?.textContent ?? ''
+}
+
+function selectedNotice(root: HTMLElement): string {
+  return root.querySelector('[data-testid="iteration-selected-notice"]')?.textContent ?? ''
+}
+
+function lastValues(instance: { setValues: ReturnType<typeof vi.fn> }): number[] {
+  return Array.from(instance.setValues.mock.calls.at(-1)?.[0] as Float32Array)
+}
+
+describe('a realization or group the new iteration lacks', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    delete (window as { __pestoFrames?: unknown }).__pestoFrames
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('draws no field, clears the legend and readout, and says which realization is missing', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const instance = await meshLayerInstance()
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left')?.textContent).not.toBe(''))
+    const callsBefore = stub.valuesCalls.length
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('realization r001 is not in iteration 3'))
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(stub.valuesCalls.some((c) => c.iteration === '3' && c.realization === 'r001')).toBe(false)
+    const values = lastValues(instance)
+    expect(values.length).toBe(2)
+    expect(values.every((v) => Number.isNaN(v))).toBe(true)
+    expect(root.querySelector('.floating-bottom-left')?.textContent).toBe('')
+    expect(selectedNotice(root)).toBe('')
+    expect(sliderLabel(root)).toBe('—')
+  })
+
+  it('never draws another realization or the mean in its place, even after another control moves', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const instance = await meshLayerInstance()
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('r001'))
+    const callsBefore = stub.valuesCalls.length
+
+    setInput(root, 'Layer', '1')
+    setInput(root, 'Colormap', 'magma', 'change')
+
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(lastValues(instance).every((v) => Number.isNaN(v))).toBe(true)
+    expect(drawnNotice(root)).toContain('realization r001 is not in iteration 3')
+  })
+
+  it('keeps the missing name as the wanted one, so switching back draws it and clears both notices', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('r001'))
+
+    await choose(root, store, '0')
+
+    await vi.waitFor(() => {
+      expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '0', realization: 'r001', stat: null })
+    })
+    await vi.waitFor(() => expect(drawnNotice(root)).toBe(''))
+    expect(selectedNotice(root)).toBe('')
+    expect(sliderLabel(root)).toBe('r001')
+    expect((root.querySelector('[aria-label="Realization"]') as HTMLInputElement).value).toBe('1')
+  })
+
+  it('draws again, and drops the notice, when a realization of the new iteration is picked', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('r001'))
+
+    setInput(root, 'Realization', '1')
+
+    await vi.waitFor(() => {
+      expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '3', realization: 'base', stat: null })
+    })
+    await vi.waitFor(() => expect(drawnNotice(root)).toBe(''))
+    expect(store.get().reals).toEqual(new Set(['base']))
+  })
+
+  it('still draws a statistic for the new iteration, and says again that the realization is missing when value returns', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    setInput(root, 'Statistic', 'mean', 'change')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.stat).toBe('mean'))
+
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '3', realization: null, stat: 'mean' }))
+    await vi.waitFor(() => expect(drawnNotice(root)).toBe(''))
+
+    const callsBefore = stub.valuesCalls.length
+    setInput(root, 'Statistic', 'value', 'change')
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(drawnNotice(root)).toContain('realization r001 is not in iteration 3')
+  })
+
+  it('says names were not recorded, and draws no single realization, when the new iteration has none', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store, TWO_ITERATIONS, {
+      ...ITERATIONS,
+      '3': { ...ITERATIONS['3'], reals: null },
+    })
+    const callsBefore = stub.valuesCalls.length
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('realization names were not recorded for iteration 3'))
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect((root.querySelector('[aria-label="Realization"]') as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('draws no field and names the group when it has nothing to draw in the new iteration', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const instance = await meshLayerInstance()
+    setInput(root, 'Parameter group', 'sy', 'change')
+    const callsBefore = stub.valuesCalls.length
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('group sy has nothing to draw in iteration 3'))
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(lastValues(instance).every((v) => Number.isNaN(v))).toBe(true)
+    expect(root.querySelector('.floating-bottom-left')?.textContent).toBe('')
+
+    // Picking a group that does draw in this iteration fetches its field.
+    setInput(root, 'Parameter group', 'hk', 'change')
+    await vi.waitFor(() => {
+      expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '3', realization: 'base', stat: null })
+    })
+    await vi.waitFor(() => expect(drawnNotice(root)).toBe(''))
+    expect(lastValues(instance)).toEqual([10, 20])
+  })
+
+  it('counts the selected realizations the new iteration lacks and keeps every name in the store', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+    store.set({ reals: new Set(['base', 'r001', 'rX']) }, 'test')
+    store.flush()
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(selectedNotice(root)).toContain('2 selected realizations are not in iteration 3'))
+    expect(store.get().reals).toEqual(new Set(['base', 'r001', 'rX']))
+    expect(drawnNotice(root)).toBe('')
+  })
+
+  it('says "1 selected realization is not in iteration 3" for one missing name that is not drawn', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+    store.set({ reals: new Set(['base', 'rX']) }, 'test')
+    store.flush()
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(selectedNotice(root)).toContain('1 selected realization is not in iteration 3'))
+    expect(selectedNotice(root)).not.toContain('realizations')
+  })
+
+  it('shows only the drawn-realization line when the drawn one is the only missing name', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    expect(store.get().reals).toEqual(new Set(['r001']))
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('r001'))
+    expect(selectedNotice(root)).toBe('')
+  })
+
+  it('shows no selected-realization notice when none are missing', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    store.set({ reals: new Set(['base', 'r017']) }, 'test')
+    store.flush()
+
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.iteration).toBe('3'))
+
+    expect(selectedNotice(root)).toBe('')
+    expect(root.querySelector('[data-testid="iteration-selected-notice"]')?.children.length).toBe(0)
+  })
+
+  it('replaces the selected-realization notice on every switch, never stacking a second', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    store.set({ reals: new Set(['base', 'r001', 'rX']) }, 'test')
+    store.flush()
+    const count = () => root.querySelectorAll('[data-testid="iteration-selected-notice"] .notice-parts').length
+
+    for (const label of ['3', '0', '3']) {
+      await choose(root, store, label)
+      await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.iteration).toBe(label))
+      expect(count()).toBe(1)
+    }
+    expect(selectedNotice(root)).toContain('2 selected realizations are not in iteration 3')
+
+    // Back in iteration 0 only rX is missing, so the count follows the shown iteration.
+    await choose(root, store, '0')
+    await vi.waitFor(() => expect(selectedNotice(root)).toContain('1 selected realization is not in iteration 0'))
+    expect(count()).toBe(1)
+  })
+
+  it('passes the run-together check for the toggle and both notices', async () => {
+    loadRealStylesheet()
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    store.set({ reals: new Set(['base', 'r001', 'rX']) }, 'test')
+    store.flush()
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('r001'))
+    await vi.waitFor(() => expect(selectedNotice(root)).toContain('selected'))
+
+    expectNoRunTogetherText(root.querySelector('[data-testid="map-notices"]') as HTMLElement, 'iteration notices')
+    expectNoRunTogetherText(toggleButton(root, '0').parentElement as HTMLElement, 'iteration toggle')
+  })
+})
+
+describe('a layer another view sets while a field fetch is out', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    delete (window as { __pestoFrames?: unknown }).__pestoFrames
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('is still the layer drawn when the fetch lands', async () => {
+    window.__pestoFrames = []
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    let release: () => void = () => {}
+    stub.gate = new Promise((resolve) => {
+      release = resolve
+    })
+
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    store.set({ layer: 1 }, 'other-view')
+    store.flush()
+    expect((root.querySelector('[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
+
+    release()
+    stub.gate = null
+    await vi.waitFor(() => expect(window.__pestoFrames?.at(-1)?.selection).toBe('r001'))
+
+    expect(window.__pestoFrames?.at(-1)?.layer).toBe(1)
+    expect(store.get().layer).toBe(1)
+    expect((root.querySelector('[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
   })
 })
