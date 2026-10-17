@@ -806,6 +806,19 @@ def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
     return f"{name} depends on control, which failed: {why or 'it was not read in this ingest'}"
 
 
+def _as_control_read_them(
+    manifest: Manifest, sources: list[SourceFingerprint]
+) -> list[SourceFingerprint]:
+    """``sources`` with the control file's fingerprint swapped for the one
+    ``control`` recorded. A dependent is built from the table control cached,
+    so a .pst edited while it ran must leave it stale, not fresh."""
+    control = manifest.artifacts.get("control")
+    if control is None:
+        return sources
+    recorded = {s.path: s for s in control.sources}
+    return [recorded.get(s.path, s) for s in sources]
+
+
 def _cell_note_for(manifest: Manifest, planned: Sequence[PlannedArtifact]) -> str | None:
     """The note an ensemble carries when there is no cell resolution to
     draw its map block from, or ``None`` when ``par_cell`` is recorded ok."""
@@ -989,6 +1002,8 @@ def ingest_run(
         seconds = time.perf_counter() - start
 
         sources, unfingerprinted = _fingerprint_sources(artifact.sources)
+        if artifact.kind in _CONTROL_DEPENDENTS:
+            sources = _as_control_read_them(manifest, sources)
 
         notes: tuple[str, ...] = ()
         if ok and isinstance(result, WrittenArtifact) and not unfingerprinted:
