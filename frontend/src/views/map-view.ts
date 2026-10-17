@@ -296,6 +296,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // never stacked: the drawn realization or group is missing (D-04), and how
   // many selected realizations are missing (D-03).
   const iterationNotes = document.createElement('div')
+  // A switch that leaves the map empty must be heard, not only seen.
+  iterationNotes.setAttribute('role', 'status')
   const drawnNoticeEl = document.createElement('div')
   drawnNoticeEl.setAttribute('data-testid', 'iteration-drawn-notice')
   const selectedNoticeEl = document.createElement('div')
