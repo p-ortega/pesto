@@ -1907,6 +1907,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       (selection) => selection.iteration,
       (next, _prev, origins) => followIteration(next.iteration, origins),
     )
+    // D-03: the count follows the selection whichever view changes it; the iteration
+    // side is redrawn by switchIteration once the new names have landed.
+    store.subscribe(
+      (selection) => selection.reals,
+      () => renderSelectedNotice(),
+    )
 
     pending = committed
     await performFetch(committed)
