@@ -241,6 +241,7 @@ def test_capability_stats_blocked_names_the_summary_and_its_reason_while_map_sta
     layout = CacheLayout(root=cache_root)
     manifest = Manifest.empty(str(run_dir))
     _mark_ok_with_file(manifest, layout, "grid")
+    _mark_ok_with_file(manifest, layout, "par_cell")
     _mark_ok_with_file(manifest, layout, "par_ens/0")
     manifest.mark_failed("par_agg/0", "boom")
     manifest.save(layout)
@@ -254,6 +255,26 @@ def test_capability_stats_blocked_names_the_summary_and_its_reason_while_map_sta
     assert any(b["artifact"] == "par_agg/0" and b["reason"] == "boom" for b in stats["blocked_by"])
     assert capabilities["map"]["available"] is True
     assert capabilities["map"]["blocked_by"] == []
+
+
+def test_capability_map_blocked_names_par_cell_when_it_failed(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    _mark_ok_with_file(manifest, layout, "grid")
+    _mark_ok_with_file(manifest, layout, "par_ens/0")
+    manifest.mark_failed("par_cell", "no group could be placed on the grid")
+    manifest.save(layout)
+
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    map_capability = response.json()["capabilities"]["map"]
+
+    assert map_capability["available"] is False
+    assert map_capability["blocked_by"] == [
+        {"artifact": "par_cell", "reason": "no group could be placed on the grid"}
+    ]
 
 
 def test_capability_chips_blocked_names_config_and_its_reason(tmp_path):
@@ -280,6 +301,7 @@ def test_capability_map_blocked_when_nothing_has_been_ingested(tmp_path):
     assert map_capability["available"] is False
     blocked_names = {b["artifact"] for b in map_capability["blocked_by"]}
     assert "grid" in blocked_names
+    assert "par_cell" in blocked_names
     assert "par_ens/0" in blocked_names
 
 
