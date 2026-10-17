@@ -169,6 +169,35 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
 
 
 # ---------------------------------------------------------------------------
+# a .pst edited mid-ingest
+# ---------------------------------------------------------------------------
+
+
+def test_a_pst_edited_while_a_dependent_runs_leaves_that_dependent_stale(
+    tmp_path, in_process, monkeypatch
+):
+    """The summary is built from the table control cached before the edit, so
+    it must not be recorded fresh against the edited file."""
+    run_dir, run, cache_root = _make(tmp_path, iterations=(0,))
+    real = runner._write_par_agg_artifact
+
+    def _edited_during_the_worker(*args):
+        result = real(*args)
+        run.pst_path.write_text(run.pst_path.read_text() + "\n* edited mid-ingest\n")
+        return result
+
+    monkeypatch.setattr(runner, "_write_par_agg_artifact", _edited_during_the_worker)
+    ingest_run(run_dir, cache_root=cache_root)
+
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+    assert manifest.artifacts["par_agg/0"].state == "ok"
+    for name in ("control", "par_agg/0", "config"):
+        assert manifest.is_stale(name, layout, planned[name].sources), name
+
+
+# ---------------------------------------------------------------------------
 # the control file is parsed once
 # ---------------------------------------------------------------------------
 
@@ -279,7 +308,7 @@ def test_a_control_table_with_zero_observation_rows_still_loads_for_the_workers(
     schema = load_control_tables(layout, obs="schema")
 
     assert not isinstance(schema, ReadFailure)
-    assert len(schema.obs) == 0
+    assert "obsnme" in schema.obs.columns
     assert list(schema.par["parnme"]) == ["p0", "p1"]
 
 

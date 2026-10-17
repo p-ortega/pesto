@@ -241,6 +241,7 @@ def test_capability_stats_blocked_names_the_summary_and_its_reason_while_map_sta
     layout = CacheLayout(root=cache_root)
     manifest = Manifest.empty(str(run_dir))
     _mark_ok_with_file(manifest, layout, "grid")
+    _mark_ok_with_file(manifest, layout, "par_cell")
     _mark_ok_with_file(manifest, layout, "par_ens/0")
     manifest.mark_failed("par_agg/0", "boom")
     manifest.save(layout)
@@ -254,6 +255,26 @@ def test_capability_stats_blocked_names_the_summary_and_its_reason_while_map_sta
     assert any(b["artifact"] == "par_agg/0" and b["reason"] == "boom" for b in stats["blocked_by"])
     assert capabilities["map"]["available"] is True
     assert capabilities["map"]["blocked_by"] == []
+
+
+def test_capability_map_blocked_names_par_cell_when_it_failed(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    _mark_ok_with_file(manifest, layout, "grid")
+    _mark_ok_with_file(manifest, layout, "par_ens/0")
+    manifest.mark_failed("par_cell", "no group could be placed on the grid")
+    manifest.save(layout)
+
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    map_capability = response.json()["capabilities"]["map"]
+
+    assert map_capability["available"] is False
+    assert map_capability["blocked_by"] == [
+        {"artifact": "par_cell", "reason": "no group could be placed on the grid"}
+    ]
 
 
 def test_capability_chips_blocked_names_config_and_its_reason(tmp_path):
@@ -280,6 +301,7 @@ def test_capability_map_blocked_when_nothing_has_been_ingested(tmp_path):
     assert map_capability["available"] is False
     blocked_names = {b["artifact"] for b in map_capability["blocked_by"]}
     assert "grid" in blocked_names
+    assert "par_cell" in blocked_names
     assert "par_ens/0" in blocked_names
 
 
@@ -563,6 +585,27 @@ def test_ingest_run_raising_ends_the_stream_with_a_failure_frame(tmp_path):
     assert "the run directory vanished mid-ingest" in text
 
 
+def test_an_ingest_that_raises_still_drops_the_memo_for_its_cache(tmp_path):
+    """An ingest can rewrite par_cell and then raise; the memo built from the
+    old file must not outlive it."""
+    run_dir = _make_run(tmp_path, iterations=())
+    cache_root = tmp_path / "cache"
+
+    def failing(run_dir, cache_root, iterations, on_progress, cancel):
+        raise RuntimeError("boom after par_cell was rewritten")
+
+    with mock.patch.object(runner_module, "ingest_run", failing):
+        app, token = _app_for(run_dir, cache_root)
+        app.state.block_cells_memo = {(str(cache_root), 0): object()}
+        app.state.ens_memo = {(str(cache_root), 0): object()}
+        with _client(app) as client:
+            assert client.post("/api/run/ingest", headers={"x-pesto-token": token}).status_code == 202
+            _drain_events(client, token)
+
+    assert app.state.block_cells_memo == {}
+    assert app.state.ens_memo == {}
+
+
 def test_a_start_after_a_failed_ingest_is_accepted_not_permanently_refused(tmp_path):
     run_dir = _make_run(tmp_path, iterations=())
     cache_root = tmp_path / "cache"
@@ -844,9 +887,38 @@ def test_an_old_cache_in_an_unwritable_folder_refuses_the_start_with_409(tmp_pat
     assert response.status_code == 409
     body = response.json()
     assert body["title"] == "the cache is out of date and cannot be rewritten here"
-    assert "--cache-dir" in body["detail"]
-    assert "~" in body["detail"]
-    assert str(tmp_path) not in body["detail"]
+    assert body["folder"] == "~/somewhere/cache"
+    assert body["detail"] == (
+        "the cache was made at cache version 2 and pesto cannot write to its folder; "
+        "open the run again with --cache-dir set to a folder that can be written"
+    )
+    assert str(tmp_path) not in response.text
+    assert getattr(app.state, "ingest", None) is None
+
+
+def test_a_cache_from_a_newer_pesto_is_refused_not_overwritten(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "somewhere" / "cache"
+    newer = CACHE_VERSION + 1
+    _write_old_manifest(cache_root, run_dir, version=newer)
+    before = (cache_root / "manifest.json").read_bytes()
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["title"] == "the cache was made by a newer pesto"
+    assert body["detail"] == (
+        f"the cache was made at cache version {newer} and this pesto writes version "
+        f"{CACHE_VERSION}; rewriting it would throw away the newer one. Open the run with "
+        "that newer pesto, or open it again with --cache-dir set to another folder"
+    )
+    assert body["folder"] == "~/somewhere/cache"
+    assert (cache_root / "manifest.json").read_bytes() == before
     assert getattr(app.state, "ingest", None) is None
 
 
@@ -877,8 +949,28 @@ def test_an_unwritable_folder_with_no_old_cache_does_not_refuse_the_start(tmp_pa
     assert response.status_code == 202
 
 
-def test_a_folder_outside_the_home_directory_is_shown_as_given(tmp_path, monkeypatch):
+def test_a_folder_outside_the_home_directory_shows_only_its_last_two_parts(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    elsewhere = tmp_path / "elsewhere"
+    elsewhere = tmp_path / "Scratch" / "cache"
 
-    assert _display_folder(elsewhere) == str(elsewhere)
+    assert _display_folder(elsewhere) == "…/Scratch/cache"
+
+
+def test_a_short_folder_outside_the_home_directory_still_hides_its_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    assert _display_folder(Path("/cache")) == "…/cache"
+    assert _display_folder(Path("/Volumes/cache")) == "…/cache"
+
+
+def test_the_state_never_sends_an_absolute_cache_folder(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    cache_root = tmp_path / "Scratch" / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    app, token = _app_for(run_dir, cache_root)
+
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+
+    assert response.json()["rewrite"]["folder"] == "…/Scratch/cache"
+    assert str(tmp_path) not in response.text

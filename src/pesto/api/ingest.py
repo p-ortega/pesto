@@ -85,19 +85,25 @@ def _resolve(request: Request):
 
 def _display_folder(path: Path) -> str:
     """``path`` for the screen: the home directory shortened to ``~`` when the
-    path sits under it, else the path as given."""
+    path sits under it. Anywhere else (an external disk, ``--cache-dir`` on
+    another volume) only the last two parts are shown after ``…/``, and at
+    least one leading part is always hidden, so a full path never reaches a
+    response body (D-09)."""
     path = Path(path)
     try:
         home = Path.home()
     except RuntimeError:
-        return str(path)
-    for candidate, base in ((path, home), (path.resolve(), home.resolve())):
-        try:
-            relative = candidate.relative_to(base)
-        except ValueError:
-            continue
-        return "~" if relative == Path(".") else f"~/{relative.as_posix()}"
-    return str(path)
+        home = None
+    if home is not None:
+        for candidate, base in ((path, home), (path.resolve(), home.resolve())):
+            try:
+                relative = candidate.relative_to(base)
+            except ValueError:
+                continue
+            return "~" if relative == Path(".") else f"~/{relative.as_posix()}"
+    parts = path.parts[1:] if path.anchor else path.parts
+    shown = parts[-2:] if len(parts) > 2 else parts[-1:]
+    return "\u2026/" + "/".join(shown)
 
 
 def _free_bytes(layout: CacheLayout) -> int:
@@ -184,6 +190,9 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         )
 
     grid_names = [pa.name for pa in planned if pa.kind == "grid"]
+    # Since 07-07 par_cell is the only source of cells and positions; without
+    # it par_ens is recorded ok with an empty map block.
+    par_cell_names = [pa.name for pa in planned if pa.kind == "par_cell"]
     par_ens_names = [pa.name for pa in planned if pa.kind == "par_ens"]
     par_agg_names = [pa.name for pa in planned if pa.kind == "par_agg"]
     config_names = [pa.name for pa in planned if pa.kind == "config"]
@@ -192,7 +201,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         "fresh": fresh,
         "artifacts": artifacts_out,
         "capabilities": {
-            "map": _capability(manifest, required=grid_names, any_of=par_ens_names),
+            "map": _capability(manifest, required=grid_names + par_cell_names, any_of=par_ens_names),
             "stats": _capability(manifest, required=[], any_of=par_agg_names),
             "chips": _capability(manifest, required=config_names, any_of=[]),
         },
@@ -234,17 +243,34 @@ async def start_ingest(request: Request) -> JSONResponse:
         return resolved
     run_path, layout, _run, _planned, manifest = resolved
 
+    # A newer pesto's cache may be hours of ingest; D-05 and D-06 only agreed
+    # to replace older ones, so this one is left as it is.
+    found = manifest.found_cache_version
+    if found is not None and found > CACHE_VERSION:
+        return problem(
+            409,
+            "the cache was made by a newer pesto",
+            detail=(
+                f"the cache was made at cache version {found} and this pesto writes version "
+                f"{CACHE_VERSION}; rewriting it would throw away the newer one. Open the run "
+                "with that newer pesto, or open it again with --cache-dir set to another folder"
+            ),
+            extra={"folder": _display_folder(layout.root)},
+        )
+
     # D-07: an old cache that cannot be replaced is refused, never read as if
-    # it were current and never left half rewritten.
+    # it were current and never left half rewritten. The folder goes in its own
+    # field because redacting the detail would cut "~/a/b" down to "~b".
     if manifest.found_cache_version is not None and not probe_writable(layout.root):
         return problem(
             409,
             "the cache is out of date and cannot be rewritten here",
             detail=(
-                f"the cache in {_display_folder(layout.root)} was made at cache version "
-                f"{manifest.found_cache_version} and pesto cannot write to that folder; "
+                f"the cache was made at cache version {manifest.found_cache_version} and "
+                "pesto cannot write to its folder; "
                 "open the run again with --cache-dir set to a folder that can be written"
             ),
+            extra={"folder": _display_folder(layout.root)},
         )
 
     existing: _IngestState | None = getattr(request.app.state, "ingest", None)
@@ -274,10 +300,12 @@ async def start_ingest(request: Request) -> JSONResponse:
         except Exception as exc:  # noqa: BLE001 - reported to the stream, not swallowed
             state.error = exc
         finally:
+            # A failed or cancelled ingest may already have rewritten files,
+            # so the memo goes either way, and before the stream ends.
+            if _invalidate_enscache is not None:
+                _invalidate_enscache(request.app.state, str(layout.root))
             state.done = True
             await state.queue.put(None)
-        if state.error is None and _invalidate_enscache is not None:
-            _invalidate_enscache(request.app.state, str(layout.root))
 
     state.task = asyncio.create_task(run_in_background())
     return JSONResponse({"started": True}, status_code=202)
