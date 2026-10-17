@@ -896,6 +896,32 @@ def test_an_old_cache_in_an_unwritable_folder_refuses_the_start_with_409(tmp_pat
     assert getattr(app.state, "ingest", None) is None
 
 
+def test_a_cache_from_a_newer_pesto_is_refused_not_overwritten(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "somewhere" / "cache"
+    newer = CACHE_VERSION + 1
+    _write_old_manifest(cache_root, run_dir, version=newer)
+    before = (cache_root / "manifest.json").read_bytes()
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["title"] == "the cache was made by a newer pesto"
+    assert body["detail"] == (
+        f"the cache was made at cache version {newer} and this pesto writes version "
+        f"{CACHE_VERSION}; rewriting it would throw away the newer one. Open the run with "
+        "that newer pesto, or open it again with --cache-dir set to another folder"
+    )
+    assert body["folder"] == "~/somewhere/cache"
+    assert (cache_root / "manifest.json").read_bytes() == before
+    assert getattr(app.state, "ingest", None) is None
+
+
 def test_an_old_cache_in_a_writable_folder_still_starts(tmp_path):
     run_dir = _make_run(tmp_path, iterations=(0,))
     cache_root = tmp_path / "cache"

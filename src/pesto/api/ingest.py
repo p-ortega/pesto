@@ -243,6 +243,21 @@ async def start_ingest(request: Request) -> JSONResponse:
         return resolved
     run_path, layout, _run, _planned, manifest = resolved
 
+    # A newer pesto's cache may be hours of ingest; D-05 and D-06 only agreed
+    # to replace older ones, so this one is left as it is.
+    found = manifest.found_cache_version
+    if found is not None and found > CACHE_VERSION:
+        return problem(
+            409,
+            "the cache was made by a newer pesto",
+            detail=(
+                f"the cache was made at cache version {found} and this pesto writes version "
+                f"{CACHE_VERSION}; rewriting it would throw away the newer one. Open the run "
+                "with that newer pesto, or open it again with --cache-dir set to another folder"
+            ),
+            extra={"folder": _display_folder(layout.root)},
+        )
+
     # D-07: an old cache that cannot be replaced is refused, never read as if
     # it were current and never left half rewritten. The folder goes in its own
     # field because redacting the detail would cut "~/a/b" down to "~b".
