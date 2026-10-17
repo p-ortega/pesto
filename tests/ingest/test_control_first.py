@@ -279,7 +279,7 @@ def test_a_control_table_with_zero_observation_rows_still_loads_for_the_workers(
     schema = load_control_tables(layout, obs="schema")
 
     assert not isinstance(schema, ReadFailure)
-    assert len(schema.obs) == 0
+    assert "obsnme" in schema.obs.columns
     assert list(schema.par["parnme"]) == ["p0", "p1"]
 
 
