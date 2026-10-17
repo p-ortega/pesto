@@ -563,6 +563,27 @@ def test_ingest_run_raising_ends_the_stream_with_a_failure_frame(tmp_path):
     assert "the run directory vanished mid-ingest" in text
 
 
+def test_an_ingest_that_raises_still_drops_the_memo_for_its_cache(tmp_path):
+    """An ingest can rewrite par_cell and then raise; the memo built from the
+    old file must not outlive it."""
+    run_dir = _make_run(tmp_path, iterations=())
+    cache_root = tmp_path / "cache"
+
+    def failing(run_dir, cache_root, iterations, on_progress, cancel):
+        raise RuntimeError("boom after par_cell was rewritten")
+
+    with mock.patch.object(runner_module, "ingest_run", failing):
+        app, token = _app_for(run_dir, cache_root)
+        app.state.block_cells_memo = {(str(cache_root), 0): object()}
+        app.state.ens_memo = {(str(cache_root), 0): object()}
+        with _client(app) as client:
+            assert client.post("/api/run/ingest", headers={"x-pesto-token": token}).status_code == 202
+            _drain_events(client, token)
+
+    assert app.state.block_cells_memo == {}
+    assert app.state.ens_memo == {}
+
+
 def test_a_start_after_a_failed_ingest_is_accepted_not_permanently_refused(tmp_path):
     run_dir = _make_run(tmp_path, iterations=())
     cache_root = tmp_path / "cache"

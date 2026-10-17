@@ -76,14 +76,14 @@ def cache_tag(manifest: Manifest, artifact_name: str) -> str | None:
     when the artifact's recorded state is not ``"ok"`` -- an absent or
     failed artifact has no cacheable bytes, so it has no tag either.
 
-    Built from ``manifest.cache_version`` and the artifact's recorded
-    ``CacheFile`` entries as ``(path, bytes)`` pairs in recorded order,
-    hashed with sha256 and truncated to 16 hex characters -- never from the
-    file contents, which would mean reading every buffer just to decide
-    whether a browser may keep its old copy.
+    Built from ``manifest.cache_version``, the artifact's recorded
+    ``CacheFile`` entries as ``(path, bytes)`` pairs in recorded order, and
+    its recorded source checksums, hashed with sha256 and truncated to 16 hex
+    characters -- never from the file contents, which would mean reading
+    every buffer just to decide whether a browser may keep its old copy.
 
-    A re-ingest rewrites an artifact's files and their recorded sizes, so
-    the tag changes with it. A ``CACHE_VERSION`` bump changes
+    A re-ingest from changed sources changes the tag even when the new files
+    happen to be the same size as the old ones. A ``CACHE_VERSION`` bump changes
     ``manifest.cache_version`` for every artifact at once (D-08: a version
     bump is a hard reset, outranking size, mtime and checksum alike), so it
     invalidates every tag in one stroke.
@@ -92,7 +92,11 @@ def cache_tag(manifest: Manifest, artifact_name: str) -> str | None:
     if artifact is None or artifact.state != "ok":
         return None
 
-    fingerprint = [manifest.cache_version, [[f.path, f.bytes] for f in artifact.files]]
+    fingerprint = [
+        manifest.cache_version,
+        [[f.path, f.bytes] for f in artifact.files],
+        [[s.path, s.checksum] for s in artifact.sources],
+    ]
     digest = hashlib.sha256(json.dumps(fingerprint).encode()).hexdigest()
     return digest[:16]
 
