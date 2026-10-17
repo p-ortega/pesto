@@ -380,4 +380,9 @@ def format_table(result: BenchResult) -> str:
         "Reopen and slider delay are measured by the browser check, "
         "and ingest growth by tests/perf."
     )
+    lines.append(
+        "Cell picking is measured by frontend/tests/picking-scale.test.ts: "
+        f"index build at or under {SPEED_LIMITS.pick_index_build_ms:g} ms, "
+        f"warm pick p95 at or under {SPEED_LIMITS.pick_p95_ms:g} ms."
+    )
     return "\n".join(lines)
