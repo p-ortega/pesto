@@ -96,6 +96,7 @@ const RESTORED_VIEW = {
   group: 'G1',
   stat: 'value',
   layer: null as number | null,
+  tab: undefined as string | undefined,
 }
 
 function bytesOf(view: ArrayBufferView): Uint8Array {
@@ -279,5 +280,79 @@ describe('a restored layer', () => {
   it('opens on layer 0 when the saved layer is past the bottom of the grid', async () => {
     const root = await openedOn(9)
     expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('0')
+  })
+})
+
+describe('the remembered right-panel tab (D-09)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    RESTORED_VIEW.tab = undefined
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  async function openMap(saved: string | undefined): Promise<HTMLElement> {
+    RESTORED_VIEW.tab = saved
+    stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+    return root
+  }
+
+  function tab(root: HTMLElement, name: string): HTMLElement {
+    return root.querySelector(`#tab-${name}`) as HTMLElement
+  }
+
+  function putBodies(): Array<Record<string, unknown>> {
+    return vi
+      .mocked(fetch)
+      .mock.calls.filter(([input, init]) => String(input).startsWith('/api/run/view') && init?.method === 'PUT')
+      .map(([, init]) => JSON.parse(String(init?.body)))
+  }
+
+  it('opens on Obs when the run was left on Obs, with the Params panel hidden but present', async () => {
+    const root = await openMap('obs')
+
+    expect(tab(root, 'obs').getAttribute('aria-selected')).toBe('true')
+    expect(tab(root, 'params').getAttribute('aria-selected')).toBe('false')
+    const paramsPanel = root.querySelector('#panel-params') as HTMLElement
+    expect(paramsPanel.hidden).toBe(true)
+    expect(paramsPanel.querySelector('.param-row')).not.toBeNull()
+  })
+
+  it('opens on Params when the saved state has no tab', async () => {
+    const root = await openMap(undefined)
+
+    expect(tab(root, 'params').getAttribute('aria-selected')).toBe('true')
+    expect((root.querySelector('#panel-params') as HTMLElement).hidden).toBe(false)
+  })
+
+  it('opens on Params when the saved tab is not one this build knows', async () => {
+    const root = await openMap('phi')
+
+    expect(tab(root, 'params').getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('shows the three tabs in the order Params, Obs, Config', async () => {
+    const root = await openMap(undefined)
+
+    const labels = Array.from(root.querySelectorAll('[role="tab"]')).map((el) => el.textContent)
+    expect(labels).toEqual(['Params', 'Obs', 'Config'])
+    expect(root.querySelector('.map-frame')?.children.length).toBe(3)
+  })
+
+  it('writes the tab the user clicked into the next saved view state', async () => {
+    const root = await openMap(undefined)
+
+    tab(root, 'config').click()
+
+    await vi.waitFor(() => expect(putBodies().some((body) => body.tab === 'config')).toBe(true), { timeout: 3000 })
   })
 })

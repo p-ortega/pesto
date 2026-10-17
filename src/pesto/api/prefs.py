@@ -119,7 +119,10 @@ _VIEW_STATE_DEFAULTS: dict = {
     "group": None,
     "stat": "value",
     "layer": None,
+    "tab": "params",
 }
+
+_PANEL_TABS = ("params", "obs", "config")
 
 
 def _view_store_path() -> Path:
@@ -159,7 +162,11 @@ def read_view_state(cache_root: Path | str) -> dict:
     if not isinstance(stored, dict):
         return _default_view_state()
 
-    return {key: stored.get(key, default) for key, default in _VIEW_STATE_DEFAULTS.items()}
+    state = {key: stored.get(key, default) for key, default in _VIEW_STATE_DEFAULTS.items()}
+    # A tab this build does not know (a hand edit, a newer build) reopens on Params.
+    if not isinstance(state["tab"], str) or state["tab"] not in _PANEL_TABS:
+        state["tab"] = _VIEW_STATE_DEFAULTS["tab"]
+    return state
 
 
 def write_view_state(cache_root: Path | str, state: dict) -> None:

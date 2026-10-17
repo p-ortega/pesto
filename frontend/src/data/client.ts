@@ -434,6 +434,14 @@ export async function ingestCancel(): Promise<void> {
 // own Pydantic model already applies every default; a caller that has not
 // yet read the current state should call readViewState first rather than
 // PUT a partial object, since the server always writes the whole document.
+export type PanelTab = 'params' | 'obs' | 'config'
+
+const PANEL_TABS: readonly PanelTab[] = ['params', 'obs', 'config']
+
+function isPanelTab(value: unknown): value is PanelTab {
+  return typeof value === 'string' && (PANEL_TABS as readonly string[]).includes(value)
+}
+
 export interface ViewState {
   divider: number
   colormap: string
@@ -443,6 +451,8 @@ export interface ViewState {
   group: string | null
   stat: string
   layer: number | null
+  /** Optional so a caller that only moves the divider still compiles; absent means Params. */
+  tab?: PanelTab
 }
 
 interface ViewStateWire {
@@ -454,6 +464,7 @@ interface ViewStateWire {
   group: string | null
   stat: string
   layer?: number | null
+  tab?: string
 }
 
 function toViewState(raw: unknown): ViewState {
@@ -467,6 +478,7 @@ function toViewState(raw: unknown): ViewState {
     group: wire.group,
     stat: wire.stat,
     layer: wire.layer ?? null,
+    tab: isPanelTab(wire.tab) ? wire.tab : 'params',
   }
 }
 
@@ -480,6 +492,7 @@ function toViewStateWire(state: ViewState): ViewStateWire {
     group: state.group,
     stat: state.stat,
     layer: state.layer,
+    tab: state.tab ?? 'params',
   }
 }
 
