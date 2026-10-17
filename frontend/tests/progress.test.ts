@@ -268,6 +268,54 @@ describe('mountProgress', () => {
     expect(rowText).toContain('—')
   })
 
+  it('renders the notices it is given on mount, in order, before any row exists', async () => {
+    const { stub } = buildFetchStub({ streamChunks: [] })
+    vi.stubGlobal('fetch', stub)
+
+    mountProgress(root, {
+      onFinished: () => undefined,
+      notices: [
+        { title: 'first notice', tone: 'info' },
+        { title: 'second notice', tone: 'warning' },
+      ],
+    })
+
+    const noticeArea = Array.from(root.children)[1] as HTMLElement
+    const text = textOf(noticeArea)
+    expect(text).toContain('first notice')
+    expect(text).toContain('second notice')
+    expect(text.indexOf('first notice')).toBeLessThan(text.indexOf('second notice'))
+    expect(textOf(root)).not.toContain('grid')
+    await settle()
+  })
+
+  it('keeps its notices above the rows once rows arrive', async () => {
+    const text = progressFrame({ artifact: 'grid', state: 'started' })
+    const { stub } = buildFetchStub({ streamText: text })
+    vi.stubGlobal('fetch', stub)
+
+    mountProgress(root, {
+      onFinished: () => undefined,
+      notices: [{ title: 'why this is happening', tone: 'info' }],
+    })
+    await settle()
+
+    const whole = textOf(root)
+    expect(whole).toContain('why this is happening')
+    expect(whole.indexOf('why this is happening')).toBeLessThan(whole.indexOf('grid'))
+  })
+
+  it('shows no notice when none is given', async () => {
+    const { stub } = buildFetchStub({ streamChunks: [] })
+    vi.stubGlobal('fetch', stub)
+
+    mountProgress(root, { onFinished: () => undefined })
+
+    const noticeArea = Array.from(root.children)[1] as HTMLElement
+    expect(textOf(noticeArea)).toBe('')
+    await settle()
+  })
+
   it('renders an ok row with a genuine zero written size as zero, not a dash', async () => {
     const text = progressFrame({ artifact: 'grid', state: 'ok', source_bytes: 0, written_bytes: 0, seconds: 0.2 }) + doneFrame()
     const { stub } = buildFetchStub({ streamText: text })

@@ -609,3 +609,93 @@ def test_is_stale_with_layout_opens_no_cache_file(tmp_path, monkeypatch):
         monkeypatch.setattr(builtins, "open", real_open)
 
     assert opened_under_cache_root == []
+
+
+# ---------------------------------------------------------------------------
+# The version and size an old cache was made at are kept, so the caller can say why
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest_json(layout, **overrides):
+    layout.ensure()
+    payload = {
+        "cache_version": 1,
+        "run_dir": "somewhere",
+        "artifacts": {},
+        "ingest_seconds": 3.0,
+        "cache_bytes": 4096,
+    }
+    payload.update(overrides)
+    layout.manifest.write_text(json.dumps(payload))
+
+
+def test_an_old_manifest_keeps_the_version_and_size_it_was_made_with(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    for version in (1, 2):
+        _write_manifest_json(layout, cache_version=version)
+
+        loaded = Manifest.load(layout)
+
+        assert loaded.found_cache_version == version
+        assert loaded.found_cache_bytes == 4096
+        assert loaded.artifacts == {}
+
+
+def test_a_newer_manifest_keeps_its_version_too(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    _write_manifest_json(layout, cache_version=CACHE_VERSION + 1)
+
+    assert Manifest.load(layout).found_cache_version == CACHE_VERSION + 1
+
+
+def test_a_version_that_is_not_an_integer_is_not_kept(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    for bad in (True, "2", 2.5, None, [2]):
+        _write_manifest_json(layout, cache_version=bad)
+
+        assert Manifest.load(layout).found_cache_version is None, bad
+
+
+def test_a_size_that_is_not_an_integer_is_not_kept(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    for bad in (True, "4096", 1.5, None):
+        _write_manifest_json(layout, cache_bytes=bad)
+
+        loaded = Manifest.load(layout)
+
+        assert loaded.found_cache_version == 1
+        assert loaded.found_cache_bytes is None, bad
+
+
+def test_no_manifest_and_a_current_manifest_keep_nothing(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    assert Manifest.load(layout).found_cache_version is None
+
+    Manifest.empty(str(tmp_path)).save(layout)
+    loaded = Manifest.load(layout)
+    assert loaded.found_cache_version is None
+    assert loaded.found_cache_bytes is None
+
+
+def test_a_manifest_in_a_broken_shape_keeps_nothing(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    for text in ("not json", "[1, 2]", '{"cache_version": 1, "run_dir": 5}'):
+        layout.manifest.write_text(text)
+
+        assert Manifest.load(layout).found_cache_version is None, text
+
+
+def test_save_writes_neither_found_field(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    _write_manifest_json(layout)
+    loaded = Manifest.load(layout)
+    assert loaded.found_cache_version == 1
+
+    loaded.save(layout)
+
+    payload = json.loads(layout.manifest.read_text())
+    assert "found_cache_version" not in payload
+    assert "found_cache_bytes" not in payload
+    assert Manifest.load(layout).found_cache_version is None
