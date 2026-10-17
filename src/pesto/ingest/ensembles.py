@@ -27,11 +27,6 @@ if TYPE_CHECKING:
     from pesto.ingest.control import ControlTables
     from pesto.ingest.ensfile import EnsembleData
 
-    # ParCells lives in pesto.model, which nothing under pesto.ingest may
-    # import (test_no_ingest_file_imports_anything_from_model) -- even for
-    # typing. The "ParCells | None" annotation below stays an unresolved
-    # forward reference, never evaluated at runtime.
-
 
 @dataclass(frozen=True)
 class Block:
@@ -62,18 +57,15 @@ class StoredEnsemble:
 
     ``write_par_ensemble`` builds one of these to hold the values before
     they are serialised and never fills ``path``, ``iteration``,
-    ``n_real``, ``n_par``, ``block_to_control``, ``control_to_block``,
-    ``cell`` or ``layer`` -- those are what a reader needs and a writer
-    already knows some other way. ``load_stored`` fills all of them:
+    ``n_real``, ``n_par``, ``block_to_control`` or ``control_to_block`` --
+    those are what a reader needs and a writer already knows some other way. ``load_stored`` fills all of them:
     ``block_to_control`` is the block-position-to-control-position
     permutation `write_par_ensemble` computed, ``control_to_block`` is
     its inverse (built once here with ``numpy.argsort`` so
-    ``read_par_across_reals`` never recomputes it per call),
-    ``cell``/``layer`` are the map block's companion arrays and ``xy`` the
-    flat x/y of each x/y-placed row, NaN elsewhere (all ``None``
-    when the sidecar names none), and ``map_values``/``nomap_values``
-    become read-only ``numpy.memmap`` views rather than materialised
-    arrays.
+    ``read_par_across_reals`` never recomputes it per call), and
+    ``map_values``/``nomap_values`` become read-only ``numpy.memmap`` views
+    rather than materialised arrays. Which cell a parameter sits on is not
+    kept here; ``par_cell`` owns it.
 
     Compares like :class:`pesto.ingest.ensfile.EnsembleData`: array fields
     with ``numpy.array_equal``, everything else with ``==``. Unhashable,
@@ -95,9 +87,6 @@ class StoredEnsemble:
     n_par: int | None = None
     block_to_control: np.ndarray | None = None
     control_to_block: np.ndarray | None = None
-    cell: np.ndarray | None = None
-    layer: np.ndarray | None = None
-    xy: np.ndarray | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, StoredEnsemble):
@@ -118,9 +107,6 @@ class StoredEnsemble:
             and self.n_par == other.n_par
             and _optional_array_equal(self.block_to_control, other.block_to_control)
             and _optional_array_equal(self.control_to_block, other.control_to_block)
-            and _optional_array_equal(self.cell, other.cell)
-            and _optional_array_equal(self.layer, other.layer)
-            and _optional_array_equal(self.xy, other.xy)
         )
 
     __hash__ = None
@@ -208,24 +194,47 @@ def _remove_written(
     return removed, tuple(notes)
 
 
+_LEFTOVER_SUFFIXES = (".cell.i32", ".layer.i32", ".xy.f32")
+
+
+def _leftover_cell_file_notes(layout: CacheLayout, iteration: int) -> tuple[str, ...]:
+    """One note naming the per-iteration cell files an older cache left in
+    ``ens/``, or nothing when there are none. Only looks; never deletes."""
+    found = [
+        f"par_{iteration}{suffix}"
+        for suffix in _LEFTOVER_SUFFIXES
+        if (layout.ens / f"par_{iteration}{suffix}").exists()
+    ]
+    if not found:
+        return ()
+    n = len(found)
+    if n == 1:
+        lead = "1 file from an older cache remains in ens/ and is no longer used"
+    else:
+        lead = f"{n} files from an older cache remain in ens/ and are no longer used"
+    return (f"{lead}: {', '.join(found)}",)
+
+
 def write_par_ensemble(
     data: "EnsembleData",
     tables: "ControlTables",
     mappable: frozenset[str],
     iteration: int,
     layout: CacheLayout,
-    cells: "ParCells | None" = None,
 ) -> WrittenArtifact | ReadFailure:
     """Write ``data`` into the cache as a two-block float32 file plus its
-    sidecar, names, permutation, cells and realization index.
+    sidecar, names, permutation and realization index.
 
     Every step after the permutation check works with the parameter's
     control-file position -- the identity that survives everything else
-    (hash-ordered files, a group split, a cell resolution). ``cells``' cell
-    and layer arrays, when given, are derived companion data written
-    alongside the map block for a reader's convenience; the parameter
-    names in control-file order remain the identity of everything in this
-    artifact, cells included.
+    (hash-ordered files, a group split). Which cell each parameter sits on
+    is not written here; ``par_cell`` owns that mapping, and readers join
+    it to this artifact by parameter name.
+
+    Per-iteration cell, layer and position files that an older cache left
+    in ``ens/`` are never touched. When any are present the returned
+    artifact carries a note saying how many remain and that they are no
+    longer used.
 
     Atomic as a whole, not just per file: this function tracks every file
     it publishes as it goes, and when it cannot finish -- ``write_par_reals``
@@ -371,42 +380,6 @@ def write_par_ensemble(
         )
         written.append(parmap_entry)
 
-        cell_file_entry = None
-        layer_file_entry = None
-        xy_file_entry = None
-        xy_file_name: str | None = None
-        cell_file_name: str | None = None
-        layer_file_name: str | None = None
-        if cells is not None and n_map > 0:
-            cell_map_order = np.asarray(cells.cell, dtype="<i4")[map_positions]
-            layer_map_order = np.asarray(cells.layer, dtype="<i4")[map_positions]
-            cell_path = layout.ens / f"par_{iteration}.cell.i32"
-            layer_path = layout.ens / f"par_{iteration}.layer.i32"
-            cell_bytes = write_atomic_bytes(
-                cell_path, lambda f: f.write(cell_map_order.tobytes())
-            )
-            layer_bytes = write_atomic_bytes(
-                layer_path, lambda f: f.write(layer_map_order.tobytes())
-            )
-            cell_file_entry = CacheFile(path=str(cell_path.relative_to(layout.root)), bytes=cell_bytes)
-            layer_file_entry = CacheFile(
-                path=str(layer_path.relative_to(layout.root)), bytes=layer_bytes
-            )
-            written.append(cell_file_entry)
-            written.append(layer_file_entry)
-            cell_file_name = cell_path.name
-            layer_file_name = layer_path.name
-            if cells.point_xy is not None:
-                xy_map_order = np.asarray(cells.point_xy, dtype="<f4")[map_positions]
-                if np.isfinite(xy_map_order[:, 0]).any():
-                    xy_path = layout.ens / f"par_{iteration}.xy.f32"
-                    xy_bytes = write_atomic_bytes(xy_path, lambda f: f.write(xy_map_order.tobytes()))
-                    xy_file_entry = CacheFile(
-                        path=str(xy_path.relative_to(layout.root)), bytes=xy_bytes
-                    )
-                    written.append(xy_file_entry)
-                    xy_file_name = xy_path.name
-
         reals_result = write_par_reals(stored.real_names, iteration, layout)
         if isinstance(reals_result, ReadFailure):
             try:
@@ -442,9 +415,6 @@ def write_par_ensemble(
             ],
             "par_names_file": parnames_path.name,
             "block_to_control_file": parmap_path.name,
-            "cell_file": cell_file_name,
-            "layer_file": layer_file_name,
-            "xy_file": xy_file_name,
             "source": {
                 "path": str(stored.source_path),
                 "on_disk_format": stored.on_disk_format,
@@ -462,13 +432,8 @@ def write_par_ensemble(
             parmap_entry,
             reals_result,
         ]
-        if cell_file_entry is not None:
-            files.append(cell_file_entry)
-        if layer_file_entry is not None:
-            files.append(layer_file_entry)
-        if xy_file_entry is not None:
-            files.append(xy_file_entry)
-        return WrittenArtifact(name=name, files=tuple(files), notes=stored.notes)
+        artifact_notes = stored.notes + _leftover_cell_file_notes(layout, iteration)
+        return WrittenArtifact(name=name, files=tuple(files), notes=artifact_notes)
     except Exception as exc:
         try:
             removed, cleanup_notes = _remove_written(written, layout)
@@ -559,9 +524,6 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         n_par = int(sidecar["n_par"])
         parnames_file = sidecar["par_names_file"]
         block_to_control_file = sidecar["block_to_control_file"]
-        cell_file = sidecar.get("cell_file")
-        layer_file = sidecar.get("layer_file")
-        xy_file = sidecar.get("xy_file")
         source = sidecar.get("source", {})
         notes = tuple(sidecar.get("notes", []))
     except (KeyError, TypeError, ValueError) as exc:
@@ -594,9 +556,6 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
     try:
         par_names = tuple((layout.ens / parnames_file).read_text().splitlines())
         block_to_control = np.fromfile(layout.ens / block_to_control_file, dtype="<i4")
-        cell = np.fromfile(layout.ens / cell_file, dtype="<i4") if cell_file else None
-        layer = np.fromfile(layout.ens / layer_file, dtype="<i4") if layer_file else None
-        xy = np.fromfile(layout.ens / xy_file, dtype="<f4") if xy_file else None
 
         map_block = next(b for b in blocks if b.name == "map")
         nomap_block = next(b for b in blocks if b.name == "nomap")
@@ -637,9 +596,6 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         n_par=n_par,
         block_to_control=block_to_control,
         control_to_block=np.argsort(block_to_control),
-        cell=cell,
-        layer=layer,
-        xy=xy,
     )
 
 
@@ -713,9 +669,9 @@ def read_map_row(stored: StoredEnsemble, realization: int | str) -> np.ndarray |
     """The map block's row for this realization, in block order -- no
     permutation applied.
 
-    This is the array ``stored.cell`` and ``stored.layer`` are aligned
-    with; a caller pairing it with ``stored.par_names`` instead would be
-    pairing two different orders.
+    A caller pairing it with ``stored.par_names`` directly would be pairing
+    two different orders; ``enscache.get_block_cells`` names each row
+    through the recorded permutation.
     """
     row = _resolve_realization(stored, realization)
     if isinstance(row, ReadFailure):

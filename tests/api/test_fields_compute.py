@@ -18,7 +18,7 @@ from pesto.ingest.ensembles import load_stored, write_par_ensemble
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.ppfactors import PpGroup
-from pesto.model import GridShape, GroupResolution, ParCells
+from pesto.model import GridShape
 
 FAC = """pp.dat
 zone.dat
@@ -61,12 +61,8 @@ def _stored(tmp_path: Path):
         obs=pd.DataFrame({"obsnme": [], "obgnme": [], "weight": []}),
         par_groups=("G1", "G4"), obs_groups=(), source_path=Path("c.pst"), notes=(), ambiguities=(),
     )
-    cells = ParCells(
-        cell=np.array([0, -1, 1, -1], dtype=np.int32), layer=np.zeros(4, dtype=np.int32), parnme=tuple(NAMES),
-        groups=(GroupResolution("G1", "test", 2, 2), GroupResolution("G4", "unmapped", 0, 2)), summary="", notes=(),
-    )
     written = write_par_ensemble(
-        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
     )
     assert not isinstance(written, ReadFailure)
     assert not isinstance(write_par_agg(data, tables, 0, layout), ReadFailure)

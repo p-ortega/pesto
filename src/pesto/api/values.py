@@ -6,7 +6,8 @@ statistic across realizations, both as raw little-endian bytes in block
 order under one ``shape``/``dtype`` contract -- so the two are
 interchangeable in the same GPU buffer, and Phase 5.1's canvas never has
 to know which one it received. ``GET /cells/{which}`` serves the block-
-order companion arrays Phase 4 wrote at ingest time.
+order cell, layer and position arrays, joined by parameter name from
+``par_cell`` (positions relative to the mesh origin).
 
 Neither route filters by layer or group, and neither re-derives a
 permutation: D-05 puts layer filtering on the client, and the statistic
@@ -16,6 +17,7 @@ permutation is read from the sidecar Phase 4 recorded through
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -24,7 +26,7 @@ from fastapi import APIRouter, Query, Request
 from starlette.responses import Response
 
 from pesto.api.blob import blob_response, cache_headers, cache_tag
-from pesto.api.enscache import STATS, get_stored, map_permutation
+from pesto.api.enscache import STATS, get_block_cells, get_stored, map_permutation
 from pesto.api.problem import problem, problem_from_failure
 from pesto.api.query import RunQuery
 from pesto.cache.layout import CacheLayout
@@ -163,6 +165,18 @@ async def get_parmap(request: Request, iteration: int, v: str | None = None) -> 
     return response
 
 
+def _cells_tag(manifest: Manifest, iteration: int, which: str) -> str | None:
+    """One tag over every artifact the cells arrays are built from, or
+    ``None`` when any of them has no cacheable bytes."""
+    names = [f"par_ens/{iteration}", "par_cell"]
+    if which == "xy":
+        names.append("grid")
+    tags = [cache_tag(manifest, n) for n in names]
+    if any(t is None for t in tags):
+        return None
+    return hashlib.sha256("|".join(tags).encode()).hexdigest()[:16]
+
+
 @router.get("/cells/{which}")
 async def get_cells(
     which: Literal["cell", "layer", "xy"], request: Request, iteration: int, v: str | None = None
@@ -172,12 +186,12 @@ async def get_cells(
         return problem(409, "no run is open")
 
     layout = CacheLayout(root=Path(cache_root))
-    stored = get_stored(request.app.state, cache_root, iteration)
-    if isinstance(stored, ReadFailure):
-        return problem_from_failure(404, stored)
+    block_cells = get_block_cells(request.app.state, cache_root, iteration)
+    if isinstance(block_cells, ReadFailure):
+        return problem_from_failure(404, block_cells)
 
-    array = {"cell": stored.cell, "layer": stored.layer, "xy": stored.xy}[which]
-    if array is None:
+    array = {"cell": block_cells.cell, "layer": block_cells.layer, "xy": block_cells.xy}[which]
+    if array is None or array.size == 0:
         detail = (
             "no point positions were recorded for that iteration"
             if which == "xy"
@@ -186,7 +200,7 @@ async def get_cells(
         return problem(404, detail, artifact=f"par_ens/{iteration}")
 
     manifest = Manifest.load(layout)
-    tag = cache_tag(manifest, f"par_ens/{iteration}")
+    tag = _cells_tag(manifest, iteration, which)
     response = blob_response(array, meta={"order": "block", "iteration": iteration})
     response.headers.update(cache_headers(tag, v))
     return response

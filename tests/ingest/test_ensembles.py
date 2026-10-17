@@ -1,10 +1,10 @@
-"""Cells beside the map block, and the per-iteration realization index.
+"""The ensemble writer and reader, and the per-iteration realization index.
 
-Covers the behaviour Task 2 adds on top of the tracer: a placed group's
-cell and layer land beside the map block in map-block order (including any
-row that came back ``-1``), a run with no grid file or an unreadable one
-ingests normally with an empty map block and a note saying why, and the
-realization index is written in file order with duplicates kept and noted.
+Covers the two-block layout and its permutation, the realization index
+(written in file order, duplicates kept and noted), cleanup after a partial
+write, and the rule that no per-iteration cell, layer or position file is
+written any more: ``par_cell`` owns the parameter-to-cell mapping, and files
+an older cache left behind are noted and never deleted.
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ from pesto.ingest.ensembles import (
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.runner import ingest_run
-from pesto.model import GroupResolution, ParCells
 
 from .fixtures import make_run, sample_values
 
@@ -76,7 +75,6 @@ def _write_sample_ensemble(
     real_names=("base", "34"),
     values=None,
     iteration=0,
-    cells=None,
 ):
     """Write a small ensemble through ``write_par_ensemble`` and return the
     layout plus the source values, so a reader test proves itself against
@@ -93,95 +91,122 @@ def _write_sample_ensemble(
     layout = CacheLayout(root=tmp_path / ".pesto")
     layout.ensure()
     result = write_par_ensemble(
-        data, tables, mappable=mappable, iteration=iteration, layout=layout, cells=cells
+        data, tables, mappable=mappable, iteration=iteration, layout=layout
     )
     assert isinstance(result, WrittenArtifact)
     return layout, values
 
 
-def _fake_cells() -> ParCells:
-    """What a fake adapter's ``locate_par`` would return: three parameters
-    in control-file order, one group (``G1``) placed with one row that
-    fell outside the grid (``-1``), one group (``G2``) placed too."""
-    return ParCells(
-        cell=np.array([5, -1, 9], dtype=np.int32),
-        layer=np.array([0, 0, 1], dtype=np.int32),
-        parnme=("par0", "par1", "par2"),
-        groups=(
-            GroupResolution(group="G1", rule="fake", mapped=1, total=2),
-            GroupResolution(group="G2", rule="fake", mapped=1, total=1),
-        ),
-        summary="fake adapter placed G1 and G2",
-        notes=(),
-    )
-
-
 # ---------------------------------------------------------------------------
-# Cells and layers land beside the map block, in map-block order
+# No per-iteration cell files: par_cell owns the mapping
 # ---------------------------------------------------------------------------
 
+_OLD_CELL_FILES = {
+    "par_0.cell.i32": b"\x01\x00\x00\x00\x02\x00\x00\x00",
+    "par_0.layer.i32": b"\x00\x00\x00\x00\x01\x00\x00\x00",
+    "par_0.xy.f32": b"\x00\x00\x80\x3f" * 4,
+}
 
-def test_write_par_ensemble_writes_cell_and_layer_in_map_block_order(tmp_path):
-    control_names = ["par0", "par1", "par2"]
-    entity_names = ("par0", "par1", "par2")
-    permutation = (0, 1, 2)
-    values = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
-    data = _ensemble_data(values, ("r0", "r1"), entity_names, permutation)
-    tables = _control_tables(control_names, ["G1", "G1", "G2"])
-    cells = _fake_cells()
 
-    layout = CacheLayout(root=tmp_path / ".pesto")
-    layout.ensure()
-
-    result = write_par_ensemble(
-        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+def _write_three_groups(tmp_path, layout=None, **kwargs):
+    data = _ensemble_data(
+        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
+        ("r0", "r1"),
+        ("par0", "par1", "par2"),
+        (0, 1, 2),
     )
-
-    assert isinstance(result, WrittenArtifact)
-    cell_path = layout.ens / "par_0.cell.i32"
-    layer_path = layout.ens / "par_0.layer.i32"
-    assert cell_path.exists()
-    assert layer_path.exists()
-
-    n_map_par = 2
-    assert cell_path.stat().st_size == 4 * n_map_par
-    cell_values = np.frombuffer(cell_path.read_bytes(), dtype="<i4")
-    layer_values = np.frombuffer(layer_path.read_bytes(), dtype="<i4")
-    # par0, par1 (control order, group G1) -- par1's row came back -1.
-    assert list(cell_values) == [5, -1]
-    assert list(layer_values) == [0, 0]
-
-    sidecar = json.loads((layout.ens / "par_0.json").read_text())
-    assert sidecar["cell_file"] == "par_0.cell.i32"
-    assert sidecar["layer_file"] == "par_0.layer.i32"
-
-    cache_files_by_path = {f.path for f in result.files}
-    assert str(cell_path.relative_to(layout.root)) in cache_files_by_path
-    assert str(layer_path.relative_to(layout.root)) in cache_files_by_path
-
-
-def test_write_par_ensemble_writes_no_cell_files_when_map_block_is_empty(tmp_path):
-    control_names = ["par0", "par1"]
-    entity_names = ("par0", "par1")
-    permutation = (0, 1)
-    values = np.array([[1.0, 2.0]], dtype=np.float32)
-    data = _ensemble_data(values, ("r0",), entity_names, permutation)
-    tables = _control_tables(control_names, ["G1", "G1"])
-    cells = _fake_cells()
-
-    layout = CacheLayout(root=tmp_path / ".pesto")
-    layout.ensure()
-
+    tables = _control_tables(["par0", "par1", "par2"], ["G1", "G1", "G2"])
+    if layout is None:
+        layout = CacheLayout(root=tmp_path / ".pesto")
+        layout.ensure()
     result = write_par_ensemble(
-        data, tables, mappable=frozenset(), iteration=0, layout=layout, cells=cells
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, **kwargs
     )
+    return layout, result
+
+
+def test_write_par_ensemble_takes_no_cells_argument(tmp_path):
+    with pytest.raises(TypeError):
+        _write_three_groups(tmp_path, cells=object())
+
+
+def test_write_par_ensemble_writes_no_cell_layer_or_xy_file(tmp_path):
+    layout, result = _write_three_groups(tmp_path)
 
     assert isinstance(result, WrittenArtifact)
     assert not (layout.ens / "par_0.cell.i32").exists()
     assert not (layout.ens / "par_0.layer.i32").exists()
+    assert not (layout.ens / "par_0.xy.f32").exists()
     sidecar = json.loads((layout.ens / "par_0.json").read_text())
-    assert sidecar["cell_file"] is None
-    assert sidecar["layer_file"] is None
+    for key in ("cell_file", "layer_file", "xy_file"):
+        assert key not in sidecar
+    assert not any(
+        f.path.endswith((".cell.i32", ".layer.i32", ".xy.f32")) for f in result.files
+    )
+    assert not any("older cache" in note for note in result.notes)
+
+
+def test_leftover_cell_files_from_an_older_cache_are_kept_and_noted(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    for name, payload in _OLD_CELL_FILES.items():
+        (layout.ens / name).write_bytes(payload)
+
+    layout, result = _write_three_groups(tmp_path, layout=layout)
+
+    assert isinstance(result, WrittenArtifact)
+    for name, payload in _OLD_CELL_FILES.items():
+        assert (layout.ens / name).read_bytes() == payload
+    assert any(
+        "3 files from an older cache remain in ens/ and are no longer used" in note
+        for note in result.notes
+    )
+    note = next(n for n in result.notes if "older cache" in n)
+    for name in _OLD_CELL_FILES:
+        assert name in note
+    assert not any(f.path.endswith(tuple(_OLD_CELL_FILES)) for f in result.files)
+
+
+def test_one_leftover_file_is_noted_in_the_singular(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    (layout.ens / "par_0.cell.i32").write_bytes(b"\x00" * 8)
+
+    layout, result = _write_three_groups(tmp_path, layout=layout)
+
+    assert any(
+        "1 file from an older cache remains in ens/ and is no longer used" in n
+        for n in result.notes
+    )
+
+
+def test_a_failed_write_never_removes_leftover_cell_files(tmp_path, monkeypatch):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    for name, payload in _OLD_CELL_FILES.items():
+        (layout.ens / name).write_bytes(payload)
+    monkeypatch.setattr(ensembles_module, "write_par_reals", _fail_reals("disk full"))
+
+    _layout, result = _write_three_groups(tmp_path, layout=layout)
+
+    assert isinstance(result, ReadFailure)
+    for name, payload in _OLD_CELL_FILES.items():
+        assert (layout.ens / name).read_bytes() == payload
+
+
+def test_load_stored_still_reads_a_sidecar_that_names_the_old_cell_files(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
+    sidecar_path = layout.ens / "par_0.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar.update({"cell_file": "par_0.cell.i32", "layer_file": None, "xy_file": None})
+    sidecar_path.write_text(json.dumps(sidecar))
+
+    stored = load_stored(0, layout)
+
+    assert isinstance(stored, StoredEnsemble)
+    assert not hasattr(stored, "cell")
+    assert not hasattr(stored, "layer")
+    assert not hasattr(stored, "xy")
 
 
 # ---------------------------------------------------------------------------
@@ -298,64 +323,6 @@ def test_load_stored_par_names_are_control_order_and_block_to_control_maps_back(
     # Block order is [par1, par2, par0] (map block first); block_to_control
     # names, for each block position, which control position it came from.
     assert list(stored.block_to_control) == [1, 2, 0]
-
-
-def test_load_stored_cell_and_layer_are_none_without_cells(tmp_path):
-    layout, _ = _write_sample_ensemble(tmp_path)
-
-    stored = load_stored(0, layout)
-
-    assert stored.cell is None
-    assert stored.layer is None
-
-
-def test_load_stored_cell_and_layer_are_int32_arrays_with_cells(tmp_path):
-    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells())
-
-    stored = load_stored(0, layout)
-
-    assert stored.cell is not None
-    assert stored.cell.dtype == np.dtype("int32")
-    assert stored.layer is not None
-    assert stored.layer.dtype == np.dtype("int32")
-
-
-def _fake_cells_with_xy(point_xy) -> ParCells:
-    base = _fake_cells()
-    return ParCells(
-        cell=base.cell,
-        layer=base.layer,
-        parnme=base.parnme,
-        groups=base.groups,
-        summary=base.summary,
-        notes=base.notes,
-        point_xy=point_xy,
-    )
-
-
-def test_load_stored_returns_the_point_position_at_its_block_position(tmp_path):
-    xy = np.full((3, 2), np.nan)
-    xy[0] = [10.0, 20.0]
-    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells_with_xy(xy))
-
-    stored = load_stored(0, layout)
-
-    assert stored.xy is not None
-    rows = stored.xy.reshape(-1, 2)
-    placed_at = int(stored.control_to_block[0])
-    np.testing.assert_array_equal(rows[placed_at], [10.0, 20.0])
-    others = [i for i in range(rows.shape[0]) if i != placed_at]
-    assert np.isnan(rows[others]).all()
-
-
-def test_point_positions_that_are_all_nan_write_no_xy_file(tmp_path):
-    xy = np.full((3, 2), np.nan)
-    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells_with_xy(xy))
-
-    stored = load_stored(0, layout)
-
-    assert stored.xy is None
-    assert not (layout.ens / "par_0.xy.f32").exists()
 
 
 def test_load_stored_missing_payload_file_is_a_read_failure(tmp_path):
@@ -491,13 +458,13 @@ def test_read_map_row_returns_the_map_blocks_row_in_block_order(tmp_path):
     np.testing.assert_array_equal(row, values[0, :2])
 
 
-def test_read_map_row_length_matches_cell_size_when_cells_present(tmp_path):
-    layout, _ = _write_sample_ensemble(tmp_path, cells=_fake_cells())
+def test_read_map_row_length_matches_the_map_block_size(tmp_path):
+    layout, _ = _write_sample_ensemble(tmp_path)
     stored = load_stored(0, layout)
 
     row = read_map_row(stored, "base")
 
-    assert row.shape[0] == stored.cell.size
+    assert row.shape[0] == stored.blocks[0].n_par
 
 
 def test_read_realization_field_unknown_name_names_the_name_looked_for(tmp_path):
@@ -781,19 +748,18 @@ def test_write_par_ensemble_refuses_zero_parameters_and_leaves_no_file(tmp_path)
 # ---------------------------------------------------------------------------
 
 
-def _sample_ensemble_with_cells(tmp_path):
-    """A small ensemble with cells, so both blocks and the cell/layer files
-    are all exercised together by the cleanup and happy-path tests below."""
+def _sample_ensemble(tmp_path):
+    """A small two-block ensemble, so both blocks are exercised together by
+    the cleanup and happy-path tests below."""
     control_names = ["par0", "par1", "par2"]
     entity_names = ("par0", "par1", "par2")
     permutation = (0, 1, 2)
     values = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
     data = _ensemble_data(values, ("r0", "r1"), entity_names, permutation)
     tables = _control_tables(control_names, ["G1", "G1", "G2"])
-    cells = _fake_cells()
     layout = CacheLayout(root=tmp_path / ".pesto")
     layout.ensure()
-    return data, tables, cells, layout
+    return data, tables, layout
 
 
 def _fail_reals(reason: str):
@@ -806,25 +772,23 @@ def _fail_reals(reason: str):
 def test_a_write_par_reals_failure_removes_every_file_already_written_and_names_the_count(
     tmp_path, monkeypatch
 ):
-    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    data, tables, layout = _sample_ensemble(tmp_path)
     monkeypatch.setattr(ensembles_module, "write_par_reals", _fail_reals("disk full"))
 
     result = write_par_ensemble(
-        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
     )
 
     assert isinstance(result, ReadFailure)
     assert "disk full" in result.reason
-    assert "cleaned up 5 file(s)" in result.reason
+    assert "cleaned up 3 file(s)" in result.reason
     assert not layout.par_ens(0).exists()
     assert not (layout.ens / "par_0.parnames.txt").exists()
     assert not (layout.ens / "par_0.parmap.i32").exists()
-    assert not (layout.ens / "par_0.cell.i32").exists()
-    assert not (layout.ens / "par_0.layer.i32").exists()
 
 
 def test_a_cleanup_error_never_replaces_the_original_read_failure(tmp_path, monkeypatch):
-    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    data, tables, layout = _sample_ensemble(tmp_path)
     monkeypatch.setattr(ensembles_module, "write_par_reals", _fail_reals("disk full"))
 
     def _raise(*args, **kwargs):
@@ -833,7 +797,7 @@ def test_a_cleanup_error_never_replaces_the_original_read_failure(tmp_path, monk
     monkeypatch.setattr(ensembles_module, "_remove_written", _raise)
 
     result = write_par_ensemble(
-        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
     )
 
     assert isinstance(result, ReadFailure)
@@ -866,10 +830,10 @@ def test_remove_written_treats_an_already_deleted_file_as_removed(tmp_path):
 
 
 def test_a_successful_write_par_ensemble_is_unchanged_by_the_cleanup_machinery(tmp_path):
-    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    data, tables, layout = _sample_ensemble(tmp_path)
 
     result = write_par_ensemble(
-        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
     )
 
     assert isinstance(result, WrittenArtifact)
@@ -880,8 +844,6 @@ def test_a_successful_write_par_ensemble_is_unchanged_by_the_cleanup_machinery(t
         str((layout.ens / "par_0.parnames.txt").relative_to(root)),
         str((layout.ens / "par_0.parmap.i32").relative_to(root)),
         str((layout.reals / "par_0.reals.json").relative_to(root)),
-        str((layout.ens / "par_0.cell.i32").relative_to(root)),
-        str((layout.ens / "par_0.layer.i32").relative_to(root)),
     ]
     assert [f.path for f in result.files] == expected_order
     for cache_file in result.files:
@@ -889,7 +851,7 @@ def test_a_successful_write_par_ensemble_is_unchanged_by_the_cleanup_machinery(t
 
 
 def test_cleanup_never_unlinks_a_path_under_the_source_run_directory(tmp_path, monkeypatch):
-    data, tables, cells, layout = _sample_ensemble_with_cells(tmp_path)
+    data, tables, layout = _sample_ensemble(tmp_path)
     source_dir = tmp_path / "run"
     source_dir.mkdir()
     source_file = source_dir / "case.0.par.jcb"
@@ -907,7 +869,7 @@ def test_cleanup_never_unlinks_a_path_under_the_source_run_directory(tmp_path, m
     monkeypatch.setattr(Path, "unlink", _recording_unlink)
 
     result = write_par_ensemble(
-        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout, cells=cells
+        data, tables, mappable=frozenset({"G1"}), iteration=0, layout=layout
     )
 
     assert isinstance(result, ReadFailure)
