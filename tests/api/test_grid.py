@@ -71,6 +71,8 @@ def test_mesh_document_reports_the_counts_the_arrays_were_written_with(tmp_path)
     assert body["nlay"] == mesh.nlay
     assert body["bounds"] == list(mesh.bounds)
     assert body["crs"] == mesh.crs
+    assert body["origin"] == list(mesh.origin)
+    assert len(body["origin"]) == 2
     assert body["buffers"]["positions"]["count"] == 2 * mesh.positions.shape[0]
 
 
