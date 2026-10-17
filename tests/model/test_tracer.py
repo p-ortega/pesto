@@ -41,12 +41,13 @@ def test_a_grid_file_becomes_buffers_and_placed_parameters_end_to_end(tmp_path):
     assert mesh.nlay == 2
     assert mesh.crs is None
     xmin, xmax, ymin, ymax = mesh.bounds
+    ox, oy = mesh.origin
     # The fixture's non-zero XORIGIN/YORIGIN proves the mesh sits in model
-    # coordinates rather than local, offset-free ones.
-    assert xmin == pytest.approx(1000.0, abs=1e-2)
-    assert xmax == pytest.approx(1003.6, abs=1e-2)
-    assert ymin == pytest.approx(2000.0, abs=1e-2)
-    assert ymax == pytest.approx(2002.0, abs=1e-2)
+    # coordinates rather than local, offset-free ones: bounds plus origin.
+    assert xmin + ox == pytest.approx(1000.0, abs=1e-2)
+    assert xmax + ox == pytest.approx(1003.6, abs=1e-2)
+    assert ymin + oy == pytest.approx(2000.0, abs=1e-2)
+    assert ymax + oy == pytest.approx(2002.0, abs=1e-2)
 
     shape = adapter.grid_shape()
     assert shape.ncpl == 3

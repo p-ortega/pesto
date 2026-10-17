@@ -1034,7 +1034,8 @@ def _geometry(n: int, nlay: int) -> Geometry:
     mesh = fan_polygons(verts, iverts, nlay=nlay)
     top = np.full(n, 10.0)
     botm = np.array([[10.0 - 5.0 * (k + 1)] * n for k in range(nlay)])
-    return Geometry(mesh.positions, mesh.cell_index, mesh.indices, top=top, botm=botm)
+    world = mesh.positions.astype(np.float64) + np.array(mesh.origin)
+    return Geometry(world, mesh.cell_index, mesh.indices, top=top, botm=botm)
 
 
 def test_xyz_host_cell_places_points_by_x_y_and_z():
