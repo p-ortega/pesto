@@ -177,4 +177,12 @@ describe('renderReadout', () => {
     expect(el.textContent).toContain('par_one (G1): 42.50')
     expect(el.textContent).toContain('x 10, y 0 · layer 0 · base')
   })
+
+  it('a point pick prints world coordinates at a large northing without losing the metre', () => {
+    const el = mount()
+    const pick: ReadoutPick = { kind: 'point', row: 0, layer: 0, x: 712345.25, y: 7019873.75, selectionLabel: 'base' }
+    renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([42.5]) })
+
+    expect(el.textContent).toContain('x 712345, y 7019874 · layer 0 · base')
+  })
 })
