@@ -427,11 +427,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     return drawsAsPointsFor(fieldKind, drawnGroup, ppIndex, joined, pointXy)
   }
 
-  function clearSelection(): void {
+  // The store hears about every ring taken away, so no view keeps a cell or parameter the map no longer shows.
+  function clearSelection(publish = true): void {
     selectedCellId = null
     selectedPointRow = null
     layer?.setSelected(null)
     layer?.setSelectedPoint(null)
+    if (publish) store.set({ cells: new Set(), pars: new Set() }, 'map')
   }
 
   function activeMaskFor(layerIndex: number): Uint8Array {
@@ -630,14 +632,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const reach = 6 * (window.devicePixelRatio || 1)
     const pointIndex = pickPoint(currentPoints, wx, wy, camera.screenToWorld(x + reach, y)[0] - wx)
     if (pointIndex !== null) {
-      clearSelection()
+      clearSelection(false)
       selectedPointRow = currentPoints.rows[pointIndex]
       layer?.setSelectedPoint(pointIndex)
       redraw()
       updateReadout()
       // The ring and readout are already up; the store hears about it after.
       const name = joined[selectedPointRow]?.parnme
-      store.set(name === undefined ? { cells: new Set() } : { cells: new Set(), pars: new Set([name]) }, 'map')
+      store.set({ cells: new Set(), pars: name === undefined ? new Set() : new Set([name]) }, 'map')
       return
     }
     selectedPointRow = null
@@ -646,7 +648,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setSelected(selectedCellId)
     redraw()
     updateReadout()
-    store.set({ cells: selectedCellId === null ? new Set() : new Set([selectedCellId]) }, 'map')
+    store.set({ cells: selectedCellId === null ? new Set() : new Set([selectedCellId]), pars: new Set() }, 'map')
     if (selectedCellId !== null && currentClasses[selectedCellId]?.kind === 'interpolated') {
       fetchContributors(selectedCellId)
     }
