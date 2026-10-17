@@ -2,7 +2,7 @@
 // fetched, and how its cells are classified. The map view draws; this
 // module loads and classifies. It renders nothing and reads no page state.
 
-import { gridCells, gridPointXy, gridValues, type GridValuesQuery } from '../data/client'
+import { ApiError, gridCells, gridPointXy, gridValues, type GridValuesQuery } from '../data/client'
 import { layerActiveMask, referencedMask } from '../data/domain'
 import {
   EMPTY_PP_INDEX,
@@ -71,10 +71,15 @@ export interface ParameterFieldSource {
    * returned for drawing. A real failure of the newest call is thrown.
    */
   fetchField(request: FieldRequest): Promise<FieldAnswer>
+  /** Aborts the field fetch that is out, if any; its answer comes back stale. */
+  cancelField(): void
   /** The parmap and the parameter table are requested together, in that order. */
   loadParameterTables(iteration: number, signal?: AbortSignal): Promise<ParameterTables>
-  /** A run with no pilot points has no index; that is not an error. */
-  loadPpIndex(signal?: AbortSignal): Promise<PpIndex>
+  /**
+   * The ingest always writes an index, empty for a run with no pilot points,
+   * so a failed read is a problem the caller must show; the index is then empty.
+   */
+  loadPpIndex(signal?: AbortSignal): Promise<{ index: PpIndex; problem: string | null }>
   loadCells(iteration: number, signal?: AbortSignal): Promise<{ cell: Int32Array; layer: Int32Array }>
   /** A failed or misshapen read comes back as a problem; the caller says so. */
   loadPointXy(iteration: number, rowCount: number, signal?: AbortSignal): Promise<PointPositions>
@@ -91,7 +96,7 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function createParameterFieldSource(opts: { runId: string }): ParameterFieldSource {
+export function createParameterFieldSource(opts: { runId: string | null }): ParameterFieldSource {
   const slot = new LatestWins<Float32Array>()
   const iterationSlot = new LatestWins<IterationData>()
 
@@ -118,11 +123,12 @@ export function createParameterFieldSource(opts: { runId: string }): ParameterFi
     return { parmap, identities, joined: joinBlockToIdentity(parmap, identities), parTable }
   }
 
-  async function loadPpIndex(signal?: AbortSignal): Promise<PpIndex> {
+  async function loadPpIndex(signal?: AbortSignal): Promise<{ index: PpIndex; problem: string | null }> {
     try {
-      return await fetchPpIndex({ signal })
-    } catch {
-      return EMPTY_PP_INDEX
+      return { index: await fetchPpIndex({ signal }), problem: null }
+    } catch (error) {
+      const reason = error instanceof ApiError ? (error.problem.detail ?? error.problem.title) : describeError(error)
+      return { index: EMPTY_PP_INDEX, problem: reason }
     }
   }
 
@@ -160,7 +166,11 @@ export function createParameterFieldSource(opts: { runId: string }): ParameterFi
     return answer.stale ? { stale: true } : { stale: false, data: answer.value }
   }
 
-  return { fetchField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
+  function cancelField(): void {
+    slot.cancel()
+  }
+
+  return { fetchField, cancelField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
 }
 
 export interface UnmappedEntry {

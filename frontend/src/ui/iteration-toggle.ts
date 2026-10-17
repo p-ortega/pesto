@@ -46,6 +46,7 @@ export function renderIterationToggle(el: HTMLElement, opts: IterationToggleOpti
     const button = document.createElement('button')
     button.type = 'button'
     button.textContent = String(iteration)
+    button.setAttribute('aria-label', `Iteration ${iteration}`)
     button.setAttribute('aria-pressed', String(iteration === opts.current))
     button.addEventListener('click', () => {
       opts.onChange(iteration)
