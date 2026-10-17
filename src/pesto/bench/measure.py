@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence
 
-import numpy as np
-
 from pesto.bench.report import (
     ArtifactTiming,
     CacheSize,
@@ -244,17 +242,23 @@ def machine_facts() -> dict[str, object]:
     }
 
 
+def nearest_rank(sorted_values: Sequence[float], percent: int) -> float:
+    """The k-th smallest of n, k = ceil(percent * n / 100), in integers. The browser check uses the same rule."""
+    k = (percent * len(sorted_values) + 99) // 100
+    return sorted_values[max(1, k) - 1]
+
+
 def percentile_summary(samples: Sequence[float]) -> LatencySummary | None:
     if len(samples) == 0:
         return None
-    values = np.asarray(samples, dtype=float)
-    p50, p95 = np.percentile(values, [50, 95], method="higher")
+    values = [float(x) for x in samples]
+    ranked = sorted(values)
     return LatencySummary(
         count=len(values),
-        first_seconds=float(values[0]),
-        p50_seconds=float(p50),
-        p95_seconds=float(p95),
-        max_seconds=float(values.max()),
+        first_seconds=values[0],
+        p50_seconds=nearest_rank(ranked, 50),
+        p95_seconds=nearest_rank(ranked, 95),
+        max_seconds=ranked[-1],
     )
 
 

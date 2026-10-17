@@ -19,7 +19,7 @@ import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { isSoftwareRenderer, judgedResultsBlocker, parseBenchResult, stripToken, summarize, type BenchTarget } from './bench-json'
+import { isSoftwareRenderer, judgedResultsBlocker, parseBenchResult, realizationSweep, stripToken, summarize, type BenchTarget } from './bench-json'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..')
@@ -873,7 +873,7 @@ for (const target of TARGETS) {
         return
       }
       const last = Math.min(real.max, bench ? 100 : 2)
-      const sweep = Array.from({ length: last }, (_, i) => ({ value: String(i + 1) }))
+      const sweep = realizationSweep(Number(real.value), real.max, last).map((value) => ({ value }))
       const run = () => timeMoves(page, { selector: SEL.realization, steps: sweep, timeoutMs: FRAME_TIMEOUT_MS, gapMs: 60, selectionFromLabel: true })
 
       const cold = await run()
