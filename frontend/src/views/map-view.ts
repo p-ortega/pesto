@@ -364,6 +364,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // A newer iteration switch or field landing makes older fetches drop their answers.
   let generation = 0
   let switchSerial = 0
+  // The iteration whose tables are loading. Until they land, the held field
+  // and cells are the old iteration's, so a click would describe the wrong one.
+  let loadingIteration: number | null = null
 
   // Set once loadAndDraw has put the restored or fresh choices into `committed`.
   let choicesSettled = false
@@ -472,7 +475,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // that must turn warning-coloured on a failed fetch (D-14) without
   // touching chrome.ts, which this plan does not modify.
   function appendSelectionField(): void {
-    const label = statusError ?? selectionLabel(pending ?? committed)
+    const label =
+      statusError ?? (loadingIteration !== null ? `loading iteration ${loadingIteration}` : selectionLabel(pending ?? committed))
     const field = document.createElement('span')
     const labelEl = document.createElement('span')
     labelEl.textContent = 'Selection'
@@ -623,7 +627,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // camera.screenToWorld then pickAtWorld on a canvas click -- both are
   // null until loadAndDraw lands, so a click before then is a no-op.
   function handleCanvasClick(event: MouseEvent): void {
-    if (!camera || !meshGeom) return
+    if (!camera || !meshGeom || loadingIteration !== null) return
     const rect = canvas.getBoundingClientRect()
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width
     const y = ((event.clientY - rect.top) / rect.height) * canvas.height
@@ -1494,11 +1498,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   async function switchIteration(k: number): Promise<void> {
     const token = ++switchSerial
     const from = loadedIteration
+    loadingIteration = k
+    paintStatusBar()
     let answer
     try {
       answer = await source.loadIteration(k)
     } catch (error) {
       if (token !== switchSerial) return
+      loadingIteration = null
+      paintStatusBar()
       addNotice(mapNotice, {
         title: `Iteration ${k} could not be read`,
         detail: `${describeError(error)} The map keeps drawing iteration ${from}.`,
@@ -1509,6 +1517,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (answer.stale || token !== switchSerial) return
+    loadingIteration = null
     const data = answer.data
 
     // Fetches already out were made for the old iteration's rows; they drop their answers.
