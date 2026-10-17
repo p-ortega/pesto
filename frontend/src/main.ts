@@ -125,16 +125,10 @@ function showProgress(notices: RenderNoticeOptions[] = []): void {
   })
 }
 
-// A cache made at a higher version than this pesto writes came from a
-// different pesto, not an older one; saying "older" there would be wrong.
-function whoMadeIt(rewrite: RewriteFacts): string {
-  return rewrite.found > rewrite.expected ? 'a different pesto' : 'an older pesto'
-}
-
 function rewriteNotices(rewrite: RewriteFacts): RenderNoticeOptions[] {
   const notices: RenderNoticeOptions[] = [
     {
-      title: `This cache was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}). Re-reading the run once.`,
+      title: `This cache was made by an older pesto (cache version ${rewrite.found}). Re-reading the run once.`,
       tone: 'info',
     },
   ]
@@ -168,9 +162,27 @@ function renderRewriteRefusal(rewrite: RewriteFacts): void {
   renderNotice(panel, {
     title: "This cache is out of date and can't be rewritten here",
     detail:
-      `The cache in ${rewrite.folder} was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}), ` +
+      `The cache in ${rewrite.folder} was made by an older pesto (cache version ${rewrite.found}), ` +
       "and pesto can't write to that folder. " +
       'Open the run again with --cache-dir set to a folder you can write to.',
+    tone: 'critical',
+  })
+}
+
+// The server refuses to rewrite a newer pesto's cache (it may hold hours of
+// ingest), so the browser must not promise a re-read it will never start.
+function renderNewerCacheRefusal(rewrite: RewriteFacts): void {
+  clearTeardown()
+  const root = getRoot()
+  root.textContent = ''
+  const panel = document.createElement('div')
+  root.appendChild(panel)
+  renderNotice(panel, {
+    title: 'This cache was made by a newer pesto',
+    detail:
+      `The cache in ${rewrite.folder} is cache version ${rewrite.found}, and this pesto writes version ` +
+      `${rewrite.expected}. Rewriting it would throw the newer one away. Open the run with that newer ` +
+      'pesto, or open it again with --cache-dir set to another folder.',
     tone: 'critical',
   })
 }
@@ -203,7 +215,9 @@ async function routeByFreshness(config: RunConfig | null): Promise<void> {
   // nothing for the user to agree to that they did not already choose by
   // opening the run.
   if (state.rewrite) {
-    if (state.rewrite.writable) {
+    if (state.rewrite.found > state.rewrite.expected) {
+      renderNewerCacheRefusal(state.rewrite)
+    } else if (state.rewrite.writable) {
       showProgress(rewriteNotices(state.rewrite))
     } else {
       renderRewriteRefusal(state.rewrite)
