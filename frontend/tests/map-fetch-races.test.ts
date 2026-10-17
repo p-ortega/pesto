@@ -9,6 +9,7 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ArtifactRow, IngestState } from '../src/data/client'
+import { Camera } from '../src/gl/camera'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
@@ -539,5 +540,51 @@ describe('a tab clicked before the map has loaded', () => {
       tab: 'obs',
     })
     expect(root.querySelector('canvas[data-drawn="true"]')).toBeNull()
+  })
+})
+
+describe('the wait while a new iteration loads its tables', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  // Where a world point lands on the canvas after Camera.fit, read back through screenToWorld.
+  function clickAtWorld(canvas: HTMLCanvasElement, wx: number, wy: number): void {
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    const camera = new Camera(canvas.width, canvas.height)
+    camera.fit([0, 2, 0, 1])
+    const [x0, y0] = camera.screenToWorld(0, 0)
+    const [x1, y1] = camera.screenToWorld(1, 1)
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: (wx - x0) / (x1 - x0), clientY: (wy - y0) / (y1 - y0) }))
+  }
+
+  function statusText(root: HTMLElement): string {
+    return root.querySelector('.status-bar')?.textContent ?? ''
+  }
+
+  it('says the iteration is loading and reads no click until it has', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const release = hold(stub, 'tables3')
+
+    toggleButton(root, '3').click()
+    store.flush()
+    await vi.waitFor(() => expect(statusText(root)).toContain('loading iteration 3'))
+    clickAtWorld(canvas, 0.5, 0.5)
+    expect(store.get().cells.size).toBe(0)
+    expect(root.querySelector('.floating-bottom-right')?.textContent).not.toContain('cell 0')
+
+    release()
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.iteration).toBe('3'))
+    await settle()
+    expect(statusText(root)).not.toContain('loading iteration')
+    clickAtWorld(canvas, 0.5, 0.5)
+    expect(Array.from(store.get().cells)).toEqual([0])
   })
 })
