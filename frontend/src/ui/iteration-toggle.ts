@@ -34,7 +34,7 @@ export function renderIterationToggle(el: HTMLElement, opts: IterationToggleOpti
     return { setCurrent: () => {} }
   }
 
-  el.classList.add('floating')
+  el.classList.add('floating', 'iteration-toggle')
   el.setAttribute('role', 'group')
   el.setAttribute('aria-label', 'Iteration')
   el.style.display = 'flex'
