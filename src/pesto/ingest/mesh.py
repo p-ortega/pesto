@@ -104,6 +104,7 @@ def write_mesh(
             "nlay": int(mesh.nlay),
             "bounds": list(mesh.bounds),
             "crs": mesh.crs,
+            "origin": [float(mesh.origin[0]), float(mesh.origin[1])],
             "files": {
                 "positions": {
                     "name": positions_path.name,
@@ -212,6 +213,27 @@ def _read_sidecar(layout: CacheLayout) -> "dict | ReadFailure":
     return raw
 
 
+def _parse_origin(value) -> tuple[float, float]:
+    ox, oy = value
+    return (float(ox), float(oy))
+
+
+def load_mesh_origin(layout: CacheLayout) -> "tuple[float, float] | ReadFailure":
+    """The mesh origin from ``mesh.json`` alone, with no binary read. A
+    missing or malformed origin is a failure, never ``(0, 0)``."""
+    raw = _read_sidecar(layout)
+    if isinstance(raw, ReadFailure):
+        return raw
+    try:
+        return _parse_origin(raw["origin"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReadFailure(
+            name="grid",
+            path=str(layout.grid / "mesh.json"),
+            reason=f"mesh.json has an unexpected shape: {exc}",
+        )
+
+
 def load_idomain(layout: CacheLayout) -> "np.ndarray | None | ReadFailure":
     """The cached idomain, or ``None`` when ``mesh.json`` names none."""
     raw = _read_sidecar(layout)
@@ -288,6 +310,7 @@ def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
         nlay = int(raw["nlay"])
         bounds = tuple(float(b) for b in raw["bounds"])
         crs = raw.get("crs")
+        origin = _parse_origin(raw["origin"])
     except (KeyError, TypeError, ValueError) as exc:
         return ReadFailure(
             name=name,
@@ -315,4 +338,5 @@ def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
         nlay=nlay,
         bounds=bounds,
         crs=crs,
+        origin=origin,
     )
