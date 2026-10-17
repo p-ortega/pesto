@@ -9,6 +9,8 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { MeshLayer } from '../src/gl/mesh-layer'
+import { emptySelection } from '../src/state/rules'
+import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
 import { createRecordingGl } from './support/recording-gl'
 
@@ -180,13 +182,13 @@ function stubFetch(): void {
   )
 }
 
-async function mounted(setup: () => void = () => {}): Promise<HTMLElement> {
+async function mounted(setup: () => void = () => {}, store?: SelectionStore): Promise<HTMLElement> {
   stubFetch()
   setup()
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
-  mountMap(root, { config: CONFIG, state: baseState() })
+  mountMap(root, { config: CONFIG, state: baseState(), store })
   await vi.waitFor(() => {
     expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
   })
@@ -281,6 +283,22 @@ describe('a group placed by x/y draws as dots', () => {
     expect(readout).toContain('pb')
     expect(readout).toContain('x 1, y 1 · layer 0')
     expect(readout).not.toMatch(/\bpa\b/)
+  })
+
+  it('a click on a dot writes its parameter name to the store and clears the cell', async () => {
+    const store = createSelectionStore({ initial: emptySelection('test_run', 0), schedule: () => {} })
+    const root = await mounted(() => {}, store)
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    const scale = 0.96 * Math.min(canvas.width, canvas.height)
+    const x = canvas.width / 2 + scale * (0.75 - 0.5)
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: canvas.width / 2, clientY: canvas.height / 2 }))
+    expect(Array.from(store.get().cells)).toEqual([0])
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 2, clientY: canvas.height / 2 }))
+    expect(Array.from(store.get().pars)).toEqual(['pb'])
+    expect(store.get().cells.size).toBe(0)
   })
 
   it('a click on the host cell away from its dots says how many sit there, not that none do', async () => {
