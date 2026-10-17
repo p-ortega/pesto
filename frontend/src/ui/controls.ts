@@ -50,8 +50,7 @@ export interface FieldChoice {
 export interface SelectionControlsOptions {
   /** The grid's layer count -- the layer slider's range is `[0, nlay - 1]`. */
   nlay: number
-  /** Fixed for this plan; no iteration selector exists yet, so every
-   * emitted selection carries it through unchanged. */
+  /** The iteration every emitted selection carries; `setIteration` moves it. */
   iteration: number
   /** Already resolved by `fetchRealNames` -- this module reads it, it does
    * not fetch it. */
@@ -88,6 +87,16 @@ export interface SelectionControlsHandle {
   sync(selection: Pick<FieldChoice, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>): void
   /** Moves the layer slider without emitting onSelectionChange. */
   setLayer(layer: number): void
+  /** The iteration the emitted selections carry from now on. Emits nothing. */
+  setIteration(iteration: number): void
+  /**
+   * Rebuilds the realization slider from another iteration's names and moves
+   * it to `wanted`, matched exactly by name. Returns the new index, or null
+   * when `wanted` is not there (or no names were recorded): the slider then
+   * reads "—" and emits no realization until the user picks one. An old slider
+   * position is never reused. Emits nothing.
+   */
+  setRealizations(names: RealNamesResult, wanted: string | null): number | null
 }
 
 function isStatistic(value: string): value is Statistic {
@@ -196,6 +205,21 @@ export function renderSelectionControls(
 
   let realNames: string[] = []
   let warningLine: HTMLElement | null = null
+  let iteration = opts.iteration
+  // True while the wanted realization is not in the shown iteration: the slider
+  // position then means nothing and no name is emitted.
+  let realMissing = false
+
+  function notRecordedText(forIteration: number): string {
+    return (
+      `Realization names weren't recorded for iteration ${forIteration}, ` +
+      "so a realization can't be named."
+    )
+  }
+
+  function updateRealDisabled(): void {
+    realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
+  }
 
   if (opts.realNames.ok) {
     realNames = opts.realNames.names
@@ -204,7 +228,7 @@ export function renderSelectionControls(
     realInput.max = String(lastIndex)
     realInput.step = '1'
     realInput.value = '0'
-    realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
+    updateRealDisabled()
     realValue.textContent = realNames[0] ?? '—'
   } else {
     realInput.min = '0'
@@ -215,9 +239,7 @@ export function renderSelectionControls(
     warningLine = document.createElement('div')
     warningLine.classList.add('label')
     warningLine.style.color = 'var(--status-warning)'
-    warningLine.textContent =
-      `Realization names weren't recorded for iteration ${opts.realNames.iteration}, ` +
-      "so a realization can't be named."
+    warningLine.textContent = notRecordedText(opts.realNames.iteration)
   }
 
   // Colormap: the nine names colormap.ts's STOPS declares. jet is offered,
@@ -341,13 +363,13 @@ export function renderSelectionControls(
 
   function currentSelection(): FieldChoice {
     const stat = isStatistic(statSelect.value) ? statSelect.value : 'value'
-    const realization = stat === 'value' ? (realNames[Number(realInput.value)] ?? null) : null
+    const realization = stat === 'value' && !realMissing ? (realNames[Number(realInput.value)] ?? null) : null
     const colormap = isColormap(colormapSelect.value) ? colormapSelect.value : 'viridis'
     const scale: ValueScale = scaleSelect.value === 'log10' ? 'log10' : 'linear'
     const limitsMode: LimitsMode =
       limitsSelect.value === 'minmax' ? 'minmax' : limitsSelect.value === 'manual' ? 'manual' : 'robust'
     return {
-      iteration: opts.iteration,
+      iteration,
       layer: Number(layerInput.value),
       stat,
       realization,
@@ -366,14 +388,23 @@ export function renderSelectionControls(
   })
 
   statSelect.addEventListener('change', () => {
-    const isValueStat = statSelect.value === 'value'
-    realInput.disabled = !isValueStat || realNames.length <= 1
+    updateRealDisabled()
     opts.onSelectionChange(currentSelection())
   })
 
   realInput.addEventListener('input', () => {
+    realMissing = false
     const index = Number(realInput.value)
     realValue.textContent = realNames[index] ?? '—'
+    opts.onSelectionChange(currentSelection())
+  })
+
+  // A range input fires no input event when its thumb is clicked without moving,
+  // so the position it already sits on could never be picked while it reads "—".
+  realInput.addEventListener('click', () => {
+    if (!realMissing || realNames.length === 0) return
+    realMissing = false
+    realValue.textContent = realNames[Number(realInput.value)] ?? '—'
     opts.onSelectionChange(currentSelection())
   })
 
@@ -447,6 +478,47 @@ export function renderSelectionControls(
     setLayer(layer): void {
       layerInput.value = String(layer)
       layerValue.textContent = layerInput.value
+    },
+    setIteration(next): void {
+      iteration = next
+    },
+    setRealizations(names, wanted): number | null {
+      realMissing = false
+      if (!names.ok) {
+        realNames = []
+        realInput.min = '0'
+        realInput.max = '0'
+        realInput.value = '0'
+        realInput.disabled = true
+        realValue.textContent = '—'
+        const text = notRecordedText(names.iteration)
+        if (warningLine === null) {
+          warningLine = document.createElement('div')
+          warningLine.classList.add('label')
+          warningLine.style.color = 'var(--status-warning)'
+          realLabel.after(warningLine)
+        }
+        warningLine.textContent = text
+        realMissing = true
+        return null
+      }
+      warningLine?.remove()
+      warningLine = null
+      realNames = names.names
+      realInput.min = '0'
+      realInput.max = String(Math.max(realNames.length - 1, 0))
+      realInput.step = '1'
+      const index = wanted === null ? -1 : realNames.indexOf(wanted)
+      realInput.value = '0'
+      updateRealDisabled()
+      if (index < 0) {
+        realMissing = true
+        realValue.textContent = '—'
+        return null
+      }
+      realInput.value = String(index)
+      realValue.textContent = realNames[index]
+      return index
     },
   }
 }
