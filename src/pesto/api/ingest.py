@@ -282,10 +282,12 @@ async def start_ingest(request: Request) -> JSONResponse:
         except Exception as exc:  # noqa: BLE001 - reported to the stream, not swallowed
             state.error = exc
         finally:
+            # A failed or cancelled ingest may already have rewritten files,
+            # so the memo goes either way, and before the stream ends.
+            if _invalidate_enscache is not None:
+                _invalidate_enscache(request.app.state, str(layout.root))
             state.done = True
             await state.queue.put(None)
-        if state.error is None and _invalidate_enscache is not None:
-            _invalidate_enscache(request.app.state, str(layout.root))
 
     state.task = asyncio.create_task(run_in_background())
     return JSONResponse({"started": True}, status_code=202)
