@@ -329,6 +329,8 @@ function renderClosingReport(noticeArea: HTMLElement, statusBar: HTMLElement, st
 
 export interface MountProgressOptions {
   onFinished: () => void
+  // Shown above the rows before the ingest starts, in order.
+  notices?: RenderNoticeOptions[]
 }
 
 /**
@@ -375,6 +377,10 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
     })
   }
   paintHeader()
+
+  for (const notice of opts.notices ?? []) {
+    addNotice(noticeArea, notice)
+  }
 
   activatesOnEnter(cancelButton, () => {
     cancelButton.disabled = true

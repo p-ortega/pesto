@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse
 from starlette.responses import StreamingResponse as _EventStreamResponse
 
 from pesto.api.problem import problem, redact_paths
-from pesto.cache.layout import CacheLayout
+from pesto.cache.layout import CACHE_VERSION, CacheLayout, probe_writable
 from pesto.cache.manifest import Manifest
 
 router = APIRouter(prefix="/api/run/ingest")
@@ -81,6 +81,36 @@ def _resolve(request: Request):
     planned = plan_artifacts(run, layout)
     manifest = Manifest.load(layout)
     return run_path, layout, run, planned, manifest
+
+
+def _display_folder(path: Path) -> str:
+    """``path`` for the screen: the home directory shortened to ``~`` when the
+    path sits under it, else the path as given."""
+    path = Path(path)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return str(path)
+    for candidate, base in ((path, home), (path.resolve(), home.resolve())):
+        try:
+            relative = candidate.relative_to(base)
+        except ValueError:
+            continue
+        return "~" if relative == Path(".") else f"~/{relative.as_posix()}"
+    return str(path)
+
+
+def _rewrite_facts(layout: CacheLayout, manifest: Manifest) -> dict[str, Any] | None:
+    """Why an old cache is being re-read, or None when there was no old cache
+    (no manifest, or one whose version could not be read, is a first ingest)."""
+    if manifest.found_cache_version is None:
+        return None
+    return {
+        "found": manifest.found_cache_version,
+        "expected": CACHE_VERSION,
+        "writable": probe_writable(layout.root),
+        "folder": _display_folder(layout.root),
+    }
 
 
 def _artifact_fact(manifest: Manifest, name: str) -> dict[str, Any]:
@@ -157,6 +187,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
+        "rewrite": _rewrite_facts(layout, manifest),
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 

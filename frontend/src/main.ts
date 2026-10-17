@@ -8,8 +8,8 @@
 // toward putting the token back too.
 
 import { forgetToken, hasToken, readTokenOnce } from './auth/token'
-import { apiGet, ApiError, ingestState, type IngestState } from './data/client'
-import { renderNotice } from './ui/chrome'
+import { apiGet, ApiError, ingestState, type IngestState, type RewriteFacts } from './data/client'
+import { renderNotice, type RenderNoticeOptions } from './ui/chrome'
 import { mountPicker } from './ui/dir-picker'
 import { mountEstimate, mountProgress } from './ui/progress'
 import { initTheme } from './ui/theme'
@@ -113,13 +113,29 @@ function showEstimate(): void {
   })
 }
 
-function showProgress(): void {
+function showProgress(notices: RenderNoticeOptions[] = []): void {
   clearTeardown()
   activeTeardown = mountProgress(getRoot(), {
+    notices,
     onFinished: () => {
       void afterIngestFinished()
     },
   })
+}
+
+// A cache made at a higher version than this pesto writes came from a
+// different pesto, not an older one; saying "older" there would be wrong.
+function whoMadeIt(rewrite: RewriteFacts): string {
+  return rewrite.found > rewrite.expected ? 'a different pesto' : 'an older pesto'
+}
+
+function rewriteNotices(rewrite: RewriteFacts): RenderNoticeOptions[] {
+  return [
+    {
+      title: `This cache was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}). Re-reading the run once.`,
+      tone: 'info',
+    },
+  ]
 }
 
 function showMap(config: RunConfig | null, state: IngestState): void {
@@ -142,6 +158,14 @@ async function routeByFreshness(config: RunConfig | null): Promise<void> {
 
   if (state.fresh) {
     showMap(config, state)
+    return
+  }
+
+  // An old cache is re-read at once, with the reason on screen; there is
+  // nothing for the user to agree to that they did not already choose by
+  // opening the run.
+  if (state.rewrite?.writable) {
+    showProgress(rewriteNotices(state.rewrite))
     return
   }
 

@@ -266,6 +266,73 @@ describe('the screen router', () => {
     expect(stub.calls).not.toContain('POST /api/run/ingest')
   })
 
+  describe('an old cache', () => {
+    function oldCacheHandlers(rewrite: Record<string, unknown> | null) {
+      return {
+        'GET /api/run/config': () => ({ status: 200, body: CONFIG_BODY }),
+        'GET /api/run/ingest/state': () => ({
+          status: 200,
+          body: baseState({ fresh: false, rewrite }),
+        }),
+        'GET /api/run/ingest/estimate': () => ({ status: 200, body: ESTIMATE_BODY }),
+        'POST /api/run/ingest': () => ({ status: 202, body: { started: true } }),
+        'GET /api/run/ingest/events': () => ({ status: 200, stream: [] }),
+      }
+    }
+
+    it('goes straight to the progress screen with the reason, and never shows the estimate', async () => {
+      const stub = stubFetch(
+        oldCacheHandlers({ found: 2, expected: 3, writable: true, folder: '~/runs/.pesto' }),
+      )
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('Re-reading the run once')).toBe(true)
+      })
+      expect(screenHasText('This cache was made by an older pesto (cache version 2).')).toBe(true)
+      expect(screenHasText('Agree and ingest')).toBe(false)
+      expect(stub.calls).not.toContain('GET /api/run/ingest/estimate')
+      await vi.waitFor(() => {
+        expect(stub.calls).toContain('POST /api/run/ingest')
+      })
+    })
+
+    it('names the version it actually found', async () => {
+      stubFetch(oldCacheHandlers({ found: 1, expected: 3, writable: true, folder: '~/runs/.pesto' }))
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('cache version 1')).toBe(true)
+      })
+      expect(screenHasText('cache version 2')).toBe(false)
+    })
+
+    it('calls a cache from a higher version "a different pesto", never "an older pesto"', async () => {
+      stubFetch(oldCacheHandlers({ found: 4, expected: 3, writable: true, folder: '~/runs/.pesto' }))
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('a different pesto (cache version 4)')).toBe(true)
+      })
+      expect(screenHasText('an older pesto')).toBe(false)
+    })
+
+    it('still shows the estimate for a first ingest, when there is no rewrite', async () => {
+      const stub = stubFetch(oldCacheHandlers(null))
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('Agree and ingest')).toBe(true)
+      })
+      expect(screenHasText('Re-reading the run once')).toBe(false)
+      expect(stub.calls).not.toContain('POST /api/run/ingest')
+    })
+  })
+
   it('returns to the picker when the estimate is declined', async () => {
     stubFetch({
       'GET /api/run/config': () => ({ status: 200, body: CONFIG_BODY }),

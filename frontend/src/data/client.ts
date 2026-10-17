@@ -284,12 +284,23 @@ export interface Capability {
   blockedBy: { artifact: string; reason: string }[]
 }
 
+// Why a cache is being re-read: the version it was made at, the version this
+// pesto writes, whether its folder can be written, and that folder with the
+// home directory shortened to ~.
+export interface RewriteFacts {
+  found: number
+  expected: number
+  writable: boolean
+  folder: string
+}
+
 export interface IngestState {
   fresh: boolean
   artifacts: ArtifactRow[]
   capabilities: { map: Capability; stats: Capability; chips: Capability }
   ingestSeconds: number | null
   cacheBytes: number | null
+  rewrite?: RewriteFacts | null
 }
 
 export interface IngestEstimate {
@@ -312,6 +323,7 @@ export async function ingestState(): Promise<IngestState> {
     capabilities: { map: unknown; stats: unknown; chips: unknown }
     ingest_seconds: number | null
     cache_bytes: number | null
+    rewrite?: RewriteFacts | null
   }
   return {
     fresh: raw.fresh,
@@ -323,6 +335,7 @@ export async function ingestState(): Promise<IngestState> {
     },
     ingestSeconds: raw.ingest_seconds,
     cacheBytes: raw.cache_bytes,
+    rewrite: raw.rewrite ?? null,
   }
 }
 

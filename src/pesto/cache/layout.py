@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pesto.cache.gitignore import ensure_gitignored
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 _DIR_NAME = ".pesto"
 
 
@@ -38,6 +38,32 @@ def _fallback_root(run_dir: Path) -> Path:
     digest = hashlib.sha256(str(run_dir.resolve()).encode()).hexdigest()[:16]
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     return base / "pesto" / digest
+
+
+def probe_writable(folder: Path) -> bool:
+    """Can a file be created in ``folder``? Answered by a real write, never
+    by permission bits (D-04). Never creates ``folder`` itself.
+
+    The probe name is a fresh uuid4 so two pesto processes probing the same
+    folder cannot unlink each other's file.
+    """
+    probe = Path(folder) / f".probe-{uuid.uuid4().hex}"
+    try:
+        probe.write_bytes(b"")
+        probe.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def run_id_for(run_dir: Path) -> str:
+    """A short stable id for one run: 12 hex characters of the sha256 of the
+    resolved run path. It names the run, it is not a secret.
+
+    Resolving first is what makes a trailing slash or a symlink give the
+    same id as the plain path.
+    """
+    return hashlib.sha256(str(Path(run_dir).resolve()).encode()).hexdigest()[:12]
 
 
 def resolve_cache_root(run_dir: Path, override: Path | None = None) -> Path:
@@ -61,14 +87,11 @@ def resolve_cache_root(run_dir: Path, override: Path | None = None) -> Path:
         raise NotADirectoryError(f"not a directory: {run_path}")
 
     candidate = run_path / _DIR_NAME
-    # A fresh uuid4 per call so two pesto processes probing the same
-    # directory at the same moment cannot unlink each other's probe file.
-    probe = candidate / f".probe-{uuid.uuid4().hex}"
     try:
         candidate.mkdir(parents=True, exist_ok=True)
-        probe.write_bytes(b"")
-        probe.unlink()
     except OSError:
+        return _fallback_root(run_path)
+    if not probe_writable(candidate):
         return _fallback_root(run_path)
     return candidate
 
