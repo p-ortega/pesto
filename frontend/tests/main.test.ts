@@ -474,6 +474,29 @@ describe('the screen router', () => {
     expect(bare.rewrite).toBeNull()
   })
 
+  it('sets the active run from the ingest state after reading it, and clears it on the picker', async () => {
+    stubFetch({
+      'GET /api/run/config': () => ({ status: 200, body: CONFIG_BODY }),
+      'GET /api/run/ingest/state': () => ({ status: 200, body: baseState({ fresh: false, run_id: 'abc123def456' }) }),
+      'GET /api/run/ingest/estimate': () => ({ status: 200, body: ESTIMATE_BODY }),
+      'GET /api/fs/roots': () => ({ status: 200, body: [] }),
+    })
+
+    await bootMain()
+    const run = await import('../src/data/run')
+
+    await vi.waitFor(() => {
+      expect(screenHasText('Agree and ingest')).toBe(true)
+    })
+    expect(run.activeRunId()).toBe('abc123def456')
+
+    findButtonByText('Go back').click()
+    await vi.waitFor(() => {
+      expect(screenHasText('Choose a run directory')).toBe(true)
+    })
+    expect(run.activeRunId()).toBeNull()
+  })
+
   it('returns to the picker when the estimate is declined', async () => {
     stubFetch({
       'GET /api/run/config': () => ({ status: 200, body: CONFIG_BODY }),
