@@ -147,6 +147,24 @@ def test_the_json_keeps_unrounded_seconds_and_the_table_rounds_them() -> None:
     assert "0.123456789" not in table
 
 
+def test_the_table_ends_by_naming_where_cell_picking_is_measured_and_its_limits() -> None:
+    lines = format_table(_result_with_wall(0.5)).splitlines()
+    assert lines[-2] == (
+        "Reopen and slider delay are measured by the browser check, "
+        "and ingest growth by tests/perf."
+    )
+    assert lines[-1] == (
+        "Cell picking is measured by frontend/tests/picking-scale.test.ts: "
+        "index build at or under 1000 ms, warm pick p95 at or under 1 ms."
+    )
+
+
+def test_the_json_carries_the_two_pick_limits() -> None:
+    limits = result_to_dict(_result_with_wall(0.5))["speed_limits"]
+    assert limits["pick_index_build_ms"] == 1000.0
+    assert limits["pick_p95_ms"] == 1.0
+
+
 def test_time_ingest_adds_up_the_workers_own_seconds() -> None:
     rows = [
         _row("par_ens/0", "started", index=0),
