@@ -4,8 +4,9 @@
 // no parameter sitting on the cell, so the readout reaches for the
 // contributors route instead of the D-05 join.
 
-import { apiGet, apiGetBytes } from './client'
+import { apiGet, apiGetBytes, type FetchOptions } from './client'
 import type { CellClass } from './parmap'
+import { activeRunId, runUrl } from './run'
 
 export interface PpGroupInfo {
   group: string
@@ -24,8 +25,8 @@ export interface PpIndex {
 
 export const EMPTY_PP_INDEX: PpIndex = { groups: [], not_interpolable: [], notes: [] }
 
-export async function fetchPpIndex(): Promise<PpIndex> {
-  return (await apiGet('/api/run/grid/pp')) as PpIndex
+export async function fetchPpIndex(opts?: FetchOptions): Promise<PpIndex> {
+  return (await apiGet(runUrl(activeRunId(), '/api/run/grid/pp'), opts)) as PpIndex
 }
 
 export interface FieldQuery {
@@ -35,11 +36,16 @@ export interface FieldQuery {
   stat?: string
 }
 
-export async function gridField(query: FieldQuery): Promise<Float32Array> {
-  const params = new URLSearchParams({ iteration: String(query.iteration), group: query.group })
-  if (query.stat !== undefined) params.set('stat', query.stat)
-  if (query.realization !== undefined) params.set('realization', query.realization)
-  const { buffer } = await apiGetBytes(`/api/run/grid/field?${params.toString()}`)
+export async function gridField(query: FieldQuery, opts?: FetchOptions): Promise<Float32Array> {
+  const { buffer } = await apiGetBytes(
+    runUrl(activeRunId(), '/api/run/grid/field', {
+      iteration: query.iteration,
+      group: query.group,
+      stat: query.stat,
+      realization: query.realization,
+    }),
+    opts,
+  )
   return new Float32Array(buffer)
 }
 
@@ -48,9 +54,15 @@ export interface Contributor {
   weight: number
 }
 
-export async function fieldContributors(iteration: number, group: string, cell: number): Promise<Contributor[]> {
-  const params = new URLSearchParams({ iteration: String(iteration), group, cell: String(cell) })
-  const body = (await apiGet(`/api/run/grid/field/cell?${params.toString()}`)) as { contributors: Contributor[] }
+export async function fieldContributors(
+  iteration: number,
+  group: string,
+  cell: number,
+  opts?: FetchOptions,
+): Promise<Contributor[]> {
+  const body = (await apiGet(runUrl(activeRunId(), '/api/run/grid/field/cell', { iteration, group, cell }), opts)) as {
+    contributors: Contributor[]
+  }
   return body.contributors
 }
 
