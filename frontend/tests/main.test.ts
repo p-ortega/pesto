@@ -309,15 +309,25 @@ describe('the screen router', () => {
       expect(screenHasText('cache version 2')).toBe(false)
     })
 
-    it('calls a cache from a higher version "a different pesto", never "an older pesto"', async () => {
-      stubFetch(oldCacheHandlers({ found: 4, expected: 3, writable: true, folder: '~/runs/.pesto' }))
+    it('refuses a cache from a newer pesto even in a writable folder, naming both versions, and starts nothing', async () => {
+      const stub = stubFetch(
+        oldCacheHandlers({ found: 4, expected: 3, writable: true, folder: '~/runs/.pesto' }),
+      )
 
       await bootMain()
 
       await vi.waitFor(() => {
-        expect(screenHasText('a different pesto (cache version 4)')).toBe(true)
+        expect(screenHasText('made by a newer pesto')).toBe(true)
       })
+      expect(screenHasText('cache version 4')).toBe(true)
+      expect(screenHasText('version 3')).toBe(true)
+      expect(screenHasText('~/runs/.pesto')).toBe(true)
+      expect(screenHasText('--cache-dir')).toBe(true)
       expect(screenHasText('an older pesto')).toBe(false)
+      expect(screenHasText('Re-reading the run once')).toBe(false)
+      expect(mapMounted()).toBe(false)
+      expect(stub.calls).not.toContain('POST /api/run/ingest')
+      expect(stub.calls.some((call) => call.includes('/api/run/ingest/events'))).toBe(false)
     })
 
     it('refuses with a critical notice when the cache folder cannot be written, and starts nothing', async () => {
@@ -342,14 +352,15 @@ describe('the screen router', () => {
       expect(stub.calls.some((call) => call.includes('/api/run/ingest/events'))).toBe(false)
     })
 
-    it('says "a different pesto" in the refusal when the cache came from a higher version', async () => {
+    it('gives a newer cache in an unwritable folder the newer-pesto refusal, not the out-of-date one', async () => {
       stubFetch(oldCacheHandlers({ found: 4, expected: 3, writable: false, folder: '~/runs/.pesto' }))
 
       await bootMain()
 
       await vi.waitFor(() => {
-        expect(screenHasText('a different pesto (cache version 4)')).toBe(true)
+        expect(screenHasText('made by a newer pesto')).toBe(true)
       })
+      expect(screenHasText('out of date')).toBe(false)
       expect(screenHasText('an older pesto')).toBe(false)
     })
 
