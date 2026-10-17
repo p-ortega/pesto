@@ -333,3 +333,35 @@ def test_load_control_table_gives_the_same_failures_as_load_control_tables(tmp_p
     foreign = load_control_table(layout, "par", None)
     assert isinstance(foreign, ReadFailure)
     assert foreign.reason == load_control_tables(layout).reason
+
+
+def test_schema_only_observation_load_has_zero_rows_and_the_same_columns(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+
+    full = load_control_tables(layout)
+    schema = load_control_tables(layout, obs="schema")
+
+    assert isinstance(full, ControlTables)
+    assert isinstance(schema, ControlTables)
+    assert len(full.obs) == len(_OBS_NAMES)
+    assert len(schema.obs) == 0
+    assert list(schema.obs.columns) == list(full.obs.columns)
+    # A categorical column keeps its type but not its values, which are rows.
+    assert {c: d.name for c, d in schema.obs.dtypes.items()} == {
+        c: d.name for c, d in full.obs.dtypes.items()
+    }
+    assert schema.par.equals(full.par)
+
+
+def test_schema_only_observation_load_still_checks_the_notes_version(tmp_path):
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+    notes_path = layout.control / "notes.json"
+    payload = json.loads(notes_path.read_text())
+    payload["cache_version"] = CACHE_VERSION + 1
+    notes_path.write_text(json.dumps(payload))
+
+    assert isinstance(load_control_tables(layout, obs="schema"), ReadFailure)

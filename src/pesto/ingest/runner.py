@@ -31,7 +31,8 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
-from pesto.ingest.tables import write_control
+from pesto.ingest.parcell import write_par_cell
+from pesto.ingest.tables import load_control_tables, write_control
 
 # CellsPayload is what crosses the process boundary in place of a live
 # ParCells: the cell and layer arrays as little-endian int32 bytes plus
@@ -72,7 +73,7 @@ class PlannedArtifact:
     """
 
     name: str
-    kind: str  # "par_ens" | "par_agg" | "control" | "grid" | "pp_factors" | "config"
+    kind: str  # "control" | "grid" | "par_cell" | "par_ens" | "par_agg" | "pp_factors" | "config"
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
@@ -309,6 +310,26 @@ def _write_control_artifact(pst_path: str, cache_root: str) -> "WrittenArtifact 
     return write_control(tables, layout)
 
 
+def _write_par_cell_artifact(grid_path: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
+    """The worker for the ``par_cell`` artifact: resolves which cell each
+    parameter sits on from the cached control table, never from the control
+    file, and writes ``grid/par_cell.parquet`` and its sidecar."""
+    layout = CacheLayout(root=Path(cache_root))
+    tables = load_control_tables(layout, obs="schema")
+    if isinstance(tables, ReadFailure):
+        return tables
+    # The cached table lost its index; the resolver reads names off the index.
+    par = tables.par.set_index("parnme", drop=False)
+    # Deferred import: nothing under pesto.ingest may name pesto.model at
+    # module level (test_no_ingest_file_imports_anything_from_model).
+    from pesto.model.mf6 import Mf6Adapter
+
+    cells = Mf6Adapter(Path(grid_path)).locate_par(par)
+    if isinstance(cells, ReadFailure):
+        return cells
+    return write_par_cell(cells, tables.par, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -443,12 +464,13 @@ def plan_artifacts(
     run: RunLayout, layout: CacheLayout, iterations: Sequence[int] | None = None
 ) -> tuple[PlannedArtifact, ...]:
     """The whole, deterministically ordered list of artifacts one ingest of
-    ``run`` will attempt: an ensemble and a summary for each selected
-    iteration, then ``control``, then ``grid`` when a grid file exists,
-    then ``config``. Iteration artifacts come first in ascending iteration
-    order, ensemble before summary within an iteration -- a caller
-    watching rows go past sees the same sequence every time this is called
-    for the same run and layout.
+    ``run`` will attempt: ``control`` first, so every later worker can read
+    its cached tables; then ``grid`` and ``par_cell`` when a grid file
+    exists; then an ensemble and a summary for each selected iteration in
+    ascending order, ensemble before summary; then ``pp_factors`` when the
+    run carries pilot-point files; then ``config``. A caller watching rows
+    go past sees the same sequence every time this is called for the same
+    run and layout.
 
     ``iterations`` defaults to the first and last numbered iteration,
     exactly as :func:`ingest_run` has always chosen them. When ``noptmax``
@@ -461,8 +483,9 @@ def plan_artifacts(
     Each artifact names the source files it depends on: an ensemble and a
     summary against that iteration's ensemble file and the control file,
     ``control`` against the control file, ``grid`` against the grid file,
-    and ``config`` against the control file and, when one exists, the grid
-    file too. A run with no grid file plans no ``grid`` artifact, and
+    ``par_cell`` against the control file and the grid file, and ``config``
+    against the control file and, when one exists, the grid file too. A run
+    with no grid file plans no ``grid`` and no ``par_cell`` artifact, and
     ``config`` fingerprints only the control file.
     """
     if iterations is None:
@@ -475,7 +498,54 @@ def plan_artifacts(
     pst_bytes = _stat_size(pst_path)
     grid_path = run.grid
 
-    artifacts: list[PlannedArtifact] = []
+    artifacts: list[PlannedArtifact] = [
+        PlannedArtifact(
+            name="control",
+            kind="control",
+            sources=(str(pst_path),),
+            outputs=(
+                str(layout.control / "par.parquet"),
+                str(layout.control / "obs.parquet"),
+                str(layout.control / "notes.json"),
+            ),
+            source_bytes=pst_bytes,
+        )
+    ]
+
+    if grid_path is not None:
+        grid_bytes = _stat_size(grid_path)
+        artifacts.append(
+            PlannedArtifact(
+                name="grid",
+                kind="grid",
+                sources=(str(grid_path),),
+                outputs=(
+                    str(layout.grid / "positions.f32"),
+                    str(layout.grid / "cell_index.f32"),
+                    str(layout.grid / "indices.u32"),
+                    str(layout.grid / "mesh.json"),
+                ),
+                source_bytes=grid_bytes,
+            )
+        )
+        artifacts.append(
+            PlannedArtifact(
+                name="par_cell",
+                kind="par_cell",
+                sources=(str(pst_path), str(grid_path)),
+                outputs=(
+                    str(layout.grid / "par_cell.parquet"),
+                    str(layout.grid / "par_cell.json"),
+                ),
+                source_bytes=pst_bytes + grid_bytes,
+            )
+        )
+        config_sources = (str(pst_path), str(grid_path))
+        config_bytes = pst_bytes + grid_bytes
+    else:
+        config_sources = (str(pst_path),)
+        config_bytes = pst_bytes
+
     for iteration in selected:
         source = run.par_ens.get(iteration)
         if source is None:
@@ -500,42 +570,6 @@ def plan_artifacts(
                 source_bytes=source_bytes,
             )
         )
-
-    artifacts.append(
-        PlannedArtifact(
-            name="control",
-            kind="control",
-            sources=(str(pst_path),),
-            outputs=(
-                str(layout.control / "par.parquet"),
-                str(layout.control / "obs.parquet"),
-                str(layout.control / "notes.json"),
-            ),
-            source_bytes=pst_bytes,
-        )
-    )
-
-    if grid_path is not None:
-        grid_bytes = _stat_size(grid_path)
-        artifacts.append(
-            PlannedArtifact(
-                name="grid",
-                kind="grid",
-                sources=(str(grid_path),),
-                outputs=(
-                    str(layout.grid / "positions.f32"),
-                    str(layout.grid / "cell_index.f32"),
-                    str(layout.grid / "indices.u32"),
-                    str(layout.grid / "mesh.json"),
-                ),
-                source_bytes=grid_bytes,
-            )
-        )
-        config_sources = (str(pst_path), str(grid_path))
-        config_bytes = pst_bytes + grid_bytes
-    else:
-        config_sources = (str(pst_path),)
-        config_bytes = pst_bytes
 
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
@@ -784,6 +818,8 @@ def _dispatch(
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
         return _write_grid_artifact, (grid_path, cache_root)
+    if artifact.kind == "par_cell":
+        return _write_par_cell_artifact, (grid_path, cache_root)
     if artifact.kind == "pp_factors":
         return _write_pp_factors_artifact, (run_dir, pst_path, grid_path, cache_root)
     if artifact.kind == "config":
