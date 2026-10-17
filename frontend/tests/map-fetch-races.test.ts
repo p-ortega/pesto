@@ -443,3 +443,50 @@ describe('a colour choice made while an iteration switch loads its field', () =>
     expect(stub.valuesCalls.length).toBe(callsBefore)
   })
 })
+
+describe('a statistic or realization change while the drawn group has nothing in the shown iteration', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    window.__pestoFrames = []
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    delete (window as { __pestoFrames?: unknown }).__pestoFrames
+  })
+
+  function drawnNotice(root: HTMLElement): string {
+    return root.querySelector('[data-testid="iteration-drawn-notice"]')?.textContent ?? ''
+  }
+
+  it('keeps the notice, draws nothing and fetches nothing', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const instance = await meshLayerInstance()
+    setInput(root, 'Parameter group', 'sy', 'change')
+    toggleButton(root, '3').click()
+    store.flush()
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('group sy has nothing to draw in iteration 3'))
+    const callsBefore = stub.valuesCalls.length
+
+    setInput(root, 'Statistic', 'mean', 'change')
+    await settle()
+    expect(drawnNotice(root)).toContain('group sy has nothing to draw in iteration 3')
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(legendText(root)).toBe('')
+    expect(lastValues(instance).every((v) => Number.isNaN(v))).toBe(true)
+
+    setInput(root, 'Statistic', 'value', 'change')
+    setInput(root, 'Realization', '0')
+    await settle()
+    expect(drawnNotice(root)).toContain('group sy has nothing to draw in iteration 3')
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(legendText(root)).toBe('')
+
+    // A group this iteration does draw still fetches, and the notice goes.
+    setInput(root, 'Parameter group', 'hk', 'change')
+    await vi.waitFor(() => expect(drawnNotice(root)).toBe(''))
+    expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '3', group: null, realization: 'r017', stat: null })
+  })
+})
