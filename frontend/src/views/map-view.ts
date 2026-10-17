@@ -111,7 +111,8 @@ export interface MapViewOptions {
 }
 
 export interface MapViewHandle {
-  viewFields(): MapViewFields
+  /** Null until the map has read the saved choices and settled its own; nothing it holds before that was chosen. */
+  viewFields(): MapViewFields | null
 }
 
 function formatBytes(bytes: number): string {
@@ -364,9 +365,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let generation = 0
   let switchSerial = 0
 
+  // Set once loadAndDraw has put the restored or fresh choices into `committed`.
+  let choicesSettled = false
+
   // D-11: the shell saves the divider and these choices together, on one
   // debounced timer. This view only says when one of its choices moved.
-  function viewFields(): MapViewFields {
+  function viewFields(): MapViewFields | null {
+    if (!choicesSettled) return null
     return {
       colormap: committed.colormap,
       reverse: committed.reverseColormap,
@@ -1804,6 +1809,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     // A saved layer holding none of a dot group's dots gives way to the layer that does.
     committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
+    choicesSettled = true
 
     // Placed before pickerEl, not appended at the end: the controls come
     // first in the top-left cluster, both visually (flex column) and in
