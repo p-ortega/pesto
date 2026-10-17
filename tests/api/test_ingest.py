@@ -844,9 +844,12 @@ def test_an_old_cache_in_an_unwritable_folder_refuses_the_start_with_409(tmp_pat
     assert response.status_code == 409
     body = response.json()
     assert body["title"] == "the cache is out of date and cannot be rewritten here"
-    assert "--cache-dir" in body["detail"]
-    assert "~" in body["detail"]
-    assert str(tmp_path) not in body["detail"]
+    assert body["folder"] == "~/somewhere/cache"
+    assert body["detail"] == (
+        "the cache was made at cache version 2 and pesto cannot write to its folder; "
+        "open the run again with --cache-dir set to a folder that can be written"
+    )
+    assert str(tmp_path) not in response.text
     assert getattr(app.state, "ingest", None) is None
 
 
