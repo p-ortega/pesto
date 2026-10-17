@@ -6,6 +6,8 @@
 // against a stubbed fetch, with only the two GL modules mocked.
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ArtifactRow, IngestState } from '../src/data/client'
 import { emptySelection } from '../src/state/rules'
@@ -81,6 +83,15 @@ describe('renderIterationToggle', () => {
     expect(buttons.map((b) => b.textContent)).toEqual(['0', '3'])
     expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
     expectNoRunTogetherText(el, 'iteration toggle')
+  })
+
+  it('carries the class the stylesheet uses to mark the pressed iteration', () => {
+    const el = document.createElement('div')
+    renderIterationToggle(el, { iterations: [0, 1], current: 1, onChange: vi.fn() })
+
+    expect(el.classList.contains('iteration-toggle')).toBe(true)
+    const css = readFileSync(resolve(__dirname, '../src/style.css'), 'utf8')
+    expect(css).toContain(".iteration-toggle button[aria-pressed='true']")
   })
 
   it('calls onChange with the clicked iteration and moves the press with setCurrent', () => {
