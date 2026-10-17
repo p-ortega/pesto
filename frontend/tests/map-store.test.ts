@@ -254,3 +254,84 @@ describe('a click on the map writes to the store', () => {
     expect(store.get().cells.size).toBe(0)
   })
 })
+
+function setInput(root: HTMLElement, label: string, value: string, event = 'input'): void {
+  const el = root.querySelector(`[aria-label="${label}"]`) as HTMLInputElement | HTMLSelectElement
+  el.value = value
+  el.dispatchEvent(new Event(event))
+}
+
+describe('the map publishes its choices and follows other views', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('holds the drawn iteration, layer, colour and realization once the first draw is up', async () => {
+    const store = manualStore()
+    await mountedWith(store)
+
+    const s = store.get()
+    expect(s.iteration).toBe(0)
+    expect(s.layer).toBe(0)
+    expect(s.colour).toEqual({ source: 'par', stat: 'value' })
+    expect(s.reals).toEqual(new Set(['base']))
+  })
+
+  it('writes a layer move, a realization move and a statistic change at once', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+
+    setInput(root, 'Layer', '1')
+    expect(store.get().layer).toBe(1)
+
+    setInput(root, 'Realization', '2')
+    expect(store.get().reals).toEqual(new Set(['r002']))
+
+    setInput(root, 'Statistic', 'mean', 'change')
+    expect(store.get().colour.stat).toBe('mean')
+    expect(store.get().reals).toEqual(new Set(['r002']))
+  })
+
+  it('moves the layer slider and redraws for a layer set by another view, without a fetch', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const instance = await meshLayerInstance()
+    const setValuesBefore = instance.setValues.mock.calls.length
+    const valuesFetchesBefore = stub.calls.filter((c) => c === 'GET /api/run/grid/values').length
+
+    store.set({ layer: 1 }, 'test')
+    store.flush()
+
+    expect((root.querySelector('[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
+    expect(instance.setValues.mock.calls.length).toBeGreaterThan(setValuesBefore)
+    expect(stub.calls.filter((c) => c === 'GET /api/run/grid/values').length).toBe(valuesFetchesBefore)
+  })
+
+  it('does not apply its own layer move a second time', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+    const instance = await meshLayerInstance()
+
+    setInput(root, 'Layer', '1')
+    const setValuesAfterMove = instance.setValues.mock.calls.length
+    store.flush()
+
+    expect(instance.setValues.mock.calls.length).toBe(setValuesAfterMove)
+  })
+
+  it('says so, and keeps drawing, when another view asks for a layer the grid does not have', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+
+    store.set({ layer: 7 }, 'test')
+    store.flush()
+
+    expect((root.querySelector('[aria-label="Layer"]') as HTMLInputElement).value).toBe('0')
+    expect(root.querySelector('[data-testid="map-notices"]')?.textContent).toContain('layer 7')
+  })
+})

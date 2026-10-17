@@ -50,6 +50,7 @@ import {
   type ParameterFieldSource,
   type UnmappedEntry,
 } from './parameter-field-source'
+import type { SharedSelection } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 
 // MAP-08: how long a lost context is given to come back on its own before
@@ -324,6 +325,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     manualLimits: null,
   }
   let pending: FieldChoice | null = null
+  // The last choice this view put into the store, so a control move writes
+  // only the fields it changed.
+  let reported: FieldChoice = committed
   let statusError: string | null = null
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
@@ -787,6 +791,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       clearSelection()
       scheduleFetch(next)
       updateReadout()
+      publishChoice({ ...reported, layer: nextLayer })
       return
     }
     pendingGroup = null
@@ -804,6 +809,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     deriveAndDraw()
     updateReadout()
     scheduleViewWrite()
+    publishChoice({ ...reported, layer: nextLayer })
   }
 
   function dotLayerFor(group: string): number | null {
@@ -1161,6 +1167,26 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     scheduleViewWrite()
   }
 
+  // The part of a choice other views care about, in the store's own terms.
+  // The realization is named only while a single realization is drawn.
+  function storePatch(choice: FieldChoice, before: FieldChoice | null): Partial<SharedSelection> {
+    const patch: Partial<SharedSelection> = {}
+    if (before === null || choice.layer !== before.layer) patch.layer = choice.layer
+    if (before === null || choice.iteration !== before.iteration) patch.iteration = choice.iteration
+    if (before === null || choice.stat !== before.stat) patch.colour = { source: 'par', stat: choice.stat }
+    const named = choice.stat === 'value' ? choice.realization : null
+    if (named !== null && (before === null || before.stat !== 'value' || named !== before.realization)) {
+      patch.reals = new Set([named])
+    }
+    return patch
+  }
+
+  // Local effects come first, so the map never waits a frame for its own change.
+  function publishChoice(choice: FieldChoice): void {
+    store.set(storePatch(choice, reported), 'map')
+    reported = choice
+  }
+
   function handleSelectionChange(next: FieldChoice): void {
     const needsFetch =
       next.stat !== committed.stat ||
@@ -1168,9 +1194,29 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       next.iteration !== committed.iteration
     if (needsFetch) {
       scheduleFetch(next)
+    } else {
+      committed = next
+      deriveAndDraw()
+      scheduleViewWrite()
+    }
+    publishChoice(next)
+  }
+
+  // Another view moved the layer: follow it with no fetch, the way a layer
+  // slider move does. A change written only by this view is already applied.
+  function followForeignLayer(layerIndex: number, origins: ReadonlySet<string>): void {
+    if (origins.size === 1 && origins.has('map')) return
+    if (!Number.isInteger(layerIndex) || layerIndex < 0 || layerIndex >= (mesh?.nlay ?? 0)) {
+      addNotice(mapNotice, {
+        title: 'A layer was asked for that this grid does not have',
+        detail: `Another view asked for layer ${layerIndex}; the grid has ${mesh?.nlay ?? 0}. The map keeps drawing layer ${committed.layer}.`,
+        tone: 'serious',
+      })
       return
     }
-    committed = next
+    committed = { ...committed, layer: layerIndex }
+    reported = { ...reported, layer: layerIndex }
+    controlsHandle?.setLayer(layerIndex)
     deriveAndDraw()
     scheduleViewWrite()
   }
@@ -1429,6 +1475,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       onFitToExtent: fitToExtent,
     })
     controlsHandle.setLayer(committed.layer)
+
+    reported = committed
+    store.set(storePatch(committed, null), 'map')
+    store.subscribe(
+      (selection) => selection.layer,
+      (next, _prev, origins) => followForeignLayer(next.layer, origins),
+    )
 
     await performFetch(committed)
   }
