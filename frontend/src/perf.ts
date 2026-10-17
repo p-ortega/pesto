@@ -10,6 +10,8 @@ export interface FrameStamp {
   reverse?: boolean
   scale?: string
   limits?: string
+  // The iteration the frame shows, so an iteration redraw can be told from others.
+  iteration?: number
 }
 
 declare global {
