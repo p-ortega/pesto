@@ -269,14 +269,20 @@ def test_a_rotated_offset_grid_reports_bounds_matching_the_transformed_geometry_
         float(expected_y.max()),
     )
 
-    for actual, expected in zip(mesh.bounds, expected_bounds):
+    xmin, xmax, ymin, ymax = mesh.bounds
+    ox, oy = mesh.origin
+    world_bounds = (xmin + ox, xmax + ox, ymin + oy, ymax + oy)
+    for actual, expected in zip(world_bounds, expected_bounds):
         assert actual == pytest.approx(expected, abs=1e-2)
 
     at_origin = write_disv_grb(
         tmp_path / "origin.disv.grb", xorigin=0.0, yorigin=0.0, angrot=0.0
     )
-    origin_bounds = Mf6Adapter(at_origin).grid_mesh().bounds
-    assert mesh.bounds != origin_bounds
+    origin_mesh = Mf6Adapter(at_origin).grid_mesh()
+    oxmin, oxmax, oymin, oymax = origin_mesh.bounds
+    oox, ooy = origin_mesh.origin
+    origin_world_bounds = (oxmin + oox, oxmax + oox, oymin + ooy, oymax + ooy)
+    assert world_bounds != origin_world_bounds
 
 
 # ---------------------------------------------------------------------------

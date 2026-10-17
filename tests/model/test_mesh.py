@@ -262,8 +262,14 @@ def test_a_rotated_offset_grid_reports_bounds_matching_the_transformed_geometry(
         tmp_path / "rotated.disv.grb", xorigin=1000.0, yorigin=2000.0, angrot=30.0
     )
 
-    origin_bounds = Mf6Adapter(at_origin).grid_mesh().bounds
-    rotated_bounds = Mf6Adapter(rotated_and_offset).grid_mesh().bounds
+    def world_bounds(path):
+        mesh = Mf6Adapter(path).grid_mesh()
+        xmin, xmax, ymin, ymax = mesh.bounds
+        ox, oy = mesh.origin
+        return (xmin + ox, xmax + ox, ymin + oy, ymax + oy)
+
+    origin_bounds = world_bounds(at_origin)
+    rotated_bounds = world_bounds(rotated_and_offset)
 
     assert rotated_bounds != origin_bounds
     # Offset alone would shift bounds by exactly (1000, 1000, 2000, 2000);
@@ -280,3 +286,20 @@ def test_pesto_model_never_imports_or_calls_a_reprojection_library():
     assert "pyproj" not in source
     for forbidden in ("to_crs", "set_crs", "reproject"):
         assert forbidden not in source
+
+
+@pytest.mark.slow
+def test_a_real_run_at_a_northing_near_7e6_keeps_sub_millimetre_accuracy(pl253_run):
+    from pesto.model.mf6 import Mf6Adapter
+
+    adapter = Mf6Adapter(pl253_run / "pl253.disv.grb")
+
+    mesh = adapter.grid_mesh()
+    geometry = adapter.geometry()
+
+    assert not isinstance(mesh, ReadFailure)
+    assert not isinstance(geometry, ReadFailure)
+    ymin, ymax = geometry.positions[:, 1].min(), geometry.positions[:, 1].max()
+    assert ymin > 6.9e6 and ymax < 7.1e6
+    world = mesh.positions.astype(np.float64) + np.array(mesh.origin)
+    assert np.abs(world - geometry.positions).max() <= 1e-3
