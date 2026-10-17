@@ -89,3 +89,41 @@ export function applyPatch(current: SharedSelection, patch: Partial<SharedSelect
     colour: { source: merged.colour.source, stat: merged.colour.stat },
   }
 }
+
+export type SelectMode = 'replace' | 'add' | 'remove'
+
+function combine<T>(current: ReadonlySet<T>, ids: readonly T[], mode: SelectMode): Set<T> {
+  if (mode === 'replace') return new Set(ids)
+  const out = new Set(current)
+  for (const id of ids) {
+    if (mode === 'add') out.add(id)
+    else out.delete(id)
+  }
+  return out
+}
+
+export function selectCells(s: SharedSelection, ids: readonly number[], mode: SelectMode): SharedSelection {
+  return applyPatch(s, { cells: combine(s.cells, ids, mode) })
+}
+
+export function selectSites(s: SharedSelection, ids: readonly number[], mode: SelectMode): SharedSelection {
+  return applyPatch(s, { sites: combine(s.sites, ids, mode) })
+}
+
+export function selectPars(s: SharedSelection, names: readonly string[], mode: SelectMode): SharedSelection {
+  return applyPatch(s, { pars: combine(s.pars, names, mode) })
+}
+
+// Adding to 'all' starts a named set. Removing from 'all' changes nothing,
+// since there is no named set to take names out of.
+export function selectReals(s: SharedSelection, names: readonly string[], mode: SelectMode): SharedSelection {
+  if (s.reals === 'all') {
+    if (mode === 'remove') return applyPatch(s, {})
+    return applyPatch(s, { reals: new Set(names) })
+  }
+  return applyPatch(s, { reals: combine(s.reals, names, mode) })
+}
+
+export function clearReals(s: SharedSelection): SharedSelection {
+  return applyPatch(s, { reals: 'all' })
+}
