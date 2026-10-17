@@ -190,6 +190,9 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         )
 
     grid_names = [pa.name for pa in planned if pa.kind == "grid"]
+    # Since 07-07 par_cell is the only source of cells and positions; without
+    # it par_ens is recorded ok with an empty map block.
+    par_cell_names = [pa.name for pa in planned if pa.kind == "par_cell"]
     par_ens_names = [pa.name for pa in planned if pa.kind == "par_ens"]
     par_agg_names = [pa.name for pa in planned if pa.kind == "par_agg"]
     config_names = [pa.name for pa in planned if pa.kind == "config"]
@@ -198,7 +201,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         "fresh": fresh,
         "artifacts": artifacts_out,
         "capabilities": {
-            "map": _capability(manifest, required=grid_names, any_of=par_ens_names),
+            "map": _capability(manifest, required=grid_names + par_cell_names, any_of=par_ens_names),
             "stats": _capability(manifest, required=[], any_of=par_agg_names),
             "chips": _capability(manifest, required=config_names, any_of=[]),
         },
