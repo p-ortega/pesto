@@ -19,12 +19,20 @@ class SpeedLimits:
     ingest_growth_time_factor: float = 10.0
     slider_fetch_p95_ms: float = 150.0
     slider_no_fetch_p95_ms: float = 50.0
+    pick_index_build_ms: float = 1000.0
+    pick_p95_ms: float = 1.0
 
 
 SPEED_LIMITS = SpeedLimits()
 
 # "or less" limits pass when exactly at the limit; "under" limits do not.
-_AT_OR_UNDER = ("reopen_seconds", "values_p95_seconds", "cache_ratio")
+_AT_OR_UNDER = (
+    "reopen_seconds",
+    "values_p95_seconds",
+    "cache_ratio",
+    "pick_index_build_ms",
+    "pick_p95_ms",
+)
 _STRICTLY_UNDER = (
     "ingest_growth_time_factor",
     "slider_fetch_p95_ms",
