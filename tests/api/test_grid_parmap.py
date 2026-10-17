@@ -21,6 +21,7 @@ from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
 from pesto.ingest.control import ControlTables
 from pesto.ingest.ensembles import StoredEnsemble, load_stored, write_par_ensemble
+from pesto.ingest.parcell import write_par_cell
 from pesto.ingest.ensfile import EnsembleData
 from pesto.model import GroupResolution, ParCells
 
@@ -111,27 +112,32 @@ def _write_case(tmp_path, *, iteration: int = 0):
     data = _ensemble_data()
 
     ens_result = write_par_ensemble(
-        data, tables, mappable=MAPPABLE, iteration=iteration, layout=layout, cells=_cells()
+        data, tables, mappable=MAPPABLE, iteration=iteration, layout=layout
     )
     assert isinstance(ens_result, WrittenArtifact), ens_result
-    return layout, ens_result
+    cell_result = write_par_cell(_cells(), tables.par, layout)
+    assert isinstance(cell_result, WrittenArtifact), cell_result
+    return layout, ens_result, cell_result
 
 
-def _write_manifest(layout: CacheLayout, run_dir: Path, iteration: int, ens_result) -> Manifest:
+def _write_manifest(
+    layout: CacheLayout, run_dir: Path, iteration: int, ens_result, cell_result
+) -> Manifest:
     manifest = Manifest.empty(str(run_dir))
     source = run_dir / "case.0.par.jcb"
     source.write_text("original ensemble source bytes")
     fingerprint = SourceFingerprint.of(source)
     manifest.mark_ok(f"par_ens/{iteration}", sources=[fingerprint], files=ens_result.files)
+    manifest.mark_ok("par_cell", sources=[fingerprint], files=cell_result.files)
     manifest.save(layout)
     return manifest
 
 
 def _setup(tmp_path, iteration: int = 0) -> CacheLayout:
-    layout, ens_result = _write_case(tmp_path, iteration=iteration)
+    layout, ens_result, cell_result = _write_case(tmp_path, iteration=iteration)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    _write_manifest(layout, run_dir, iteration, ens_result)
+    _write_manifest(layout, run_dir, iteration, ens_result, cell_result)
     return layout
 
 
@@ -167,19 +173,20 @@ def test_parmap_values_equal_the_recorded_block_to_control_permutation(tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Cache tag: shared with GET /cells/{which} on the same artifact
+# Cache tag: parmap and /cells/{which} both honour a tag sent back
 # ---------------------------------------------------------------------------
 
 
-def test_parmap_cache_headers_match_the_cells_route_for_the_same_iteration(tmp_path):
+def test_parmap_and_the_cells_route_both_honour_the_tag_they_sent(tmp_path):
     layout = _setup(tmp_path)
     client = _opened_client(layout)
 
-    parmap_resp = client.get("/api/run/grid/parmap", params={"iteration": 0})
-    cells_resp = client.get("/api/run/grid/cells/cell", params={"iteration": 0})
-
-    assert parmap_resp.headers["etag"] == cells_resp.headers["etag"]
-    assert parmap_resp.headers["cache-control"] == cells_resp.headers["cache-control"]
+    for path in ("/api/run/grid/parmap", "/api/run/grid/cells/cell"):
+        first = client.get(path, params={"iteration": 0})
+        assert first.headers["cache-control"] == "no-store"
+        tag = first.headers["etag"].strip('"')
+        again = client.get(path, params={"iteration": 0, "v": tag})
+        assert "immutable" in again.headers["cache-control"]
 
 
 # ---------------------------------------------------------------------------
