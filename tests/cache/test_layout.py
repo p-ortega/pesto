@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from pesto.cache.layout import CACHE_VERSION, CacheLayout, for_run, resolve_cache_root
+from pesto.cache.layout import (
+    CACHE_VERSION,
+    CacheLayout,
+    for_run,
+    probe_writable,
+    resolve_cache_root,
+    run_id_for,
+)
 
 _IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
@@ -216,3 +223,59 @@ def test_a_field_memo_path_stays_in_its_own_folder_whatever_the_group_or_key(tmp
     for path in (layout.pp_field(name, 0, "t", "base"), layout.pp_field("G", 0, "t", name)):
         assert path.resolve().is_relative_to(fields.resolve())
         assert len(path.relative_to(fields).parts) == 4
+
+
+def test_cache_version_is_three():
+    assert CACHE_VERSION == 3
+
+
+def test_probe_writable_is_true_on_a_writable_folder_and_leaves_nothing_behind(tmp_path):
+    assert probe_writable(tmp_path) is True
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_probe_writable_is_false_and_creates_nothing_for_a_missing_folder(tmp_path):
+    missing = tmp_path / "not-there"
+
+    assert probe_writable(missing) is False
+    assert not missing.exists()
+
+
+def test_probe_writable_is_false_when_the_probe_write_fails(tmp_path, monkeypatch):
+    def _raise(self, *args, **kwargs):
+        raise OSError("simulated probe write failure")
+
+    monkeypatch.setattr(Path, "write_bytes", _raise)
+
+    assert probe_writable(tmp_path) is False
+
+
+def test_run_id_is_twelve_lowercase_hex_characters(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+
+    run_id = run_id_for(run)
+
+    assert len(run_id) == 12
+    assert run_id == run_id.lower()
+    assert set(run_id) <= set("0123456789abcdef")
+
+
+def test_run_id_is_the_same_for_a_trailing_slash_a_dot_segment_and_a_symlink(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(run)
+
+    assert run_id_for(Path(str(run) + "/")) == run_id_for(run)
+    assert run_id_for(run / ".") == run_id_for(run)
+    assert run_id_for(link) == run_id_for(run)
+
+
+def test_run_id_differs_for_two_different_directories(tmp_path):
+    run_a = tmp_path / "run-a"
+    run_b = tmp_path / "run-b"
+    run_a.mkdir()
+    run_b.mkdir()
+
+    assert run_id_for(run_a) != run_id_for(run_b)

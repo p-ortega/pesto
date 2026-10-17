@@ -192,6 +192,13 @@ def _notes_from(raw: object) -> tuple[str, ...]:
     return tuple(raw)
 
 
+def _plain_int(value: object) -> int | None:
+    """``value`` when it is a real integer (a bool is not one), else None."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
 @dataclass
 class Manifest:
     """A run's cache state: which artifacts exist, what sources they were
@@ -208,6 +215,10 @@ class Manifest:
     artifacts: dict[str, Artifact] = field(default_factory=dict)
     ingest_seconds: float | None = None
     cache_bytes: int | None = None
+    # Set only when a manifest of another cache version was loaded, so the
+    # caller can say why the cache is being re-read. Never saved.
+    found_cache_version: int | None = None
+    found_cache_bytes: int | None = None
 
     @classmethod
     def empty(cls, run_dir: str) -> "Manifest":
@@ -337,8 +348,14 @@ class Manifest:
 
         if data.get("cache_version") != CACHE_VERSION:
             # D-08: a version bump is a hard invalidation, outranking size,
-            # mtime and checksum alike -- no artifacts survive it.
-            return cls(cache_version=CACHE_VERSION, run_dir=run_dir)
+            # mtime and checksum alike -- no artifacts survive it. The version
+            # and size found are kept so the caller can say why.
+            return cls(
+                cache_version=CACHE_VERSION,
+                run_dir=run_dir,
+                found_cache_version=_plain_int(data.get("cache_version")),
+                found_cache_bytes=_plain_int(data.get("cache_bytes")),
+            )
 
         raw_artifacts = data.get("artifacts", {})
         if not isinstance(raw_artifacts, dict):

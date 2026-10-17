@@ -8,10 +8,10 @@
 // toward putting the token back too.
 
 import { forgetToken, hasToken, readTokenOnce } from './auth/token'
-import { apiGet, ApiError, ingestState, type IngestState } from './data/client'
-import { renderNotice } from './ui/chrome'
+import { apiGet, ApiError, ingestState, type IngestState, type RewriteFacts } from './data/client'
+import { renderNotice, type RenderNoticeOptions } from './ui/chrome'
 import { mountPicker } from './ui/dir-picker'
-import { mountEstimate, mountProgress } from './ui/progress'
+import { formatBytes, mountEstimate, mountProgress } from './ui/progress'
 import { initTheme } from './ui/theme'
 import { mountMap, type RunConfig } from './views/map'
 
@@ -113,12 +113,63 @@ function showEstimate(): void {
   })
 }
 
-function showProgress(): void {
+function showProgress(notices: RenderNoticeOptions[] = []): void {
   clearTeardown()
   activeTeardown = mountProgress(getRoot(), {
+    notices,
     onFinished: () => {
       void afterIngestFinished()
     },
+  })
+}
+
+// A cache made at a higher version than this pesto writes came from a
+// different pesto, not an older one; saying "older" there would be wrong.
+function whoMadeIt(rewrite: RewriteFacts): string {
+  return rewrite.found > rewrite.expected ? 'a different pesto' : 'an older pesto'
+}
+
+function rewriteNotices(rewrite: RewriteFacts): RenderNoticeOptions[] {
+  const notices: RenderNoticeOptions[] = [
+    {
+      title: `This cache was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}). Re-reading the run once.`,
+      tone: 'info',
+    },
+  ]
+  // The rewrite replaces the old files one at a time, so it needs about the
+  // old cache's size. Only warn when both figures are known and space is short.
+  if (
+    rewrite.freeBytes !== null &&
+    rewrite.oldCacheBytes !== null &&
+    rewrite.freeBytes < rewrite.oldCacheBytes
+  ) {
+    notices.push({
+      title: 'Disk space may run short',
+      detail:
+        `The disk has ${formatBytes(rewrite.freeBytes)} free and the old cache used ` +
+        `${formatBytes(rewrite.oldCacheBytes)}. If the space runs out, each artifact that fails says why.`,
+      tone: 'warning',
+    })
+  }
+  return notices
+}
+
+// D-07: an old cache in a folder pesto cannot write to is neither read nor
+// rewritten. Say so, name the folder (already shortened to ~ by the server)
+// and the one thing the user can do about it.
+function renderRewriteRefusal(rewrite: RewriteFacts): void {
+  clearTeardown()
+  const root = getRoot()
+  root.textContent = ''
+  const panel = document.createElement('div')
+  root.appendChild(panel)
+  renderNotice(panel, {
+    title: "This cache is out of date and can't be rewritten here",
+    detail:
+      `The cache in ${rewrite.folder} was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}), ` +
+      "and pesto can't write to that folder. " +
+      'Open the run again with --cache-dir set to a folder you can write to.',
+    tone: 'critical',
   })
 }
 
@@ -142,6 +193,18 @@ async function routeByFreshness(config: RunConfig | null): Promise<void> {
 
   if (state.fresh) {
     showMap(config, state)
+    return
+  }
+
+  // An old cache is re-read at once, with the reason on screen; there is
+  // nothing for the user to agree to that they did not already choose by
+  // opening the run.
+  if (state.rewrite) {
+    if (state.rewrite.writable) {
+      showProgress(rewriteNotices(state.rewrite))
+    } else {
+      renderRewriteRefusal(state.rewrite)
+    }
     return
   }
 

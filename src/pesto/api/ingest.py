@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse
 from starlette.responses import StreamingResponse as _EventStreamResponse
 
 from pesto.api.problem import problem, redact_paths
-from pesto.cache.layout import CacheLayout
+from pesto.cache.layout import CACHE_VERSION, CacheLayout, probe_writable, run_id_for
 from pesto.cache.manifest import Manifest
 
 router = APIRouter(prefix="/api/run/ingest")
@@ -83,6 +83,47 @@ def _resolve(request: Request):
     return run_path, layout, run, planned, manifest
 
 
+def _display_folder(path: Path) -> str:
+    """``path`` for the screen: the home directory shortened to ``~`` when the
+    path sits under it, else the path as given."""
+    path = Path(path)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return str(path)
+    for candidate, base in ((path, home), (path.resolve(), home.resolve())):
+        try:
+            relative = candidate.relative_to(base)
+        except ValueError:
+            continue
+        return "~" if relative == Path(".") else f"~/{relative.as_posix()}"
+    return str(path)
+
+
+def _free_bytes(layout: CacheLayout) -> int:
+    """Free space on the disk the cache lives on, measured at the nearest
+    existing parent when the cache folder itself is not there yet."""
+    probe = layout.root
+    while not probe.exists():
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def _rewrite_facts(layout: CacheLayout, manifest: Manifest) -> dict[str, Any] | None:
+    """Why an old cache is being re-read, or None when there was no old cache
+    (no manifest, or one whose version could not be read, is a first ingest)."""
+    if manifest.found_cache_version is None:
+        return None
+    return {
+        "found": manifest.found_cache_version,
+        "expected": CACHE_VERSION,
+        "writable": probe_writable(layout.root),
+        "folder": _display_folder(layout.root),
+        "free_bytes": _free_bytes(layout),
+        "old_cache_bytes": manifest.found_cache_bytes,
+    }
+
+
 def _artifact_fact(manifest: Manifest, name: str) -> dict[str, Any]:
     """The one fact a disabled control shows about the artifact it rests
     on: its name and the manifest's own recorded reason, or "not yet
@@ -121,7 +162,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     resolved = _resolve(request)
     if isinstance(resolved, JSONResponse):
         return resolved
-    _run_path, layout, _run, planned, manifest = resolved
+    run_path, layout, _run, planned, manifest = resolved
 
     artifacts_out: list[dict[str, Any]] = []
     fresh = True
@@ -157,6 +198,8 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
+        "rewrite": _rewrite_facts(layout, manifest),
+        "run_id": run_id_for(run_path),
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
@@ -172,10 +215,7 @@ async def get_ingest_estimate(request: Request) -> JSONResponse:
 
     estimate = _size_the_run(run)
 
-    probe = layout.root
-    while not probe.exists():
-        probe = probe.parent
-    free_bytes = shutil.disk_usage(probe).free
+    free_bytes = _free_bytes(layout)
 
     body = {
         "total": estimate.total,
@@ -192,7 +232,20 @@ async def start_ingest(request: Request) -> JSONResponse:
     resolved = _resolve(request)
     if isinstance(resolved, JSONResponse):
         return resolved
-    run_path, layout, _run, _planned, _manifest = resolved
+    run_path, layout, _run, _planned, manifest = resolved
+
+    # D-07: an old cache that cannot be replaced is refused, never read as if
+    # it were current and never left half rewritten.
+    if manifest.found_cache_version is not None and not probe_writable(layout.root):
+        return problem(
+            409,
+            "the cache is out of date and cannot be rewritten here",
+            detail=(
+                f"the cache in {_display_folder(layout.root)} was made at cache version "
+                f"{manifest.found_cache_version} and pesto cannot write to that folder; "
+                "open the run again with --cache-dir set to a folder that can be written"
+            ),
+        )
 
     existing: _IngestState | None = getattr(request.app.state, "ingest", None)
     if existing is not None and not existing.done:

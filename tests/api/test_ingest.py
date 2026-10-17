@@ -23,6 +23,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -32,7 +33,8 @@ from fastapi.testclient import TestClient
 
 import pesto.ingest.runner as runner_module
 from pesto.api.app import create_app
-from pesto.cache.layout import CacheLayout
+from pesto.api.ingest import _display_folder
+from pesto.cache.layout import CACHE_VERSION, CacheLayout, run_id_for
 from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint
 from pesto.ingest.discover import discover
 from pesto.ingest.runner import Progress, plan_artifacts
@@ -613,3 +615,270 @@ def test_a_real_ingest_through_the_routes(forecast_run, tmp_path):
         _content_type2, progress2, _done2 = _drain_events(client, token)
         assert progress2
         assert all(row["state"] == "skipped" for row in progress2)
+
+
+# --- an old cache is reported, then re-read ---------------------------------
+
+
+def _write_old_manifest(cache_root: Path, run_dir: Path, *, version: int = 2, cache_bytes: int | None = 4096):
+    cache_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cache_version": version,
+        "run_dir": str(run_dir),
+        "artifacts": {},
+        "ingest_seconds": 3.0,
+        "cache_bytes": cache_bytes,
+    }
+    (cache_root / "manifest.json").write_text(json.dumps(payload))
+
+
+def _state(app, token) -> dict[str, Any]:
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    assert response.status_code == 200
+    return response.json()
+
+
+def _ingest_that_leaves_a_fresh_cache(run_dir, cache_root, iterations, on_progress, cancel):
+    """What a finished real ingest leaves behind: every planned artifact ok,
+    recorded against its sources, saved at the current cache version."""
+    layout = CacheLayout(root=Path(cache_root))
+    manifest = Manifest.empty(str(run_dir))
+    for planned in _planned_for(Path(run_dir), layout):
+        sources = [SourceFingerprint.of(Path(s)) for s in planned.sources]
+        _mark_ok_with_file(manifest, layout, planned.name, sources=sources)
+    manifest.save(layout)
+    return manifest
+
+
+def test_state_of_a_version_2_cache_says_it_was_made_at_version_2(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    app, token = _app_for(run_dir, cache_root)
+
+    body = _state(app, token)
+
+    assert body["fresh"] is False
+    assert body["rewrite"]["found"] == 2
+    assert body["rewrite"]["expected"] == CACHE_VERSION
+    assert body["rewrite"]["writable"] is True
+    assert isinstance(body["rewrite"]["folder"], str)
+
+
+def test_state_of_a_version_1_cache_says_version_1(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=1)
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _state(app, token)["rewrite"]["found"] == 1
+
+
+def test_state_of_a_newer_cache_reports_its_higher_version(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=CACHE_VERSION + 1)
+    app, token = _app_for(run_dir, cache_root)
+
+    rewrite = _state(app, token)["rewrite"]
+
+    assert rewrite["found"] == CACHE_VERSION + 1
+    assert rewrite["expected"] == CACHE_VERSION
+
+
+def test_state_with_no_manifest_is_a_first_ingest_not_a_rewrite(tmp_path):
+    run_dir = _make_run(tmp_path)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    body = _state(app, token)
+
+    assert body["fresh"] is False
+    assert body["rewrite"] is None
+
+
+def test_state_with_a_version_that_is_not_an_integer_is_a_first_ingest(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    (cache_root / "manifest.json").write_text(json.dumps({"cache_version": "2", "run_dir": "x"}))
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _state(app, token)["rewrite"] is None
+
+
+def test_state_of_a_current_cache_has_no_rewrite(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    for planned in _planned_for(run_dir, layout):
+        sources = [SourceFingerprint.of(Path(s)) for s in planned.sources]
+        _mark_ok_with_file(manifest, layout, planned.name, sources=sources)
+    manifest.save(layout)
+    app, token = _app_for(run_dir, cache_root)
+
+    body = _state(app, token)
+
+    assert body["fresh"] is True
+    assert body["rewrite"] is None
+
+
+def test_after_the_one_rewrite_the_state_is_fresh_with_no_rewrite(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            before = client.get("/api/run/ingest/state", headers={"x-pesto-token": token}).json()
+            assert before["rewrite"]["found"] == 2
+
+            assert client.post("/api/run/ingest", headers={"x-pesto-token": token}).status_code == 202
+            _drain_events(client, token)
+
+            after = client.get("/api/run/ingest/state", headers={"x-pesto-token": token}).json()
+
+    assert after["fresh"] is True
+    assert after["rewrite"] is None
+
+
+def test_the_folder_in_the_state_has_the_home_directory_shortened(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "somewhere" / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    app, token = _app_for(run_dir, cache_root)
+
+    folder = _state(app, token)["rewrite"]["folder"]
+
+    assert folder == "~/somewhere/cache"
+    assert str(tmp_path) not in folder
+
+
+def test_the_rewrite_carries_free_space_and_the_old_cache_size(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2, cache_bytes=4096)
+    app, token = _app_for(run_dir, cache_root)
+
+    rewrite = _state(app, token)["rewrite"]
+
+    assert isinstance(rewrite["free_bytes"], int)
+    assert rewrite["free_bytes"] > 0
+    assert rewrite["old_cache_bytes"] == 4096
+
+
+def test_the_rewrite_says_so_when_the_old_cache_size_was_not_recorded(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2, cache_bytes=None)
+    app, token = _app_for(run_dir, cache_root)
+
+    rewrite = _state(app, token)["rewrite"]
+
+    assert rewrite["old_cache_bytes"] is None
+    assert isinstance(rewrite["free_bytes"], int)
+
+
+def test_the_rewrite_reports_the_free_space_the_disk_answers_with(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    monkeypatch.setattr(
+        "pesto.api.ingest.shutil.disk_usage", lambda path: SimpleNamespace(total=100, used=93, free=7)
+    )
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _state(app, token)["rewrite"]["free_bytes"] == 7
+
+
+def test_the_estimate_and_the_rewrite_measure_free_space_the_same_way(tmp_path):
+    run_dir = _make_run(tmp_path)
+    cache_root = tmp_path / "not-yet" / "cache"
+    app, token = _app_for(run_dir, cache_root)
+
+    estimate = _client(app).get("/api/run/ingest/estimate", headers={"x-pesto-token": token}).json()
+
+    assert estimate["cache_root_exists"] is False
+    assert estimate["free_bytes"] > 0
+
+
+def test_the_state_carries_a_twelve_character_run_id_that_does_not_change(tmp_path):
+    run_dir = _make_run(tmp_path)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    first = _state(app, token)
+    second = _state(app, token)
+
+    assert len(first["run_id"]) == 12
+    assert first["run_id"] == second["run_id"]
+    assert first["run_id"] == run_id_for(run_dir)
+
+
+def test_two_runs_have_different_run_ids_in_the_state(tmp_path):
+    run_a = _make_run(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    run_b = _make_run(other)
+
+    id_a = _state(*_app_for(run_a, tmp_path / "cache-a"))["run_id"]
+    id_b = _state(*_app_for(run_b, tmp_path / "cache-b"))["run_id"]
+
+    assert id_a != id_b
+
+
+def test_an_old_cache_in_an_unwritable_folder_refuses_the_start_with_409(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "somewhere" / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    monkeypatch.setattr("pesto.api.ingest.probe_writable", lambda folder: False)
+    app, token = _app_for(run_dir, cache_root)
+
+    with _client(app) as client:
+        state = client.get("/api/run/ingest/state", headers={"x-pesto-token": token}).json()
+        response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+
+    assert state["rewrite"]["writable"] is False
+    assert response.status_code == 409
+    body = response.json()
+    assert body["title"] == "the cache is out of date and cannot be rewritten here"
+    assert "--cache-dir" in body["detail"]
+    assert "~" in body["detail"]
+    assert str(tmp_path) not in body["detail"]
+    assert getattr(app.state, "ingest", None) is None
+
+
+def test_an_old_cache_in_a_writable_folder_still_starts(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+            _drain_events(client, token)
+
+    assert response.status_code == 202
+
+
+def test_an_unwritable_folder_with_no_old_cache_does_not_refuse_the_start(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    monkeypatch.setattr("pesto.api.ingest.probe_writable", lambda folder: False)
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, tmp_path / "cache")
+        with _client(app) as client:
+            response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+            _drain_events(client, token)
+
+    assert response.status_code == 202
+
+
+def test_a_folder_outside_the_home_directory_is_shown_as_given(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    elsewhere = tmp_path / "elsewhere"
+
+    assert _display_folder(elsewhere) == str(elsewhere)
