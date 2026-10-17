@@ -102,6 +102,22 @@ describe('renderGroupPicker', () => {
     expect(el.querySelector('select')).toBeNull()
   })
 
+  it('stacks its controls in a column with a real gap in the ready and none-drawable states (WINDOWS.md #14)', () => {
+    const ready = mount()
+    renderGroupPicker(ready, {
+      state: { kind: 'ready', interpolated: [], drawable: ['G1'], unmapped: [{ group: 'G3', note: null }], selected: 'G1' },
+      onGroupChange: vi.fn(),
+    })
+    const none = mount()
+    renderGroupPicker(none, { state: { kind: 'none-drawable', unmapped: [] }, onGroupChange: vi.fn() })
+
+    for (const el of [ready, none]) {
+      expect(el.style.display).toBe('flex')
+      expect(el.style.flexDirection).toBe('column')
+      expect(el.style.gap).toBe('var(--space-sm)')
+    }
+  })
+
   it('is disabled until the parameter table and the permutation have landed', () => {
     const el = mount()
     renderGroupPicker(el, { state: { kind: 'loading' }, onGroupChange: vi.fn() })

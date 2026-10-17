@@ -10,13 +10,13 @@ from typing import Annotated, Literal
 
 import numpy as np
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict
 from starlette.responses import JSONResponse, Response
 
 from pesto.api.blob import blob_response, cache_headers, cache_tag
 from pesto.api.enscache import STATS, get_stored
 from pesto.api.fields import compute_field, contributors, memo_field, point_values, stat_values
 from pesto.api.problem import problem, problem_from_failure
+from pesto.api.query import RunQuery
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.failures import ReadFailure
@@ -26,9 +26,7 @@ from pesto.model import GridShape
 router = APIRouter(prefix="/api/run/grid")
 
 
-class FieldQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class FieldQuery(RunQuery):
     iteration: int
     group: str
     stat: Literal[STATS] | None = None
@@ -36,9 +34,7 @@ class FieldQuery(BaseModel):
     v: str | None = None
 
 
-class CellQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class CellQuery(RunQuery):
     iteration: int
     group: str
     cell: int
