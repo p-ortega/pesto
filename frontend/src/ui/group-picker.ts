@@ -34,6 +34,14 @@ function renderUnmappedRows(el: HTMLElement, unmapped: UnmappedGroup[]): void {
   }
 }
 
+// A column, not a row: the picker is a short stack of two controls, so it does not
+// cover the map the way a row would. The gap is what keeps their texts apart.
+function stackWithGap(el: HTMLElement): void {
+  el.style.display = 'flex'
+  el.style.flexDirection = 'column'
+  el.style.gap = 'var(--space-sm)'
+}
+
 /**
  * Renders the picker into `el` for whichever of the four states apply.
  * `failed` renders nothing at all -- the map's own designed state already
@@ -58,6 +66,7 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
   }
 
   if (opts.state.kind === 'none-drawable') {
+    stackWithGap(el)
     const noticeHost = document.createElement('div')
     renderNotice(noticeHost, {
       title: 'No parameter group can be drawn on this map',
@@ -76,6 +85,7 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
   }
 
   // ready
+  stackWithGap(el)
   const select = document.createElement('select')
   select.setAttribute('aria-label', 'Parameter group')
   for (const group of opts.state.drawable) {
