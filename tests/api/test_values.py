@@ -157,7 +157,6 @@ def _write_case(
         mappable=mappable,
         iteration=iteration,
         layout=layout,
-        cells=_cells(point_xy) if cells else None,
     )
     assert isinstance(ens_result, WrittenArtifact), ens_result
 

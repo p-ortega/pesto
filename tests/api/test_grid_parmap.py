@@ -112,7 +112,7 @@ def _write_case(tmp_path, *, iteration: int = 0):
     data = _ensemble_data()
 
     ens_result = write_par_ensemble(
-        data, tables, mappable=MAPPABLE, iteration=iteration, layout=layout, cells=_cells()
+        data, tables, mappable=MAPPABLE, iteration=iteration, layout=layout
     )
     assert isinstance(ens_result, WrittenArtifact), ens_result
     cell_result = write_par_cell(_cells(), tables.par, layout)

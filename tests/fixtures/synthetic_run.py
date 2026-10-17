@@ -259,7 +259,6 @@ def write_synthetic_run(dest: Path) -> Path:
     planned = plan_artifacts(run, layout)
 
     tables = _control_tables()
-    cells = _cells()
     mesh = _mesh()
     grid_shape = GridShape(ncpl=NCPL, nlay=NLAY, nrow=None, ncol=None)
 
@@ -276,7 +275,6 @@ def write_synthetic_run(dest: Path) -> Path:
                 mappable=MAPPABLE,
                 iteration=iteration,
                 layout=layout,
-                cells=cells,
             )
         elif artifact.kind == "par_agg":
             iteration = int(artifact.name.split("/")[1])

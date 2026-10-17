@@ -19,8 +19,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol, Sequence, runtime_checkable
 
-import numpy as np
-
 from pesto.cache.layout import CacheLayout, for_run
 from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
 from pesto.cache.runconfig import build_config, write_config
@@ -217,7 +215,7 @@ def _write_par_ens(
 
     ``cell_note``, when the parent gives one, says why there is no cell
     resolution; the map block is then empty and the note is kept. Otherwise
-    the groups and cells come from the cached ``par_cell`` artifact.
+    the placed groups come from the cached ``par_cell`` artifact.
     """
     layout, tables = _control_tables_for(cache_root)
     if isinstance(tables, ReadFailure):
@@ -227,7 +225,6 @@ def _write_par_ens(
         return data
 
     mappable: list[str] = []
-    cells = None
     if cell_note is None:
         placed = load_par_cell(layout)
         if isinstance(placed, ReadFailure):
@@ -238,21 +235,7 @@ def _write_par_ens(
                 "do not match the cached control table"
             )
         else:
-            # Deferred import: ParCells lives in pesto.model, which pesto.ingest
-            # may never name at module level. Used only as a carrier for the
-            # arrays write_par_ensemble stores beside the map block.
-            from pesto.model import ParCells
-
             mappable = sorted(placed.placed_groups)
-            cells = ParCells(
-                cell=placed.cell,
-                layer=placed.layer,
-                parnme=placed.parnme,
-                groups=(),
-                summary="",
-                notes=(),
-                point_xy=np.column_stack([placed.x, placed.y]),
-            )
     if cell_note is not None:
         data = replace(data, notes=data.notes + (cell_note,))
 
@@ -262,7 +245,6 @@ def _write_par_ens(
         mappable=frozenset(mappable),
         iteration=iteration,
         layout=layout,
-        cells=cells,
     )
 
 
