@@ -21,12 +21,12 @@ from typing import Annotated, Literal
 
 import numpy as np
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict
 from starlette.responses import Response
 
 from pesto.api.blob import blob_response, cache_headers, cache_tag
 from pesto.api.enscache import STATS, get_stored, map_permutation
 from pesto.api.problem import problem, problem_from_failure
+from pesto.api.query import RunQuery
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest import ensembles as _ensembles
@@ -37,13 +37,11 @@ router = APIRouter(prefix="/api/run/grid")
 _StatName = Literal[STATS]
 
 
-class ValuesQuery(BaseModel):
-    """The whole accepted query surface for ``GET /values``. ``extra="forbid"``
-    is what turns an unknown parameter -- ``layer``, ``group``, or a typo --
-    into a 422 rather than a silently ignored filter a client might believe
-    the server applied."""
-
-    model_config = ConfigDict(extra="forbid")
+class ValuesQuery(RunQuery):
+    """The whole accepted query surface for ``GET /values``. ``RunQuery`` keeps
+    ``extra="forbid"``, which turns an unknown parameter -- ``layer``, ``group``,
+    or a typo -- into a 422 rather than a silently ignored filter a client might
+    believe the server applied."""
 
     iteration: int
     stat: _StatName | None = None

@@ -29,9 +29,6 @@
 // be a false positive this test would raise on every select in the app.
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RealNamesResult } from '../src/data/reals'
 import type { IngestState } from '../src/data/client'
@@ -40,126 +37,9 @@ import { renderChips, renderHeader, renderNotice, renderStatusBar } from '../src
 import { renderLegend, type LegendOptions } from '../src/ui/legend'
 import { renderSelectionControls } from '../src/ui/controls'
 import { renderParamsPanel } from '../src/ui/params-panel'
+import { renderGroupPicker } from '../src/ui/group-picker'
 import { createRecordingGl } from './support/recording-gl'
-
-const testDir = dirname(fileURLToPath(import.meta.url))
-const frontendRoot = join(testDir, '..')
-const styleSheetPath = join(frontendRoot, 'src', 'style.css')
-
-// ---------------------------------------------------------------------------
-// The separation check
-// ---------------------------------------------------------------------------
-
-const BLOCK_LIKE = new Set(['block', 'list-item', 'flex', 'grid', 'table', 'flow-root'])
-const FLEX_OR_GRID = new Set(['flex', 'inline-flex', 'grid', 'inline-grid'])
-
-function textOf(el: Element): string {
-  return (el.textContent ?? '').trim()
-}
-
-function isZeroOrUnset(value: string): boolean {
-  if (value === '' || value === 'auto') return true
-  const n = parseFloat(value)
-  return Number.isFinite(n) && n === 0
-}
-
-// A whitespace-only text node directly between the two elements in the DOM
-// -- the plain-HTML way two inline elements end up with a real space
-// between them, even with no CSS involved at all.
-function hasWhitespaceTextBetween(parent: Element, a: Element, b: Element): boolean {
-  const nodes = Array.from(parent.childNodes)
-  const startIndex = nodes.indexOf(a)
-  const endIndex = nodes.indexOf(b)
-  for (let i = startIndex + 1; i < endIndex; i++) {
-    const node = nodes[i]
-    if (node.nodeType === 3 && (node.textContent ?? '').length > 0 && (node.textContent ?? '').trim() === '') {
-      return true
-    }
-  }
-  return false
-}
-
-function hasRealMargin(a: Element, b: Element): boolean {
-  const aStyle = getComputedStyle(a)
-  const bStyle = getComputedStyle(b)
-  const candidates = [aStyle.marginRight, aStyle.marginBottom, bStyle.marginLeft, bStyle.marginTop]
-  return candidates.some((value) => !isZeroOrUnset(value))
-}
-
-function hasRealGapOnParent(parent: Element): boolean {
-  const style = getComputedStyle(parent)
-  if (!FLEX_OR_GRID.has(style.display)) return false
-  const gap = style.gap || style.rowGap || style.columnGap
-  return gap !== '' && gap !== '0px' && gap !== 'normal'
-}
-
-function isBlockLike(el: Element): boolean {
-  return BLOCK_LIKE.has(getComputedStyle(el).display)
-}
-
-// Separated if any one of: a real whitespace text node between them, a real
-// margin on either side, a real gap on a flex/grid parent, or either side
-// is itself a block-level box (which forces its own line regardless of the
-// parent's own display or gap).
-function pairIsSeparated(parent: Element, a: Element, b: Element): boolean {
-  return (
-    hasWhitespaceTextBetween(parent, a, b) ||
-    hasRealMargin(a, b) ||
-    hasRealGapOnParent(parent) ||
-    isBlockLike(a) ||
-    isBlockLike(b)
-  )
-}
-
-interface Violation {
-  component: string
-  parent: string
-  textA: string
-  textB: string
-}
-
-function describeParent(el: Element): string {
-  const cls = typeof el.className === 'string' && el.className ? `.${el.className.split(' ').join('.')}` : ''
-  return `${el.tagName.toLowerCase()}${cls}`
-}
-
-// Walks every element under (and including) `root`, and for each one with
-// two or more element children carrying real text, checks every adjacent
-// pair of those text-bearing children. `<select>` is skipped -- see the
-// file header.
-function findRunTogetherText(root: Element, component: string): Violation[] {
-  const violations: Violation[] = []
-  const candidates = [root, ...Array.from(root.querySelectorAll('*'))]
-  for (const parent of candidates) {
-    if (parent.tagName === 'SELECT' || parent.tagName === 'OPTGROUP') continue
-    const textBearing = Array.from(parent.children).filter((child) => textOf(child).length > 0)
-    for (let i = 0; i + 1 < textBearing.length; i++) {
-      const a = textBearing[i]
-      const b = textBearing[i + 1]
-      if (!pairIsSeparated(parent, a, b)) {
-        violations.push({ component, parent: describeParent(parent), textA: textOf(a), textB: textOf(b) })
-      }
-    }
-  }
-  return violations
-}
-
-function formatViolations(violations: Violation[]): string {
-  return violations
-    .map((v) => `[${v.component}] inside <${v.parent}>: "${v.textA}" runs into "${v.textB}" with no separation`)
-    .join('\n')
-}
-
-function expectNoRunTogetherText(root: Element, component: string): void {
-  const violations = findRunTogetherText(root, component)
-  expect(violations, formatViolations(violations)).toEqual([])
-}
-
-function loadRealStylesheet(): void {
-  const style = document.createElement('style')
-  style.textContent = readFileSync(styleSheetPath, 'utf8')
-  document.head.appendChild(style)
-}
+import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
 beforeEach(() => {
   loadRealStylesheet()
@@ -488,6 +368,38 @@ describe('controls.ts (WINDOWS.md #13)', () => {
       onFitToExtent: () => undefined,
     })
     expectNoRunTogetherText(el, 'controls.ts renderSelectionControls (no realization names)')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// frontend/src/ui/group-picker.ts
+// ---------------------------------------------------------------------------
+
+describe('group-picker.ts (WINDOWS.md #14)', () => {
+  it('the group select and the "N groups unmapped" button are separated', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    renderGroupPicker(el, {
+      state: {
+        kind: 'ready',
+        interpolated: [],
+        drawable: ['G1', 'G2'],
+        unmapped: [{ group: 'G3', note: null }],
+        selected: 'G1',
+      },
+      onGroupChange: () => undefined,
+    })
+    expectNoRunTogetherText(el, 'group-picker.ts renderGroupPicker')
+  })
+
+  it('the notice and the unmapped list of a run with nothing drawable are separated', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    renderGroupPicker(el, {
+      state: { kind: 'none-drawable', unmapped: [{ group: 'G1', note: null }] },
+      onGroupChange: () => undefined,
+    })
+    expectNoRunTogetherText(el, 'group-picker.ts renderGroupPicker (none drawable)')
   })
 })
 

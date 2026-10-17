@@ -697,3 +697,36 @@ def test_real_ingested_run_serves_a_realization_and_a_stat_payload_of_equal_leng
     assert value_resp.status_code == 200
     assert mean_resp.status_code == 200
     assert len(value_resp.content) == len(mean_resp.content)
+
+
+def test_the_token_query_form_gets_the_same_bytes_as_the_header_form(tmp_path):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    app, token = create_app()
+    app.state.cache_root = str(layout.root)
+    params = {"iteration": 0, "realization": REAL_NAMES[0]}
+
+    with_header = _client(app)
+    with_header.headers["x-pesto-token"] = token
+    expected = with_header.get("/api/run/grid/values", params=params)
+    by_query = _client(app).get("/api/run/grid/values", params={**params, "token": token})
+
+    assert by_query.status_code == 200
+    assert by_query.content == expected.content
+
+
+def test_a_layer_filter_is_still_refused_next_to_the_token(tmp_path):
+    layout, ens0, agg0, _data, _tables = _write_case(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_manifest(layout, run_dir, [(0, ens0, agg0)])
+    client = _opened_client(layout)
+
+    response = client.get(
+        "/api/run/grid/values",
+        params={"iteration": 0, "realization": REAL_NAMES[0], "layer": "1"},
+    )
+
+    assert response.status_code == 422

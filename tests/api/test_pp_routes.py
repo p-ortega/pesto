@@ -116,3 +116,37 @@ def test_field_is_not_memoised_when_the_ensemble_carries_no_cache_tag(tmp_path):
     r = client.get("/api/run/grid/field", params={"iteration": 0, "group": "G4", "realization": "base"})
     assert r.status_code == 200
     assert not (layout.pp / "fields").exists()
+
+
+def _header_free_client(client):
+    # same app and token, but no x-pesto-token header, so only ?token= can authorise
+    bare = TestClient(client.app, base_url="http://127.0.0.1")
+    return bare, client.headers["x-pesto-token"]
+
+
+def test_field_accepts_the_token_in_the_query_form(tmp_path):
+    _, client = _case(tmp_path)
+    params = {"iteration": 0, "group": "G4", "realization": "34"}
+    expected = client.get("/api/run/grid/field", params=params)
+    bare, token = _header_free_client(client)
+    r = bare.get("/api/run/grid/field", params={**params, "token": token})
+    assert r.status_code == 200
+    assert r.content == expected.content
+
+
+def test_field_cell_accepts_the_token_in_the_query_form(tmp_path):
+    _, client = _case(tmp_path)
+    params = {"iteration": 0, "group": "G4", "cell": 1}
+    expected = client.get("/api/run/grid/field/cell", params=params)
+    bare, token = _header_free_client(client)
+    r = bare.get("/api/run/grid/field/cell", params={**params, "token": token})
+    assert r.status_code == 200
+    assert r.json() == expected.json()
+
+
+def test_a_misspelt_query_field_is_still_refused_on_both_routes(tmp_path):
+    _, client = _case(tmp_path)
+    field = {"iteration": 0, "group": "G4", "realization": "34", "groupp": "G1"}
+    cell = {"iteration": 0, "group": "G4", "cell": 1, "layer": 1}
+    assert client.get("/api/run/grid/field", params=field).status_code == 422
+    assert client.get("/api/run/grid/field/cell", params=cell).status_code == 422
