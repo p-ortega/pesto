@@ -755,6 +755,55 @@ def test_the_folder_in_the_state_has_the_home_directory_shortened(tmp_path, monk
     assert str(tmp_path) not in folder
 
 
+def test_an_old_cache_in_an_unwritable_folder_refuses_the_start_with_409(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "somewhere" / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+    monkeypatch.setattr("pesto.api.ingest.probe_writable", lambda folder: False)
+    app, token = _app_for(run_dir, cache_root)
+
+    with _client(app) as client:
+        state = client.get("/api/run/ingest/state", headers={"x-pesto-token": token}).json()
+        response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+
+    assert state["rewrite"]["writable"] is False
+    assert response.status_code == 409
+    body = response.json()
+    assert body["title"] == "the cache is out of date and cannot be rewritten here"
+    assert "--cache-dir" in body["detail"]
+    assert "~" in body["detail"]
+    assert str(tmp_path) not in body["detail"]
+    assert getattr(app.state, "ingest", None) is None
+
+
+def test_an_old_cache_in_a_writable_folder_still_starts(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    _write_old_manifest(cache_root, run_dir, version=2)
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, cache_root)
+        with _client(app) as client:
+            response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+            _drain_events(client, token)
+
+    assert response.status_code == 202
+
+
+def test_an_unwritable_folder_with_no_old_cache_does_not_refuse_the_start(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    monkeypatch.setattr("pesto.api.ingest.probe_writable", lambda folder: False)
+
+    with mock.patch.object(runner_module, "ingest_run", _ingest_that_leaves_a_fresh_cache):
+        app, token = _app_for(run_dir, tmp_path / "cache")
+        with _client(app) as client:
+            response = client.post("/api/run/ingest", headers={"x-pesto-token": token})
+            _drain_events(client, token)
+
+    assert response.status_code == 202
+
+
 def test_a_folder_outside_the_home_directory_is_shown_as_given(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     elsewhere = tmp_path / "elsewhere"

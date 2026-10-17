@@ -138,6 +138,25 @@ function rewriteNotices(rewrite: RewriteFacts): RenderNoticeOptions[] {
   ]
 }
 
+// D-07: an old cache in a folder pesto cannot write to is neither read nor
+// rewritten. Say so, name the folder (already shortened to ~ by the server)
+// and the one thing the user can do about it.
+function renderRewriteRefusal(rewrite: RewriteFacts): void {
+  clearTeardown()
+  const root = getRoot()
+  root.textContent = ''
+  const panel = document.createElement('div')
+  root.appendChild(panel)
+  renderNotice(panel, {
+    title: "This cache is out of date and can't be rewritten here",
+    detail:
+      `The cache in ${rewrite.folder} was made by ${whoMadeIt(rewrite)} (cache version ${rewrite.found}), ` +
+      "and pesto can't write to that folder. " +
+      'Open the run again with --cache-dir set to a folder you can write to.',
+    tone: 'critical',
+  })
+}
+
 function showMap(config: RunConfig | null, state: IngestState): void {
   clearTeardown()
   mountMap(getRoot(), { config, state })
@@ -164,8 +183,12 @@ async function routeByFreshness(config: RunConfig | null): Promise<void> {
   // An old cache is re-read at once, with the reason on screen; there is
   // nothing for the user to agree to that they did not already choose by
   // opening the run.
-  if (state.rewrite?.writable) {
-    showProgress(rewriteNotices(state.rewrite))
+  if (state.rewrite) {
+    if (state.rewrite.writable) {
+      showProgress(rewriteNotices(state.rewrite))
+    } else {
+      renderRewriteRefusal(state.rewrite)
+    }
     return
   }
 

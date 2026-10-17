@@ -320,6 +320,50 @@ describe('the screen router', () => {
       expect(screenHasText('an older pesto')).toBe(false)
     })
 
+    it('refuses with a critical notice when the cache folder cannot be written, and starts nothing', async () => {
+      const stub = stubFetch(
+        oldCacheHandlers({ found: 2, expected: 3, writable: false, folder: '~/runs/.pesto' }),
+      )
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('out of date')).toBe(true)
+      })
+      expect(screenHasText('~/runs/.pesto')).toBe(true)
+      expect(screenHasText('--cache-dir')).toBe(true)
+      expect(screenHasText('cache version 2')).toBe(true)
+      expect(screenHasText('Critical')).toBe(true)
+      expect(screenHasText('Agree and ingest')).toBe(false)
+      expect(screenHasText('Re-reading the run once')).toBe(false)
+      expect(mapMounted()).toBe(false)
+      expect(stub.calls).not.toContain('POST /api/run/ingest')
+      expect(stub.calls).not.toContain('GET /api/run/ingest/estimate')
+      expect(stub.calls.some((call) => call.includes('/api/run/ingest/events'))).toBe(false)
+    })
+
+    it('says "a different pesto" in the refusal when the cache came from a higher version', async () => {
+      stubFetch(oldCacheHandlers({ found: 4, expected: 3, writable: false, folder: '~/runs/.pesto' }))
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('a different pesto (cache version 4)')).toBe(true)
+      })
+      expect(screenHasText('an older pesto')).toBe(false)
+    })
+
+    it('does not show an absolute home path in the refusal', async () => {
+      stubFetch(oldCacheHandlers({ found: 2, expected: 3, writable: false, folder: '~/runs/.pesto' }))
+
+      await bootMain()
+
+      await vi.waitFor(() => {
+        expect(screenHasText('--cache-dir')).toBe(true)
+      })
+      expect(screenText()).not.toMatch(/\/(Users|home)\/\S+/i)
+    })
+
     it('still shows the estimate for a first ingest, when there is no rewrite', async () => {
       const stub = stubFetch(oldCacheHandlers(null))
 
