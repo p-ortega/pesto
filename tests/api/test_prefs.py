@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pesto.api.prefs import read_recent_runs, write_last_run
+from pesto.api.prefs import _VIEW_STATE_DEFAULTS, read_recent_runs, read_view_state, write_last_run
 
 
 def _store(tmp_path: Path, paths: list[Path]) -> None:
@@ -67,3 +67,14 @@ def test_writing_a_run_that_cannot_be_resolved_does_not_raise(
     write_last_run(locked)
 
     assert not (tmp_path / ".cache" / "pesto" / "last_run.json").exists()
+
+
+def test_a_view_state_with_a_tab_that_is_not_a_string_reads_back_on_params(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    store = tmp_path / ".cache" / "pesto" / "view_state.json"
+    store.parent.mkdir(parents=True)
+    entry = {**_VIEW_STATE_DEFAULTS, "tab": {"nested": "obs"}}
+    store.write_text(json.dumps({"version": 1, "roots": {str(cache_root.resolve()): entry}}))
+
+    assert read_view_state(cache_root)["tab"] == "params"

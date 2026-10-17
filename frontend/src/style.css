@@ -214,6 +214,48 @@ body {
   height: 100%;
 }
 
+/* The right panel: a tab bar over one panel per tab. A hidden panel stays
+   in the DOM; the attribute selector outranks the display of a panel class
+   (such as .params-panel) so `hidden` still hides it. */
+.tabs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 0;
+}
+
+.tabs-bar {
+  display: flex;
+  gap: var(--space-sm);
+  flex: none;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: -1px;
+  cursor: pointer;
+  color: var(--ink-secondary);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--ink-primary);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.tabs-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-panel[hidden] {
+  display: none;
+}
+
 /* The Params panel is a column too: heading, then a table that scrolls
    inside the frame's height, then the unmapped list and notes. */
 .params-panel {
