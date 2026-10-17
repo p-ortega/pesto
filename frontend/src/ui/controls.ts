@@ -32,7 +32,7 @@ const JET_REASON = 'A ramp whose lightness reverses three times invents boundari
 
 const LOG_WARNING_ID = 'scale-log10-warning'
 
-export interface Selection {
+export interface FieldChoice {
   iteration: number
   layer: number
   stat: Statistic
@@ -66,10 +66,10 @@ export interface SelectionControlsOptions {
    *  `partrans`). Omitted, this control still falls back to exactly those
    *  defaults, so every existing caller keeps its old behaviour (WINDOWS.md
    *  #8: the checkbox used to never learn what the view already knew). */
-  initial?: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'> & {
+  initial?: Pick<FieldChoice, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'> & {
     stat?: Statistic
   }
-  onSelectionChange: (selection: Selection) => void
+  onSelectionChange: (selection: FieldChoice) => void
   /** MAP-11/D-15: the one button-shaped primary action this map surface
    *  has. Calls the same `camera.fit(bounds)` the `Home` key triggers. */
   onFitToExtent: () => void
@@ -85,7 +85,7 @@ export interface SelectionControlsHandle {
    *  whenever it changes one of these fields on the control's behalf (a
    *  group change re-inferring the scale, say), so the control the user
    *  sees never disagrees with what is actually drawn (WINDOWS.md #5, #8). */
-  sync(selection: Pick<Selection, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>): void
+  sync(selection: Pick<FieldChoice, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>): void
   /** Moves the layer slider without emitting onSelectionChange. */
   setLayer(layer: number): void
 }
@@ -339,7 +339,7 @@ export function renderSelectionControls(
     return [Number.isFinite(lower) ? lower : 0, Number.isFinite(upper) ? upper : 1]
   }
 
-  function currentSelection(): Selection {
+  function currentSelection(): FieldChoice {
     const stat = isStatistic(statSelect.value) ? statSelect.value : 'value'
     const realization = stat === 'value' ? (realNames[Number(realInput.value)] ?? null) : null
     const colormap = isColormap(colormapSelect.value) ? colormapSelect.value : 'viridis'
