@@ -4,6 +4,7 @@ import {
   judgedResultsBlocker,
   nearestRankP95,
   parseBenchResult,
+  realizationSweep,
   stripToken,
   summarize,
 } from './visual/bench-json'
@@ -78,10 +79,34 @@ describe('percentiles', () => {
     expect(summarize([])).toEqual({ count: 0, p50: null, p95: null, max: null })
   })
 
+  it('ranks 20 and 300 samples the way the Python side does', () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => 20 - i)
+    expect(summarize(twenty).p95).toBe(19)
+    const threeHundred = Array.from({ length: 300 }, (_, i) => 300 - i)
+    expect(summarize(threeHundred)).toMatchObject({ p50: 150, p95: 285, max: 300 })
+  })
+
+  it('gives one sample for both percentiles and sorts before ranking', () => {
+    expect(summarize([7])).toEqual({ count: 1, p50: 7, p95: 7, max: 7 })
+    expect(nearestRankP95([3, 1, 2])).toBe(3)
+  })
+
   it('does not reorder the caller\'s samples', () => {
     const samples = [3, 1, 2]
     summarize(samples)
     expect(samples).toEqual([3, 1, 2])
+  })
+})
+
+describe('realizationSweep', () => {
+  it('lists slider positions in order and never the one the slider is on', () => {
+    expect(realizationSweep(0, 5, 3)).toEqual(['1', '2', '3'])
+    expect(realizationSweep(2, 5, 3)).toEqual(['0', '1', '3'])
+  })
+
+  it('stops at the last position and gives nothing when there is nothing to move to', () => {
+    expect(realizationSweep(5, 5, 10)).toEqual(['0', '1', '2', '3', '4'])
+    expect(realizationSweep(0, 0, 3)).toEqual([])
   })
 })
 

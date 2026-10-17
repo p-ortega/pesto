@@ -15,6 +15,7 @@ from pesto.bench import measure
 from pesto.bench.measure import (
     cache_size,
     machine_facts,
+    nearest_rank,
     percentile_summary,
     read_floor,
     run_facts,
@@ -75,6 +76,27 @@ def test_percentile_summary_uses_the_nearest_rank_and_keeps_the_first_sample() -
 
 def test_percentile_summary_of_nothing_is_none() -> None:
     assert percentile_summary([]) is None
+
+
+def test_nearest_rank_is_the_ceiling_rank_at_the_sizes_that_matter() -> None:
+    assert nearest_rank(list(range(1, 21)), 95) == 19
+    assert nearest_rank(list(range(1, 301)), 95) == 285
+    assert nearest_rank(list(range(1, 301)), 50) == 150
+    assert nearest_rank(list(range(1, 6)), 95) == 5
+
+
+def test_percentile_summary_ranks_the_sorted_samples_whatever_order_they_came_in() -> None:
+    summary = percentile_summary([float(n) for n in reversed(range(1, 21))])
+    assert summary is not None
+    assert summary.first_seconds == 20.0
+    assert summary.p50_seconds == 10.0
+    assert summary.p95_seconds == 19.0
+
+
+def test_percentile_summary_of_one_sample_is_that_sample() -> None:
+    summary = percentile_summary([7.0])
+    assert summary is not None
+    assert (summary.p50_seconds, summary.p95_seconds) == (7.0, 7.0)
 
 
 def test_a_limit_with_nothing_to_measure_is_not_measured_and_never_a_pass() -> None:
