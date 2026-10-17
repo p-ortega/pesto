@@ -85,19 +85,25 @@ def _resolve(request: Request):
 
 def _display_folder(path: Path) -> str:
     """``path`` for the screen: the home directory shortened to ``~`` when the
-    path sits under it, else the path as given."""
+    path sits under it. Anywhere else (an external disk, ``--cache-dir`` on
+    another volume) only the last two parts are shown after ``…/``, and at
+    least one leading part is always hidden, so a full path never reaches a
+    response body (D-09)."""
     path = Path(path)
     try:
         home = Path.home()
     except RuntimeError:
-        return str(path)
-    for candidate, base in ((path, home), (path.resolve(), home.resolve())):
-        try:
-            relative = candidate.relative_to(base)
-        except ValueError:
-            continue
-        return "~" if relative == Path(".") else f"~/{relative.as_posix()}"
-    return str(path)
+        home = None
+    if home is not None:
+        for candidate, base in ((path, home), (path.resolve(), home.resolve())):
+            try:
+                relative = candidate.relative_to(base)
+            except ValueError:
+                continue
+            return "~" if relative == Path(".") else f"~/{relative.as_posix()}"
+    parts = path.parts[1:] if path.anchor else path.parts
+    shown = parts[-2:] if len(parts) > 2 else parts[-1:]
+    return "\u2026/" + "/".join(shown)
 
 
 def _free_bytes(layout: CacheLayout) -> int:
