@@ -102,15 +102,15 @@ export function parseBenchResult(json: unknown): BenchTarget {
   }
 }
 
-// Nearest rank: the smallest sample with at least `fraction` of all samples at or below it.
-function nearestRank(sorted: number[], fraction: number): number {
-  const rank = Math.max(1, Math.ceil(fraction * sorted.length))
+// Nearest rank: the k-th smallest of n, k = ceil(percent * n / 100), in integers. pesto bench uses the same rule.
+function nearestRank(sorted: number[], percent: number): number {
+  const rank = Math.max(1, Math.floor((percent * sorted.length + 99) / 100))
   return sorted[rank - 1]
 }
 
 export function nearestRankP95(samples: number[]): number | null {
   if (samples.length === 0) return null
-  return nearestRank([...samples].sort((a, b) => a - b), 0.95)
+  return nearestRank([...samples].sort((a, b) => a - b), 95)
 }
 
 export function summarize(samples: number[]): Summary {
@@ -118,10 +118,19 @@ export function summarize(samples: number[]): Summary {
   const sorted = [...samples].sort((a, b) => a - b)
   return {
     count: sorted.length,
-    p50: nearestRank(sorted, 0.5),
-    p95: nearestRank(sorted, 0.95),
+    p50: nearestRank(sorted, 50),
+    p95: nearestRank(sorted, 95),
     max: sorted[sorted.length - 1],
   }
+}
+
+// Slider positions 0..max except the one it is on, first `count` of them, so the first move always changes the field.
+export function realizationSweep(current: number, max: number, count: number): string[] {
+  const out: string[] = []
+  for (let position = 0; position <= max && out.length < count; position++) {
+    if (position !== current) out.push(String(position))
+  }
+  return out
 }
 
 export function isSoftwareRenderer(renderer: string): boolean {

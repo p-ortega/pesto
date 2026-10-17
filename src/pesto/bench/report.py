@@ -270,7 +270,7 @@ def _server_lines(result: BenchResult) -> list[str]:
             continue
         lines.append(
             f"  {kind}: {summary.count} requests, first {_ms(summary.first_seconds)}, "
-            f"p50 {_ms(summary.p50_seconds)}, p95 {_ms(summary.p95_seconds)}, "
+            f"p50 {_ms(summary.p50_seconds)}, p95 {_ms(summary.p95_seconds)} (nearest rank), "
             f"max {_ms(summary.max_seconds)}"
         )
     for note in values.notes:
