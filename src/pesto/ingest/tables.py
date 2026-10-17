@@ -22,7 +22,7 @@ from pesto.cache._atomic import write_atomic_bytes, write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.choices import Ambiguity
-from pesto.ingest.control import ControlTables
+from pesto.ingest.control import ControlTables, ObsSchemaOnly
 from pesto.ingest.failures import ReadFailure
 
 if TYPE_CHECKING:
@@ -143,9 +143,10 @@ def load_control_tables(
 ) -> ControlTables | ReadFailure:
     """Read the control tables back from ``layout.control``.
 
-    With ``obs="schema"`` the observation table comes back with its real
-    columns and dtypes but zero rows, so a worker that never looks at
-    observations does not read millions of them.
+    With ``obs="schema"`` the observation table comes back as an
+    ``ObsSchemaOnly``: its real columns and dtypes, and an error on any row
+    access, so a worker that never looks at observations does not read
+    millions of them and one that does cannot see zero by mistake.
 
     An absent file, an unreadable one, a parquet file pyarrow refuses, a
     ``notes.json`` of the wrong shape, and a ``notes.json`` written at a
@@ -171,7 +172,8 @@ def load_control_tables(
         if obs == "schema":
             import pyarrow.parquet as pq
 
-            obs_frame = pq.read_schema(obs_path).empty_table().to_pandas()
+            empty = pq.read_schema(obs_path).empty_table().to_pandas()
+            obs_frame = ObsSchemaOnly(columns=empty.columns, dtypes=empty.dtypes)
         else:
             obs_frame = pd.read_parquet(obs_path)
     except Exception as exc:

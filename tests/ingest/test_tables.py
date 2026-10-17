@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import WrittenArtifact
@@ -346,13 +347,34 @@ def test_schema_only_observation_load_has_zero_rows_and_the_same_columns(tmp_pat
     assert isinstance(full, ControlTables)
     assert isinstance(schema, ControlTables)
     assert len(full.obs) == len(_OBS_NAMES)
-    assert len(schema.obs) == 0
     assert list(schema.obs.columns) == list(full.obs.columns)
     # A categorical column keeps its type but not its values, which are rows.
     assert {c: d.name for c, d in schema.obs.dtypes.items()} == {
         c: d.name for c, d in full.obs.dtypes.items()
     }
     assert schema.par.equals(full.par)
+
+
+def test_a_schema_only_observation_table_refuses_to_be_counted_or_walked(tmp_path):
+    """Zero rows that look like a real table would let a worker count 0
+    observations with no error; any row access must fail instead."""
+    tables = _control_tables(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    write_control(tables, layout)
+
+    obs = load_control_tables(layout, obs="schema").obs
+
+    with pytest.raises(TypeError, match="observation rows were not loaded"):
+        len(obs)
+    with pytest.raises(TypeError, match="observation rows were not loaded"):
+        list(obs)
+    with pytest.raises(TypeError, match="observation rows were not loaded"):
+        obs["obsnme"]
+    with pytest.raises(TypeError, match="observation rows were not loaded"):
+        obs.shape
+    with pytest.raises(TypeError, match="observation rows were not loaded"):
+        bool(obs)
+    assert "obsnme" in obs.columns
 
 
 def test_schema_only_observation_load_still_checks_the_notes_version(tmp_path):

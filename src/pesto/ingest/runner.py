@@ -195,8 +195,9 @@ def _reason_for(artifact: str, source: str, exc: BaseException) -> str:
 
 def _control_tables_for(cache_root: str):
     """The cached control table every worker but ``control`` starts from, with
-    its observation table as column schema only: no worker here reads
-    observation rows, and the table can hold millions of them."""
+    its observation table as column schema only (``ObsSchemaOnly``, which
+    raises on any row access): no worker here reads observation rows, and the
+    table can hold millions of them."""
     layout = CacheLayout(root=Path(cache_root))
     return layout, load_control_tables(layout, obs="schema")
 
