@@ -846,10 +846,11 @@ def test_the_failed_artifacts_recorded_sources_hold_exactly_what_could_be_finger
 
     artifact = manifest.artifacts["par_ens/0"]
     assert artifact.state == "failed"
-    # par_ens/0 depends on the vanished ensemble file and the (still
-    # fingerprintable) control file -- only the latter survives.
-    assert len(artifact.sources) == 1
-    assert artifact.sources[0].path == run.pst_path.name
+    # par_ens/0 depends on the vanished ensemble file plus the control and
+    # grid files, which can still be fingerprinted -- only those two survive.
+    assert sorted(s.path for s in artifact.sources) == sorted(
+        [run.pst_path.name, run.grid_path.name]
+    )
 
 
 def test_the_cache_file_the_worker_wrote_is_still_present_after_the_fingerprint_failure(
