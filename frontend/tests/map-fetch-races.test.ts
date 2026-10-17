@@ -687,3 +687,37 @@ describe('the iteration notices for assistive technology', () => {
     expect(selected.closest('[role="status"]')).not.toBeNull()
   })
 })
+
+describe('the count of selected realizations the shown iteration lacks', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function selectedNotice(root: HTMLElement): string {
+    return root.querySelector('[data-testid="iteration-selected-notice"]')?.textContent ?? ''
+  }
+
+  it('follows the selection when another view changes it after the switch', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    store.set({ reals: new Set(['base', 'r001', 'rX']) }, 'test')
+    store.flush()
+    toggleButton(root, '3').click()
+    store.flush()
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.iteration).toBe('3'))
+    await vi.waitFor(() => expect(selectedNotice(root)).toContain('2 selected realizations are not in iteration 3'))
+
+    store.set({ reals: new Set(['base', 'rX']) }, 'other-view')
+    store.flush()
+    expect(selectedNotice(root)).toContain('1 selected realization is not in iteration 3')
+
+    store.set({ reals: new Set(['base']) }, 'other-view')
+    store.flush()
+    expect(selectedNotice(root)).toBe('')
+  })
+})
