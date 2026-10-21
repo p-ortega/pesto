@@ -16,6 +16,7 @@ import pytest
 
 from .fixtures import (
     MISSING_FILE,
+    PDC_HEADER,
     control_ordered_names,
     hash_ordered_names,
     make_run,
@@ -285,13 +286,86 @@ def test_make_run_inventory_contains_every_expected_file(tmp_path):
         "case.0.reinflate.pcs.csv",
         "coarse.disv.grb",
         "coarse.boundary.layer10.bin",
-        "case.adjusted.weights.bin",
+        "case.weights.bin",
+        "case.adjusted.weights.jcb",
     }
     existing_names = {p.name for p in tmp_path.iterdir()}
 
     assert expected_names <= existing_names
     assert run.case == "case"
     assert run.pst_path.exists()
+
+
+def test_make_run_pdc_files_carry_the_pestpp_header_and_no_rows(tmp_path):
+    run = make_run(tmp_path, iterations=(0, 1))
+
+    for path in run.pdc_paths.values():
+        assert path.read_text().splitlines() == [PDC_HEADER]
+    assert PDC_HEADER.split(",")[0] == "name"
+    assert PDC_HEADER.split(",")[-1] == "distance"
+
+
+def test_make_run_phi_actual_and_meas_have_one_column_per_realization_and_a_row_per_iteration(
+    tmp_path,
+):
+    run = make_run(tmp_path, iterations=(0, 1, 2))
+
+    for kind in ("actual", "meas"):
+        rows = _read_csv_grid(run.phi_paths[kind])
+        assert rows[0] == [
+            "iteration", "total_runs", "mean", "standard_deviation", "min", "max",
+            *run.real_names,
+        ]
+        assert [row[0] for row in rows[1:]] == ["0", "1", "2"]
+        assert all(len(row) == 6 + len(run.real_names) for row in rows)
+    # The other phi files keep their old content.
+    assert run.phi_paths["regul"].read_text() == "iteration,total_runs,phi\n0,1,1.0\n"
+
+
+def test_make_run_adjusted_weights_are_a_real_matrix_named_by_realization_and_observation(
+    tmp_path,
+):
+    run = make_run(tmp_path, hash_ordered=True, iterations=(0,))
+
+    assert run.adjusted_weights_path == tmp_path / "case.adjusted.weights.jcb"
+    matrix = pyemu.Matrix.from_binary(str(run.adjusted_weights_path))
+    assert list(matrix.row_names) == run.real_names
+    assert sorted(matrix.col_names) == sorted(run.obs_names)
+    assert (matrix.x == 1.0).all()
+
+
+def test_make_run_adjusted_weights_equal_the_control_weights(tmp_path):
+    from pesto.ingest.control import read_control
+
+    run = make_run(tmp_path, iterations=(0,))
+
+    tables = read_control(run.pst_path)
+    control = dict(zip(tables.obs["obsnme"], tables.obs["weight"]))
+    matrix = pyemu.Matrix.from_binary(str(run.adjusted_weights_path))
+    for j, name in enumerate(matrix.col_names):
+        assert (matrix.x[:, j] == control[name]).all()
+
+
+def test_make_run_without_extras_writes_no_adjusted_weights_and_no_decoy(tmp_path):
+    run = make_run(tmp_path, extras=False, iterations=(0,))
+
+    assert run.adjusted_weights_path is None
+    assert run.decoy_paths == ()
+    assert not any("weights" in p.name for p in tmp_path.iterdir())
+
+
+def test_the_renamed_decoy_still_ends_in_an_ensemble_extension_and_matches_no_slot(tmp_path):
+    from pesto.ingest.discover import discover
+
+    run = make_run(tmp_path, iterations=(0,))
+
+    decoy = [p for p in run.decoy_paths if "weights" in p.name]
+    assert [p.name for p in decoy] == ["case.weights.bin"]
+    assert decoy[0].suffix == ".bin"
+    layout = discover(tmp_path)
+    assert layout.adjusted_weights != decoy[0]
+    assert decoy[0] not in set(layout.obs_ens.values()) | set(layout.par_ens.values())
+    assert layout.noise is None
 
 
 def test_make_run_missing_file_sentinel_names_but_does_not_create(tmp_path):
