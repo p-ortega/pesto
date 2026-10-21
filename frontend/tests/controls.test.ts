@@ -329,6 +329,68 @@ describe('renderSelectionControls', () => {
     expect(onSelectionChange).not.toHaveBeenCalled()
   })
 
+  describe('the Go to realization box', () => {
+    const goBox = (el: HTMLElement) => el.querySelector('input[aria-label="Go to realization"]') as HTMLInputElement
+    const slider = (el: HTMLElement) => el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    const commit = (el: HTMLElement, text: string) => {
+      goBox(el).value = text
+      goBox(el).dispatchEvent(new Event('change'))
+    }
+
+    it('holds a list of exactly the iteration names, in order, with no option text', () => {
+      const { el } = mount(THREE_NAMES)
+      const list = el.querySelector(`datalist#${goBox(el).getAttribute('list')}`) as HTMLDataListElement
+      expect(list).not.toBeNull()
+      const options = Array.from(list.querySelectorAll('option'))
+      expect(options.map((o) => o.getAttribute('value'))).toEqual(['base', 'r001', 'r002'])
+      expect(options.map((o) => o.textContent)).toEqual(['', '', ''])
+    })
+
+    it('sits in a label whose visible text is "Go to"', () => {
+      const { el } = mount(THREE_NAMES)
+      const label = goBox(el).closest('label') as HTMLElement
+      expect(label.classList.contains('label')).toBe(true)
+      expect(label.textContent).toBe('Go to')
+    })
+
+    it('moves the slider to a typed name, emits it, and empties the box', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      commit(el, 'r002')
+
+      expect(onSelectionChange).toHaveBeenCalledTimes(1)
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ realization: 'r002' }))
+      expect(slider(el).value).toBe('2')
+      expect(slider(el).nextElementSibling?.textContent).toBe('r002')
+      expect(goBox(el).value).toBe('')
+    })
+
+    it('commits a pick from the list (insertReplacementText) the same way', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      goBox(el).value = 'r001'
+      goBox(el).dispatchEvent(new InputEvent('input', { inputType: 'insertReplacementText' }))
+
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ realization: 'r001' }))
+      expect(slider(el).value).toBe('1')
+    })
+
+    it('emits nothing while the user is still typing', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      goBox(el).value = 'r00'
+      goBox(el).dispatchEvent(new Event('input'))
+      goBox(el).value = 'r001'
+      goBox(el).dispatchEvent(new InputEvent('input', { inputType: 'insertText' }))
+
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(slider(el).value).toBe('0')
+    })
+  })
+
   describe('after another iteration is shown', () => {
     const realInput = (el: HTMLElement) => el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
     const labelOf = (el: HTMLElement) => realInput(el).nextElementSibling?.textContent
