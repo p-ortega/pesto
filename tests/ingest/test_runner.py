@@ -564,6 +564,62 @@ def test_plan_artifacts_has_no_pdc_for_a_run_with_neither_a_pdc_file_nor_an_obs_
     assert not any(name.startswith("pdc/") for name in names)
 
 
+def test_plan_artifacts_plans_phi_check_after_pdc_for_each_observation_iteration(tmp_path):
+    from .obs_fixtures import make_obs_run as make_phi_run
+
+    run_dir = tmp_path / "run"
+    made = make_phi_run(run_dir, with_noise=True, with_pdc=True, with_phi=True)
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = plan_artifacts(run, layout)
+    names = [a.name for a in planned]
+    by_name = {a.name: a for a in planned}
+
+    for k in (0, 1):
+        assert names.index(f"phi_check/{k}") == names.index(f"pdc/{k}") + 1
+        phi = by_name[f"phi_check/{k}"]
+        assert phi.kind == "phi_check"
+        assert phi.needs == ("obs_index", f"obs_ens/{k}")
+        assert phi.outputs == (str(layout.phi_check(k)),)
+        assert phi.sources[:3] == (str(made.obs_ens[k]), str(made.phi_path), str(made.adjusted_weights_path))
+    assert [a.name for a in plan_artifacts(run, layout)] == names
+
+
+def test_plan_artifacts_has_no_phi_check_for_a_run_without_a_phi_actual_file(tmp_path):
+    from .obs_fixtures import make_obs_run as make_phi_run
+
+    run_dir = tmp_path / "run"
+    make_phi_run(run_dir)
+
+    names = [a.name for a in plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))]
+
+    assert not any(name.startswith("phi_check/") for name in names)
+
+
+def test_plan_artifacts_has_no_phi_check_for_an_iteration_without_an_observation_file(tmp_path):
+    from .obs_fixtures import make_obs_run as make_phi_run
+
+    run_dir = tmp_path / "run"
+    make_phi_run(run_dir, iterations=(1,), par_iterations=(0, 1), with_phi=True)
+
+    names = [a.name for a in plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))]
+
+    assert "phi_check/1" in names and "phi_check/0" not in names
+
+
+def test_plan_artifacts_phi_check_lists_the_phi_file_so_editing_it_makes_it_stale(tmp_path):
+    from .obs_fixtures import make_obs_run as make_phi_run
+
+    run_dir = tmp_path / "run"
+    made = make_phi_run(run_dir, with_phi=True)
+
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))}
+
+    assert str(made.phi_path) in planned["phi_check/0"].sources
+    assert str(made.phi_path) not in planned["obs_ens/0"].sources
+
+
 def _needing(*names: str) -> PlannedArtifact:
     return PlannedArtifact(
         name="obs_ens/0", kind="obs_ens", sources=(), outputs=(), source_bytes=0, needs=names
