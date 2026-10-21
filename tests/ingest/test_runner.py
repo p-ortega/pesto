@@ -435,7 +435,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
-        *[f"obs_ens/{k}" for k in (0, 1) if k in run.obs_ens],
+        *[name for k in (0, 1) if k in run.obs_ens for name in (f"obs_ens/{k}", f"obs_agg/{k}")],
         "config",
     ]
     assert [a.name for a in second] == names

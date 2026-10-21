@@ -164,11 +164,17 @@ def _capability(manifest: Manifest, required: list[str], any_of: list[str]) -> d
 
 
 def _obs_capability(
-    manifest: Manifest, run, *, obs_index_names: list[str], obs_ens_names: list[str]
+    manifest: Manifest,
+    run,
+    *,
+    obs_index_names: list[str],
+    obs_ens_names: list[str],
+    missing_artifact: str = "obs_ens",
 ) -> dict[str, Any]:
     """Whether observations are usable. With no observation ensemble planned
     there is nothing to wait for, so the one reason says why: no file in the
-    run at all, or none at the iterations the parameters use."""
+    run at all, or none at the iterations the parameters use. The same
+    reason serves ``obs_stats``, whose artifact is ``obs_agg``."""
     if obs_ens_names:
         return _capability(manifest, required=obs_index_names, any_of=obs_ens_names)
     from pesto.ingest.runner import observation_iterations
@@ -178,7 +184,7 @@ def _obs_capability(
         reason = notes[0]
     else:
         reason = "no observation ensemble file was found for this run"
-    return {"available": False, "blocked_by": [{"artifact": "obs_ens", "reason": reason}]}
+    return {"available": False, "blocked_by": [{"artifact": missing_artifact, "reason": reason}]}
 
 
 @router.get("/state")
@@ -216,6 +222,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     config_names = [pa.name for pa in planned if pa.kind == "config"]
     obs_index_names = [pa.name for pa in planned if pa.kind == "obs_index"]
     obs_ens_names = [pa.name for pa in planned if pa.kind == "obs_ens"]
+    obs_agg_names = [pa.name for pa in planned if pa.kind == "obs_agg"]
 
     body = {
         "fresh": fresh,
@@ -226,6 +233,13 @@ async def get_ingest_state(request: Request) -> JSONResponse:
             "chips": _capability(manifest, required=config_names, any_of=[]),
             "obs": _obs_capability(
                 manifest, run, obs_index_names=obs_index_names, obs_ens_names=obs_ens_names
+            ),
+            "obs_stats": _obs_capability(
+                manifest,
+                run,
+                obs_index_names=[],
+                obs_ens_names=obs_agg_names,
+                missing_artifact="obs_agg",
             ),
         },
         "ingest_seconds": manifest.ingest_seconds,
