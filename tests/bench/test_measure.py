@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from ingest.fixtures import make_run
 from pesto.bench import measure
 from pesto.bench.measure import (
     cache_size,
+    cold_read,
     machine_facts,
     nearest_rank,
     percentile_summary,
@@ -265,3 +267,35 @@ def test_cache_size_divides_bytes_on_disk_by_the_unique_source_bytes(tmp_path: P
     assert size.cache_bytes == 100
     assert size.source_bytes == sum(s.bytes for s in size.sources)
     assert size.ratio == pytest.approx(100 / size.source_bytes)
+
+
+def test_cold_read_reports_both_rates_and_their_ratio(tmp_path: Path) -> None:
+    first = tmp_path / "a.bin"
+    first.write_bytes(b"x" * 3000)
+    seen: list[str] = []
+
+    def passes(files, which):
+        seen.append(which)
+        return (3000, 2.0 if which == "first" else 1.0, "test pass")
+
+    result = cold_read([first], read_pass=passes)
+    assert seen == ["first", "reread"]
+    assert result.bytes == 3000
+    assert result.files == 1
+    assert result.first_seconds == 2.0 and result.reread_seconds == 1.0
+    assert result.first_mb_per_second == pytest.approx(3000 / 1e6 / 2.0)
+    assert result.reread_mb_per_second == pytest.approx(3000 / 1e6 / 1.0)
+    assert result.ratio == pytest.approx(0.5)
+    assert result.method
+
+
+def test_the_table_has_one_cold_read_line_with_the_rates_ratio_and_label(tmp_path: Path) -> None:
+    source = tmp_path / "a.bin"
+    source.write_bytes(b"x" * 3000)
+    result = _result_with_wall(0.5)
+    cold = cold_read([source], read_pass=lambda files, which: (3000, 2.0 if which == "first" else 1.0, "m"))
+    table = format_table(replace(result, cold_read=cold))
+    lines = [line for line in table.splitlines() if line.startswith("Cold read:")]
+    assert len(lines) == 1
+    assert "ratio 0.50" in lines[0] and "cold" in lines[0] and "MB/s" in lines[0]
+    assert f"  note: {cold.note}" in table.splitlines()
