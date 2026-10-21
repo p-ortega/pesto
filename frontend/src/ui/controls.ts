@@ -31,6 +31,7 @@ const COLORMAP_NAMES: readonly ColormapName[] = [
 const JET_REASON = 'A ramp whose lightness reverses three times invents boundaries that are not in the data.'
 
 const LOG_WARNING_ID = 'scale-log10-warning'
+const REAL_NAMES_LIST_ID = 'go-to-realization-names'
 
 export interface FieldChoice {
   iteration: number
@@ -203,6 +204,21 @@ export function renderSelectionControls(
   realLabel.appendChild(realInput)
   realLabel.appendChild(realValue)
 
+  // Go to: type or pick a realization by name. The text is looked up as a
+  // name, exactly as typed -- never read as a slider position.
+  const goLabel = document.createElement('label')
+  goLabel.classList.add('label')
+  goLabel.textContent = 'Go to'
+  const goInput = document.createElement('input')
+  goInput.type = 'text'
+  goInput.size = 8
+  goInput.autocomplete = 'off'
+  goInput.setAttribute('aria-label', 'Go to realization')
+  goInput.setAttribute('list', REAL_NAMES_LIST_ID)
+  const namesList = document.createElement('datalist')
+  namesList.id = REAL_NAMES_LIST_ID
+  goLabel.appendChild(goInput)
+
   let realNames: string[] = []
   let warningLine: HTMLElement | null = null
   let iteration = opts.iteration
@@ -228,6 +244,16 @@ export function renderSelectionControls(
     realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
   }
 
+  // Options carry a value and no text, so the list adds nothing to the panel's text.
+  function rebuildNamesList(): void {
+    namesList.textContent = ''
+    for (const name of realNames) {
+      const option = document.createElement('option')
+      option.setAttribute('value', name)
+      namesList.appendChild(option)
+    }
+  }
+
   if (opts.realNames.ok) {
     realNames = opts.realNames.names
     const lastIndex = Math.max(realNames.length - 1, 0)
@@ -236,6 +262,7 @@ export function renderSelectionControls(
     realInput.step = '1'
     realInput.value = '0'
     updateRealDisabled()
+    rebuildNamesList()
     showReal()
   } else {
     realInput.min = '0'
@@ -405,6 +432,24 @@ export function renderSelectionControls(
     opts.onSelectionChange(currentSelection())
   })
 
+  // Enter or leaving the box fires change; a pick from the list fires input with
+  // insertReplacementText. Plain typing commits nothing, so "66" never draws "6".
+  function commitGoTo(): void {
+    const typed = goInput.value
+    const index = realNames.indexOf(typed)
+    if (index < 0) return
+    realMissing = false
+    realInput.value = String(index)
+    showReal()
+    goInput.value = ''
+    opts.onSelectionChange(currentSelection())
+  }
+
+  goInput.addEventListener('change', commitGoTo)
+  goInput.addEventListener('input', (event) => {
+    if ((event as InputEvent).inputType === 'insertReplacementText') commitGoTo()
+  })
+
   // A range input fires no input event when its thumb is clicked without moving,
   // so the position it already sits on could never be picked while it reads "—".
   realInput.addEventListener('click', () => {
@@ -444,6 +489,8 @@ export function renderSelectionControls(
   el.appendChild(layerLabel)
   el.appendChild(statLabel)
   el.appendChild(realLabel)
+  el.appendChild(goLabel)
+  el.appendChild(namesList)
   if (warningLine) {
     el.appendChild(warningLine)
   }
