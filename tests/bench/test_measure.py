@@ -376,3 +376,40 @@ def test_the_bench_code_never_calls_another_program() -> None:
         if re.search(r"subprocess|os\.system|Popen", path.read_text())
     ]
     assert found == []
+
+
+def _sized_row(artifact: str, state: str, seconds: float, source_bytes: int) -> Progress:
+    return Progress(
+        artifact=artifact,
+        state=state,
+        index=0,
+        total=3,
+        source_bytes=source_bytes,
+        written_bytes=0,
+        seconds=seconds,
+    )
+
+
+def test_read_rate_is_source_bytes_of_ok_and_failed_artifacts_over_worker_seconds() -> None:
+    rows = [
+        _sized_row("a", "started", 0.0, 4_000_000),
+        _sized_row("a", "ok", 1.0, 4_000_000),
+        _sized_row("b", "started", 0.0, 2_000_000),
+        _sized_row("b", "failed", 1.0, 2_000_000),
+        _sized_row("c", "skipped", 5.0, 9_000_000),
+    ]
+    timing = time_ingest(Path("run"), Path("cache"), "as found", _fake_ingest(rows))
+    assert timing.read_mb_per_second == pytest.approx(6.0 / 2.0)
+
+
+def test_read_rate_is_none_when_no_worker_ran() -> None:
+    rows = [_sized_row("a", "skipped", 0.0, 4_000_000)]
+    timing = time_ingest(Path("run"), Path("cache"), "warm", _fake_ingest(rows))
+    assert timing.read_mb_per_second is None
+
+
+def test_the_table_prints_the_read_rate_on_each_ingest_line() -> None:
+    result = _result_with_wall(0.5)
+    result = replace(result, ingests=[replace(result.ingests[0], read_mb_per_second=1234.0)])
+    line = next(x for x in format_table(result).splitlines() if x.startswith("Ingest, as found"))
+    assert "source read 1,234 MB/s" in line

@@ -21,6 +21,7 @@ from fixtures.synthetic_run import (
 from ingest.fixtures import make_run
 
 from pesto.bench.measure import observation_facts
+from pesto.bench.report import ArtifactTiming
 from pesto.bench.serve import (
     OPEN_ROUTES,
     BenchServer,
@@ -321,9 +322,13 @@ def obs_run(tmp_path: Path) -> Path:
     return folder
 
 
+def _timing(name: str, state: str, reason: str | None = None) -> ArtifactTiming:
+    return ArtifactTiming(name, state, 0.1, None, 10, 5, reason)
+
+
 def test_observation_facts_without_the_probe(obs_run: Path) -> None:
-    facts = observation_facts(obs_run, probe=False)
-    assert facts.ingest == "not implemented in M0"
+    facts = observation_facts(obs_run, probe=False, artifacts=[_timing("obs_ens/0", "ok")])
+    assert facts.ingest == "obs_ens/0 ok"
     assert [f.name for f in facts.files] == ["case.0.obs.jcb", "case.1.obs.jcb"]
     assert all(f.bytes > 0 for f in facts.files)
     assert facts.probe is None
@@ -332,7 +337,7 @@ def test_observation_facts_without_the_probe(obs_run: Path) -> None:
 
 def test_observation_probe_times_the_lowest_iteration_and_leaves_the_run_alone(obs_run: Path) -> None:
     before = _snapshot(obs_run)
-    facts = observation_facts(obs_run, probe=True)
+    facts = observation_facts(obs_run, probe=True, artifacts=[])
     probe = facts.probe
     assert probe is not None
     assert probe.file == "case.0.obs.jcb"
@@ -346,7 +351,7 @@ def test_observation_probe_times_the_lowest_iteration_and_leaves_the_run_alone(o
 
 def test_a_failing_probe_is_a_note_not_a_crash(obs_run: Path) -> None:
     (obs_run / "case.0.obs.jcb").write_bytes(b"not an ensemble")
-    facts = observation_facts(obs_run, probe=True)
+    facts = observation_facts(obs_run, probe=True, artifacts=[])
     assert facts.probe is not None
     assert "probe failed:" in facts.probe.note
     assert facts.probe.shape is None
@@ -354,7 +359,24 @@ def test_a_failing_probe_is_a_note_not_a_crash(obs_run: Path) -> None:
 
 def test_a_run_with_no_observation_ensemble_lists_none(tmp_path: Path) -> None:
     run = write_synthetic_run(tmp_path / "run")
-    facts = observation_facts(run, probe=True)
+    facts = observation_facts(run, probe=True, artifacts=[])
     assert facts.files == []
     assert facts.probe is None
     assert "no observation ensemble present" in facts.notes
+
+
+def test_a_failed_observation_artifact_shows_its_reason_in_the_ingest_text(obs_run: Path) -> None:
+    reason = "obs_ens/1: reading case.1.obs.jcb would need about 9.0 GB"
+    rows = [
+        _timing("control", "ok"),
+        _timing("obs_ens/0", "ok"),
+        _timing("obs_ens/1", "failed", reason),
+    ]
+    facts = observation_facts(obs_run, probe=False, artifacts=rows)
+    assert facts.ingest == f"obs_ens/0 ok; obs_ens/1 failed: {reason}"
+
+
+def test_with_no_observation_artifact_the_ingest_text_says_none_was_planned(tmp_path: Path) -> None:
+    run = write_synthetic_run(tmp_path / "run")
+    facts = observation_facts(run, probe=False, artifacts=[_timing("control", "ok")])
+    assert facts.ingest == "no observation ensemble was planned for this run"
