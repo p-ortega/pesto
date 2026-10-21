@@ -11,6 +11,11 @@ a real obsval below the sentinel limit, weighted or not. Nothing here
 re-tests the stored float32 values. The stored file is stat-major,
 ``(len(OBS_STATS), n_obs)``, row ``i`` of every stat being sorted position
 ``i`` of ``obs_index``; the sidecar records the digest of that order.
+
+The noise band is the same shape for the realizations pestpp used as
+observations plus noise: it is built only from the ``obs+noise`` file that
+discovery found, never from a starting observation ensemble, and without the
+realization named ``base``.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from pesto.cache._atomic import write_atomic_bytes, write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.aggregate import summarise
+from pesto.ingest.ensfile import EnsembleData, _clean
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.obsens import load_obs_ensemble
 from pesto.ingest.obsindex import (
@@ -32,6 +38,7 @@ from pesto.ingest.obsindex import (
     FLAG_HAS_TARGET,
     FLAG_LESS,
     SENTINEL_LIMIT,
+    ObsIndex,
     load_obs_index,
 )
 from pesto.ingest.tables import load_control_table
@@ -50,7 +57,20 @@ OBS_STATS = (
     "resid_mean",
     "rmse",
 )
+NOISE_STATS = (
+    "mean",
+    "std",
+    "min",
+    "max",
+    "q05",
+    "q25",
+    "q50",
+    "q75",
+    "q95",
+    "n_valid",
+)
 RESIDUAL_TEXT = "simulated minus observed"
+BASE_NAME = "base"
 _EXAMPLES = 3
 
 
@@ -64,6 +84,21 @@ class StoredObsAgg:
     stats: tuple[str, ...]
     order_digest: str
     counts: dict
+    notes: tuple[str, ...]
+
+
+@dataclass(frozen=True, eq=False)
+class StoredNoiseAgg:
+    """The noise band read back through its sidecar. ``values`` is a
+    read-only memory map of shape (len(stats), n_obs), float32. ``base`` is
+    ``"excluded"`` or ``"not present"``."""
+
+    values: np.ndarray
+    stats: tuple[str, ...]
+    order_digest: str
+    source: str
+    n_real_used: int
+    base: str
     notes: tuple[str, ...]
 
 
@@ -259,14 +294,18 @@ def write_obs_agg(
         )
 
 
-def load_obs_agg(iteration: int, layout: CacheLayout) -> StoredObsAgg | ReadFailure:
-    """Open the stored statistics through their sidecar. Refused when the
-    sidecar is not the shape this writer used, the payload size disagrees
-    with it, or the columns were ordered against a different ``obs_index``
-    than the one in the cache."""
-    name = f"obs_agg/{iteration}"
-    sidecar_path = layout.obs_agg_meta(iteration)
-    payload_path = layout.obs_agg(iteration)
+def _open_stat_file(
+    name: str,
+    label: str,
+    sidecar_path: Path,
+    payload_path: Path,
+    expected_stats: tuple[str, ...],
+    layout: CacheLayout,
+) -> tuple[dict, np.ndarray, tuple[str, ...], str] | ReadFailure:
+    """Open a stat-major float32 file through its sidecar: the version, the
+    shape, the statistic names, the payload size and the ``obs_index`` digest
+    are all checked before a read-only memory map is handed back. Returns the
+    sidecar, the map, the stat names and the digest."""
     try:
         sidecar = json.loads(sidecar_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -284,8 +323,6 @@ def load_obs_agg(iteration: int, layout: CacheLayout) -> StoredObsAgg | ReadFail
         n_stats, n_obs = (int(v) for v in sidecar["shape"])
         digest = str(sidecar["order_digest"])
         stats = tuple(str(v) for v in sidecar["stats"])
-        counts = dict(sidecar.get("counts", {}))
-        notes = tuple(str(v) for v in sidecar.get("notes", []))
         if sidecar.get("dtype") != "<f4":
             raise ValueError(f"dtype {sidecar.get('dtype')!r}")
         if len(stats) != n_stats:
@@ -294,15 +331,14 @@ def load_obs_agg(iteration: int, layout: CacheLayout) -> StoredObsAgg | ReadFail
         return _fail(
             name,
             sidecar_path,
-            f"sidecar {sidecar_path.name} is not shaped like an observation statistics "
-            f"sidecar: {exc}",
+            f"sidecar {sidecar_path.name} is not shaped like {label} sidecar: {exc}",
         )
-    if stats != OBS_STATS:
+    if stats != expected_stats:
         return _fail(
             name,
             sidecar_path,
             f"sidecar {sidecar_path.name} names the statistics {list(stats)} but this reader "
-            f"expects {list(OBS_STATS)}",
+            f"expects {list(expected_stats)}",
         )
 
     expected = n_stats * n_obs * 4
@@ -341,11 +377,232 @@ def load_obs_agg(iteration: int, layout: CacheLayout) -> StoredObsAgg | ReadFail
         )
 
     values = np.memmap(payload_path, dtype="<f4", mode="r", shape=(n_stats, n_obs))
+    return sidecar, values, stats, digest
+
+
+def load_obs_agg(iteration: int, layout: CacheLayout) -> StoredObsAgg | ReadFailure:
+    """Open the stored statistics through their sidecar. Refused when the
+    sidecar is not the shape this writer used, the payload size disagrees
+    with it, or the columns were ordered against a different ``obs_index``
+    than the one in the cache."""
+    name = f"obs_agg/{iteration}"
+    opened = _open_stat_file(
+        name,
+        "an observation statistics",
+        layout.obs_agg_meta(iteration),
+        layout.obs_agg(iteration),
+        OBS_STATS,
+        layout,
+    )
+    if isinstance(opened, ReadFailure):
+        return opened
+    sidecar, values, stats, digest = opened
     return StoredObsAgg(
         iteration=iteration,
         values=values,
         stats=stats,
         order_digest=digest,
-        counts=counts,
-        notes=notes,
+        counts=dict(sidecar.get("counts", {})),
+        notes=tuple(str(v) for v in sidecar.get("notes", [])),
+    )
+
+
+def _find_base(real_names: tuple[str, ...]) -> tuple[list[int], str | None]:
+    """Positions of the base realization, by the name rule used everywhere
+    else: exact ``base`` first, then trimmed and lower-cased. The second item
+    is a note when only the folded name matched."""
+    exact = [i for i, n in enumerate(real_names) if n == BASE_NAME]
+    if exact:
+        return exact, None
+    folded = [i for i, n in enumerate(real_names) if _clean(n) == BASE_NAME]
+    if not folded:
+        return [], None
+    shown = ", ".join(repr(real_names[i]) for i in folded[:_EXAMPLES])
+    return folded, (
+        f"the base realization matched only after trimming spaces and lower-casing "
+        f"(the file names it {shown})"
+    )
+
+
+def write_noise_agg(
+    data: EnsembleData,
+    index: ObsIndex,
+    source_name: str,
+    layout: CacheLayout,
+    *,
+    block_rows: int = 50_000,
+) -> WrittenArtifact | ReadFailure:
+    """Write ``agg/noise.f32`` and then its sidecar ``agg/noise.json``, or
+    leave nothing behind.
+
+    ``data`` is the obs+noise ensemble read through the guarded reader. The
+    realization named ``base`` is left out, and the sidecar says so. Every
+    column is placed by the observation name the file gave it
+    (``data.permutation``), never by position.
+    """
+    name = "noise_agg"
+    payload_path = layout.noise_agg
+    sidecar_path = layout.noise_agg_meta
+    written: list[Path] = []
+    try:
+        if data.permutation is None:
+            return _fail(
+                name,
+                data.source_path,
+                f"the observation names in {source_name} could not be matched to the control "
+                "file, so no control-file order exists to store against -- refusing rather "
+                "than falling back to file column position",
+            )
+        permutation = np.asarray(data.permutation, dtype=np.int64)
+        if permutation.shape[0] != index.control_rows:
+            return _fail(
+                name,
+                data.source_path,
+                f"the name match for {source_name} covers {permutation.shape[0]} control "
+                f"observations but the obs_index was built from {index.control_rows} -- "
+                "refusing to store against a different control table",
+            )
+        n_obs = index.n_obs
+        if n_obs == 0:
+            return _fail(name, data.source_path, "the obs_index holds no observations")
+        n_file_real = int(data.values.shape[0])
+        if len(data.real_names) != n_file_real:
+            return _fail(
+                name,
+                data.source_path,
+                f"{source_name} has {n_file_real} realizations but {len(data.real_names)} names",
+            )
+
+        base_rows, base_note = _find_base(tuple(data.real_names))
+        base_set = set(base_rows)
+        keep = np.array([i for i in range(n_file_real) if i not in base_set], dtype=np.int64)
+        if keep.size == 0:
+            return _fail(
+                name,
+                data.source_path,
+                f"{source_name} holds no realization other than base, so there is no noise band "
+                "to draw",
+            )
+
+        loaded = load_control_table(layout, "obs", columns=["obsnme"])
+        if isinstance(loaded, ReadFailure):
+            return _fail(name, loaded.path, f"the control table: {loaded.reason}")
+        table, _table_notes = loaded
+        if table.num_rows != index.control_rows:
+            return _fail(
+                name,
+                payload_path,
+                f"the control table holds {table.num_rows} observations but the obs_index "
+                f"was built from {index.control_rows}",
+            )
+        names = table.column("obsnme")
+
+        # An older sidecar must not outlive a failed rewrite of its payload.
+        sidecar_path.unlink(missing_ok=True)
+
+        n_stats = len(NOISE_STATS)
+        step = max(int(block_rows), 1)
+        summary_notes: list[str] = []
+
+        def _write_payload(fileobj) -> int:
+            fileobj.truncate(n_stats * n_obs * 4)
+            for start in range(0, n_obs, step):
+                stop = min(start + step, n_obs)
+                control_rows = index.order[start:stop]
+                file_columns = permutation[control_rows]
+                block = np.asarray(data.values[np.ix_(keep, file_columns)])
+                block_names = _block_names(names, control_rows)
+                summary, notes = summarise(block, block_names, noun="observation")
+                summary_notes.extend(notes)
+                for row, stat in enumerate(NOISE_STATS):
+                    fileobj.seek((row * n_obs + start) * 4)
+                    fileobj.write(
+                        np.ascontiguousarray(summary[stat].to_numpy(), dtype="<f4").tobytes()
+                    )
+            return n_stats * n_obs * 4
+
+        payload_bytes = write_atomic_bytes(payload_path, _write_payload)
+        written.append(payload_path)
+
+        notes: list[str] = list(data.notes)
+        notes.extend(summary_notes)
+        if base_rows:
+            base_state = "excluded"
+            notes.append(
+                f"{len(base_rows)} realization(s) named base were left out of the noise band"
+            )
+            if base_note is not None:
+                notes.append(base_note)
+        else:
+            base_state = "not present"
+            notes.append(f"{source_name} has no realization named base; every realization was used")
+        sidecar = {
+            "cache_version": CACHE_VERSION,
+            "stats": list(NOISE_STATS),
+            "shape": [n_stats, int(n_obs)],
+            "dtype": "<f4",
+            "layout": "stat-major, columns in obs_index order",
+            "order_digest": index.order_digest,
+            "source": source_name,
+            "n_real_used": int(keep.size),
+            "base": base_state,
+            "notes": notes,
+        }
+        sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
+        written.append(sidecar_path)
+        files = (
+            CacheFile(path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes),
+            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes),
+        )
+        return WrittenArtifact(name=name, files=files, notes=tuple(notes))
+    except Exception as exc:
+        removed = 0
+        for path in written:
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except Exception:
+                pass
+        return _fail(
+            name,
+            payload_path,
+            f"failed to write the noise statistics from {source_name}: {exc} -- cleaned up "
+            f"{removed} file(s) already written for this artifact",
+        )
+
+
+def load_noise_agg(layout: CacheLayout) -> StoredNoiseAgg | ReadFailure:
+    """Open the stored noise band through its sidecar, with the same checks
+    as :func:`load_obs_agg`."""
+    name = "noise_agg"
+    opened = _open_stat_file(
+        name,
+        "a noise statistics",
+        layout.noise_agg_meta,
+        layout.noise_agg,
+        NOISE_STATS,
+        layout,
+    )
+    if isinstance(opened, ReadFailure):
+        return opened
+    sidecar, values, stats, digest = opened
+    try:
+        source = str(sidecar["source"])
+        n_real_used = int(sidecar["n_real_used"])
+        base = str(sidecar["base"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return _fail(
+            name,
+            layout.noise_agg_meta,
+            f"sidecar {layout.noise_agg_meta.name} is not shaped like a noise statistics "
+            f"sidecar: {exc}",
+        )
+    return StoredNoiseAgg(
+        values=values,
+        stats=stats,
+        order_digest=digest,
+        source=source,
+        n_real_used=n_real_used,
+        base=base,
+        notes=tuple(str(v) for v in sidecar.get("notes", [])),
     )
