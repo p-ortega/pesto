@@ -57,6 +57,8 @@ class IngestTiming:
     wait_seconds: float | None
     artifacts: list[ArtifactTiming]
     notes: list[str]
+    # Source bytes of the artifacts the workers ran, over the workers' seconds.
+    read_mb_per_second: float | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,21 @@ class ReadFloor:
     bytes: int
     seconds: float
     mb_per_second: float | None
+    note: str
+
+
+@dataclass(frozen=True)
+class ColdRead:
+    bytes: int
+    files: int
+    first_seconds: float
+    first_mb_per_second: float | None
+    reread_seconds: float
+    reread_mb_per_second: float | None
+    ratio: float | None
+    proven_cold: bool
+    label: str  # "cold" | "not proven cold" | "not measured"
+    method: str
     note: str
 
 
@@ -195,6 +212,7 @@ class BenchResult:
     observations: ObservationFacts | None = None
     # Why the server stage gave nothing, when it raised; None when it ran or was turned off.
     server_failure: str | None = None
+    cold_read: ColdRead | None = None
     schema_version: int = SCHEMA_VERSION
     tool: str = TOOL
 
@@ -300,6 +318,23 @@ def _target_lines(result: BenchResult) -> list[str]:
     return lines
 
 
+def _rate(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:,.0f} MB/s"
+
+
+def _cold_read_lines(result: BenchResult) -> list[str]:
+    cold = result.cold_read
+    if cold is None:
+        return []
+    ratio = "n/a" if cold.ratio is None else f"{cold.ratio:.2f}"
+    return [
+        f"Cold read: {_megabytes(cold.bytes)} in {cold.files} files, first read "
+        f"{_rate(cold.first_mb_per_second)}, re-read {_rate(cold.reread_mb_per_second)}, "
+        f"ratio {ratio}, {cold.label} (method: {cold.method})",
+        f"  note: {cold.note}",
+    ]
+
+
 def _observation_lines(result: BenchResult) -> list[str]:
     facts = result.observations
     if facts is None:
@@ -350,10 +385,13 @@ def format_table(result: BenchResult) -> str:
             f"workers {_seconds(ingest.worker_seconds)}, "
             f"outside workers {_seconds(ingest.outside_worker_seconds)}, "
             f"CPU {_seconds(ingest.cpu_seconds)}, "
-            f"waiting {_seconds(ingest.wait_seconds)}"
+            f"waiting {_seconds(ingest.wait_seconds)}, "
+            f"source read {_rate(ingest.read_mb_per_second)}"
         )
         for note in ingest.notes:
             lines.append(f"  note: {note}")
+
+    lines.extend(_cold_read_lines(result))
 
     floor = result.read_floor
     if floor is not None:

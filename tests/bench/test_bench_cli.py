@@ -242,3 +242,44 @@ def test_a_failing_server_stage_still_writes_the_ingest_numbers_and_exits_1(
         assert rows[name]["status"] == "not measured"
         assert "server stage failed" in rows[name]["note"]
     assert any("server stage failed" in note for note in body["notes"])
+
+
+def test_the_cold_read_runs_once_before_the_first_ingest_on_the_planned_sources(
+    run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pesto.bench import cli
+    from pesto.bench.measure import _source_paths
+
+    events: list[str] = []
+    seen_files: list[list[Path]] = []
+    real = cli.cold_read
+
+    def spy(files):
+        events.append("cold_read")
+        seen_files.append(list(files))
+        return real(files)
+
+    def fake(run, cache_root=None, on_progress=None):
+        events.append("ingest")
+
+    monkeypatch.setattr("pesto.bench.cli.cold_read", spy)
+    monkeypatch.setattr("pesto.bench.cli.ingest_run", fake)
+    result = cli.run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
+
+    assert events == ["cold_read", "ingest", "ingest"]
+    assert seen_files[0] == _source_paths(run_dir.resolve(), tmp_path.resolve() / "scratch" / "ingest-1")
+    assert result.cold_read is not None and result.cold_read.bytes > 0
+    note = "the cold-read check read every source file just before this ingest, so these files were likely in memory"
+    assert note in result.ingests[0].notes
+    assert note not in result.ingests[1].notes
+
+
+def test_bench_leaves_the_run_folder_as_it_was_with_the_cold_read(
+    run_dir: Path, tmp_path: Path, ingest_calls: list[Path]
+) -> None:
+    from pesto.bench.cli import run_bench
+
+    before = snapshot(run_dir)
+    result = run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
+    assert result.cold_read is not None and result.cold_read.bytes > 0
+    assert snapshot(run_dir) == before

@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
 from pesto.bench.measure import (
+    _source_paths,
     cache_size,
+    cold_read,
     machine_facts,
     observation_facts,
     read_floor_for,
@@ -38,6 +41,10 @@ from pesto.ingest.runner import ingest_run
 _AS_FOUND = "ingest-1"
 _WARM = "ingest-2"
 _VALUES_SAMPLES = 300
+_COLD_READ_NOTE = (
+    "the cold-read check read every source file just before this ingest, "
+    "so these files were likely in memory"
+)
 _STAGE_OFF = "the server stage was turned off"
 
 
@@ -154,8 +161,11 @@ def run_bench(
     warm_dir.mkdir(parents=True, exist_ok=False)
 
     facts = run_facts(run)
+    print("pesto bench: reading the source files before any ingest (cold read check)", file=sys.stderr)
+    cold = cold_read(_source_paths(run, as_found_dir))
     print(f"pesto bench: ingesting {run.name} (as found)", file=sys.stderr)
     first = time_ingest(run, as_found_dir, "as found", ingest)
+    first = replace(first, notes=[*first.notes, _COLD_READ_NOTE])
     print(f"pesto bench: ingesting {run.name} (warm, straight after)", file=sys.stderr)
     second = time_ingest(run, warm_dir, "warm (straight after)", ingest)
 
@@ -199,7 +209,7 @@ def run_bench(
             verdicts += _values_verdicts(None, f"the server stage failed: {server_failure}")
     else:
         verdicts += _values_verdicts(None)
-    observations = observation_facts(run, obs_probe)
+    observations = observation_facts(run, obs_probe, second.artifacts)
 
     return BenchResult(
         pesto_version=_version(),
@@ -222,6 +232,7 @@ def run_bench(
         server=server_result,
         browser_targets=targets,
         observations=observations,
+        cold_read=cold,
     )
 
 
