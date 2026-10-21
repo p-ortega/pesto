@@ -116,6 +116,28 @@ describe('renderIterationToggle', () => {
     expect(onChange).toHaveBeenCalledTimes(1)
   })
 
+  it('starts with a visible Iteration label that screen readers skip', () => {
+    const el = document.createElement('div')
+    renderIterationToggle(el, { iterations: [0, 3], current: 0, onChange: vi.fn() })
+
+    const first = el.firstElementChild as HTMLElement
+    expect(first.tagName).toBe('SPAN')
+    expect(first.classList.contains('label')).toBe(true)
+    expect(first.textContent).toBe('Iteration')
+    expect(first.getAttribute('aria-hidden')).toBe('true')
+    expect(el.getAttribute('aria-label')).toBe('Iteration')
+    expect(Array.from(el.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['0', '3'])
+    expect(el.style.alignItems).toBe('center')
+  })
+
+  it('passes the run-together check with the label before the buttons', () => {
+    loadRealStylesheet()
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    renderIterationToggle(el, { iterations: [0, 3], current: 0, onChange: vi.fn() })
+    expectNoRunTogetherText(el, 'iteration toggle with label')
+  })
+
   it.each([[[0]], [[]]])('draws nothing for %j', (iterations) => {
     const el = document.createElement('div')
     renderIterationToggle(el, { iterations, current: 0, onChange: vi.fn() })
