@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pesto.ingest.control import ControlTables, read_control
+from pesto.ingest.control import ControlTables, ObsSchemaOnly, read_control
 from pesto.ingest.discover import discover
 from pesto.ingest.ensfile import EnsembleData, read_ensemble, sniff
 from pesto.ingest.failures import ReadFailure
@@ -24,12 +24,13 @@ from pesto.ingest.failures import ReadFailure
 from . import fixtures
 
 
-def _control_tables(entity_names: list[str]) -> ControlTables:
+def _control_tables(entity_names: list[str], obs_names: list[str] | None = None) -> ControlTables:
     """A minimal ``ControlTables`` carrying only what ``read_ensemble``'s
-    orientation decision needs: ``par["parnme"]`` in control-file order."""
+    orientation decision needs: ``par["parnme"]`` (and, for observation
+    reads, ``obs["obsnme"]``) in control-file order."""
     return ControlTables(
         par=pd.DataFrame({"parnme": list(entity_names)}),
-        obs=pd.DataFrame({"obsnme": []}),
+        obs=pd.DataFrame({"obsnme": list(obs_names or [])}),
         par_groups=(),
         obs_groups=(),
         source_path=Path("unused.pst"),
@@ -377,50 +378,83 @@ def test_read_ensemble_never_writes_to_the_source_file(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_kind_obs_refuses_naming_the_observation_ensemble_boundary_not_the_parameter_count(
-    tmp_path,
-):
-    real_names = fixtures.control_ordered_names("real", 300)[:5]
+def test_kind_obs_reads_an_observation_file_against_the_observation_table(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 5)
     obs_entity_names = fixtures.control_ordered_names("obs", 8)
     values = fixtures.sample_values(len(real_names), len(obs_entity_names))
     path = fixtures.write_dense_ensemble(
         tmp_path / "case.0.obs.bin", values, real_names, obs_entity_names
     )
-    # A parameter count deliberately different from the observation entity
-    # count, so a verdict about parameters would be an obviously wrong
-    # diagnosis for this file.
+    # A parameter table of a different size: the observation read must not
+    # compare against it.
     par_entity_names = fixtures.control_ordered_names("par", 6)
 
-    result = read_ensemble(path, _control_tables(par_entity_names), kind="obs")
+    result = read_ensemble(
+        path, _control_tables(par_entity_names, obs_entity_names), kind="obs"
+    )
 
-    assert isinstance(result, ReadFailure)
-    assert "observation ensemble" in result.reason
-    assert "does not read observation ensemble values yet" in result.reason
-    assert "parameter" not in result.reason.split("does not")[0]
+    assert isinstance(result, EnsembleData)
+    assert result.real_names == tuple(real_names)
+    assert result.entity_names == tuple(obs_entity_names)
+    assert np.array_equal(result.values, values.astype(np.float32))
 
 
-def test_kind_obs_does_not_claim_a_missing_file_was_found(tmp_path):
-    """02-REVIEW.md IN-01: the kind="obs" refusal used to say the file "was
-    found and named" without ever looking, so a path that is not on disk got
-    reported as present. Existence is stated, not assumed."""
-    par_entity_names = fixtures.control_ordered_names("par", 6)
+def test_kind_obs_says_a_missing_file_is_not_on_disk(tmp_path):
+    """02-REVIEW.md IN-01: a path that is not on disk is reported as not on
+    disk, never as found."""
+    obs_entity_names = fixtures.control_ordered_names("obs", 8)
     missing = tmp_path / "never-written.obs.bin"
     assert not missing.exists()
 
-    result = read_ensemble(missing, _control_tables(par_entity_names), kind="obs")
+    result = read_ensemble(
+        missing, _control_tables(["par0"], obs_entity_names), kind="obs"
+    )
 
     assert isinstance(result, ReadFailure)
     assert "was found" not in result.reason
     assert "is not on disk" in result.reason
     assert str(missing) in result.reason
-    # The boundary is still the reason it refused, not a bare missing-file error.
-    assert "does not read observation ensemble values yet" in result.reason
 
 
-def test_kind_obs_refusal_points_at_obs_not_par_for_the_widened_seam(tmp_path):
-    """The refusal used to advise passing kind="par" "once observation
-    ensemble reading is supported" -- the wrong argument at exactly the
-    moment the advice becomes actionable. It names kind="obs"."""
+def test_kind_obs_with_a_schema_only_observation_table_says_rows_were_not_loaded(tmp_path):
+    real_names = fixtures.control_ordered_names("real", 4)
+    obs_entity_names = fixtures.control_ordered_names("obs", 8)
+    values = fixtures.sample_values(len(real_names), len(obs_entity_names))
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.obs.bin", values, real_names, obs_entity_names
+    )
+    tables = ControlTables(
+        par=pd.DataFrame({"parnme": ["par0"]}),
+        obs=ObsSchemaOnly(
+            columns=pd.Index(["obsnme"]), dtypes=pd.Series({"obsnme": np.dtype("O")})
+        ),
+        par_groups=(),
+        obs_groups=(),
+        source_path=Path("unused.pst"),
+        notes=(),
+        ambiguities=(),
+    )
+
+    result = read_ensemble(path, tables, kind="obs")
+
+    assert isinstance(result, ReadFailure)
+    assert "observation rows were not loaded" in result.reason
+
+
+def test_kind_obs_without_a_control_table_refuses_and_says_what_is_needed(tmp_path):
+    path = fixtures.write_dense_ensemble(
+        tmp_path / "case.0.obs.bin", fixtures.sample_values(2, 3), ["a", "b"], ["o0", "o1", "o2"]
+    )
+
+    result = read_ensemble(path, None, kind="obs")
+
+    assert isinstance(result, ReadFailure)
+    assert "no control table was given" in result.reason
+
+
+def test_parameter_read_of_an_observation_file_points_at_kind_obs(tmp_path):
+    """The parameter-path refusal still tells a caller whose file holds
+    observations which argument reads them."""
     real_names = fixtures.control_ordered_names("real", 4)
     obs_entity_names = fixtures.control_ordered_names("obs", 8)
     values = fixtures.sample_values(len(real_names), len(obs_entity_names))
@@ -429,11 +463,11 @@ def test_kind_obs_refusal_points_at_obs_not_par_for_the_widened_seam(tmp_path):
     )
     par_entity_names = fixtures.control_ordered_names("par", 6)
 
-    result = read_ensemble(path, _control_tables(par_entity_names), kind="obs")
+    result = read_ensemble(path, _control_tables(par_entity_names))
 
     assert isinstance(result, ReadFailure)
     assert 'kind="obs"' in result.reason
-    assert 'kind="par"' not in result.reason
+    assert "parameter table" in result.reason
 
 
 def test_default_kind_names_the_parameter_table_as_what_it_compared_against(tmp_path):
@@ -649,28 +683,25 @@ def test_zero_data_row_ensemble_is_empty_record_or_named_failure(tmp_path):
 
 
 @pytest.mark.slow
-def test_a_real_observation_ensemble_gets_a_straight_answer_both_kinds(pl253_run):
+def test_a_real_observation_ensemble_reads_by_name_and_the_default_kind_points_at_obs(pl253_run):
     """02-REVIEW.md CR-01, reproduced against the real run it was found on:
-    a 300 (well, 7-iteration) x 236,172 observation ensemble used to be
-    refused with a reason blaming the parameter count. This is the first
-    test in this file to drive an observation-shaped entity axis against
-    real data at all."""
+    a 300 (well, 7-iteration) x 236,172 observation ensemble is refused under
+    the default kind with a reason pointing at kind="obs", and reads under
+    kind="obs" with every observation matched to the control table by name."""
     layout = discover(pl253_run)
     tables = read_control(layout.pst_path)
     assert isinstance(tables, ControlTables)
 
     obs_path = layout.obs_ens[0]
 
-    boundary_result = read_ensemble(obs_path, tables, kind="obs")
-    assert isinstance(boundary_result, ReadFailure)
-    assert "observation ensemble" in boundary_result.reason
-    assert "does not read observation ensemble values yet" in boundary_result.reason
+    obs_result = read_ensemble(obs_path, tables, kind="obs")
+    assert isinstance(obs_result, EnsembleData)
+    assert len(obs_result.entity_names) == len(tables.obs)
 
     default_result = read_ensemble(obs_path, tables)
     assert isinstance(default_result, ReadFailure)
     assert "parameter table" in default_result.reason
-    assert "observation ensemble" in default_result.reason
-    assert "does not read observation ensemble values yet" in default_result.reason
+    assert 'kind="obs"' in default_result.reason
 
 
 @pytest.mark.slow

@@ -224,13 +224,7 @@ def _build_permutation(
     return tuple(permutation)
 
 
-def _decide_orientation(
-    values: np.ndarray,
-    row_names: tuple[str, ...],
-    col_names: tuple[str, ...],
-    tables: "ControlTables | None",
-    notes: list[str],
-) -> tuple[
+_OrientationResult = tuple[
     np.ndarray,
     tuple[str, ...],
     tuple[str, ...],
@@ -239,41 +233,42 @@ def _decide_orientation(
     bool,
     tuple[int, ...] | None,
     bool,
-]:
-    """Decide which axis is realizations and which is entities.
+]
 
-    Dimensions first, names second (D-05): with no ``tables`` at all,
-    orientation is *assumed* realization-major -- there is nothing to
-    compare against, so ``orientation_decided_by`` says ``"assumed"``
-    rather than claiming a decision was made, and the permutation is
-    ``None``. With ``tables``, exactly one axis's count matching
-    ``len(tables.par)`` decides it by ``"dimensions"``; neither axis
-    matching, or both matching (a square ensemble), decides nothing and
+
+def _orient_by_names(
+    values: np.ndarray,
+    row_names: tuple[str, ...],
+    col_names: tuple[str, ...],
+    control_names: list[str],
+    label: str,
+    notes: list[str],
+) -> _OrientationResult:
+    """Decide which axis is realizations and which is entities, given only
+    the control file's names for the entity kind (``label`` is
+    ``"parameters"`` or ``"observations"``).
+
+    Dimensions first, names second (D-05): exactly one axis's count
+    matching ``len(control_names)`` decides it by ``"dimensions"``; neither
+    axis matching, or both matching (a square ensemble), decides nothing and
     falls through to comparing the actual names, case-insensitively after
-    stripping, against the control file's parameter names. The winning
-    axis must match at least 90% of its own names while the other axis
-    matches at most 50% -- a decisive margin, not a bare majority, per
-    D-06. When names decide nothing either, this function raises
-    ``_OrientationUndecidable`` naming the counts and axes that were
-    tried, rather than guessing or silently transposing.
+    stripping, against the control names. The winning axis must match at
+    least 90% of its own names while the other axis matches at most 50% --
+    a decisive margin, not a bare majority, per D-06. When names decide
+    nothing either, this raises ``_OrientationUndecidable`` naming the
+    counts and axes that were tried, rather than guessing or silently
+    transposing.
 
-    This function validates against ``tables.par`` only, by design, never
-    ``tables.obs`` -- that is a stated boundary, not an oversight. Reading
-    observation ensemble content is out of scope for M0 (REQUIREMENTS.md Out
-    of Scope); ``read_ensemble``'s ``kind`` argument is the seam a later
-    milestone widens to let a caller validate against the observation table
-    instead, without this function needing to guess which table applies.
+    Parameters and observations share this one rule; only the list of
+    control names differs.
     """
-    if tables is None:
-        return values, row_names, col_names, "realization_major", "assumed", True, None, False
-
-    control_names = list(tables.par["parnme"])
-    n_par = len(control_names)
+    n_control = len(control_names)
+    table_word = label.removesuffix("s")
     ncol = len(col_names)
     nrow = len(row_names)
 
-    col_matches_dims = ncol == n_par
-    row_matches_dims = nrow == n_par
+    col_matches_dims = ncol == n_control
+    row_matches_dims = nrow == n_control
 
     if col_matches_dims and not row_matches_dims:
         entity_is_columns = True
@@ -297,15 +292,20 @@ def _decide_orientation(
             entity_is_columns = False
             decided_by = "names"
         else:
+            if label == "parameters":
+                advice = (
+                    "An observation ensemble would look exactly like this -- if this "
+                    'file holds observations, pass kind="obs" to read_ensemble.'
+                )
+            else:
+                advice = (
+                    "pesto refuses rather than guess which axis holds the observations."
+                )
             raise _OrientationUndecidable(
-                f"ncol={ncol}, nrow={nrow}: neither axis's count matches the {n_par} "
-                f"parameters in the control file's parameter table, which is the only "
+                f"ncol={ncol}, nrow={nrow}: neither axis's count matches the {n_control} "
+                f"{label} in the control file's {table_word} table, which is the only "
                 f"table this comparison was made against (column name match="
-                f"{col_fraction:.0%}, row name match={row_fraction:.0%}). An observation "
-                f"ensemble would look exactly like this -- pesto does not read observation "
-                f"ensemble values yet, so if this file holds observations, pass "
-                f'kind="obs" to read_ensemble to get that stated directly rather than '
-                f"this refusal."
+                f"{col_fraction:.0%}, row name match={row_fraction:.0%}). {advice}"
             )
 
     if entity_is_columns:
@@ -337,6 +337,29 @@ def _decide_orientation(
     )
 
 
+def _decide_orientation(
+    values: np.ndarray,
+    row_names: tuple[str, ...],
+    col_names: tuple[str, ...],
+    tables: "ControlTables | None",
+    notes: list[str],
+) -> _OrientationResult:
+    """The parameter caller of ``_orient_by_names``.
+
+    With no ``tables`` at all, orientation is *assumed* realization-major --
+    there is nothing to compare against, so ``orientation_decided_by`` says
+    ``"assumed"`` rather than claiming a decision was made, and the
+    permutation is ``None``. With ``tables``, the comparison is against
+    ``tables.par["parnme"]`` only; observation files go through
+    ``read_obs_file``, which calls the same core with the observation names.
+    """
+    if tables is None:
+        return values, row_names, col_names, "realization_major", "assumed", True, None, False
+    return _orient_by_names(
+        values, row_names, col_names, list(tables.par["parnme"]), "parameters", notes
+    )
+
+
 def read_ensemble(
     path: Path, tables: "ControlTables | None" = None, kind: str = "par"
 ) -> "EnsembleData | ReadFailure":
@@ -349,20 +372,14 @@ def read_ensemble(
 
     ``kind`` states what the caller believes ``path`` holds, and is
     validated first, before any file is opened. ``kind="par"`` (the default)
-    is the only path this function actually reads. ``kind="obs"`` refuses
-    without reading the file's contents, saying plainly that pesto does not
-    read observation ensemble values yet and that orientation can currently
-    only be validated against the control file's parameter table (02-REVIEW.md
-    CR-01; reading observation ensemble content is out of M0's scope, and
-    ``kind`` is the seam a later milestone widens).
-
-    That refusal states whether the file is on disk rather than assuming it,
-    because the two cases are different answers: a file that exists is one
-    M0 can report by existence and name, while a path that is not there is
-    a file M0 can report nothing about at all. Deciding this costs one
-    read-only stat and no open (02-REVIEW.md IN-01 -- claiming a file "was
-    found and named" without looking is an answer given where the function
-    could not tell).
+    matches the file against the control file's parameter table.
+    ``kind="obs"`` reads through ``pesto.ingest.obsread.read_obs_file``: the
+    header is sized and checked against this machine's memory before
+    anything is read, and the file's observation names are matched to
+    ``tables.obs["obsnme"]``. It needs a control table whose observation
+    rows were loaded; a schema-only table returns a ``ReadFailure`` saying
+    so, and a path that is not on disk returns one saying the file is not
+    on disk.
 
     Any value other than ``"par"`` or ``"obs"`` refuses with a
     ``ReadFailure`` naming the value given and the two values this function
@@ -385,32 +402,29 @@ def read_ensemble(
     file_path = Path(path)
 
     if kind == "obs":
-        if file_path.exists():
-            found = (
-                f"{file_path.name} was found and named, but pesto "
-                f"does not read observation ensemble values yet"
+        from pesto.ingest.obsread import read_obs_file
+
+        if tables is None:
+            return ReadFailure(
+                name=file_path.name,
+                path=str(file_path),
+                reason=(
+                    f"{file_path.name}: reading an observation ensemble needs the control "
+                    f"table's observation names to match against, and no control table was given."
+                ),
             )
-            advice = (
-                "Its existence and name are everything M0 reports about it; "
-                'kind="obs" is the seam that widens once observation ensemble '
-                "reading is supported."
+        try:
+            control_names = list(tables.obs["obsnme"])
+        except TypeError as exc:
+            return ReadFailure(
+                name=file_path.name,
+                path=str(file_path),
+                reason=(
+                    f"{file_path.name}: cannot match observation names because the control "
+                    f"table's {exc}"
+                ),
             )
-        else:
-            found = (
-                f"{file_path.name} is not on disk at {file_path}, and pesto "
-                f"does not read observation ensemble values yet"
-            )
-            advice = (
-                "M0 reports nothing about this file: it was neither found nor read."
-            )
-        return ReadFailure(
-            name=file_path.name,
-            path=str(file_path),
-            reason=(
-                f"{found} -- orientation can only be validated against the "
-                f"control file's parameter table in M0. {advice}"
-            ),
-        )
+        return read_obs_file(file_path, control_names, artifact=file_path.name)
     if kind != "par":
         return ReadFailure(
             name=file_path.name,
