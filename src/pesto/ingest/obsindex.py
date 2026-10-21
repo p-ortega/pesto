@@ -76,6 +76,9 @@ RULE_CHAIN = (
 ZERO_ROWS_NOTE = "observation table has zero rows"
 
 _NO_TIME, _DATE, _NUM = 0, 1, 2  # per-observation time kind
+_EPOCH = pd.Timestamp(DATETIME_ORIGIN, tz="UTC")
+_SEP = "\x1f"  # joins the parts of an identity key
+_NULL = "\x00"  # stands for a blank part, which is not the same as the text "NA"
 _EXAMPLES = 3
 
 _SITE_COLUMNS = ("site_id", "site", "group", "start", "count", "time_kind", "site_rule")
@@ -143,6 +146,11 @@ def _as_large_string(column) -> "pa.Array":
     return column.cast(pa.large_string()).combine_chunks()
 
 
+def _has_text(text: pd.Series) -> pd.Series:
+    """Cells that hold something other than blank text."""
+    return text.notna() & (text.astype(str).str.strip() != "")
+
+
 def _to_float(column) -> tuple[np.ndarray, int]:
     """A column as float64, NaN where blank. The second value counts cells
     that held text which is not a number."""
@@ -151,7 +159,7 @@ def _to_float(column) -> tuple[np.ndarray, int]:
     if pa.types.is_string(column.type) or pa.types.is_large_string(column.type):
         text = column.to_pandas()
         parsed = pd.to_numeric(text, errors="coerce")
-        bad = int((text.notna() & parsed.isna()).sum())
+        bad = int((_has_text(text) & parsed.isna()).sum())
         return parsed.to_numpy(dtype=np.float64, na_value=np.nan), bad
     if pa.types.is_dictionary(column.type):
         return _to_float(column.cast(column.type.value_type))
@@ -205,48 +213,128 @@ def _empty_index(notes: tuple[str, ...]) -> ObsIndex:
     )
 
 
+def _text_series(column) -> pd.Series:
+    import pyarrow as pa
+
+    if pa.types.is_dictionary(column.type):
+        column = column.cast(column.type.value_type)
+    return column.to_pandas()
+
+
+def _parse_dates(text: pd.Series) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Days since 1970-01-01 (NaN when not a date), which cells were only a
+    year and month, and which cells held text that is not a date."""
+    parsed = pd.to_datetime(text, format="ISO8601", errors="coerce", utc=True)
+    days = ((parsed - _EPOCH).dt.total_seconds() / 86400.0).to_numpy(
+        dtype=np.float64, na_value=np.nan
+    )
+    stripped = text.astype(str).str.strip()
+    partial = stripped.str.fullmatch(r"\d{4}-\d{2}").to_numpy(dtype=bool) & parsed.notna().to_numpy()
+    bad = (_has_text(text) & parsed.isna()).to_numpy(dtype=bool)
+    return days, partial, bad
+
+
 def _token_times(names, has_token: np.ndarray, token, notes: list[str]):
-    """The time each name's token carries: float64 (NaN when none) and the
-    per-observation time kind."""
+    """The time each name's token carries: float64 (NaN when none), the
+    per-observation time kind, and which dates were only a year and month."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
     n = len(has_token)
     time = np.full(n, np.nan)
     kind = np.zeros(n, dtype=np.int8)
-    is_time = pc.fill_null(pc.equal(token.field("kind"), "time"), False).to_numpy(
-        zero_copy_only=False
-    )
+    partial = np.zeros(n, dtype=bool)
+    token_kind = token.field("kind")
+    value = token.field("value")
+    is_time = pc.fill_null(pc.equal(token_kind, "time"), False).to_numpy(zero_copy_only=False)
+    is_date = pc.fill_null(pc.equal(token_kind, "datetime"), False).to_numpy(zero_copy_only=False)
+    unusable: list[np.ndarray] = []
+
     rows = np.flatnonzero(has_token & is_time)
     if rows.size:
-        text = pc.take(token.field("value"), pa.array(rows)).to_pandas()
+        text = pc.take(value, pa.array(rows)).to_pandas()
         parsed = pd.to_numeric(text, errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)
         good = np.isfinite(parsed)
         time[rows[good]] = parsed[good]
         kind[rows[good]] = _NUM
-        if (~good).any():
-            notes.append(
-                f"{int((~good).sum())} name(s) have a _time: token that is not a number, "
-                f"so it was not used as a time; {_examples(names, rows[~good])}"
-            )
-    return time, kind
+        unusable.append(rows[~good])
+
+    rows = np.flatnonzero(has_token & is_date)
+    if rows.size:
+        text = pc.take(value, pa.array(rows)).to_pandas()
+        days, part, _bad = _parse_dates(text)
+        good = np.isfinite(days)
+        time[rows[good]] = days[good]
+        kind[rows[good]] = _DATE
+        partial[rows[good]] = part[good]
+        unusable.append(rows[~good])
+
+    bad_rows = np.concatenate(unusable) if unusable else np.zeros(0, dtype=np.int64)
+    if bad_rows.size:
+        notes.append(
+            f"{bad_rows.size} name(s) have a _time: or _datetime: token that is not a valid "
+            f"time, so it was not used as a time; {_examples(names, bad_rows)}"
+        )
+    return time, kind, partial
 
 
 def _column_times(table, names, notes: list[str]):
-    """The time the numeric ``time`` column gives: float64 (NaN when none) and
-    the per-observation time kind."""
+    """The time the ``datetime`` column, then the ``time`` column, gives:
+    float64 (NaN when none), the per-observation time kind, and which dates
+    were only a year and month."""
     n = table.num_rows
     time = np.full(n, np.nan)
     kind = np.zeros(n, dtype=np.int8)
-    if "time" not in table.column_names:
-        return time, kind
-    values, bad = _to_float(table["time"])
-    good = np.isfinite(values)
-    time[good] = values[good]
-    kind[good] = _NUM
-    if bad:
-        notes.append(f"{bad} cell(s) in the time column are not numbers and were not used")
-    return time, kind
+    partial = np.zeros(n, dtype=bool)
+    if "datetime" in table.column_names:
+        days, part, bad = _parse_dates(_text_series(table["datetime"]))
+        got = np.isfinite(days)
+        time[got] = days[got]
+        kind[got] = _DATE
+        partial = part
+        if bad.any():
+            notes.append(
+                f"{int(bad.sum())} cell(s) in the datetime column are text that is not a date, "
+                f"so they were not used as a time; {_examples(names, np.flatnonzero(bad))}"
+            )
+    if "time" in table.column_names:
+        values, bad_count = _to_float(table["time"])
+        got = np.isfinite(values)
+        both = got & (kind == _DATE)
+        use = got & (kind == _NO_TIME)
+        time[use] = values[use]
+        kind[use] = _NUM
+        if bad_count:
+            notes.append(
+                f"{bad_count} cell(s) in the time column are text that is not a number and "
+                "were not used as a time"
+            )
+        if both.any():
+            notes.append(
+                f"{int(both.sum())} observation(s) have both a datetime and a time in their "
+                f"columns; the datetime was used; {_examples(names, np.flatnonzero(both))}"
+            )
+    return time, kind, partial
+
+
+def _mapping_tier(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """The site and time mapping tier. No mapping file format exists yet, so
+    it supplies no time for anyone; ``obs_index.json`` records "none supplied"."""
+    return np.full(n, np.nan), np.zeros(n, dtype=np.int8)
+
+
+def _identity_parts(table) -> tuple[list[str], list]:
+    import pyarrow as pa
+
+    columns = [c for c in IDENTITY_COLUMNS if c in table.column_names]
+    parts = []
+    for column in columns:
+        values = table[column]
+        if pa.types.is_dictionary(values.type):
+            values = values.cast(values.type.value_type)
+        # Text is kept exactly as it is, so "NA" and "null" stay values.
+        parts.append(values.cast(pa.large_string()).combine_chunks())
+    return columns, parts
 
 
 def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
@@ -281,7 +369,6 @@ def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
     group_enc = pc.dictionary_encode(group_text)
     group_code = group_enc.indices.to_numpy(zero_copy_only=False).astype(np.int64)
     group_names = [str(g) for g in group_enc.dictionary.to_pylist()]
-    n_groups = len(group_names)
 
     # Values and flags come straight from obsval and weight.
     if "obsval" in table.column_names:
@@ -290,43 +377,97 @@ def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
             new_notes.append(f"{bad_value} obsval cell(s) are text that is not a number")
     else:
         value = np.full(n, np.nan)
-        new_notes.append("the observation table has no obsval column, so no observation has a target")
+        new_notes.append(
+            "the observation table has no obsval column, so no observation has a target"
+        )
     if "weight" in table.column_names:
         weight, bad_weight = _to_float(table["weight"])
         if bad_weight:
             new_notes.append(f"{bad_weight} weight cell(s) are text that is not a number")
     else:
         weight = np.zeros(n)
-        new_notes.append("the observation table has no weight column, so no observation is weighted")
+        new_notes.append(
+            "the observation table has no weight column, so no observation is weighted"
+        )
     no_value = np.isnan(value)
     sentinel = np.abs(value) >= SENTINEL_LIMIT
     has_target = ~no_value & ~sentinel
     weighted = weight > 0
-    n_sentinel = int(sentinel.sum())
-    if n_sentinel:
+    if int(sentinel.sum()):
         new_notes.append(
-            f"{n_sentinel} observation(s) have an obsval of {SENTINEL_LIMIT:g} or more "
-            "(a placeholder, not a target)"
+            f"{int(sentinel.sum())} observation(s) have an obsval of {SENTINEL_LIMIT:g} or "
+            "more (a placeholder, not a target)"
         )
     if int(no_value.sum()):
         new_notes.append(f"{int(no_value.sum())} observation(s) have no numeric obsval")
 
-    # Site key: the name with its first time token cut out.
     token = pc.extract_regex(names, _TOKEN_CAPTURE_PATTERN)
     has_token = pc.is_valid(token).to_numpy(zero_copy_only=False)
     site_name = pc.replace_substring_regex(names, TIME_TOKEN_PATTERN, "", max_replacements=1)
 
-    # Time: numeric column first, then the name token.
-    col_time, col_kind = _column_times(table, names, new_notes)
-    tok_time, tok_kind = _token_times(names, has_token, token, new_notes)
-    time = np.where(col_kind != _NO_TIME, col_time, tok_time)
-    kind = np.where(col_kind != _NO_TIME, col_kind, tok_kind)
+    # Time, in order: the datetime and time columns, the mapping, the name token.
+    col_time, col_kind, col_partial = _column_times(table, names, new_notes)
+    map_time, map_kind = _mapping_tier(n)
+    tok_time, tok_kind, tok_partial = _token_times(names, has_token, token, new_notes)
+    time = col_time.copy()
+    kind = col_kind.copy()
+    source = np.where(kind != _NO_TIME, 1, 0)
+    for tier, (tier_time, tier_kind) in ((2, (map_time, map_kind)), (3, (tok_time, tok_kind))):
+        take = (kind == _NO_TIME) & (tier_kind != _NO_TIME)
+        time[take] = tier_time[take]
+        kind[take] = tier_kind[take]
+        source[take] = tier
+    partial_used = ((source == 1) & col_partial) | ((source == 3) & tok_partial)
+    if partial_used.any():
+        new_notes.append(
+            f"{int(partial_used.sum())} datetime(s) written as year and month only were read "
+            f"as the first of the month; {_examples(names, np.flatnonzero(partial_used))}"
+        )
+    disagree = (
+        (col_kind != _NO_TIME)
+        & (tok_kind != _NO_TIME)
+        & ((col_kind != tok_kind) | (col_time != tok_time))
+    )
+    if disagree.any():
+        new_notes.append(
+            f"{int(disagree.sum())} observation(s) have a time in a column and a different "
+            f"time in the name token; the column was used; "
+            f"{_examples(names, np.flatnonzero(disagree))}"
+        )
 
-    rule = np.where(has_token, 0, 3).astype(np.int8)
-    key = pc.if_else(pa.array(has_token), site_name, names)
+    # Site key: the token-free name; else the group and identity values when a
+    # column gave a time; else the observation itself.
+    identity_columns, parts = _identity_parts(table)
+    any_identity = np.zeros(n, dtype=bool)
+    for part in parts:
+        any_identity |= pc.is_valid(part).to_numpy(zero_copy_only=False)
+    if parts:
+        identity_key = pc.binary_join_element_wise(
+            group_text,
+            *parts,
+            pa.scalar(_SEP, pa.large_string()),
+            null_handling="replace",
+            null_replacement=_NULL,
+        )
+    else:
+        identity_key = group_text
+    has_column_time = col_kind != _NO_TIME
+    rule = np.where(
+        has_token, 0, np.where(has_column_time, np.where(any_identity, 1, 2), 3)
+    ).astype(np.int8)
+    key = pc.if_else(
+        pa.array(has_token),
+        site_name,
+        pc.if_else(
+            pa.array(rule == 1),
+            identity_key,
+            pc.if_else(pa.array(rule == 2), group_text, names),
+        ),
+    )
     key_enc = pc.dictionary_encode(key)
     key_code = key_enc.indices.to_numpy(zero_copy_only=False).astype(np.int64)
     n_keys = len(key_enc.dictionary)
+    # The group is part of the site, so a site is never split across groups.
     pair = (group_code * n_keys + key_code) * len(_RULES) + rule
     site_code, n_sites = _first_appearance_codes(pair)
 
@@ -334,7 +475,7 @@ def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
     count = np.bincount(site_code, minlength=n_sites)
     n_date = np.bincount(site_code, weights=(kind == _DATE), minlength=n_sites)
     n_num = np.bincount(site_code, weights=(kind == _NUM), minlength=n_sites)
-    site_kind = np.full(n_sites, -1, dtype=np.int8)  # -1 mixed
+    site_kind = np.full(n_sites, -1, dtype=np.int8)  # -1: mixed or partly timed
     site_kind[n_date == count] = _DATE
     site_kind[n_num == count] = _NUM
     site_kind[(n_date + n_num) == 0] = _NO_TIME
@@ -354,28 +495,41 @@ def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
     s_time = row_time[order]
     starts = np.concatenate(([0], np.flatnonzero(np.diff(s_site)) + 1))
     if starts.shape[0] != n_sites:
-        raise RuntimeError(
-            f"a site was split across {starts.shape[0]} runs instead of {n_sites}"
-        )
+        raise RuntimeError(f"a site was split across {starts.shape[0]} runs instead of {n_sites}")
     counts = np.diff(np.concatenate((starts, [n])))
+    first = order[starts]
 
     same = (s_site[1:] == s_site[:-1]) & (s_time[1:] == s_time[:-1])
-    n_dup = int(same.sum())
-    if n_dup:
+    if int(same.sum()):
         new_notes.append(
-            f"{n_dup} observation(s) share a site and time with an earlier one; all were kept "
-            f"in control order and none were merged; {_examples(names, order[1:][same])}"
+            f"{int(same.sum())} observation(s) share a site and time with an earlier one; all "
+            f"were kept in control order and none were merged; {_examples(names, order[1:][same])}"
         )
-
-    n_no_time = int((kind == _NO_TIME).sum())
-    if n_no_time:
+    no_time = kind == _NO_TIME
+    if no_time.any():
         new_notes.append(
-            f"{n_no_time} observation(s) have no time from any source; their axis is "
+            f"{int(no_time.sum())} observation(s) have no time from any source; their axis is "
             f"{KIND_NO_TIME}, their position inside the site in control order; "
-            f"{_examples(names, np.flatnonzero(kind == _NO_TIME))}"
+            f"{_examples(names, np.flatnonzero(no_time))}"
+        )
+    sorted_site_kind = site_kind[s_site[starts]]
+    mixed = sorted_site_kind == -1
+    if mixed.any():
+        new_notes.append(
+            f"{int(mixed.sum())} site(s) mix kinds of time or have times on only some rows, so "
+            f"each is ordinal as a whole; {_examples(names, first[mixed])}"
         )
 
-    # Flags per sorted position.
+    shared = key_code[first] * len(_RULES) + rule[first]
+    _, shared_inverse, shared_count = np.unique(shared, return_inverse=True, return_counts=True)
+    shared_site = shared_count[shared_inverse.ravel()] > 1
+    if shared_site.any():
+        new_notes.append(
+            f"{int(np.unique(shared[shared_site]).shape[0])} site name(s) appear in more than "
+            "one group; each group's rows are kept as a separate site so the sort never splits "
+            f"a site; {_examples(names, first[shared_site])}"
+        )
+
     group_flag = np.array([inequality_flag(g) for g in group_names], dtype=np.uint8)
     flags = (
         has_target.astype(np.uint8) * FLAG_HAS_TARGET
@@ -383,25 +537,43 @@ def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
         + group_flag[group_code]
     ).astype(np.uint8)
 
-    first = order[starts]
     site_group = group_code[first]
     kind_text = {_DATE: KIND_DATETIME, _NUM: KIND_NUMERIC, _NO_TIME: KIND_NO_TIME, -1: KIND_MIXED}
-    sites = pd.DataFrame(
-        {
-            "site_id": np.arange(n_sites, dtype=np.int64),
-            "site": pd.Series(key.take(pa.array(first)).to_pylist(), dtype="object"),
-            "group": pd.Series([group_names[g] for g in site_group], dtype="object"),
-            "start": starts.astype(np.int64),
-            "count": counts.astype(np.int64),
-            "time_kind": pd.Series(
-                [kind_text[int(k)] for k in site_kind[s_site[starts]]], dtype="object"
-            ),
-            "site_rule": pd.Series([_RULES[int(r)] for r in rule[first]], dtype="object"),
-        }
-    )
+    site_rule = rule[first]
+    site_text = key.take(pa.array(first)).to_pylist()
+    if (site_rule == 1).any():
+        site_text = [
+            text.replace(_SEP, "|").replace(_NULL, "") if r == 1 else text
+            for text, r in zip(site_text, site_rule)
+        ]
+    columns = {
+        "site_id": np.arange(n_sites, dtype=np.int64),
+        "site": pd.Series(site_text, dtype="object"),
+        "group": pd.Series([group_names[g] for g in site_group], dtype="object"),
+        "start": starts.astype(np.int64),
+        "count": counts.astype(np.int64),
+        "time_kind": pd.Series([kind_text[int(k)] for k in sorted_site_kind], dtype="object"),
+        "site_rule": pd.Series([_RULES[int(r)] for r in site_rule], dtype="object"),
+    }
+    # Identity columns as read, from each site's first observation.
+    for column, part in zip(identity_columns, parts):
+        raw = table[column]
+        if pa.types.is_dictionary(raw.type):
+            raw = raw.cast(raw.type.value_type)
+        columns[column] = raw.take(pa.array(first)).to_pandas().reset_index(drop=True)
+        codes = pc.fill_null(pc.dictionary_encode(part).indices, -1).to_numpy(zero_copy_only=False)
+        in_order = codes[order]
+        varies = np.minimum.reduceat(in_order, starts) != np.maximum.reduceat(in_order, starts)
+        if varies.any():
+            new_notes.append(
+                f"{int(varies.sum())} site(s) have more than one value in the {column} column; "
+                f"the site row shows the value on its first observation; "
+                f"{_examples(names, first[varies])}"
+            )
+    sites = pd.DataFrame(columns)
 
     groups = _group_table(
-        group_names, group_code, site_group, sites, weighted, sentinel, no_value, group_flag, n
+        group_names, group_code, site_group, sites, weighted, sentinel, no_value, group_flag
     )
 
     return ObsIndex(
@@ -423,7 +595,7 @@ def _joined(values: pd.Series) -> str:
 
 
 def _group_table(
-    group_names, group_code, site_group, sites, weighted, sentinel, no_value, group_flag, n
+    group_names, group_code, site_group, sites, weighted, sentinel, no_value, group_flag
 ) -> pd.DataFrame:
     g = len(group_names)
 
