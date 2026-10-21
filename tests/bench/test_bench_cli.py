@@ -272,3 +272,14 @@ def test_the_cold_read_runs_once_before_the_first_ingest_on_the_planned_sources(
     note = "the cold-read check read every source file just before this ingest, so these files were likely in memory"
     assert note in result.ingests[0].notes
     assert note not in result.ingests[1].notes
+
+
+def test_bench_leaves_the_run_folder_as_it_was_with_the_cold_read(
+    run_dir: Path, tmp_path: Path, ingest_calls: list[Path]
+) -> None:
+    from pesto.bench.cli import run_bench
+
+    before = snapshot(run_dir)
+    result = run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
+    assert result.cold_read is not None and result.cold_read.bytes > 0
+    assert snapshot(run_dir) == before

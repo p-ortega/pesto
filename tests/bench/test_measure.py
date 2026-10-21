@@ -299,3 +299,80 @@ def test_the_table_has_one_cold_read_line_with_the_rates_ratio_and_label(tmp_pat
     assert len(lines) == 1
     assert "ratio 0.50" in lines[0] and "cold" in lines[0] and "MB/s" in lines[0]
     assert f"  note: {cold.note}" in table.splitlines()
+
+
+def snapshot(folder: Path) -> dict[str, tuple[bool, int, int]]:
+    state = {}
+    for path in sorted(folder.rglob("*")):
+        stat = path.stat()
+        state[str(path.relative_to(folder))] = (path.is_dir(), stat.st_size, stat.st_mtime_ns)
+    return state
+
+
+def _timed(first: float, reread: float, size: int = 1_000_000):
+    return lambda files, which: (size, first if which == "first" else reread, "test pass")
+
+
+def test_a_ratio_of_exactly_one_half_counts_as_cold(tmp_path: Path) -> None:
+    result = cold_read([tmp_path / "a"], read_pass=_timed(2.0, 1.0))
+    assert result.ratio == 0.5
+    assert result.proven_cold is True
+    assert result.label == "cold"
+    assert "0.50" in result.note
+
+
+def test_a_ratio_above_one_half_is_not_proven_cold_and_the_note_says_why(tmp_path: Path) -> None:
+    result = cold_read([tmp_path / "a"], read_pass=_timed(1.0, 0.6))
+    assert result.ratio == pytest.approx(0.6)
+    assert result.proven_cold is False
+    assert result.label == "not proven cold"
+    for part in ("0.60", "may have come from memory", "sudo purge", "pesto never runs it", "MB/s"):
+        assert part in result.note
+
+
+def test_zero_source_bytes_is_not_measured_with_the_reason(tmp_path: Path) -> None:
+    result = cold_read([], read_pass=lambda files, which: (0, 0.0, "test pass"))
+    assert result.label == "not measured"
+    assert result.ratio is None
+    assert result.first_mb_per_second is None
+    assert result.proven_cold is False
+    assert "zero bytes" in result.note
+
+
+def test_without_a_cache_skipping_call_the_method_says_a_plain_read_was_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "a.bin"
+    source.write_bytes(b"x" * 100)
+    monkeypatch.setattr(measure, "fcntl", None)
+    monkeypatch.delattr(measure.os, "posix_fadvise", raising=False)
+    result = cold_read([source])
+    assert "plain read" in result.method
+    assert "no way to skip the file cache" in result.method
+    assert result.bytes == 100
+
+
+def test_a_default_cold_read_counts_the_bytes_names_its_method_and_leaves_the_run_alone(
+    tmp_path: Path,
+) -> None:
+    run_dir = _small_run(tmp_path)
+    files = measure._source_paths(run_dir, tmp_path / "cache")
+    before = snapshot(run_dir)
+    result = cold_read(files)
+    assert result.bytes == sum(f.stat().st_size for f in files) > 0
+    assert result.files == len(files)
+    assert isinstance(result.method, str) and result.method
+    assert result.label in ("cold", "not proven cold", "not measured")
+    assert snapshot(run_dir) == before
+
+
+def test_the_bench_code_never_calls_another_program() -> None:
+    import re
+
+    source_dir = Path(measure.__file__).parent
+    found = [
+        path.name
+        for path in source_dir.glob("*.py")
+        if re.search(r"subprocess|os\.system|Popen", path.read_text())
+    ]
+    assert found == []
