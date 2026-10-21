@@ -111,6 +111,9 @@ class RunLayout:
     with a note naming the option key and the filename. For a restarted run,
     a layout that omits the restart ensemble is an incomplete account of the
     run.
+
+    ``external_tables`` comes from the same line scan of the control file as
+    ``noptmax`` -- never a pyemu parse.
     """
 
     run_dir: Path
@@ -139,6 +142,9 @@ class RunLayout:
     factor_files: tuple[Path, ...]
     notes: tuple[str, ...]
     ambiguities: tuple[Ambiguity, ...]
+    # Files named in external sections, in file order; a missing one is
+    # still listed, with a note.
+    external_tables: tuple[Path, ...] = ()
 
     def par_ensemble(self, iteration: IterationKey) -> Path | None:
         return self.par_ens.get(iteration)
@@ -182,6 +188,8 @@ class _ControlScan:
     restart_obs_en_name: str | None
     notes: tuple[str, ...]
     ambiguities: tuple[Ambiguity, ...]
+    # (section label, first token) of each file line in an external section.
+    external_lines: tuple[tuple[str, str], ...] = ()
 
 
 def _scan_control_file(pst_path: Path) -> _ControlScan:
@@ -211,7 +219,24 @@ def _scan_control_file(pst_path: Path) -> _ControlScan:
         with pst_path.open("r", encoding="utf-8", errors="strict") as f:
             candidates_by_kind: dict[str, list[tuple[str, tuple[str, str]]]] = {}
             noptmax: int | None = None
+            external_lines: list[tuple[str, str]] = []
+            section_label: str | None = None
             for line in f:
+                stripped_line = line.strip()
+                if stripped_line.startswith("*"):
+                    header_tokens = stripped_line[1:].split()
+                    if header_tokens and header_tokens[-1].lower() == "external":
+                        section_label = " ".join(header_tokens[:-1]).lower()
+                    else:
+                        section_label = None
+                elif (
+                    section_label is not None
+                    and stripped_line
+                    and not stripped_line.startswith("#")
+                    and "++" not in stripped_line
+                ):
+                    external_lines.append((section_label, stripped_line.split()[0]))
+
                 if noptmax is None:
                     match = _NOPTMAX_RE.match(line)
                     if match:
@@ -286,7 +311,41 @@ def _scan_control_file(pst_path: Path) -> _ControlScan:
         restart_obs_en_name=restart_obs_en_name,
         notes=tuple(notes),
         ambiguities=tuple(ambiguities),
+        external_lines=tuple(external_lines),
     )
+
+
+def _resolve_external_tables(
+    run_path: Path, external_lines: tuple[tuple[str, str], ...], notes: list[str]
+) -> tuple[Path, ...]:
+    """Turn the scan's external-section lines into paths the way pyemu 1.7
+    does (``Pst._parse_external_line``): only the base name of the first
+    token is kept, joined to the control file's directory. Keeping the base
+    name alone means no line can point outside the run directory.
+
+    The first occurrence of each path wins. A token with a directory part
+    and a file that is not on disk each leave a note.
+    """
+    tables: list[Path] = []
+    for label, token in external_lines:
+        base = token.replace("\\", "/").split("/")[-1]
+        if base in ("", ".", ".."):
+            notes.append(f"{label} external names {token!r}, which is not a file name")
+            continue
+        path = run_path / base
+        if base != token:
+            notes.append(
+                f"{label} external: the control file names '{token}' and pyemu "
+                f"reads '{base}' beside the control file"
+            )
+        if path in tables:
+            continue
+        tables.append(path)
+        if not path.exists():
+            notes.append(
+                f"{label} external names {base!r}, which is not present in {run_path.name}"
+            )
+    return tuple(tables)
 
 
 def _resolve_starting_ensemble(
@@ -433,6 +492,8 @@ def discover(run_dir: Path) -> RunLayout:
     restart_obs_ens = _resolve_starting_ensemble(
         run_path, scan.restart_obs_en_key, scan.restart_obs_en_name, notes
     )
+
+    external_tables = _resolve_external_tables(run_path, scan.external_lines, notes)
 
     escaped_case = re.escape(case)
     ens_re = re.compile(
@@ -646,4 +707,5 @@ def discover(run_dir: Path) -> RunLayout:
         factor_files=tuple(factor_files),
         notes=tuple(notes),
         ambiguities=tuple(ambiguities),
+        external_tables=external_tables,
     )
