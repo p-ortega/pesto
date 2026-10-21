@@ -61,6 +61,9 @@ from pesto.model._points import layer_from_z, locate_points
 DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
 RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer", "xyz-host-cell")
 SITE_RULE_NAMES = RULE_NAMES[:-1] + ("icpl-layer",) + RULE_NAMES[-1:]
+SITE_PLACEMENT_COLUMNS = ("k", "i", "j", "idx0", "idx1", "idx2", "icpl", "x", "y")
+"""A site table with none of these columns cannot be placed by any rule, so
+``resolve`` says so once instead of trying the rules group by group."""
 UNMAPPED = "unmapped"
 GROUP_COLUMN = "pargp"
 
@@ -631,7 +634,7 @@ def _site_ignored_columns(block: pd.DataFrame, shape: GridShape) -> tuple[str, .
     columns = ["node"]
     if shape.ncol is not None:
         columns += ["layer", "icpl"]
-    elif "icpl" not in block.columns:
+    elif "icpl" not in block.columns or not block["icpl"].notna().any():
         columns.append("layer")
     return tuple(columns)
 
@@ -667,6 +670,76 @@ def _null_group_bucket(
         f"no cell -- {names_text}"
     )
     groups.append(GroupResolution(group=label, rule=UNMAPPED, mapped=0, total=null_count))
+
+
+def _unplaced_without_placement_columns(
+    par: pd.DataFrame, group_column: str, noun: str, group_noun: str
+) -> ParCells:
+    """Every site unplaced, with one note listing the columns present. The
+    groups come from a value count, not a groupby over rows, so a table of
+    thousands of groups costs one pass."""
+    n = len(par)
+    counts = par[group_column].value_counts(dropna=True).sort_index()
+    groups = [
+        GroupResolution(group=str(name), rule=UNMAPPED, mapped=0, total=int(count))
+        for name, count in counts.items()
+        if count > 0
+    ]
+    notes = [
+        f"none of the placement columns ({', '.join(SITE_PLACEMENT_COLUMNS)}) is in the "
+        f"{noun} table, so no {noun} was placed and no rule was tried; the columns present "
+        f"are: {', '.join(str(column) for column in par.columns)}"
+    ]
+    _null_group_bucket(par, group_column, noun, notes, groups)
+    groups_tuple = tuple(groups)
+    return ParCells(
+        cell=np.full(n, -1, dtype=np.int32),
+        layer=np.full(n, -1, dtype=np.int32),
+        parnme=tuple(str(value) for value in par.index),
+        groups=groups_tuple,
+        summary=_summarize(groups_tuple, n, group_noun, f"{noun}s"),
+        notes=tuple(notes),
+        point_xy=np.full((n, 2), np.nan, dtype=np.float64),
+    )
+
+
+def _icpl_xy_agreement_note(
+    par: pd.DataFrame, cell: np.ndarray, by_icpl: np.ndarray, geometry: Geometry
+) -> str | None:
+    """For sites placed by ``icpl-layer`` that also carry x and y, say how
+    many agree with the cell that contains (x, y). ``icpl`` still decides the
+    cell; this only states the evidence. Reuses ``locate_points`` and the same
+    frame handling as the ``xyz-host-cell`` rule."""
+    if not {"x", "y"}.issubset(par.columns) or not by_icpl.any():
+        return None
+    scratch = _Rejections.blank(len(par))
+    x = _numeric_real(par, "x", scratch)
+    y = _numeric_real(par, "y", scratch)
+    rows = np.nonzero(by_icpl & np.isfinite(x) & np.isfinite(y))[0]
+    if len(rows) == 0:
+        return None
+    xs, ys = x[rows], y[rows]
+    located = locate_points(geometry, xs, ys)
+    if geometry.xoff or geometry.yoff or geometry.angrot:
+        located = _pick_frame(geometry, xs, ys, located, np.ones(len(rows), dtype=bool), scratch)
+    outside = located < 0
+    agree = (~outside) & (located == cell[rows])
+    differ = (~outside) & ~agree
+    checked = int((~outside).sum())
+    text = (
+        f"icpl and x, y: {int(agree.sum())} of {checked} site(s) with an icpl and an x, y agree "
+        "with the cell that contains their x, y"
+    )
+    if differ.any():
+        text += f"; {int(differ.sum())} do not ({_names_text([str(v) for v in par.index[rows[differ]]])})"
+    if outside.any():
+        why = (
+            "x, y could be read in two coordinate frames"
+            if scratch.frame_unclear.any()
+            else "x, y sit outside the grid"
+        )
+        text += f"; {int(outside.sum())} could not be checked because {why}"
+    return text + "; icpl decides the cell"
 
 
 def resolve(
@@ -712,11 +785,15 @@ def resolve(
             ),
         )
 
+    if sites and not set(SITE_PLACEMENT_COLUMNS) & set(par.columns):
+        return _unplaced_without_placement_columns(par, group_column, noun, group_noun)
+
     n = len(par)
     cell = np.full(n, -1, dtype=np.int32)
     layer = np.full(n, -1, dtype=np.int32)
     point_xy = np.full((n, 2), np.nan, dtype=np.float64)
     layer_unknown = np.zeros(n, dtype=bool)
+    by_icpl = np.zeros(n, dtype=bool)
     notes: list[str] = []
     groups: list[GroupResolution] = []
     pattern = re.compile(layer_pattern, re.IGNORECASE)
@@ -762,6 +839,8 @@ def resolve(
         )
         if rejections.layer_absent is not None:
             layer_unknown[mapped_positions] = rejections.layer_absent[valid]
+        if rule == "icpl-layer":
+            by_icpl[mapped_positions] = True
         if rule == "xyz-host-cell":
             px, py = rejections.moved_xy or (rejections.point_x, rejections.point_y)
             point_xy[mapped_positions, 0] = px[valid]
@@ -795,6 +874,11 @@ def resolve(
             "each was placed on its cell with layer -1, never layer 0 -- "
             f"{_names_text(unknown_names)}"
         )
+
+    if sites and geometry is not None:
+        agreement = _icpl_xy_agreement_note(par, cell, by_icpl, geometry)
+        if agreement is not None:
+            notes.append(agreement)
 
     _null_group_bucket(par, group_column, noun, notes, groups)
 

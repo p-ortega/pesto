@@ -197,12 +197,52 @@ class Mf6Adapter:
         )
         if isinstance(result, ReadFailure):
             return result
+        notes = result.notes
+        evidence = self._layer_base_note(sites, result, shape)
+        if evidence is not None:
+            notes = notes + (evidence,)
         return ObsCells(
             cell=result.cell,
             layer=result.layer,
             site=result.parnme,
             groups=result.groups,
             summary=result.summary,
-            notes=result.notes,
+            notes=notes,
             point_xy=result.point_xy,
+        )
+
+    def _layer_base_note(
+        self, sites: pd.DataFrame, result: ParCells, shape: GridShape
+    ) -> str | None:
+        """The D-02 evidence: of the sites placed by ``icpl-layer`` with a known
+        layer, how many sit in active cells if the layer is read zero-based and
+        how many if it is read one-based. Nothing is decided here; a wrong base
+        would show as the zero-based count falling behind the one-based one."""
+        groups = {g.group for g in result.groups if g.rule == "icpl-layer"}
+        if not groups:
+            return None
+        in_group = sites["obgnme"].astype(str).isin(groups).to_numpy()
+        rows = np.nonzero(in_group & (result.cell >= 0) & (result.layer >= 0))[0]
+        if len(rows) == 0:
+            return None
+        cells, layers = result.cell[rows].astype(np.int64), result.layer[rows].astype(np.int64)
+        idomain = self.idomain()
+        if (
+            isinstance(idomain, ReadFailure)
+            or idomain is None
+            or idomain.shape[0] != shape.nlay * shape.ncpl
+        ):
+            return (
+                f"layer base: the layer base of {len(rows)} site(s) with an icpl and a layer "
+                "could not be checked against active cells, because the grid file has no "
+                "usable idomain; the layer is read as zero-based"
+            )
+        zero_based = int((idomain[layers * shape.ncpl + cells] > 0).sum())
+        below = layers - 1
+        known = below >= 0
+        one_based = int((idomain[below[known] * shape.ncpl + cells[known]] > 0).sum())
+        return (
+            f"layer base: {zero_based} of {len(rows)} site(s) with an icpl and a layer sit in "
+            f"active cells read as zero-based; {one_based} of {len(rows)} would sit in active "
+            "cells read as one-based (layer minus 1); the layer is read as zero-based"
         )
