@@ -228,7 +228,8 @@ def test_a_parlbnd_edit_in_the_external_table_rereads_control_and_its_dependents
         assert final[name] == "ok", name
     assert final["grid"] == "skipped"
     tables = load_control_tables(CacheLayout(root=cache_root))
-    assert float(tables.par.loc["par0", "parlbnd"]) == 0.25
+    par = tables.par.set_index("parnme")
+    assert float(par.loc["par0", "parlbnd"]) == 0.25
 
 
 # ---------------------------------------------------------------------------
