@@ -31,6 +31,8 @@ const COLORMAP_NAMES: readonly ColormapName[] = [
 const JET_REASON = 'A ramp whose lightness reverses three times invents boundaries that are not in the data.'
 
 const LOG_WARNING_ID = 'scale-log10-warning'
+const REAL_NAMES_LIST_ID = 'go-to-realization-names'
+const GO_TO_REFUSAL_ID = 'go-to-realization-refusal'
 
 export interface FieldChoice {
   iteration: number
@@ -137,6 +139,8 @@ export function renderSelectionControls(
   el.style.display = 'flex'
   el.style.flexWrap = 'wrap'
   el.style.gap = 'var(--space-sm)'
+  // Uncapped, the panel wrapped into one band across the whole map (974 px at 1440x900) and hid the northern edge.
+  el.style.maxWidth = '32rem'
 
   // Fit to extent (D-15/MAP-11): a real button, the one button-shaped
   // primary action on this map surface, calling the same fit(bounds) the
@@ -203,6 +207,27 @@ export function renderSelectionControls(
   realLabel.appendChild(realInput)
   realLabel.appendChild(realValue)
 
+  // Go to: type or pick a realization by name. The text is looked up as a
+  // name, exactly as typed -- never read as a slider position.
+  const goLabel = document.createElement('label')
+  goLabel.classList.add('label')
+  goLabel.textContent = 'Go to'
+  const goInput = document.createElement('input')
+  goInput.type = 'text'
+  goInput.size = 8
+  goInput.autocomplete = 'off'
+  goInput.setAttribute('aria-label', 'Go to realization')
+  goInput.setAttribute('list', REAL_NAMES_LIST_ID)
+  const namesList = document.createElement('datalist')
+  namesList.id = REAL_NAMES_LIST_ID
+  goLabel.appendChild(goInput)
+  // Always in the page, empty until a refusal, so a screen reader hears the text arrive.
+  const refusalLine = document.createElement('div')
+  refusalLine.classList.add('label')
+  refusalLine.id = GO_TO_REFUSAL_ID
+  refusalLine.setAttribute('role', 'status')
+  refusalLine.style.color = 'var(--status-warning)'
+
   let realNames: string[] = []
   let warningLine: HTMLElement | null = null
   let iteration = opts.iteration
@@ -226,6 +251,23 @@ export function renderSelectionControls(
 
   function updateRealDisabled(): void {
     realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
+    goInput.disabled = realInput.disabled
+  }
+
+  function clearRefusal(): void {
+    refusalLine.textContent = ''
+    goInput.removeAttribute('aria-invalid')
+    goInput.removeAttribute('aria-describedby')
+  }
+
+  // Options carry a value and no text, so the list adds nothing to the panel's text.
+  function rebuildNamesList(): void {
+    namesList.textContent = ''
+    for (const name of realNames) {
+      const option = document.createElement('option')
+      option.setAttribute('value', name)
+      namesList.appendChild(option)
+    }
   }
 
   if (opts.realNames.ok) {
@@ -236,12 +278,14 @@ export function renderSelectionControls(
     realInput.step = '1'
     realInput.value = '0'
     updateRealDisabled()
+    rebuildNamesList()
     showReal()
   } else {
     realInput.min = '0'
     realInput.max = '0'
     realInput.value = '0'
     realInput.disabled = true
+    goInput.disabled = true
     showReal()
     warningLine = document.createElement('div')
     warningLine.classList.add('label')
@@ -400,14 +444,45 @@ export function renderSelectionControls(
   })
 
   realInput.addEventListener('input', () => {
+    clearRefusal()
     realMissing = false
     showReal()
     opts.onSelectionChange(currentSelection())
   })
 
+  // Enter or leaving the box fires change; a pick from the list fires input with
+  // insertReplacementText. Plain typing commits nothing, so "66" never draws "6".
+  function commitGoTo(): void {
+    const typed = goInput.value
+    if (typed === '') {
+      clearRefusal()
+      return
+    }
+    const index = realNames.indexOf(typed)
+    if (index < 0) {
+      // The quotes make a stray space in the typed name visible.
+      refusalLine.textContent = `realization "${typed}" is not in iteration ${iteration}`
+      goInput.setAttribute('aria-invalid', 'true')
+      goInput.setAttribute('aria-describedby', GO_TO_REFUSAL_ID)
+      return
+    }
+    clearRefusal()
+    realMissing = false
+    realInput.value = String(index)
+    showReal()
+    goInput.value = ''
+    opts.onSelectionChange(currentSelection())
+  }
+
+  goInput.addEventListener('change', commitGoTo)
+  goInput.addEventListener('input', (event) => {
+    if ((event as InputEvent).inputType === 'insertReplacementText') commitGoTo()
+  })
+
   // A range input fires no input event when its thumb is clicked without moving,
   // so the position it already sits on could never be picked while it reads "—".
   realInput.addEventListener('click', () => {
+    clearRefusal()
     if (!realMissing || realNames.length === 0) return
     realMissing = false
     showReal()
@@ -444,6 +519,9 @@ export function renderSelectionControls(
   el.appendChild(layerLabel)
   el.appendChild(statLabel)
   el.appendChild(realLabel)
+  el.appendChild(goLabel)
+  el.appendChild(namesList)
+  el.appendChild(refusalLine)
   if (warningLine) {
     el.appendChild(warningLine)
   }
@@ -490,19 +568,22 @@ export function renderSelectionControls(
     },
     setRealizations(names, wanted): number | null {
       realMissing = false
+      clearRefusal()
       if (!names.ok) {
         realNames = []
+        rebuildNamesList()
         realInput.min = '0'
         realInput.max = '0'
         realInput.value = '0'
         realInput.disabled = true
+        goInput.disabled = true
         realValue.textContent = '—'
         const text = notRecordedText(names.iteration)
         if (warningLine === null) {
           warningLine = document.createElement('div')
           warningLine.classList.add('label')
           warningLine.style.color = 'var(--status-warning)'
-          realLabel.after(warningLine)
+          refusalLine.after(warningLine)
         }
         warningLine.textContent = text
         realMissing = true
@@ -512,6 +593,7 @@ export function renderSelectionControls(
       warningLine?.remove()
       warningLine = null
       realNames = names.names
+      rebuildNamesList()
       realInput.min = '0'
       realInput.max = String(Math.max(realNames.length - 1, 0))
       realInput.step = '1'

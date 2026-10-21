@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RealNamesResult } from '../src/data/reals'
 import { STOPS, type ColormapName } from '../src/gl/colormap'
 import { renderSelectionControls, STATISTICS } from '../src/ui/controls'
+import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
 function mount(realNames: RealNamesResult, nlay = 3, partrans: string | null = null) {
   const el = document.createElement('div')
@@ -327,6 +328,222 @@ describe('renderSelectionControls', () => {
     expect((el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement).value).toBe('log10')
     expect((el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement).value).toBe('manual')
     expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('caps the panel at 32rem and still wraps, so it stops spanning the whole map', () => {
+    const { el } = mount(THREE_NAMES)
+    expect(el.style.maxWidth).toBe('32rem')
+    expect(el.style.flexWrap).toBe('wrap')
+    expect(el.style.gap).toBe('var(--space-sm)')
+  })
+
+  describe('the Go to realization box', () => {
+    const goBox = (el: HTMLElement) => el.querySelector('input[aria-label="Go to realization"]') as HTMLInputElement
+    const slider = (el: HTMLElement) => el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    const commit = (el: HTMLElement, text: string) => {
+      goBox(el).value = text
+      goBox(el).dispatchEvent(new Event('change'))
+    }
+
+    it('holds a list of exactly the iteration names, in order, with no option text', () => {
+      const { el } = mount(THREE_NAMES)
+      const list = el.querySelector(`datalist#${goBox(el).getAttribute('list')}`) as HTMLDataListElement
+      expect(list).not.toBeNull()
+      const options = Array.from(list.querySelectorAll('option'))
+      expect(options.map((o) => o.getAttribute('value'))).toEqual(['base', 'r001', 'r002'])
+      expect(options.map((o) => o.textContent)).toEqual(['', '', ''])
+    })
+
+    it('sits in a label whose visible text is "Go to"', () => {
+      const { el } = mount(THREE_NAMES)
+      const label = goBox(el).closest('label') as HTMLElement
+      expect(label.classList.contains('label')).toBe(true)
+      expect(label.textContent).toBe('Go to')
+    })
+
+    it('moves the slider to a typed name, emits it, and empties the box', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      commit(el, 'r002')
+
+      expect(onSelectionChange).toHaveBeenCalledTimes(1)
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ realization: 'r002' }))
+      expect(slider(el).value).toBe('2')
+      expect(slider(el).nextElementSibling?.textContent).toBe('r002')
+      expect(goBox(el).value).toBe('')
+    })
+
+    it('commits a pick from the list (insertReplacementText) the same way', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      goBox(el).value = 'r001'
+      goBox(el).dispatchEvent(new InputEvent('input', { inputType: 'insertReplacementText' }))
+
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ realization: 'r001' }))
+      expect(slider(el).value).toBe('1')
+    })
+
+    it('emits nothing while the user is still typing', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      goBox(el).value = 'r00'
+      goBox(el).dispatchEvent(new Event('input'))
+      goBox(el).value = 'r001'
+      goBox(el).dispatchEvent(new InputEvent('input', { inputType: 'insertText' }))
+
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(slider(el).value).toBe('0')
+    })
+  })
+
+  describe('the Go to realization box refuses what it cannot find', () => {
+    const goBox = (el: HTMLElement) => el.querySelector('input[aria-label="Go to realization"]') as HTMLInputElement
+    const slider = (el: HTMLElement) => el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    const commit = (el: HTMLElement, text: string) => {
+      goBox(el).value = text
+      goBox(el).dispatchEvent(new Event('change'))
+    }
+    const refusal = (el: HTMLElement) => {
+      const id = goBox(el).getAttribute('aria-describedby')
+      return id ? el.querySelector(`#${id}`) : null
+    }
+    const listValues = (el: HTMLElement) =>
+      Array.from(el.querySelectorAll(`datalist#${goBox(el).getAttribute('list')} option`)).map((o) => o.getAttribute('value'))
+
+    it('never reads a number as a position', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      commit(el, '1')
+
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(slider(el).value).toBe('0')
+      expect(slider(el).nextElementSibling?.textContent).toBe('base')
+      expect(refusal(el)?.textContent).toBe('realization "1" is not in iteration 0')
+    })
+
+    it('marks the box invalid and ties it to a status line', () => {
+      const { el } = mount(THREE_NAMES)
+      commit(el, 'zzz')
+
+      expect(goBox(el).getAttribute('aria-invalid')).toBe('true')
+      expect(refusal(el)?.getAttribute('role')).toBe('status')
+      expect(goBox(el).value).toBe('zzz')
+    })
+
+    it.each(['Base', ' r001', 'r001 '])('refuses %j, since names match exactly', (typed) => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+
+      commit(el, typed)
+
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(refusal(el)?.textContent).toBe(`realization "${typed}" is not in iteration 0`)
+    })
+
+    it('treats an empty box as nothing to do and clears an earlier refusal', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      commit(el, 'zzz')
+      onSelectionChange.mockClear()
+
+      commit(el, '')
+
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(goBox(el).hasAttribute('aria-invalid')).toBe(false)
+    })
+
+    it('clears the refusal on a later pick, a slider move and a slider click', () => {
+      const { el } = mount(THREE_NAMES)
+
+      commit(el, 'zzz')
+      commit(el, 'r001')
+      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(goBox(el).hasAttribute('aria-invalid')).toBe(false)
+
+      commit(el, 'zzz')
+      slider(el).value = '2'
+      slider(el).dispatchEvent(new Event('input'))
+      expect(refusal(el)?.textContent ?? '').toBe('')
+
+      commit(el, 'zzz')
+      slider(el).click()
+      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(goBox(el).hasAttribute('aria-invalid')).toBe(false)
+    })
+
+    it('names the shown iteration, and rebuilds the list when the iteration changes', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      commit(el, 'zzz')
+
+      handle.setIteration(3)
+      handle.setRealizations({ ok: true, names: ['r017', 'base'] }, 'base')
+
+      expect(listValues(el)).toEqual(['r017', 'base'])
+      expect(refusal(el)?.textContent ?? '').toBe('')
+      commit(el, 'r001')
+      expect(refusal(el)?.textContent).toBe('realization "r001" is not in iteration 3')
+    })
+
+    it('lets a name that only the new iteration holds be picked', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      handle.setIteration(3)
+      handle.setRealizations({ ok: true, names: ['r017', 'base'] }, 'base')
+      onSelectionChange.mockClear()
+
+      commit(el, 'r017')
+
+      expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ iteration: 3, realization: 'r017' }))
+      expect(slider(el).value).toBe('0')
+    })
+
+    it('is disabled exactly when the slider is', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      const stat = el.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement
+      expect(goBox(el).disabled).toBe(false)
+
+      stat.value = 'mean'
+      stat.dispatchEvent(new Event('change'))
+      expect(goBox(el).disabled).toBe(true)
+      expect(slider(el).disabled).toBe(true)
+
+      stat.value = 'value'
+      stat.dispatchEvent(new Event('change'))
+      expect(goBox(el).disabled).toBe(false)
+
+      handle.setRealizations({ ok: false, iteration: 3, reason: 'none' }, 'base')
+      expect(goBox(el).disabled).toBe(true)
+      expect(listValues(el)).toEqual([])
+
+      handle.setRealizations({ ok: true, names: ['only'] }, 'only')
+      expect(goBox(el).disabled).toBe(true)
+
+      handle.setRealizations({ ok: true, names: ['a', 'b'] }, 'a')
+      expect(goBox(el).disabled).toBe(false)
+    })
+
+    it('is disabled at mount when names were not recorded', () => {
+      const { el } = mount({ ok: false, iteration: 0, reason: 'none' })
+      expect(goBox(el).disabled).toBe(true)
+    })
+
+    it('is disabled at mount with a single name', () => {
+      const { el } = mount({ ok: true, names: ['base'] })
+      expect(goBox(el).disabled).toBe(true)
+    })
+
+    it('passes the run-together check with the box, list and refusal shown', () => {
+      loadRealStylesheet()
+      const { el } = mount(THREE_NAMES)
+      document.body.appendChild(el)
+      commit(el, 'zzz')
+
+      expectNoRunTogetherText(el, 'selection controls')
+      el.remove()
+    })
   })
 
   describe('after another iteration is shown', () => {
