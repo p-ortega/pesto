@@ -141,6 +141,37 @@ class ParCells:
         return tuple(g.group for g in self.groups if g.mapped == 0)
 
 
+@dataclass(frozen=True)
+class ObsCells:
+    """Where every observation site landed, and why.
+
+    ``cell`` and ``layer`` are int32 arrays parallel to ``site``, with ``-1``
+    meaning unplaced. ``layer`` is also ``-1`` for a site that has a cell but
+    no layer (layer unknown); it is never ``0`` in that case, and ``-1`` never
+    indexes anything. ``site`` is the site name of each row, in input order,
+    so a caller never infers identity from position. ``groups`` has one
+    :class:`GroupResolution` per observation group, always.
+    ``point_xy`` is ``(n, 2)`` float64, the real-world x/y of each site the
+    ``xyz-host-cell`` rule placed, ``NaN`` elsewhere.
+    """
+
+    cell: np.ndarray
+    layer: np.ndarray
+    site: tuple[str, ...]
+    groups: tuple[GroupResolution, ...]
+    summary: str
+    notes: tuple[str, ...]
+    point_xy: np.ndarray | None = None
+
+    @property
+    def placed_sites(self) -> int:
+        return int((self.cell >= 0).sum())
+
+    @property
+    def layer_unknown(self) -> int:
+        return int(((self.cell >= 0) & (self.layer == -1)).sum())
+
+
 @runtime_checkable
 class SpatialAdapter(Protocol):
     """Everything pesto knows how to ask a model for, whatever that model
@@ -156,7 +187,12 @@ class SpatialAdapter(Protocol):
 
     def locate_par(self, par: pd.DataFrame) -> ParCells | ReadFailure: ...
 
-    def locate_obs(self, obs: pd.DataFrame) -> ParCells | ReadFailure: ...
+    def locate_obs(self, sites: pd.DataFrame) -> "ObsCells | ReadFailure":
+        """Place observation sites on cells and layers.
+
+        ``sites`` has one row per site, indexed by site name, an ``obgnme``
+        column, and placement columns as read (strings or numbers)."""
+        ...
 
     def geometry(self) -> "Geometry | ReadFailure":
         """The mesh and elevations the host-cell rule places points against."""
