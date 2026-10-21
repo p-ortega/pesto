@@ -12,6 +12,7 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
+import { loadRealStylesheet } from './support/run-together'
 import { Camera, MAX_ZOOM_FROM_FIT, MIN_ZOOM_FROM_FIT, wheelZoomFactor } from '../src/gl/camera'
 
 vi.mock('../src/gl/context', () => ({
@@ -341,6 +342,113 @@ describe('the canvas wheel zoom follows the distance scrolled', () => {
     canvas.dispatchEvent(new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaY: -10, ctrlKey: true }))
 
     expect(zoomSpy).toHaveBeenCalledWith(200, 150, 1.1)
+  })
+})
+
+describe('drags start anywhere the map shows and the release click selects nothing', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  const pointer = (type: string, init: { x: number; y: number; id?: number; button?: number }): PointerEvent =>
+    new PointerEvent(type, { clientX: init.x, clientY: init.y, pointerId: init.id ?? 1, button: init.button ?? 0, bubbles: true })
+
+  const readoutText = (root: HTMLElement): string => root.querySelector('.floating-bottom-right')?.textContent ?? ''
+
+  it('the see-through cluster gives up pointer events, each panel takes its own back, and the canvas takes touch drags', async () => {
+    loadRealStylesheet()
+    const root = await mountReady()
+    const cluster = root.querySelector('.floating-top-left') as HTMLElement
+    expect(getComputedStyle(cluster).pointerEvents).toBe('none')
+    const panels = Array.from(cluster.querySelectorAll('.floating'))
+    expect(panels.length).toBeGreaterThan(0)
+    for (const panel of panels) expect(getComputedStyle(panel).pointerEvents).toBe('auto')
+    expect(getComputedStyle(root.querySelector('.floating-bottom-left') as HTMLElement).pointerEvents).toBe('auto')
+    expect(getComputedStyle(root.querySelector('.floating-bottom-right') as HTMLElement).pointerEvents).toBe('auto')
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    expect(getComputedStyle(canvas).touchAction).toBe('none')
+    expect(getComputedStyle(canvas).userSelect).toBe('none')
+  })
+
+  it('only the primary button pans: a right or middle drag does not move the map', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, button: 2 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80, button: 2 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, button: 1 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80, button: 1 }))
+    expect(panSpy).not.toHaveBeenCalled()
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, button: 0 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    expect(panSpy).toHaveBeenCalledWith(30, -20)
+  })
+
+  it('only the pointer that started the drag moves the map: a second finger does nothing', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, id: 1 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 300, y: 300, id: 2 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 330, y: 280, id: 2 }))
+    expect(panSpy).not.toHaveBeenCalled()
+
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80, id: 1 }))
+    expect(panSpy).toHaveBeenCalledWith(30, -20)
+  })
+
+  it('the click that ends a drag of more than 4 CSS pixels selects nothing', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const before = readoutText(root)
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 130, clientY: 80, bubbles: true }))
+
+    expect(pickSpy).not.toHaveBeenCalled()
+    expect(readoutText(root)).toBe(before)
+  })
+
+  it('a click after a move of 4 CSS pixels or less still picks the cell', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 103, y: 100 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 103, y: 100 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 103, clientY: 100, bubbles: true }))
+
+    expect(pickSpy).toHaveBeenCalled()
+  })
+
+  it('a drag released off the canvas with no click does not eat the next real click', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 140, y: 100 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 140, y: 100 }))
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 50, y: 50 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 50, y: 50 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 50, clientY: 50, bubbles: true }))
+
+    expect(pickSpy).toHaveBeenCalled()
   })
 })
 
