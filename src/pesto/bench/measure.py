@@ -11,6 +11,7 @@ from typing import Callable, Sequence
 from pesto.bench.report import (
     ArtifactTiming,
     CacheSize,
+    ColdRead,
     IngestTiming,
     LatencySummary,
     ObservationFacts,
@@ -31,6 +32,11 @@ try:
 except ImportError:  # Windows has no resource module
     resource = None  # type: ignore[assignment]
 
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl module
+    fcntl = None  # type: ignore[assignment]
+
 _READ_CHUNK = 8 * 1024 * 1024
 _NO_OBSERVATIONS = "parameters only, observation ensemble not present"
 _NO_CPU = "CPU time is not available on this platform"
@@ -39,8 +45,10 @@ _FLOOR_NOTE = (
     "above about 3,000 MB/s they did not come from the disk (an assumption, "
     "not something this run proved)"
 )
-_INGEST_STATEMENT = "not implemented in M0"
+# D-03: a first read at most half as fast as the re-read counts as cold.
+COLD_RATIO_LIMIT = 0.5
 _NO_OBS_FILES = "no observation ensemble present"
+_NO_OBS_PLANNED = "no observation ensemble was planned for this run"
 _PROBE_NOT_RUN = "not run (pass --obs-probe to time one observation file)"
 _PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
@@ -145,6 +153,7 @@ def time_ingest(
     artifacts: list[ArtifactTiming] = []
     started_at: dict[str, float] = {}
     worker = 0.0
+    worker_source_bytes = 0
     skipped = 0
     for row, children in zip(rows, children_at):
         if row.state == "started":
@@ -154,6 +163,7 @@ def time_ingest(
             skipped += 1
         if row.state in ("ok", "failed"):
             worker += row.seconds
+            worker_source_bytes += row.source_bytes
         artifact_cpu = None
         if has_cpu and row.artifact in started_at:
             artifact_cpu = children - started_at.pop(row.artifact)
@@ -192,6 +202,7 @@ def time_ingest(
         wait_seconds=wait,
         artifacts=artifacts,
         notes=notes,
+        read_mb_per_second=_rate(worker_source_bytes, worker),
     )
 
 
@@ -225,6 +236,106 @@ def read_floor(files: Sequence[Path]) -> ReadFloor:
     seconds = time.perf_counter() - start
     rate = total / 1e6 / seconds if seconds > 0 and total > 0 else None
     return ReadFloor(bytes=total, seconds=seconds, mb_per_second=rate, note=_FLOOR_NOTE)
+
+
+# A read pass takes the files and "first" or "reread" and returns (bytes, seconds, method).
+ReadPass = Callable[[Sequence[Path], str], "tuple[int, float, str]"]
+_PLAIN_METHOD = "plain read, because this platform has no way to skip the file cache"
+
+
+def _skip_cache(fd: int) -> str | None:
+    """Ask the OS not to cache this read. Returns the method used, or None when it could not."""
+    if fcntl is not None and hasattr(fcntl, "F_NOCACHE"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
+        except OSError:
+            return None
+        return "F_NOCACHE (does not evict pages that are already in memory)"
+    if hasattr(os, "posix_fadvise"):
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        except OSError:
+            return None
+        return "posix_fadvise DONTNEED (a hint the kernel may ignore)"
+    return None
+
+
+def _default_pass(files: Sequence[Path], which: str) -> tuple[int, float, str]:
+    total = 0
+    methods: set[str] = set()
+    start = time.perf_counter()
+    for path in files:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            if which == "first":
+                methods.add(_skip_cache(fd) or _PLAIN_METHOD)
+            while chunk := os.read(fd, _READ_CHUNK):
+                total += len(chunk)
+        finally:
+            os.close(fd)
+    seconds = time.perf_counter() - start
+    if which != "first":
+        return total, seconds, "plain read"
+    if not methods:
+        return total, seconds, _PLAIN_METHOD
+    return total, seconds, "; ".join(sorted(methods))
+
+
+def _rate(total: int, seconds: float) -> float | None:
+    return total / 1e6 / seconds if total > 0 and seconds > 0 else None
+
+
+def _mbs(rate: float) -> str:
+    return f"{rate:,.0f} MB/s" if rate >= 10 else f"{rate:.2f} MB/s"
+
+
+def cold_read(files: Sequence[Path], read_pass: ReadPass | None = None) -> ColdRead:
+    """Read every file once, then again at once, and label the first read only as far as the numbers show.
+
+    D-03: "cold" needs the first rate to be at most COLD_RATIO_LIMIT of the re-read rate.
+    Nothing is run to empty the cache; the note tells the user how to do that themselves.
+    """
+    run_pass = read_pass or _default_pass
+    first_bytes, first_seconds, method = run_pass(files, "first")
+    reread_bytes, reread_seconds, _ = run_pass(files, "reread")
+    first_rate = _rate(first_bytes, first_seconds)
+    reread_rate = _rate(reread_bytes, reread_seconds)
+    ratio = first_rate / reread_rate if first_rate is not None and reread_rate else None
+
+    if first_bytes == 0:
+        label, proven = "not measured", False
+        note = "the source files add up to zero bytes, so there is nothing to compare"
+    elif ratio is None:
+        label, proven = "not measured", False
+        note = "a read took no measurable time, so the two rates cannot be compared"
+    elif ratio <= COLD_RATIO_LIMIT:
+        label, proven = "cold", True
+        note = (
+            f"cold: the first read ran at {_mbs(first_rate)} and the re-read at "
+            f"{_mbs(reread_rate)} (ratio {ratio:.2f}), so the first read was at most "
+            f"{COLD_RATIO_LIMIT:g} times as fast as the re-read"
+        )
+    else:
+        label, proven = "not proven cold", False
+        note = (
+            f"not proven cold: the first read ran at {_mbs(first_rate)} and the re-read at "
+            f"{_mbs(reread_rate)} (ratio {ratio:.2f}, above {COLD_RATIO_LIMIT:g}), so the data "
+            "may have come from memory. Run sudo purge in your own terminal right before "
+            "pesto bench for a proven cold figure; pesto never runs it."
+        )
+    return ColdRead(
+        bytes=first_bytes,
+        files=len(files),
+        first_seconds=first_seconds,
+        first_mb_per_second=first_rate,
+        reread_seconds=reread_seconds,
+        reread_mb_per_second=reread_rate,
+        ratio=ratio,
+        proven_cold=proven,
+        label=label,
+        method=method,
+        note=note,
+    )
 
 
 def read_floor_for(run_dir: Path, cache_dir: Path) -> ReadFloor:
@@ -308,8 +419,22 @@ def _probe_file(path: Path) -> ObservationProbe:
     )
 
 
-def observation_facts(run_dir: Path, probe: bool) -> ObservationFacts:
-    """What M0 does with observation ensembles (nothing), and what is on disk.
+def _observation_ingest_text(artifacts: Sequence[ArtifactTiming]) -> str:
+    parts = []
+    for item in artifacts:
+        if not item.name.startswith("obs_ens/"):
+            continue
+        text = f"{item.name} {item.state}"
+        if item.state == "failed" and item.reason:
+            text += f": {item.reason}"
+        parts.append(text)
+    return "; ".join(parts) if parts else _NO_OBS_PLANNED
+
+
+def observation_facts(
+    run_dir: Path, probe: bool, artifacts: Sequence[ArtifactTiming]
+) -> ObservationFacts:
+    """What the warm ingest did with each observation ensemble, and what is on disk.
 
     The probe only reads: it opens one file with "rb" and makes one pyemu read.
     """
@@ -327,7 +452,7 @@ def observation_facts(run_dir: Path, probe: bool) -> ObservationFacts:
         else:
             notes.append("no numbered iteration to probe")
     return ObservationFacts(
-        ingest=_INGEST_STATEMENT,
+        ingest=_observation_ingest_text(artifacts),
         files=[SourceFile(name=path.name, bytes=_size(path)) for _key, path in files],
         probe=probed,
         notes=notes,

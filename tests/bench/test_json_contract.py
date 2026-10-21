@@ -113,7 +113,11 @@ def test_the_server_and_observation_blocks_are_present(bench) -> None:
     assert len(body["server"]["reopen_share"]["requests"]) >= 10
     assert body["server"]["values"]["realization"]["count"] == 20
     assert body["server"]["values"]["statistic"]["count"] == 20
-    assert body["observations"]["ingest"] == "not implemented in M0"
+    assert "not implemented" not in body["observations"]["ingest"]
+    assert body["observations"]["ingest"]
+    assert body["cold_read"]["label"] in ("cold", "not proven cold", "not measured")
+    for ingest in body["ingests"]:
+        assert "read_mb_per_second" in ingest
     rows = {row["speed_limit"]: row for row in body["verdicts"]}
     assert rows["grid/values p95, realization"]["status"] in ("pass", "miss")
     assert rows["grid/values p95, statistic"]["status"] in ("pass", "miss")
