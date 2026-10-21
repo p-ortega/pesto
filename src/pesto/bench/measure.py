@@ -45,10 +45,10 @@ _FLOOR_NOTE = (
     "above about 3,000 MB/s they did not come from the disk (an assumption, "
     "not something this run proved)"
 )
-_INGEST_STATEMENT = "not implemented in M0"
 # D-03: a first read at most half as fast as the re-read counts as cold.
 COLD_RATIO_LIMIT = 0.5
 _NO_OBS_FILES = "no observation ensemble present"
+_NO_OBS_PLANNED = "no observation ensemble was planned for this run"
 _PROBE_NOT_RUN = "not run (pass --obs-probe to time one observation file)"
 _PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
@@ -153,6 +153,7 @@ def time_ingest(
     artifacts: list[ArtifactTiming] = []
     started_at: dict[str, float] = {}
     worker = 0.0
+    worker_source_bytes = 0
     skipped = 0
     for row, children in zip(rows, children_at):
         if row.state == "started":
@@ -162,6 +163,7 @@ def time_ingest(
             skipped += 1
         if row.state in ("ok", "failed"):
             worker += row.seconds
+            worker_source_bytes += row.source_bytes
         artifact_cpu = None
         if has_cpu and row.artifact in started_at:
             artifact_cpu = children - started_at.pop(row.artifact)
@@ -200,6 +202,7 @@ def time_ingest(
         wait_seconds=wait,
         artifacts=artifacts,
         notes=notes,
+        read_mb_per_second=_rate(worker_source_bytes, worker),
     )
 
 
@@ -416,8 +419,22 @@ def _probe_file(path: Path) -> ObservationProbe:
     )
 
 
-def observation_facts(run_dir: Path, probe: bool) -> ObservationFacts:
-    """What M0 does with observation ensembles (nothing), and what is on disk.
+def _observation_ingest_text(artifacts: Sequence[ArtifactTiming]) -> str:
+    parts = []
+    for item in artifacts:
+        if not item.name.startswith("obs_ens/"):
+            continue
+        text = f"{item.name} {item.state}"
+        if item.state == "failed" and item.reason:
+            text += f": {item.reason}"
+        parts.append(text)
+    return "; ".join(parts) if parts else _NO_OBS_PLANNED
+
+
+def observation_facts(
+    run_dir: Path, probe: bool, artifacts: Sequence[ArtifactTiming]
+) -> ObservationFacts:
+    """What the warm ingest did with each observation ensemble, and what is on disk.
 
     The probe only reads: it opens one file with "rb" and makes one pyemu read.
     """
@@ -435,7 +452,7 @@ def observation_facts(run_dir: Path, probe: bool) -> ObservationFacts:
         else:
             notes.append("no numbered iteration to probe")
     return ObservationFacts(
-        ingest=_INGEST_STATEMENT,
+        ingest=_observation_ingest_text(artifacts),
         files=[SourceFile(name=path.name, bytes=_size(path)) for _key, path in files],
         probe=probed,
         notes=notes,

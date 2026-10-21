@@ -209,7 +209,7 @@ def run_bench(
             verdicts += _values_verdicts(None, f"the server stage failed: {server_failure}")
     else:
         verdicts += _values_verdicts(None)
-    observations = observation_facts(run, obs_probe)
+    observations = observation_facts(run, obs_probe, second.artifacts)
 
     return BenchResult(
         pesto_version=_version(),
