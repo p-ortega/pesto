@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from pesto.ingest.failures import ReadFailure
-from pesto.model import ParCells, SpatialAdapter
+from pesto.model import ObsCells, ParCells, SpatialAdapter
 from pesto.model.mf6 import Mf6Adapter
 
 from .fixtures import write_disv_grb
@@ -138,11 +138,17 @@ def test_a_corrupt_grid_file_costs_one_read_failure_not_an_exception(tmp_path):
     assert result.reason
 
 
-def test_locate_obs_refuses_rather_than_raising_or_placing_silently(tmp_path):
+def test_locate_obs_places_a_site_on_the_fixture_grid(tmp_path):
     grid_path = write_disv_grb(tmp_path / "test.disv.grb")
     adapter = Mf6Adapter(grid_path)
+    sites = pd.DataFrame(
+        {"obgnme": ["g1"], "icpl": ["2"], "layer": ["1"]},
+        index=pd.Index(["obs:a"], name="obsnme"),
+    )
 
-    result = adapter.locate_obs(pd.DataFrame({"obsnme": ["obs:a"]}))
+    result = adapter.locate_obs(sites)
 
-    assert isinstance(result, ReadFailure)
-    assert result.reason
+    assert isinstance(result, ObsCells)
+    assert result.site == ("obs:a",)
+    assert result.cell.tolist() == [2]
+    assert result.layer.tolist() == [1]

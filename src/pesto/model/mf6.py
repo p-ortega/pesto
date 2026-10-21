@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 
 from pesto.ingest.failures import ReadFailure
-from pesto.model import Geometry, GridShape, MeshBuffers, ParCells, fan_polygons
+from pesto.model import Geometry, GridShape, MeshBuffers, ObsCells, ParCells, fan_polygons
 from pesto.model._parcells import resolve
 
 
@@ -185,13 +185,24 @@ class Mf6Adapter:
             return geometry
         return resolve(par, shape, geometry=geometry)
 
-    def locate_obs(self, obs: pd.DataFrame) -> ParCells | ReadFailure:
-        return ReadFailure(
-            name=self._grb_path.name,
-            path=str(self._grb_path),
-            reason=(
-                "observation placement is not implemented for MODFLOW 6 in "
-                "this milestone -- the observation table carries no spatial "
-                "columns, so there is nothing to place"
-            ),
+    def locate_obs(self, sites: pd.DataFrame) -> ObsCells | ReadFailure:
+        shape = self.grid_shape()
+        if isinstance(shape, ReadFailure):
+            return shape
+        geometry = self.geometry()
+        if isinstance(geometry, ReadFailure):
+            return geometry
+        result = resolve(
+            sites, shape, geometry=geometry, group_column="obgnme", sites=True
+        )
+        if isinstance(result, ReadFailure):
+            return result
+        return ObsCells(
+            cell=result.cell,
+            layer=result.layer,
+            site=result.parnme,
+            groups=result.groups,
+            summary=result.summary,
+            notes=result.notes,
+            point_xy=result.point_xy,
         )

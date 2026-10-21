@@ -60,6 +60,7 @@ from pesto.model._points import layer_from_z, locate_points
 
 DEFAULT_LAYER_PATTERN = r"layer[_-]?(\d+)"
 RULE_NAMES = ("kij", "idx-triple", "idx-pair", "ij-name-layer", "ij-single-layer", "xyz-host-cell")
+SITE_RULE_NAMES = RULE_NAMES[:-1] + ("icpl-layer",) + RULE_NAMES[-1:]
 UNMAPPED = "unmapped"
 GROUP_COLUMN = "pargp"
 
@@ -86,7 +87,8 @@ break the counts."""
 NO_GROUP = "(no pargp)"
 """The ``GroupResolution.group`` label for parameters carrying no ``pargp``
 value at all. Parentheses because no real PEST group name has them, so this
-bucket's label cannot collide with a real group."""
+bucket's label cannot collide with a real group. In site mode the label is
+``(no obgnme)``, built the same way from the group column."""
 
 NULL_GROUP_NOTE_NAME_LIMIT = 3
 """How many parameter names the null-group note spells out before it
@@ -137,6 +139,9 @@ class _Rejections:
     moved_xy: tuple[np.ndarray, np.ndarray] | None = None
     point_x: np.ndarray | None = None
     point_y: np.ndarray | None = None
+    # Site mode only: rows whose layer value was blank. They stay placed on
+    # their cell with layer -1 instead of being refused.
+    layer_absent: np.ndarray | None = None
 
     @classmethod
     def blank(cls, n: int) -> "_Rejections":
@@ -190,6 +195,14 @@ def _numeric_real(block: pd.DataFrame, column: str, rejections: _Rejections) -> 
     rejections.absent |= absent
     rejections.unreadable |= ~np.isfinite(values) & ~absent
     return values
+
+
+def _valid_cell_mask(cell: np.ndarray, shape: GridShape) -> np.ndarray:
+    """Like ``_valid_mask`` but for the cell alone, used when a blank layer
+    is allowed (observation sites)."""
+    finite = np.isfinite(cell)
+    safe = np.where(finite, cell, -1.0)
+    return finite & (safe >= 0) & (safe < shape.ncpl) & (np.mod(safe, 1) == 0)
 
 
 def _combine_cell(i: np.ndarray, ncol: int, j: np.ndarray) -> np.ndarray:
@@ -250,6 +263,29 @@ def _candidate_idx_pair(block: pd.DataFrame, shape: GridShape):
     rejections = _Rejections.blank(len(block))
     layer = _numeric(block, "idx0", rejections)
     cell = _numeric(block, "idx1", rejections)
+    return cell, layer, rejections
+
+
+def _candidate_icpl_layer(block: pd.DataFrame, shape: GridShape):
+    """Site-only rule for a vertex grid: ``icpl`` is the zero-based cell and
+    ``layer`` the zero-based layer (D-02). A blank layer is not a refusal --
+    the cell is kept and the layer stays unknown (``NaN`` here, ``-1`` in the
+    result), never layer 0."""
+    if shape.ncol is not None or "icpl" not in block.columns:
+        return None
+    rejections = _Rejections.blank(len(block))
+    cell = _numeric(block, "icpl", rejections)
+    if "layer" in block.columns:
+        layer_rejections = _Rejections.blank(len(block))
+        layer = _numeric(block, "layer", layer_rejections)
+        rejections.unreadable |= layer_rejections.unreadable
+        rejections.not_whole |= layer_rejections.not_whole
+        rejections.columns_not_whole.extend(layer_rejections.columns_not_whole)
+        layer_absent = layer_rejections.absent
+    else:
+        layer = np.full(len(block), np.nan)
+        layer_absent = np.ones(len(block), dtype=bool)
+    rejections.layer_absent = layer_absent
     return cell, layer, rejections
 
 
@@ -373,8 +409,9 @@ def _resolve_group(
     shape: GridShape,
     pattern: re.Pattern[str],
     geometry: Geometry | None = None,
+    sites: bool = False,
 ):
-    """Try each rule in ``RULE_NAMES`` order; the first one whose columns
+    """Try each rule in ``RULE_NAMES`` order (``SITE_RULE_NAMES`` in site mode); the first one whose columns
     are present and that produces at least one in-range hit takes the
     whole group. Rows that rule still cannot place stay ``-1`` within it --
     winning a group is not a promise that every row in it lands.
@@ -404,8 +441,10 @@ def _resolve_group(
         ("idx-pair", _candidate_idx_pair(block, shape)),
         ("ij-name-layer", _candidate_ij_name_layer(block, shape, pattern)),
         ("ij-single-layer", _candidate_ij_single_layer(block, shape)),
-        ("xyz-host-cell", _candidate_xyz_host_cell(block, shape, pattern, geometry)),
     )
+    if sites:
+        candidates += (("icpl-layer", _candidate_icpl_layer(block, shape)),)
+    candidates += (("xyz-host-cell", _candidate_xyz_host_cell(block, shape, pattern, geometry)),)
     fallback = None
     for rule, candidate in candidates:
         if candidate is None:
@@ -420,7 +459,11 @@ def _resolve_group(
             | rejections.no_elevations
             | rejections.frame_unclear
         )
+        if rejections.layer_absent is not None:
+            rejections.too_large &= ~rejections.layer_absent
         valid = _valid_mask(cell, layer, shape)
+        if rejections.layer_absent is not None:
+            valid = valid | (_valid_cell_mask(cell, shape) & rejections.layer_absent)
         if valid.any():
             return rule, cell, layer, valid, rejections
         fires_fallback = (
@@ -444,7 +487,12 @@ def _resolve_group(
     return UNMAPPED, None, None, None, _Rejections.blank(0)
 
 
-def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
+def _unrecognized_column_note(
+    name: object,
+    block: pd.DataFrame,
+    columns: tuple[str, ...] = UNRECOGNIZED_PLACEMENT_COLUMNS,
+    sites: bool = False,
+) -> str | None:
     """One note if ``block`` carries any of ``UNRECOGNIZED_PLACEMENT_COLUMNS``
     with at least one non-null value; ``None`` otherwise. This is the only
     note an unmapped group ever gets -- a group carrying none of the rule
@@ -453,17 +501,27 @@ def _unrecognized_column_note(name: object, block: pd.DataFrame) -> str | None:
     777 lines of prose."""
     present = [
         column
-        for column in UNRECOGNIZED_PLACEMENT_COLUMNS
+        for column in columns
         if column in block.columns and block[column].notna().any()
     ]
     if not present:
         return None
     columns_text = ", ".join(repr(column) for column in present)
+    if sites:
+        return (
+            f"group {name!r} carries {columns_text}, which look like placement data but "
+            "which the site rules cannot use here; the data was seen and deliberately "
+            "not used, and the group resolved unmapped"
+        )
     return (
         f"group {name!r} carries {columns_text}, which look like placement data but "
         "which the rule table does not read (the rule table is locked as written); "
         "the data was seen and deliberately not used, and the group resolved unmapped"
     )
+
+
+def _layer_absent_mask(rejections: _Rejections, n: int) -> np.ndarray:
+    return rejections.layer_absent if rejections.layer_absent is not None else np.zeros(n, dtype=bool)
 
 
 def _classify_unplaced(
@@ -485,7 +543,9 @@ def _classify_unplaced(
     """
     unplaced = ~valid
     masks = {
-        "out_of_range": unplaced & np.isfinite(cell) & np.isfinite(layer),
+        "out_of_range": unplaced
+        & np.isfinite(cell)
+        & (np.isfinite(layer) | _layer_absent_mask(rejections, len(unplaced))),
         "not_whole": rejections.not_whole,
         "unreadable": rejections.unreadable,
         "absent": rejections.absent,
@@ -512,7 +572,12 @@ def _classify_unplaced(
 
 
 def _shortfall_note(
-    name: object, rule: str, mapped: int, total: int, counts: list[tuple[str, int]]
+    name: object,
+    rule: str,
+    mapped: int,
+    total: int,
+    counts: list[tuple[str, int]],
+    noun: str = "parameters",
 ) -> str:
     """Build the one shortfall sentence from a group name, the rule that
     won it, the placement counts, and the reasons the rest went unplaced.
@@ -525,10 +590,15 @@ def _shortfall_note(
         body = ", ".join(clauses[:-1]) + " and " + clauses[-1]
     else:
         body = clauses[0]
-    return f"group {name!r}: rule {rule!r} placed {mapped} of {total} parameters; {body}"
+    return f"group {name!r}: rule {rule!r} placed {mapped} of {total} {noun}; {body}"
 
 
-def _summarize(groups: tuple[GroupResolution, ...], total_params: int) -> str:
+def _summarize(
+    groups: tuple[GroupResolution, ...],
+    total_params: int,
+    group_noun: str = "parameter group",
+    item_noun: str = "parameters",
+) -> str:
     """The single sentence GRID-03 asks for -- built entirely from counts,
     never from a list of group names, so it does not grow with however many
     groups a real run happens to leave unplaceable.
@@ -540,18 +610,63 @@ def _summarize(groups: tuple[GroupResolution, ...], total_params: int) -> str:
     while a real parameter sat untracked.
     """
     if not groups and total_params == 0:
-        return "no parameter groups were present to place."
+        return f"no {group_noun}s were present to place."
 
     unplaced = tuple(g for g in groups if g.mapped == 0)
     untracked = total_params - sum(g.total for g in groups)
     if not unplaced and untracked == 0:
-        return f"every one of the {len(groups)} parameter group(s) was placed on the grid."
+        return f"every one of the {len(groups)} {group_noun}(s) was placed on the grid."
 
     unplaced_params = sum(g.total for g in unplaced) + untracked
     return (
-        f"{len(unplaced)} of {len(groups)} parameter group(s) could not be placed on the "
-        f"grid, accounting for {unplaced_params} of {total_params} parameters."
+        f"{len(unplaced)} of {len(groups)} {group_noun}(s) could not be placed on the "
+        f"grid, accounting for {unplaced_params} of {total_params} {item_noun}."
     )
+
+
+def _site_ignored_columns(block: pd.DataFrame, shape: GridShape) -> tuple[str, ...]:
+    """The look-alike placement columns a site group can carry that no site
+    rule reads. ``icpl`` and ``layer`` are read on a vertex grid (``layer``
+    only alongside ``icpl``); on a structured grid neither is read."""
+    columns = ["node"]
+    if shape.ncol is not None:
+        columns += ["layer", "icpl"]
+    elif "icpl" not in block.columns:
+        columns.append("layer")
+    return tuple(columns)
+
+
+def _names_text(names: list) -> str:
+    shown = ", ".join(repr(name) for name in names[:NULL_GROUP_NOTE_NAME_LIMIT])
+    if len(names) > NULL_GROUP_NOTE_NAME_LIMIT:
+        shown += f", and {len(names) - NULL_GROUP_NOTE_NAME_LIMIT} more"
+    return shown
+
+
+def _null_group_bucket(
+    par: pd.DataFrame,
+    group_column: str,
+    noun: str,
+    notes: list[str],
+    groups: list[GroupResolution],
+) -> None:
+    """Account for rows with no value in the group column. ``groupby`` drops
+    them (pandas' ``dropna=True`` default), so they never reach the group
+    loop; they are counted here, after the sorted groups, which keeps the
+    bucket's place in ``groups`` and its note's place in ``notes`` fixed.
+    Their cell and layer stay ``-1`` because nothing writes to them."""
+    null_mask = par[group_column].isna().to_numpy()
+    null_count = int(null_mask.sum())
+    if not null_count:
+        return
+    label = f"(no {group_column})"
+    names_text = _names_text(list(par.index[null_mask]))
+    notes.append(
+        f"group {label!r}: {null_count} {noun}(s) carry no {group_column!r} value at "
+        "all, so no rule could be tried for them; they are counted here and given "
+        f"no cell -- {names_text}"
+    )
+    groups.append(GroupResolution(group=label, rule=UNMAPPED, mapped=0, total=null_count))
 
 
 def resolve(
@@ -559,30 +674,41 @@ def resolve(
     shape: GridShape,
     layer_pattern: str = DEFAULT_LAYER_PATTERN,
     geometry: Geometry | None = None,
+    *,
+    group_column: str = GROUP_COLUMN,
+    sites: bool = False,
 ) -> ParCells | ReadFailure:
-    """Place every parameter in ``par`` on a layer and cell, one group
-    (``pargp``) at a time, trying the six rules in ``RULE_NAMES`` order.
+    """Place every row of ``par`` on a layer and cell, one group at a time,
+    trying the six rules in ``RULE_NAMES`` order.
 
-    Row positions come from ``par.groupby("pargp", ...).indices``, a mapping
-    from group name to the integer positions that group occupies in ``par``
-    -- not from ``block.index`` or any other label-based lookup. ``par`` is
-    indexed by ``parnme``, a string; a label-based lookup keyed on that
-    index breaks silently the moment two parameters share a name, because
-    pandas then returns every matching row for each request rather than one
-    row per request, misaligning the write entirely. ``par`` itself is only
-    read here, never mutated or reindexed.
+    Row positions come from ``par.groupby(group_column, ...).indices``, a
+    mapping from group name to the integer positions that group occupies in
+    ``par`` -- not from ``block.index`` or any other label-based lookup.
+    ``par`` is indexed by name, a string; a label-based lookup keyed on that
+    index breaks silently the moment two rows share a name, because pandas
+    then returns every matching row for each request rather than one row per
+    request, misaligning the write entirely. ``par`` itself is only read
+    here, never mutated or reindexed.
 
-    Returns a ``ReadFailure`` naming the parameter table, rather than
-    raising, when ``par`` carries no ``pargp`` column at all -- there is
-    nothing to group by, so every rule below is unreachable.
+    ``sites=True`` is observation-site mode: ``group_column`` is normally
+    ``obgnme``, the ``icpl-layer`` rule is tried before ``xyz-host-cell`` (a
+    blank layer keeps the cell and leaves the layer at ``-1``), and notes
+    and the summary say "site" instead of "parameter".
+
+    Returns a ``ReadFailure`` naming the table, rather than raising, when
+    ``par`` carries no ``group_column`` at all -- there is nothing to group
+    by, so every rule below is unreachable.
     """
-    if GROUP_COLUMN not in par.columns:
+    table_name = "site table" if sites else "parameter table"
+    noun = "site" if sites else "parameter"
+    group_noun = "observation group" if sites else "parameter group"
+    if group_column not in par.columns:
         return ReadFailure(
-            name="parameter table",
+            name=table_name,
             path="",
             reason=(
-                "the parameter table carries no 'pargp' column, so there are "
-                "no parameter groups to place"
+                f"the {table_name} carries no {group_column!r} column, so there are "
+                f"no {group_noun}s to place"
             ),
         )
 
@@ -590,25 +716,31 @@ def resolve(
     cell = np.full(n, -1, dtype=np.int32)
     layer = np.full(n, -1, dtype=np.int32)
     point_xy = np.full((n, 2), np.nan, dtype=np.float64)
+    layer_unknown = np.zeros(n, dtype=bool)
     notes: list[str] = []
     groups: list[GroupResolution] = []
     pattern = re.compile(layer_pattern, re.IGNORECASE)
 
-    grouped = par.groupby(GROUP_COLUMN, sort=True, observed=True)
+    grouped = par.groupby(group_column, sort=True, observed=True)
     for name, block in grouped:
         # grouped.indices[name] gives integer row positions, computed by
         # groupby itself -- a label-based lookup (e.g. block.index) would
-        # expand into more rows than the group has the moment two
-        # parameters share a parnme, since pandas returns every match per
-        # requested label rather than one row per request.
+        # expand into more rows than the group has the moment two rows share
+        # a name, since pandas returns every match per requested label
+        # rather than one row per request.
         positions = grouped.indices[name]
         rule, candidate_cell, candidate_layer, valid, rejections = _resolve_group(
-            block, shape, pattern, geometry
+            block, shape, pattern, geometry, sites
         )
         total = len(block)
 
         if rule == UNMAPPED:
-            note = _unrecognized_column_note(name, block)
+            if sites:
+                note = _unrecognized_column_note(
+                    name, block, _site_ignored_columns(block, shape), sites=True
+                )
+            else:
+                note = _unrecognized_column_note(name, block)
             if note is not None:
                 notes.append(note)
             groups.append(GroupResolution(group=str(name), rule=UNMAPPED, mapped=0, total=total))
@@ -618,22 +750,32 @@ def resolve(
             columns_text = ", ".join(repr(column) for column in rejections.columns_not_whole)
             notes.append(
                 f"group {name!r}: column(s) {columns_text} hold values that are not "
-                "whole numbers, so those parameters were given no cell rather than "
+                f"whole numbers, so those {noun}s were given no cell rather than "
                 "rounded down"
             )
 
         mapped_positions = positions[valid]
         cell[mapped_positions] = candidate_cell[valid].astype(np.int32)
-        layer[mapped_positions] = candidate_layer[valid].astype(np.int32)
+        placed_layer = candidate_layer[valid]
+        layer[mapped_positions] = np.where(np.isfinite(placed_layer), placed_layer, -1).astype(
+            np.int32
+        )
+        if rejections.layer_absent is not None:
+            layer_unknown[mapped_positions] = rejections.layer_absent[valid]
         if rule == "xyz-host-cell":
             px, py = rejections.moved_xy or (rejections.point_x, rejections.point_y)
             point_xy[mapped_positions, 0] = px[valid]
             point_xy[mapped_positions, 1] = py[valid]
         mapped = int(valid.sum())
         if rule == "xyz-host-cell" and mapped > 0:
+            what = "site" if sites else "parameter"
             notes.append(
-                f"group {name!r}: placed by rule 'xyz-host-cell' from each parameter's x and y, "
-                "one dot per pilot point on the cell that contains it, not a value for every cell"
+                f"group {name!r}: placed by rule 'xyz-host-cell' from each {what}'s x and y, "
+                + (
+                    "on the cell that contains it"
+                    if sites
+                    else "one dot per pilot point on the cell that contains it, not a value for every cell"
+                )
             )
         if rule == "xyz-host-cell" and mapped > 0 and rejections.moved_from_grid_frame:
             notes.append(
@@ -643,30 +785,18 @@ def resolve(
             )
         if mapped < total:
             counts = _classify_unplaced(candidate_cell, candidate_layer, valid, rejections)
-            notes.append(_shortfall_note(name, rule, mapped, total, counts))
+            notes.append(_shortfall_note(name, rule, mapped, total, counts, noun=f"{noun}s"))
         groups.append(GroupResolution(group=str(name), rule=rule, mapped=mapped, total=total))
 
-    # par.groupby(...) drops rows whose pargp is null (pandas' dropna=True
-    # default), so they never reach the loop above at all -- account for
-    # them here, after the sorted groups, which is what makes the bucket's
-    # position in `groups` and its note's position in `notes` deterministic.
-    # Their cell/layer are already -1 because nothing writes to them.
-    null_mask = par[GROUP_COLUMN].isna().to_numpy()
-    null_count = int(null_mask.sum())
-    if null_count:
-        null_names = [repr(value) for value in par.index[null_mask]]
-        shown = null_names[:NULL_GROUP_NOTE_NAME_LIMIT]
-        names_text = ", ".join(shown)
-        if len(null_names) > NULL_GROUP_NOTE_NAME_LIMIT:
-            names_text += f", and {len(null_names) - NULL_GROUP_NOTE_NAME_LIMIT} more"
+    if layer_unknown.any():
+        unknown_names = [str(value) for value in par.index[layer_unknown]]
         notes.append(
-            f"group {NO_GROUP!r}: {null_count} parameter(s) carry no 'pargp' value at "
-            "all, so no rule could be tried for them; they are counted here and given "
-            f"no cell -- {names_text}"
+            f"layer unknown for {len(unknown_names)} placed site(s): the layer was blank, so "
+            "each was placed on its cell with layer -1, never layer 0 -- "
+            f"{_names_text(unknown_names)}"
         )
-        groups.append(
-            GroupResolution(group=NO_GROUP, rule=UNMAPPED, mapped=0, total=null_count)
-        )
+
+    _null_group_bucket(par, group_column, noun, notes, groups)
 
     parnme = tuple(str(value) for value in par.index)
     groups_tuple = tuple(groups)
@@ -675,7 +805,7 @@ def resolve(
         layer=layer,
         parnme=parnme,
         groups=groups_tuple,
-        summary=_summarize(groups_tuple, len(par)),
+        summary=_summarize(groups_tuple, len(par), group_noun, f"{noun}s"),
         notes=tuple(notes),
         point_xy=point_xy,
     )
