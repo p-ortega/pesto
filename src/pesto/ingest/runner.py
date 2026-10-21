@@ -599,7 +599,9 @@ def plan_artifacts(
     ``run`` will attempt: ``control`` first, so every later worker can read
     its cached tables; then ``grid`` and ``par_cell`` when a grid file
     exists; then ``obs_index``, which needs the control table only; then
-    ``obs_cell`` when a grid file exists, which needs ``obs_index``; then an
+    ``obs_cell`` when a grid file exists, which needs ``obs_index``; then
+    ``noise_agg`` when the run has an obs+noise file (never a starting
+    observation ensemble), which needs ``obs_index``; then an
     ensemble and a summary for each selected iteration in
     ascending order, ensemble before summary; then an observation ensemble
     for each iteration :func:`observation_iterations` selects that has an

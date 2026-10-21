@@ -210,6 +210,7 @@ def make_obs_run(
     with_noise: bool = False,
     noise_real_names: list[str] | None = None,
     noise_format: str = "jcb",
+    pestpp_options: dict | None = None,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
@@ -224,7 +225,9 @@ def make_obs_run(
     ``with_noise=True`` also writes ``<case>.obs+noise.<ext>`` in the
     ``noise_format`` ensemble format, realizations named ``noise_real_names``
     (``r1, base, r2, r3`` by default), observation columns hash-ordered.
-    ``ObsRun.noise_values`` holds every row of it in control order."""
+    ``ObsRun.noise_values`` holds every row of it in control order.
+    ``pestpp_options`` go into the control file, for example
+    ``{"ies_obs_en": "noise_oe.jcb"}``."""
     from pesto.warm import load_pyemu
     from model.fixtures import write_disv_grb
 
@@ -246,6 +249,8 @@ def make_obs_run(
     pyemu = load_pyemu()
     pst = pyemu.Pst.from_par_obs_names(par_names=par_names, obs_names=obs_names)
     pst.control_data.noptmax = 3
+    if pestpp_options:
+        pst.pestpp_options.update(pestpp_options)
     # from_par_obs_names sorts the names; the control file must keep this order.
     pst.observation_data = pst.observation_data.loc[obs_names].copy()
     data = pst.observation_data
