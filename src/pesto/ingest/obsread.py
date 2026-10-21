@@ -34,6 +34,9 @@ from pesto.ingest.failures import ReadFailure
 
 COO_RECORD_BYTES = 16
 FLOAT64_BYTES = 8
+FLOAT32_BYTES = 4
+# Measured with tracemalloc: about 130 bytes per 60-character name held after a
+# read; 300 leaves room for names near the 200-character field width.
 NAME_OVERHEAD_BYTES = 300
 ESTIMATE_MARGIN = 1.1
 BUDGET_FRACTION = 0.6
@@ -74,8 +77,11 @@ class MemoryBudget:
     note: str
 
 
-def _guard(raw_bytes: int) -> int:
-    return math.ceil(raw_bytes * ESTIMATE_MARGIN)
+def _guard(raw_bytes: int, floor_bytes: int = 0) -> int:
+    """The raw figure plus the safety margin. ``floor_bytes`` is the cost of
+    the float32 copy made right after the read (float64 matrix plus float32
+    copy), which a sparse file's raw figure can fall below."""
+    return math.ceil(max(raw_bytes, floor_bytes) * ESTIMATE_MARGIN)
 
 
 def _read_exact(f, n: int) -> bytes:
@@ -212,6 +218,7 @@ def estimate_peak_bytes(path: Path) -> HeaderEstimate:
             f"{name}: its header implies a file of {expected} bytes but the file is "
             f"{size} bytes"
         )
+    copy_floor = (FLOAT64_BYTES + FLOAT32_BYTES) * nrow * ncol + NAME_OVERHEAD_BYTES * (nrow + ncol)
     return HeaderEstimate(
         file=name,
         dialect=dialect,
@@ -219,16 +226,81 @@ def estimate_peak_bytes(path: Path) -> HeaderEstimate:
         ncol=ncol,
         icount=icount,
         raw_bytes=raw,
-        guarded_bytes=_guard(raw),
+        guarded_bytes=_guard(raw, copy_floor),
         notes=(),
     )
 
 
+def _physical_memory_bytes() -> int | None:
+    """Physical memory in bytes, or ``None`` when this platform will not say."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemoryStatus()
+            status.dwLength = ctypes.sizeof(_MemoryStatus)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None
+            return int(status.ullTotalPhys)
+        return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _gb(n: int) -> str:
+    return f"{n / 1024**3:.1f}"
+
+
 def memory_budget(fraction: float = BUDGET_FRACTION) -> MemoryBudget:
-    physical = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    """How much memory one read may use: ``fraction`` of physical memory.
+
+    When the machine's memory cannot be read, a fixed ``FALLBACK_BUDGET_BYTES``
+    is allowed instead and the note says so.
+    """
+    physical = _physical_memory_bytes()
+    if physical is None or physical <= 0:
+        return MemoryBudget(
+            bytes=FALLBACK_BUDGET_BYTES,
+            physical_bytes=None,
+            fraction=fraction,
+            note=(
+                f"pesto could not read this computer's memory and allows a fixed "
+                f"{_gb(FALLBACK_BUDGET_BYTES)} GB"
+            ),
+        )
     return MemoryBudget(
-        bytes=int(physical * fraction), physical_bytes=int(physical), fraction=fraction, note=""
+        bytes=int(physical * fraction), physical_bytes=physical, fraction=fraction, note=""
     )
+
+
+def _refusal_reason(
+    artifact: str, file_name: str, estimate: HeaderEstimate, allowed: MemoryBudget
+) -> str:
+    need = f"reading {file_name} would need about {_gb(estimate.guarded_bytes)} GB of memory; "
+    if allowed.physical_bytes is None:
+        limit = (
+            f"pesto could not read this computer's memory and allows a fixed "
+            f"{_gb(allowed.bytes)} GB"
+        )
+    else:
+        limit = (
+            f"this computer has {_gb(allowed.physical_bytes)} GB and pesto allows "
+            f"{_gb(allowed.bytes)} GB ({allowed.fraction:g} of it)"
+        )
+    return f"{need}{limit}, so {artifact} is not read. The rest of the run is not affected."
 
 
 def _examples(names: list[str], limit: int = 3) -> str:
@@ -341,7 +413,7 @@ def read_obs_file(
             return fail(f"{file_path.name} holds no realizations")
         allowed = budget if budget is not None else memory_budget()
         if estimate.guarded_bytes > allowed.bytes:
-            return fail(f"reading {file_path.name} needs more memory than is allowed")
+            return fail(_refusal_reason(artifact, file_path.name, estimate, allowed))
 
         on_disk_format = sniff(file_path)
         if on_disk_format == "csv":
