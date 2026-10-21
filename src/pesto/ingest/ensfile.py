@@ -224,13 +224,7 @@ def _build_permutation(
     return tuple(permutation)
 
 
-def _decide_orientation(
-    values: np.ndarray,
-    row_names: tuple[str, ...],
-    col_names: tuple[str, ...],
-    tables: "ControlTables | None",
-    notes: list[str],
-) -> tuple[
+_OrientationResult = tuple[
     np.ndarray,
     tuple[str, ...],
     tuple[str, ...],
@@ -239,41 +233,42 @@ def _decide_orientation(
     bool,
     tuple[int, ...] | None,
     bool,
-]:
-    """Decide which axis is realizations and which is entities.
+]
 
-    Dimensions first, names second (D-05): with no ``tables`` at all,
-    orientation is *assumed* realization-major -- there is nothing to
-    compare against, so ``orientation_decided_by`` says ``"assumed"``
-    rather than claiming a decision was made, and the permutation is
-    ``None``. With ``tables``, exactly one axis's count matching
-    ``len(tables.par)`` decides it by ``"dimensions"``; neither axis
-    matching, or both matching (a square ensemble), decides nothing and
+
+def _orient_by_names(
+    values: np.ndarray,
+    row_names: tuple[str, ...],
+    col_names: tuple[str, ...],
+    control_names: list[str],
+    label: str,
+    notes: list[str],
+) -> _OrientationResult:
+    """Decide which axis is realizations and which is entities, given only
+    the control file's names for the entity kind (``label`` is
+    ``"parameters"`` or ``"observations"``).
+
+    Dimensions first, names second (D-05): exactly one axis's count
+    matching ``len(control_names)`` decides it by ``"dimensions"``; neither
+    axis matching, or both matching (a square ensemble), decides nothing and
     falls through to comparing the actual names, case-insensitively after
-    stripping, against the control file's parameter names. The winning
-    axis must match at least 90% of its own names while the other axis
-    matches at most 50% -- a decisive margin, not a bare majority, per
-    D-06. When names decide nothing either, this function raises
-    ``_OrientationUndecidable`` naming the counts and axes that were
-    tried, rather than guessing or silently transposing.
+    stripping, against the control names. The winning axis must match at
+    least 90% of its own names while the other axis matches at most 50% --
+    a decisive margin, not a bare majority, per D-06. When names decide
+    nothing either, this raises ``_OrientationUndecidable`` naming the
+    counts and axes that were tried, rather than guessing or silently
+    transposing.
 
-    This function validates against ``tables.par`` only, by design, never
-    ``tables.obs`` -- that is a stated boundary, not an oversight. Reading
-    observation ensemble content is out of scope for M0 (REQUIREMENTS.md Out
-    of Scope); ``read_ensemble``'s ``kind`` argument is the seam a later
-    milestone widens to let a caller validate against the observation table
-    instead, without this function needing to guess which table applies.
+    Parameters and observations share this one rule; only the list of
+    control names differs.
     """
-    if tables is None:
-        return values, row_names, col_names, "realization_major", "assumed", True, None, False
-
-    control_names = list(tables.par["parnme"])
-    n_par = len(control_names)
+    n_control = len(control_names)
+    table_word = label.removesuffix("s")
     ncol = len(col_names)
     nrow = len(row_names)
 
-    col_matches_dims = ncol == n_par
-    row_matches_dims = nrow == n_par
+    col_matches_dims = ncol == n_control
+    row_matches_dims = nrow == n_control
 
     if col_matches_dims and not row_matches_dims:
         entity_is_columns = True
@@ -297,15 +292,20 @@ def _decide_orientation(
             entity_is_columns = False
             decided_by = "names"
         else:
+            if label == "parameters":
+                advice = (
+                    "An observation ensemble would look exactly like this -- if this "
+                    'file holds observations, pass kind="obs" to read_ensemble.'
+                )
+            else:
+                advice = (
+                    "pesto refuses rather than guess which axis holds the observations."
+                )
             raise _OrientationUndecidable(
-                f"ncol={ncol}, nrow={nrow}: neither axis's count matches the {n_par} "
-                f"parameters in the control file's parameter table, which is the only "
+                f"ncol={ncol}, nrow={nrow}: neither axis's count matches the {n_control} "
+                f"{label} in the control file's {table_word} table, which is the only "
                 f"table this comparison was made against (column name match="
-                f"{col_fraction:.0%}, row name match={row_fraction:.0%}). An observation "
-                f"ensemble would look exactly like this -- pesto does not read observation "
-                f"ensemble values yet, so if this file holds observations, pass "
-                f'kind="obs" to read_ensemble to get that stated directly rather than '
-                f"this refusal."
+                f"{col_fraction:.0%}, row name match={row_fraction:.0%}). {advice}"
             )
 
     if entity_is_columns:
@@ -334,6 +334,29 @@ def _decide_orientation(
         contiguous,
         permutation,
         hash_ordered,
+    )
+
+
+def _decide_orientation(
+    values: np.ndarray,
+    row_names: tuple[str, ...],
+    col_names: tuple[str, ...],
+    tables: "ControlTables | None",
+    notes: list[str],
+) -> _OrientationResult:
+    """The parameter caller of ``_orient_by_names``.
+
+    With no ``tables`` at all, orientation is *assumed* realization-major --
+    there is nothing to compare against, so ``orientation_decided_by`` says
+    ``"assumed"`` rather than claiming a decision was made, and the
+    permutation is ``None``. With ``tables``, the comparison is against
+    ``tables.par["parnme"]`` only; observation files go through
+    ``read_obs_file``, which calls the same core with the observation names.
+    """
+    if tables is None:
+        return values, row_names, col_names, "realization_major", "assumed", True, None, False
+    return _orient_by_names(
+        values, row_names, col_names, list(tables.par["parnme"]), "parameters", notes
     )
 
 
