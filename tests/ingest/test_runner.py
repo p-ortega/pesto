@@ -165,8 +165,9 @@ def _raise_runtime_error(pool):
 
 
 # The synthetic fixture's grid file is a placeholder flopy cannot parse, so
-# the two artifacts that read it always fail. Whole-run tests exclude both.
-_GRID_BOUND = ("grid", "par_cell")
+# the artifacts that read it always fail. Whole-run tests exclude them.
+# obs_cell is here for the same reason par_cell is.
+_GRID_BOUND = ("grid", "par_cell", "obs_cell")
 
 
 def _assert_only_par_ens_0_and_grid_are_not_ok(manifest):
@@ -429,6 +430,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "grid",
         "par_cell",
         "obs_index",
+        "obs_cell",
         "par_ens/0",
         "par_agg/0",
         "par_ens/1",
