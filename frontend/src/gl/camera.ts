@@ -1,3 +1,28 @@
+// One 100 px mouse notch zooms 1.1x, as it always did.
+const WHEEL_PIXELS_PER_STEP = 100
+// Chrome reports a trackpad pinch as a ctrlKey wheel with small deltas, so it needs ten times the rate.
+const PINCH_PIXELS_PER_STEP = 10
+// A wheel reporting lines (deltaMode 1) gets 40 px a line.
+const LINE_PIXELS = 40
+const STEP = 1.1
+
+/** The zoom factor for one wheel event, in proportion to the distance
+ *  scrolled. Null when there is nothing to zoom by (a sideways swipe, or a
+ *  delta that is not a finite number). */
+export function wheelZoomFactor(
+  event: { deltaY: number; deltaMode: number; ctrlKey: boolean },
+  pageHeight: number,
+): number | null {
+  const pixels = event.deltaMode === 1 ? event.deltaY * LINE_PIXELS : event.deltaMode === 2 ? event.deltaY * pageHeight : event.deltaY
+  if (pixels === 0 || !Number.isFinite(pixels)) return null
+  const perStep = event.ctrlKey ? PINCH_PIXELS_PER_STEP : WHEEL_PIXELS_PER_STEP
+  return STEP ** (-pixels / perStep)
+}
+
+// The scale may go to a tenth of the last fit and up to a thousand times it.
+export const MIN_ZOOM_FROM_FIT = 0.1
+export const MAX_ZOOM_FROM_FIT = 1000
+
 /** Pan and zoom in model coordinates. The mesh arrives in whatever units
  *  the grid file uses, projected or not, so the camera works in those
  *  units and never assumes a projection. */
@@ -5,6 +30,7 @@ export class Camera {
   private scale = 1
   private tx = 0
   private ty = 0
+  private fitScale: number | null = null
 
   constructor(
     private width: number,
@@ -39,6 +65,7 @@ export class Camera {
 
   fit(bounds: [number, number, number, number], padding = 0.04): void {
     const target = this.targetFor(bounds, padding)
+    this.fitScale = target.scale
     this.scale = target.scale
     this.tx = target.tx
     this.ty = target.ty
@@ -57,6 +84,7 @@ export class Camera {
     opts: { duration?: number; reduced?: boolean; padding?: number } = {},
   ): void {
     const target = this.targetFor(bounds, opts.padding ?? 0.04)
+    this.fitScale = target.scale
     if (opts.reduced) {
       this.scale = target.scale
       this.tx = target.tx
@@ -88,9 +116,14 @@ export class Camera {
   }
 
   zoomAt(x: number, y: number, factor: number): void {
+    if (!(factor > 0) || !Number.isFinite(factor)) return
     // Hold the world point under the cursor still.
     const [wx, wy] = this.screenToWorld(x, y)
-    this.scale *= factor
+    let scale = this.scale * factor
+    if (this.fitScale !== null) {
+      scale = Math.min(Math.max(scale, this.fitScale * MIN_ZOOM_FROM_FIT), this.fitScale * MAX_ZOOM_FROM_FIT)
+    }
+    this.scale = scale
     this.tx = x - this.scale * wx
     this.ty = y - this.scale * wy
   }

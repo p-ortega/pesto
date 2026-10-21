@@ -17,7 +17,7 @@ import {
   type PpGroupInfo,
   type PpIndex,
 } from '../data/fields'
-import { Camera } from '../gl/camera'
+import { Camera, wheelZoomFactor } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
 import { readColorToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
@@ -757,16 +757,19 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   canvas.addEventListener('pointerup', endDrag)
   canvas.addEventListener('pointercancel', endDrag)
 
-  // Wheel-to-zoom (D-15): zoomAt holds the world point under the cursor
-  // fixed as the scale changes, so the grid stays under the pointer rather
-  // than drifting while the user zooms.
+  // Wheel-to-zoom (D-15): the zoom follows the distance scrolled and zoomAt
+  // holds the world point under the cursor fixed, so the grid stays under the pointer.
   canvas.addEventListener(
     'wheel',
     (event) => {
       if (!camera) return
+      // Always prevented: a sideways swipe must not scroll the page or swipe back.
       event.preventDefault()
+      const pageHeight = canvas.getBoundingClientRect().height || canvas.height
+      const factor = wheelZoomFactor(event, pageHeight)
+      if (factor === null) return
       const [x, y] = canvasPoint(event)
-      camera.zoomAt(x, y, event.deltaY < 0 ? 1.1 : 1 / 1.1)
+      camera.zoomAt(x, y, factor)
       redrawFromCamera()
     },
     { passive: false },
