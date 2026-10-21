@@ -7,6 +7,8 @@ grid or data file, and asserts against a directory built by
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pesto.ingest.discover import NoRunFound, discover
@@ -900,3 +902,160 @@ def test_a_run_without_pilot_point_files_reports_none_and_an_empty_tuple(tmp_pat
 
     assert layout.mult2model is None
     assert layout.factor_files == ()
+
+
+# ---------------------------------------------------------------------------
+# G-07-4: the files a control file names in its external sections
+# ---------------------------------------------------------------------------
+
+
+def _write_pst(run_dir, body):
+    path = run_dir / "case.pst"
+    path.write_text(body)
+    return path
+
+
+def test_external_tables_are_listed_in_control_file_order_across_every_external_section(
+    tmp_path,
+):
+    _write_pst(
+        tmp_path,
+        "pcf version=2\n"
+        "* control data keyword\n"
+        "noptmax 3\n"
+        "* parameter groups external\n"
+        "case.pargp_data.csv\n"
+        "* parameter data external\n"
+        "case.par_data.csv sep ,\n"
+        "* observation data external\n"
+        "case.obs_data.csv\n"
+        "* model input external\n"
+        "case.tplfile_data.csv\n",
+    )
+
+    layout = discover(tmp_path)
+
+    assert layout.external_tables == (
+        tmp_path / "case.pargp_data.csv",
+        tmp_path / "case.par_data.csv",
+        tmp_path / "case.obs_data.csv",
+        tmp_path / "case.tplfile_data.csv",
+    )
+    assert layout.noptmax == 3
+
+
+def test_lines_of_a_non_external_section_are_not_listed(tmp_path):
+    _write_pst(
+        tmp_path,
+        "pcf\n* parameter data\np0 log factor 1.0 0.1 10.0 grp 1.0 0.0 1\n"
+        "* parameter data external\ncase.par_data.csv\n",
+    )
+
+    layout = discover(tmp_path)
+
+    assert layout.external_tables == (tmp_path / "case.par_data.csv",)
+
+
+def test_blank_comment_and_option_lines_inside_an_external_section_are_not_listed(tmp_path):
+    _write_pst(
+        tmp_path,
+        "pcf version=2\n"
+        "* parameter data external\n"
+        "\n"
+        "# a comment\n"
+        "++ies_num_reals(30)\n"
+        "case.par_data.csv\n",
+    )
+
+    layout = discover(tmp_path)
+
+    assert layout.external_tables == (tmp_path / "case.par_data.csv",)
+
+
+def test_an_external_header_counts_in_any_letter_case(tmp_path):
+    _write_pst(tmp_path, "pcf\n* Parameter Data EXTERNAL\ncase.par_data.csv\n")
+
+    assert discover(tmp_path).external_tables == (tmp_path / "case.par_data.csv",)
+
+
+@pytest.mark.parametrize("token", ["sub/x.csv", "sub\\x.csv"])
+def test_a_directory_part_is_dropped_the_way_pyemu_drops_it_and_noted(tmp_path, token):
+    _write_pst(tmp_path, f"pcf\n* parameter data external\n{token}\n")
+
+    layout = discover(tmp_path)
+
+    assert layout.external_tables == (tmp_path / "x.csv",)
+    assert any(token in note and "'x.csv'" in note for note in layout.notes)
+
+
+def test_a_file_named_twice_is_listed_once(tmp_path):
+    _write_pst(
+        tmp_path,
+        "pcf\n* parameter groups external\nshared.csv\n* parameter data external\nshared.csv\n",
+    )
+
+    assert discover(tmp_path).external_tables == (tmp_path / "shared.csv",)
+
+
+def test_a_named_file_missing_from_the_run_is_listed_and_noted(tmp_path):
+    _write_pst(tmp_path, "pcf\n* parameter data external\nmissing.csv\n")
+
+    layout = discover(tmp_path)
+
+    assert layout.external_tables == (tmp_path / "missing.csv",)
+    assert (
+        f"parameter data external names 'missing.csv', which is not present in {tmp_path.name}"
+        in layout.notes
+    )
+
+
+def test_a_control_file_with_no_external_section_lists_no_tables(tmp_path):
+    _write_pst(tmp_path, "pcf\nnoptmax 2\n")
+
+    layout = discover(tmp_path)
+
+    assert layout.external_tables == ()
+    assert layout.noptmax == 2
+
+
+def _files_pyemu_opens(pst_path, monkeypatch):
+    """Parse ``pst_path`` with pyemu while recording each file
+    ``pandas.read_csv`` is asked to open, as resolved paths."""
+    import pandas
+
+    from pesto.warm import load_pyemu
+
+    opened = []
+    real_read_csv = pandas.read_csv
+
+    def recording_read_csv(filepath_or_buffer, *args, **kwargs):
+        opened.append(Path(filepath_or_buffer).resolve())
+        return real_read_csv(filepath_or_buffer, *args, **kwargs)
+
+    monkeypatch.setattr(pandas, "read_csv", recording_read_csv)
+    load_pyemu().Pst(str(pst_path))
+    return set(opened)
+
+
+def test_discovery_lists_exactly_the_files_pyemu_opens_for_the_synthetic_run(
+    tmp_path, monkeypatch
+):
+    run = make_run(tmp_path)
+
+    opened = _files_pyemu_opens(run.pst_path, monkeypatch)
+
+    assert opened
+    assert {p.resolve() for p in discover(tmp_path).external_tables} == opened
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("fixture_name", ["forecast_run", "hm_run", "pl253_run", "restarted_run"])
+def test_discovery_lists_exactly_the_files_pyemu_opens_for_a_real_run(
+    fixture_name, request, monkeypatch
+):
+    run_dir = request.getfixturevalue(fixture_name)
+    layout = discover(run_dir)
+
+    opened = _files_pyemu_opens(layout.pst_path, monkeypatch)
+
+    assert {p.resolve() for p in layout.external_tables} == opened
