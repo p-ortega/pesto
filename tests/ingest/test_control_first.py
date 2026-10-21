@@ -21,7 +21,7 @@ import pytest
 import pesto.ingest.runner as runner
 import pesto.model.mf6 as mf6_module
 from pesto.cache.layout import CacheLayout
-from pesto.cache.manifest import Manifest, WrittenArtifact
+from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
 from pesto.ingest.control import read_control
 from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
@@ -230,6 +230,96 @@ def test_a_parlbnd_edit_in_the_external_table_rereads_control_and_its_dependents
     tables = load_control_tables(CacheLayout(root=cache_root))
     par = tables.par.set_index("parnme")
     assert float(par.loc["par0", "parlbnd"]) == 0.25
+
+
+# ---------------------------------------------------------------------------
+# each control file is hashed once per ingest
+# ---------------------------------------------------------------------------
+
+
+def _control_file_names(run_dir):
+    run = discover(run_dir)
+    return [run.pst_path.name, *(p.name for p in run.external_tables)]
+
+
+def test_each_file_control_reads_is_hashed_exactly_once_per_ingest(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+    hashed: list[str] = []
+    real = SourceFingerprint.of
+
+    def _counting(path):
+        hashed.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(SourceFingerprint, "of", staticmethod(_counting))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    names = _control_file_names(run_dir)
+    assert len(names) > 1
+    for name in names:
+        assert hashed.count(name) == 1, name
+
+
+def test_every_dependent_records_the_fingerprints_control_recorded(tmp_path, in_process):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    recorded = {s.path: s for s in manifest.artifacts["control"].sources}
+    assert set(recorded) == set(_control_file_names(run_dir))
+    for name in ("par_cell", "par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "config"):
+        artifact = manifest.artifacts[name]
+        assert artifact.state == "ok", name
+        for source in artifact.sources:
+            if source.path in recorded:
+                assert source == recorded[source.path], (name, source.path)
+
+
+def test_a_dependent_blocked_by_a_failed_control_still_records_what_it_could_fingerprint(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0,))
+    monkeypatch.setattr(
+        runner,
+        "read_control",
+        lambda path: ReadFailure(name="control", path=str(path), reason="the control file is corrupt"),
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    expected = set(_control_file_names(run_dir))
+    for name in ("par_cell", "par_ens/0", "par_agg/0", "config"):
+        assert {s.path for s in manifest.artifacts[name].sources} >= expected, name
+
+
+# ---------------------------------------------------------------------------
+# the run directory is left as found
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(run_dir):
+    return {
+        str(p.relative_to(run_dir)): (
+            (p.stat().st_size, p.stat().st_mtime_ns) if p.is_file() else None
+        )
+        for p in run_dir.rglob("*")
+    }
+
+
+def test_ingesting_leaves_the_run_directory_exactly_as_found(tmp_path, in_process):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+
+    before = _snapshot(run_dir)
+    ingest_run(run_dir, cache_root=cache_root)
+    assert _snapshot(run_dir) == before
+
+    _set_parlbnd(run_dir / "case.par_data.csv", "par0", 0.25)
+    before_second = _snapshot(run_dir)
+    ingest_run(run_dir, cache_root=cache_root)
+    assert _snapshot(run_dir) == before_second
 
 
 # ---------------------------------------------------------------------------
