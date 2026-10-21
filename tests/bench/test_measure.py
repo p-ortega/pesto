@@ -216,6 +216,17 @@ def test_source_reads_count_a_worker_read_and_a_checksum_read_per_artifact(tmp_p
     assert reads["case.0.par.jcb"].bytes == os.stat(run_dir / "case.0.par.jcb").st_size
 
 
+def test_source_reads_count_a_file_control_lists_for_control_alone(tmp_path: Path) -> None:
+    run_dir = _small_run(tmp_path)
+    reads = {r.name: r for r in source_reads(run_dir, tmp_path / "cache")}
+    # Every other artifact takes these from the cached control table and
+    # control's recorded checksum, so only control reads them.
+    assert (run_dir / "case.par_data.csv").exists()
+    assert reads["case.par_data.csv"].reads_implied == 2
+    assert reads["case.pst"].reads_implied == 2
+    assert reads["case.0.par.jcb"].reads_implied == 4
+
+
 def test_read_floor_adds_up_the_bytes_and_reports_a_rate(tmp_path: Path) -> None:
     first = tmp_path / "a.bin"
     second = tmp_path / "b.bin"
