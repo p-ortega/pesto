@@ -118,3 +118,425 @@ def test_the_stored_file_is_valid_json_with_every_realization_in_it(tmp_path, in
     assert {r["realization"] for r in stored["rows"]} == set(run.real_names)
     assert all(set(r) == {"realization", "recomputed", "file", "rel_diff", "match"} for r in stored["rows"])
     assert np.isfinite(stored["max_rel_diff"])
+
+
+# ---------------------------------------------------------------------------
+# mismatches, gaps and the tolerance edge
+# ---------------------------------------------------------------------------
+
+PHI_HEAD = ["iteration", "total_runs", "mean", "standard_deviation", "min", "max"]
+
+
+def _rewrite_phi(run, columns, rows):
+    """Write the run's phi file again. ``columns`` are the realization column
+    names; ``rows`` maps an iteration to one cell per column (text or number)."""
+    lines = [",".join([*PHI_HEAD, *columns])]
+    for iteration, cells in rows.items():
+        lines.append(",".join([str(iteration), "4", "0", "0", "0", "0", *(str(c) for c in cells)]))
+    run.phi_path.write_text("\n".join(lines) + "\n")
+
+
+def _columns(run):
+    return list(reversed(run.real_names))
+
+
+def _phi_row(run, iteration, change=None):
+    """One iteration's cells in the file's column order, with ``change``
+    mapping a realization name to a function of its phi."""
+    change = change or {}
+    values = run.phi_values[iteration]
+    return [repr(change.get(n, lambda v: v)(values[n])) for n in _columns(run)]
+
+
+def _run_with_phi(tmp_path, rewrite=None, iterations=(0,), **kwargs):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir, with_phi=True, iterations=iterations, **kwargs)
+    if rewrite is not None:
+        rewrite(run)
+    cache_root = tmp_path / "cache"
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+    return run, CacheLayout(root=cache_root), manifest
+
+
+def test_a_planted_mismatch_is_reported_by_name_and_the_artifact_is_still_ok(
+    tmp_path, in_process
+):
+    def plant(run):
+        cells = _phi_row(run, 0, {"34": lambda v: v * 1.5})
+        _rewrite_phi(run, _columns(run), {0: cells})
+
+    run, layout, manifest = _run_with_phi(tmp_path, plant)
+
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    check = load_phi_check(0, layout)
+    assert check.status == "checked"
+    assert check.n_mismatch == 1
+    bad = [r for r in check.rows if not r.match]
+    assert [r.realization for r in bad] == ["34"]
+    assert bad[0].file == pytest.approx(run.phi_values[0]["34"] * 1.5)
+    assert bad[0].recomputed == pytest.approx(run.phi_values[0]["34"])
+    assert bad[0].rel_diff == pytest.approx(1 / 3, rel=1e-6)
+    assert "'34'" in check.summary and "1 of 4" in check.summary
+    notes = manifest.artifacts["phi_check/0"].notes
+    assert any("'34'" in n and "1 of 4" in n for n in notes)
+    # The other three still agree.
+    assert all(r.match for r in check.rows if r.realization != "34")
+
+
+def test_a_mismatch_with_many_realizations_names_at_most_three(tmp_path, in_process):
+    def plant(run):
+        everything = {n: (lambda v: v * 2.0) for n in run.real_names}
+        _rewrite_phi(run, _columns(run), {0: _phi_row(run, 0, everything)})
+
+    _run, layout, _ = _run_with_phi(tmp_path, plant)
+
+    check = load_phi_check(0, layout)
+    assert check.n_mismatch == 4
+    assert check.summary.count("'") == 6  # three names, each quoted on both sides
+
+
+def test_a_mismatch_is_visible_on_the_capability_while_it_stays_available(tmp_path, in_process):
+    def plant(run):
+        _rewrite_phi(run, _columns(run), {0: _phi_row(run, 0, {"base": lambda v: v * 3.0})})
+
+    run, layout, _ = _run_with_phi(tmp_path, plant)
+
+    capability = _capabilities(run, layout)["phi_check"]
+    assert capability["available"] is True
+    assert capability["blocked_by"] == []
+    assert len(capability["notes"]) == 1 and "'base'" in capability["notes"][0]
+
+
+@pytest.mark.parametrize("difference, matches", [(0.9e-3, True), (1.1e-3, False)])
+def test_a_relative_difference_either_side_of_the_tolerance(
+    tmp_path, in_process, difference, matches
+):
+    def plant(run):
+        cells = _phi_row(run, 0, {"base": lambda v: v / (1.0 + difference)})
+        _rewrite_phi(run, _columns(run), {0: cells})
+
+    _run, layout, _ = _run_with_phi(tmp_path, plant)
+
+    row = next(r for r in load_phi_check(0, layout).rows if r.realization == "base")
+    assert row.rel_diff == pytest.approx(difference, rel=1e-4)
+    assert row.match is matches
+
+
+def test_the_tolerance_edge_is_a_match_and_just_over_it_is_not():
+    from pesto.ingest.phicheck import compare_phi
+
+    assert compare_phi(1001.0, 1000.0) == (pytest.approx(1e-3), True)
+    assert compare_phi(1001.1, 1000.0)[1] is False
+    assert compare_phi(1000.0, 1001.0)[1] is True  # measured against the file's value
+
+
+def test_zero_against_zero_matches_and_zero_in_the_file_against_a_value_does_not():
+    from pesto.ingest.phicheck import compare_phi
+
+    assert compare_phi(0.0, 0.0) == (0.0, True)
+    assert compare_phi(4.0, 0.0) == (None, False)
+    assert compare_phi(float("nan"), 5.0) == (None, False)
+    assert compare_phi(5.0, float("inf")) == (None, False)
+
+
+def test_a_realization_with_no_value_in_the_file_and_a_file_column_not_in_the_cache_are_counted(
+    tmp_path, in_process
+):
+    def plant(run):
+        columns = [*_columns(run), "ghost"]
+        cells = _phi_row(run, 0, {})
+        cells[columns.index("34")] = ""  # empty: not part of this iteration's phi
+        _rewrite_phi(run, columns, {0: [*cells, "123.5"]})
+
+    run, layout, manifest = _run_with_phi(tmp_path, plant)
+
+    check = load_phi_check(0, layout)
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    assert check.n_only_in_cache == 1
+    assert check.n_only_in_file == 1
+    assert check.n_compared == 3
+    assert sorted(r.realization for r in check.rows) == ["176", "35", "base"]
+    assert any("'34'" in n for n in check.notes)
+    assert any("'ghost'" in n for n in check.notes)
+
+
+def test_an_unreadable_cell_is_counted_and_that_realization_is_not_compared(tmp_path, in_process):
+    def plant(run):
+        cells = _phi_row(run, 0, {})
+        cells[_columns(run).index("35")] = "n/a"
+        _rewrite_phi(run, _columns(run), {0: cells})
+
+    _run, layout, _ = _run_with_phi(tmp_path, plant)
+
+    check = load_phi_check(0, layout)
+    assert check.n_compared == 3 and check.n_only_in_cache == 1
+    assert any("1 value(s)" in n and "could not be read as a number" in n for n in check.notes)
+
+
+def test_a_name_listed_twice_in_the_file_is_matched_to_neither_column(tmp_path, in_process):
+    def plant(run):
+        columns = [*_columns(run), "base"]
+        _rewrite_phi(run, columns, {0: [*_phi_row(run, 0, {}), "1.0"]})
+
+    _run, layout, _ = _run_with_phi(tmp_path, plant)
+
+    check = load_phi_check(0, layout)
+    assert sorted(r.realization for r in check.rows) == ["176", "34", "35"]
+    assert check.n_only_in_cache == 1 and check.n_only_in_file == 2
+    assert any("more than once" in n and "'base'" in n for n in check.notes)
+
+
+def test_a_name_that_matches_only_after_trimming_and_lower_casing_is_compared_with_a_note(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(
+        run_dir, with_phi=True, iterations=(0,), real_names=["r1", "r2", "r3", "r4"]
+    )
+    columns = [c.upper() if c == "r1" else c for c in _columns(run)]
+    _rewrite_phi(run, columns, {0: _phi_row(run, 0)})
+    ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    check = load_phi_check(0, CacheLayout(root=tmp_path / "cache"))
+    assert check.n_compared == 4 and check.n_mismatch == 0
+    assert check.n_only_in_cache == 0 and check.n_only_in_file == 0
+    assert any("'r1' for 'R1'" in n and "lower-casing" in n for n in check.notes)
+
+
+def test_greater_and_less_than_groups_count_one_sided(tmp_path, in_process):
+    from .obs_fixtures import SiteSpec
+
+    sites = (
+        SiteSpec("greater_a", "oname:g", (None,), "none", obsval=0.0, weight=1.0),
+        SiteSpec("less_b", "oname:l", (None,), "none", obsval=0.0, weight=1.0),
+        SiteSpec("plain", "oname:p", (None,), "none", obsval=0.0, weight=1.0),
+    )
+    run, layout, _ = _run_with_phi(tmp_path, sites=sites)
+
+    check = load_phi_check(0, layout)
+    assert check.n_mismatch == 0
+    weights = run.phi_weights
+    values = run.values[0]
+    by_name = {r.realization: r.recomputed for r in check.rows}
+    skipped = {"greater": 0, "less": 0}
+    for r, name in enumerate(run.real_names):
+        expected = 0.0
+        # greater-than counts only below its value, less-than only above it
+        g, l, p = values[r, 0], values[r, 1], values[r, 2]
+        if g < 0:
+            expected += (weights[r, 0] * g) ** 2
+        else:
+            skipped["greater"] += 1
+        if l > 0:
+            expected += (weights[r, 1] * l) ** 2
+        else:
+            skipped["less"] += 1
+        expected += (weights[r, 2] * p) ** 2
+        assert by_name[name] == pytest.approx(expected, rel=1e-6), name
+    assert skipped["greater"] and skipped["less"]
+
+
+def test_without_an_adjusted_weights_file_control_weights_are_used_and_the_result_says_so(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    # Phi in the file is computed from the control weights, so it agrees.
+    probe = make_obs_run(tmp_path / "probe")
+    control = np.tile([float(r["weight"]) for r in probe.rows], (4, 1))
+    run = make_obs_run(run_dir, with_phi=True, iterations=(0,), adjusted_weights=control)
+    run.adjusted_weights_path.unlink()
+    ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    check = load_phi_check(0, CacheLayout(root=tmp_path / "cache"))
+    assert check.status == "checked"
+    assert check.n_mismatch == 0
+    assert check.weights_source == "control file weights"
+    assert any("pestpp's phi may differ" in n for n in check.notes)
+
+
+def test_a_file_with_no_row_for_the_iteration_says_not_checked(tmp_path, in_process):
+    def keep_iteration_zero(run):
+        _rewrite_phi(run, _columns(run), {0: _phi_row(run, 0)})
+
+    run, layout, manifest = _run_with_phi(tmp_path, keep_iteration_zero, iterations=(0, 1))
+
+    assert manifest.artifacts["phi_check/1"].state == "ok"
+    check = load_phi_check(1, layout)
+    assert check.status == "not checked"
+    assert check.n_compared == 0 and check.rows == ()
+    assert "case.phi.actual.csv" in check.reason and "iteration 1" in check.reason
+    assert load_phi_check(0, layout).status == "checked"
+
+
+def test_no_realization_in_common_says_not_checked(tmp_path, in_process):
+    def other_names(run):
+        _rewrite_phi(run, ["x1", "x2", "x3", "x4"], {0: ["1.0", "2.0", "3.0", "4.0"]})
+
+    _run, layout, manifest = _run_with_phi(tmp_path, other_names)
+
+    check = load_phi_check(0, layout)
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    assert check.status == "not checked"
+    assert "no realization is in both" in check.reason
+    assert check.n_compared == 0
+    assert check.n_only_in_cache == 4 and check.n_only_in_file == 4
+
+
+def test_a_phi_file_that_does_not_start_with_the_pestpp_columns_fails_with_a_reason(
+    tmp_path, in_process
+):
+    def old_shape(run):
+        run.phi_path.write_text("iteration,total_runs,phi\n0,1,1.0\n")
+
+    _run, layout, manifest = _run_with_phi(tmp_path, old_shape)
+
+    phi = manifest.artifacts["phi_check/0"]
+    assert phi.state == "failed"
+    assert phi.reason.startswith("phi_check/0: ")
+    assert "does not start with the columns" in phi.reason
+    assert not layout.phi_check(0).exists()
+
+
+def test_phi_check_fails_with_the_depends_on_wording_when_obs_ens_failed(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir, with_phi=True, iterations=(0,))
+    run.obs_ens[0].write_bytes(b"this is not an observation file")
+
+    manifest = ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    assert manifest.artifacts["obs_ens/0"].state == "failed"
+    phi = manifest.artifacts["phi_check/0"]
+    assert phi.state == "failed"
+    assert phi.reason.startswith("phi_check/0 depends on obs_ens/0, which failed: ")
+
+
+def test_a_run_without_a_phi_file_plans_no_phi_check_and_the_capability_says_so(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir)
+    ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    manifest = Manifest.load(CacheLayout(root=tmp_path / "cache"))
+    assert not any(name.startswith("phi_check/") for name in manifest.artifacts)
+    capability = _capabilities(run, CacheLayout(root=tmp_path / "cache"))["phi_check"]
+    assert capability == {
+        "available": False,
+        "blocked_by": [
+            {"artifact": "phi_check", "reason": "no case.phi.actual.csv was found for this run"}
+        ],
+    }
+
+
+def test_editing_the_phi_file_makes_phi_check_stale_and_the_next_ingest_redoes_it(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir, with_phi=True, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    ingest_run(run_dir, cache_root=cache_root)
+    layout = CacheLayout(root=cache_root)
+    assert load_phi_check(0, layout).n_mismatch == 0
+
+    _rewrite_phi(run, _columns(run), {0: _phi_row(run, 0, {"base": lambda v: v * 2.0})})
+    ingest_run(run_dir, cache_root=cache_root)
+
+    assert load_phi_check(0, layout).n_mismatch == 1
+
+
+def test_a_stored_file_from_another_cache_version_is_refused(tmp_path, in_process):
+    _run, layout, _ = _run_with_phi(tmp_path)
+    stored = json.loads(layout.phi_check(0).read_text())
+    stored["cache_version"] = "0"
+    layout.phi_check(0).write_text(json.dumps(stored))
+
+    result = load_phi_check(0, layout)
+    assert isinstance(result, ReadFailure)
+    assert "cache_version" in result.reason
+
+
+def test_the_module_imports_no_heavy_library_at_module_scope():
+    import inspect
+
+    from pesto.ingest import phicheck
+
+    source = inspect.getsource(phicheck)
+    assert "import pyemu" not in source and "import flopy" not in source
+    assert "from pyemu" not in source and "from flopy" not in source
+
+
+def test_the_run_folder_is_untouched_when_phi_does_not_match(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir, with_phi=True, iterations=(0,))
+    _rewrite_phi(run, _columns(run), {0: _phi_row(run, 0, {"base": lambda v: v * 2.0})})
+    before = _tree_snapshot(run_dir)
+    ingest_run(run_dir, cache_root=tmp_path / "cache")
+    assert _tree_snapshot(run_dir) == before
+
+
+# ---------------------------------------------------------------------------
+# real runs (slow; skipped when the benchmark folder is absent)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("fixture_name", ["hm_run", "pl253_run"])
+def test_on_a_real_run_phi_from_the_cache_matches_pestpps_file(fixture_name, request, tmp_path):
+    from pesto.ingest import runner
+    from pesto.ingest.control import read_control
+    from pesto.ingest.discover import discover
+    from pesto.ingest.obsweights import read_adjusted_weights
+    from pesto.ingest.phicheck import check_phi
+    from pesto.ingest.tables import load_control_table, write_control
+
+    run_path = request.getfixturevalue(fixture_name)
+    before = _tree_snapshot(run_path)
+    run = discover(run_path)
+    phi_file = run.phi.get("actual")
+    if phi_file is None:
+        pytest.skip("this run has no case.phi.actual.csv")
+    selected, _ = runner.observation_iterations(run)
+    iterations = [k for k in selected if run.obs_ens.get(k) is not None]
+    if not iterations:
+        pytest.skip("no ingested iteration has an observation file")
+
+    tables = read_control(run.pst_path)
+    assert not isinstance(tables, ReadFailure), tables
+    layout = CacheLayout(root=tmp_path / "cache")
+    layout.ensure()
+    assert not isinstance(write_control(tables, layout), ReadFailure)
+    assert not isinstance(runner._write_obs_index_artifact(str(layout.root)), ReadFailure)
+    names = load_control_table(layout, "obs", columns=["obsnme"])[0].column("obsnme").to_pylist()
+    weights = None
+    if run.adjusted_weights is not None:
+        weights = read_adjusted_weights(run.adjusted_weights, names, artifact="phi_check")
+        assert not isinstance(weights, ReadFailure), weights
+
+    checked = 0
+    for k in iterations:
+        ens = runner._write_obs_ens_artifact(str(run.obs_ens[k]), str(layout.root), k)
+        assert not isinstance(ens, ReadFailure), ens
+        # The same worker the ingest runs.
+        written = runner._write_phi_check_artifact(
+            str(layout.root),
+            k,
+            str(phi_file),
+            str(run.adjusted_weights) if run.adjusted_weights is not None else None,
+        )
+        assert not isinstance(written, ReadFailure), written
+        check = load_phi_check(k, layout)
+        assert not isinstance(check, ReadFailure), check
+        if check.status != "checked":
+            continue
+        checked += 1
+        assert check.n_compared > 0
+        assert check.n_mismatch == 0, (k, check.summary)
+        assert check.max_rel_diff is not None and check.max_rel_diff <= PHI_TOLERANCE
+        # The check function gives the same answer as the stored one.
+        again = check_phi(k, layout, phi_file, weights)
+        assert not isinstance(again, ReadFailure)
+        assert again.n_compared == check.n_compared
+        break
+
+    assert checked, "no ingested iteration had a row in the phi file"
+    assert _tree_snapshot(run_path) == before
