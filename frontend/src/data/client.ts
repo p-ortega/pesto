@@ -316,6 +316,9 @@ export interface ArtifactRow {
 export interface Capability {
   available: boolean
   blockedBy: { artifact: string; reason: string }[]
+  // Facts the server adds to a capability that is still available, for example
+  // a phi mismatch or iterations with no prior-data conflict source.
+  notes?: string[]
 }
 
 // Why a cache is being re-read: the version it was made at, the version this
@@ -357,7 +360,17 @@ function toRewriteFacts(raw: RawRewrite | null | undefined): RewriteFacts | null
 export interface IngestState {
   fresh: boolean
   artifacts: ArtifactRow[]
-  capabilities: { map: Capability; stats: Capability; chips: Capability }
+  capabilities: {
+    map: Capability
+    stats: Capability
+    chips: Capability
+    // The observation capabilities; absent from a server that does not send them.
+    obs?: Capability
+    obsStats?: Capability
+    noise?: Capability
+    pdc?: Capability
+    phiCheck?: Capability
+  }
   ingestSeconds: number | null
   cacheBytes: number | null
   rewrite?: RewriteFacts | null
@@ -374,15 +387,38 @@ export interface IngestEstimate {
 }
 
 function toCapability(raw: unknown): Capability {
-  const capability = raw as { available: boolean; blocked_by: { artifact: string; reason: string }[] }
-  return { available: capability.available, blockedBy: capability.blocked_by }
+  const capability = raw as {
+    available: boolean
+    blocked_by: { artifact: string; reason: string }[]
+    notes?: string[]
+  }
+  const mapped: Capability = { available: capability.available, blockedBy: capability.blocked_by }
+  if (capability.notes) {
+    mapped.notes = capability.notes
+  }
+  return mapped
+}
+
+// One key for a capability the server sent, nothing for one it did not, so an
+// older server's state has no explicit undefined fields.
+function present<K extends string>(key: K, raw: unknown): { [P in K]?: Capability } {
+  return raw === undefined || raw === null ? {} : ({ [key]: toCapability(raw) } as { [P in K]?: Capability })
 }
 
 export async function ingestState(): Promise<IngestState> {
   const raw = (await apiGet(runUrl(activeRunId(), '/api/run/ingest/state'))) as {
     fresh: boolean
     artifacts: ArtifactRow[]
-    capabilities: { map: unknown; stats: unknown; chips: unknown }
+    capabilities: {
+      map: unknown
+      stats: unknown
+      chips: unknown
+      obs?: unknown
+      obs_stats?: unknown
+      noise?: unknown
+      pdc?: unknown
+      phi_check?: unknown
+    }
     ingest_seconds: number | null
     cache_bytes: number | null
     rewrite?: RawRewrite | null
@@ -395,6 +431,11 @@ export async function ingestState(): Promise<IngestState> {
       map: toCapability(raw.capabilities.map),
       stats: toCapability(raw.capabilities.stats),
       chips: toCapability(raw.capabilities.chips),
+      ...present('obs', raw.capabilities.obs),
+      ...present('obsStats', raw.capabilities.obs_stats),
+      ...present('noise', raw.capabilities.noise),
+      ...present('pdc', raw.capabilities.pdc),
+      ...present('phiCheck', raw.capabilities.phi_check),
     },
     ingestSeconds: raw.ingest_seconds,
     cacheBytes: raw.cache_bytes,
