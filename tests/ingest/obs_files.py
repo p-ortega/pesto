@@ -24,8 +24,8 @@ DIALECTS = tuple(_WRITERS)
 
 def obs_names(n: int, prefix: str = "obs") -> list[str]:
     """PstFrom-like observation names in control order, all lower case.
-    Short enough for the legacy dialect's 12-character column field only
-    when ``n`` and ``prefix`` are small; use ``short_obs_names`` there."""
+    Too long for the legacy dialect's 12-character field; use
+    ``short_obs_names`` there."""
     return [f"{prefix}_oname:head_k:0_i:{i}_datetime:2020-01-{1 + i % 28:02d}" for i in range(n)]
 
 
