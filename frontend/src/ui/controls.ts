@@ -139,6 +139,8 @@ export function renderSelectionControls(
   el.style.display = 'flex'
   el.style.flexWrap = 'wrap'
   el.style.gap = 'var(--space-sm)'
+  // Uncapped, the panel wrapped into one band across the whole map (974 px at 1440x900) and hid the northern edge.
+  el.style.maxWidth = '32rem'
 
   // Fit to extent (D-15/MAP-11): a real button, the one button-shaped
   // primary action on this map surface, calling the same fit(bounds) the
