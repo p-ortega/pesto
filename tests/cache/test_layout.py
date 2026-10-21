@@ -165,6 +165,41 @@ def test_layout_exposes_named_directories_and_per_iteration_files(tmp_path):
     assert layout.par_agg_notes(0).name == "par_0.notes.json"
 
 
+def test_layout_names_every_observation_artifact_path(tmp_path):
+    layout = CacheLayout(root=tmp_path / ".pesto")
+
+    assert layout.obs_order == layout.control / "obs_order.i32"
+    assert layout.obs_time == layout.control / "obs_time.f64"
+    assert layout.obs_value == layout.control / "obs_value.f64"
+    assert layout.obs_flags == layout.control / "obs_flags.u8"
+    assert layout.obs_sites == layout.control / "obs_sites.parquet"
+    assert layout.obs_groups == layout.control / "obs_groups.parquet"
+    assert layout.obs_index_meta == layout.control / "obs_index.json"
+    assert layout.obs_cell == layout.grid / "obs_cell.parquet"
+    assert layout.obs_cell_meta == layout.grid / "obs_cell.json"
+    assert layout.noise_agg == layout.agg / "noise.f32"
+    assert layout.noise_agg_meta == layout.agg / "noise.json"
+    assert layout.obs_ens(2) == layout.ens / "obs_2.f32"
+    assert layout.obs_ens_meta(2) == layout.ens / "obs_2.json"
+    assert layout.obs_reals(2) == layout.reals / "obs_2.reals.json"
+    assert layout.obs_agg(2) == layout.agg / "obs_2.f32"
+    assert layout.obs_agg_meta(2) == layout.agg / "obs_2.json"
+    assert layout.pdc(2) == layout.agg / "pdc_2.parquet"
+    assert layout.pdc_meta(2) == layout.agg / "pdc_2.json"
+    assert layout.phi_check(2) == layout.agg / "phi_check_2.json"
+
+
+def test_the_observation_paths_need_no_new_folder_and_no_version_bump(tmp_path):
+    from pesto.cache.layout import CACHE_VERSION
+
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+
+    assert CACHE_VERSION == 3
+    for path in (layout.obs_order, layout.obs_cell, layout.noise_agg, layout.obs_ens(0)):
+        assert path.parent.is_dir()
+
+
 def test_ensure_is_idempotent(tmp_path):
     layout = CacheLayout(root=tmp_path / ".pesto")
 
