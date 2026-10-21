@@ -235,8 +235,10 @@ def test_a_worker_killed_while_reading_an_observation_file_leaves_a_named_failed
     reason = states["obs_ens/0"].reason
     assert reason.startswith("obs_ens/0: the worker reading")
     assert "case.0.obs.jcb" in reason
+    # obs_agg needs obs_ens, so it fails by name with the killed one's reason.
+    assert states["obs_agg/0"].reason.startswith("obs_agg/0 depends on obs_ens/0, which failed: ")
     for name, artifact in states.items():
-        if not name.startswith("obs_ens/"):
+        if not name.startswith(("obs_ens/", "obs_agg/")):
             assert artifact.state == "ok", name
 
 

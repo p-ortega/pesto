@@ -30,6 +30,7 @@ from pesto.ingest.tables import load_control_tables, write_control
 from pesto.model import GridShape, GroupResolution, ObsCells, ParCells, fan_polygons
 
 from .fixtures import make_run, write_control_file
+from .obs_fixtures import make_obs_run
 
 
 class _StubAdapter:
@@ -140,9 +141,14 @@ def _make(tmp_path, **kwargs):
 
 
 def _obs_ens_names(run, iterations) -> list[str]:
-    """The obs_ens names a plan holds for ``iterations``, read from the run's
-    own record of which observation files exist."""
-    return [f"obs_ens/{k}" for k in iterations if k in run.obs_ens]
+    """The obs_ens and obs_agg names a plan holds for ``iterations``, read from
+    the run's own record of which observation files exist; each obs_agg
+    follows its obs_ens."""
+    names: list[str] = []
+    for k in iterations:
+        if k in run.obs_ens:
+            names.extend([f"obs_ens/{k}", f"obs_agg/{k}"])
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +311,95 @@ def test_each_file_control_reads_is_hashed_exactly_once_per_ingest(
     assert len(names) > 1
     for name in names:
         assert hashed.count(name) == 1, name
+
+
+def test_each_observation_file_is_hashed_exactly_once_per_ingest_and_so_are_the_control_files(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir)
+    hashed: list[str] = []
+    real = SourceFingerprint.of
+
+    def _counting(path):
+        hashed.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(SourceFingerprint, "of", staticmethod(_counting))
+
+    manifest = ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    # obs_ens/K and obs_agg/K both list the observation file.
+    for iteration in (0, 1):
+        assert manifest.artifacts[f"obs_agg/{iteration}"].state == "ok"
+        assert hashed.count(run.obs_ens[iteration].name) == 1, iteration
+    names = _control_file_names(run_dir)
+    assert len(names) > 1
+    for name in names:
+        assert hashed.count(name) == 1, name
+
+
+def test_obs_agg_records_the_fingerprint_obs_ens_recorded_for_the_observation_file(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+
+    manifest = ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    for iteration in (0, 1):
+        name = f"case.{iteration}.obs.jcb"
+        from_ens = {s.path: s for s in manifest.artifacts[f"obs_ens/{iteration}"].sources}
+        from_agg = {s.path: s for s in manifest.artifacts[f"obs_agg/{iteration}"].sources}
+        assert from_agg[name] == from_ens[name]
+        assert set(from_agg) == set(from_ens)
+
+
+def test_an_observation_file_edited_while_obs_agg_runs_leaves_obs_agg_stale(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir)
+    edited = run.obs_ens[0]
+    real = runner._write_obs_agg_artifact
+
+    def _edited_during_the_worker(cache_root, iteration):
+        result = real(cache_root, iteration)
+        if iteration == 0:
+            edited.write_bytes(edited.read_bytes() + b"\0")
+        return result
+
+    monkeypatch.setattr(runner, "_write_obs_agg_artifact", _edited_during_the_worker)
+    cache_root = tmp_path / "cache"
+    ingest_run(run_dir, cache_root=cache_root)
+
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+    assert manifest.artifacts["obs_agg/0"].state == "ok"
+    assert manifest.is_stale("obs_agg/0", layout, planned["obs_agg/0"].sources)
+    assert not manifest.is_stale("obs_agg/1", layout, planned["obs_agg/1"].sources)
+
+
+def test_obs_agg_fails_by_name_when_its_obs_ens_failed(tmp_path, in_process, monkeypatch):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    real = runner._write_obs_ens_artifact
+
+    def _first_iteration_fails(source, cache_root, iteration):
+        if iteration == 0:
+            return ReadFailure(name="obs_ens/0", path=source, reason="the file is unreadable")
+        return real(source, cache_root, iteration)
+
+    monkeypatch.setattr(runner, "_write_obs_ens_artifact", _first_iteration_fails)
+
+    manifest = ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    assert manifest.artifacts["obs_agg/0"].state == "failed"
+    assert manifest.artifacts["obs_agg/0"].reason == (
+        "obs_agg/0 depends on obs_ens/0, which failed: the file is unreadable"
+    )
+    assert manifest.artifacts["obs_agg/1"].state == "ok"
 
 
 def test_every_dependent_records_the_fingerprints_control_recorded(tmp_path, in_process):

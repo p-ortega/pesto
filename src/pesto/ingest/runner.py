@@ -31,6 +31,7 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
+from pesto.ingest.obsagg import write_obs_agg
 from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsens import write_obs_ensemble
 from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
@@ -69,7 +70,7 @@ class PlannedArtifact:
 
     name: str
     # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "par_ens" | "par_agg" | "obs_ens"
-    # | "pp_factors" | "config"
+    # | "obs_agg" | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
@@ -380,6 +381,14 @@ def _write_obs_ens_artifact(
     if isinstance(data, ReadFailure):
         return data
     return write_obs_ensemble(data, index, iteration, layout)
+
+
+def _write_obs_agg_artifact(
+    cache_root: str, iteration: int
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for one iteration's observation statistics: reads the
+    cached ``obs_ens/K`` and ``obs_index``, never the source file."""
+    return write_obs_agg(iteration, CacheLayout(root=Path(cache_root)))
 
 
 def _write_grid_artifact(
@@ -739,6 +748,21 @@ def plan_artifacts(
                 needs=("obs_index",),
             )
         )
+        # Lists the same observation file so both go stale together; it reads
+        # the cached ensemble, and takes its fingerprint from obs_ens.
+        artifacts.append(
+            PlannedArtifact(
+                name=f"obs_agg/{iteration}",
+                kind="obs_agg",
+                sources=obs_sources,
+                outputs=(
+                    str(layout.obs_agg(iteration)),
+                    str(layout.obs_agg_meta(iteration)),
+                ),
+                source_bytes=_size_of(obs_sources),
+                needs=("obs_index", f"obs_ens/{iteration}"),
+            )
+        )
 
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
@@ -951,6 +975,12 @@ def estimate_bytes(
             "site count rather than any source file's size -- excluded rather than guessed"
         )
 
+    if any(run.obs_ens.get(k) is not None for k in obs_selected):
+        notes.append(
+            "obs_agg/K: statistics per observation, whose size follows the observation count "
+            "rather than any source file's size -- excluded rather than guessed"
+        )
+
     notes.append(
         "obs_index: a few files whose size follows the control table's observation count "
         "rather than any source file's size -- excluded rather than guessed"
@@ -1017,6 +1047,9 @@ def _dispatch(
     if artifact.kind == "obs_ens":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_obs_ens_artifact, (artifact.sources[0], cache_root, iteration)
+    if artifact.kind == "obs_agg":
+        iteration = int(artifact.name.split("/", 1)[1])
+        return _write_obs_agg_artifact, (cache_root, iteration)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
@@ -1037,7 +1070,17 @@ def _dispatch(
 # Artifacts whose worker reads the cached control table. ``grid`` reads only
 # the grid file and ``control`` is the one that writes the table.
 _CONTROL_DEPENDENTS = frozenset(
-    {"par_cell", "obs_index", "obs_cell", "par_ens", "par_agg", "obs_ens", "pp_factors", "config"}
+    {
+        "par_cell",
+        "obs_index",
+        "obs_cell",
+        "par_ens",
+        "par_agg",
+        "obs_ens",
+        "obs_agg",
+        "pp_factors",
+        "config",
+    }
 )
 
 
@@ -1067,20 +1110,26 @@ def _needs_failure_reason(manifest: Manifest, artifact: PlannedArtifact) -> str 
     return None
 
 
-def _fingerprint_as_control_read_them(
-    manifest: Manifest, sources: Sequence[str]
+def _fingerprint_as_upstream_read_them(
+    manifest: Manifest, sources: Sequence[str], upstream: Sequence[str] = ()
 ) -> tuple[list[SourceFingerprint], tuple[str, ...]]:
     """Fingerprints for a control dependent's ``sources``, taking each file
-    ``control`` recorded from control's own record and hashing only the
-    rest.
+    from the first of ``control`` and then the artifacts in ``upstream`` that
+    recorded it by base name, and hashing only the rest.
 
-    A dependent is built from the table control cached, so a file edited
-    while it ran must leave it stale, not fresh -- and control's record is
-    what makes that so. It also means a 398 MB observation table that seven
-    artifacts list is hashed once per ingest, not eight times.
+    A dependent is built from what its upstream artifacts cached, so a file
+    edited while it ran must leave it stale, not fresh -- and the upstream
+    record is what makes that so. It also means a 398 MB observation table
+    that seven artifacts list, or a 1 GB observation file two artifacts
+    list, is hashed once per ingest.
     """
-    control = manifest.artifacts.get("control")
-    recorded = {s.path: s for s in control.sources} if control is not None else {}
+    recorded: dict[str, SourceFingerprint] = {}
+    for name in ("control", *upstream):
+        found = manifest.artifacts.get(name)
+        if found is None:
+            continue
+        for source in found.sources:
+            recorded.setdefault(source.path, source)
     fingerprints: list[SourceFingerprint] = []
     unfingerprinted: list[str] = []
     for raw in sources:
@@ -1088,8 +1137,8 @@ def _fingerprint_as_control_read_them(
         if known is not None:
             fingerprints.append(known)
             continue
-        found, missing = _fingerprint_sources([raw])
-        fingerprints.extend(found)
+        found_now, missing = _fingerprint_sources([raw])
+        fingerprints.extend(found_now)
         unfingerprinted.extend(missing)
     return fingerprints, tuple(unfingerprinted)
 
@@ -1283,8 +1332,8 @@ def ingest_run(
         seconds = time.perf_counter() - start
 
         if artifact.kind in _CONTROL_DEPENDENTS:
-            sources, unfingerprinted = _fingerprint_as_control_read_them(
-                manifest, artifact.sources
+            sources, unfingerprinted = _fingerprint_as_upstream_read_them(
+                manifest, artifact.sources, artifact.needs
             )
         else:
             sources, unfingerprinted = _fingerprint_sources(artifact.sources)
