@@ -1019,8 +1019,10 @@ def test_a_control_file_with_no_external_section_lists_no_tables(tmp_path):
 
 
 def _files_pyemu_opens(pst_path, monkeypatch):
-    """Parse ``pst_path`` with pyemu while recording each file
-    ``pandas.read_csv`` is asked to open, as resolved paths."""
+    """Parse ``pst_path`` with pyemu while recording each existing file
+    ``pandas.read_csv`` is asked to open, as resolved paths. pyemu also
+    tries three optional ``*longname.map`` files and ignores a missing
+    one, so attempts at files that are not there are left out."""
     import pandas
 
     from pesto.warm import load_pyemu
@@ -1029,7 +1031,8 @@ def _files_pyemu_opens(pst_path, monkeypatch):
     real_read_csv = pandas.read_csv
 
     def recording_read_csv(filepath_or_buffer, *args, **kwargs):
-        opened.append(Path(filepath_or_buffer).resolve())
+        if Path(filepath_or_buffer).exists():
+            opened.append(Path(filepath_or_buffer).resolve())
         return real_read_csv(filepath_or_buffer, *args, **kwargs)
 
     monkeypatch.setattr(pandas, "read_csv", recording_read_csv)
