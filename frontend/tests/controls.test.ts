@@ -330,6 +330,13 @@ describe('renderSelectionControls', () => {
     expect(onSelectionChange).not.toHaveBeenCalled()
   })
 
+  it('caps the panel at 32rem and still wraps, so it stops spanning the whole map', () => {
+    const { el } = mount(THREE_NAMES)
+    expect(el.style.maxWidth).toBe('32rem')
+    expect(el.style.flexWrap).toBe('wrap')
+    expect(el.style.gap).toBe('var(--space-sm)')
+  })
+
   describe('the Go to realization box', () => {
     const goBox = (el: HTMLElement) => el.querySelector('input[aria-label="Go to realization"]') as HTMLInputElement
     const slider = (el: HTMLElement) => el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
