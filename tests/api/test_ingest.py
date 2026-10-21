@@ -394,6 +394,82 @@ def test_capability_map_blocked_when_nothing_has_been_ingested(tmp_path):
     assert "par_ens/0" in blocked_names
 
 
+def _obs_capability(app, token):
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    return response.json()["capabilities"]["obs"]
+
+
+def test_capability_obs_for_a_run_with_no_observation_file_says_so(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0, 3))
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    assert _obs_capability(app, token) == {
+        "available": False,
+        "blocked_by": [
+            {"artifact": "obs_ens", "reason": "no observation ensemble file was found for this run"}
+        ],
+    }
+
+
+def test_capability_obs_names_the_iteration_when_files_exist_only_for_others(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0, 3))
+    (run_dir / "case.1.obs.csv").write_bytes(b"x" * 50)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _obs_capability(app, token)
+
+    assert capability["available"] is False
+    assert capability["blocked_by"] == [
+        {
+            "artifact": "obs_ens",
+            "reason": "no observation ensemble file was found for iteration 0",
+        }
+    ]
+
+
+def test_capability_obs_blocked_names_obs_index_and_its_recorded_reason(
+    tmp_path, in_process, monkeypatch
+):
+    from pesto.ingest.failures import ReadFailure as Failure
+
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        runner_module,
+        "_write_obs_index_artifact",
+        lambda cache_root: Failure(name="obs_index", path="x", reason="no observation names"),
+    )
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+    capability = _obs_capability(app, token)
+
+    assert capability["available"] is False
+    by_artifact = {b["artifact"]: b["reason"] for b in capability["blocked_by"]}
+    assert by_artifact["obs_index"] == "no observation names"
+    assert by_artifact["obs_ens/0"].startswith("obs_ens/0 depends on obs_index, which failed")
+
+
+def test_capability_obs_is_available_when_one_of_two_observation_files_is_ok(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir)
+    run.obs_ens[1].write_bytes(b"not an ensemble file")
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+
+    body = response.json()
+    states = {a["name"]: a["state"] for a in body["artifacts"]}
+    assert states["obs_ens/0"] == "ok"
+    assert states["obs_ens/1"] == "failed"
+    assert body["capabilities"]["obs"] == {"available": True, "blocked_by": []}
+
+
 # --- the byte estimate (GET /estimate) --------------------------------------
 
 

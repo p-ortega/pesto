@@ -726,7 +726,17 @@ def test_estimate_bytes_sizes_every_artifact_without_opening_a_source_file(tmp_p
     # "control" is deliberately never sized -- a PstFrom-style .pst file's
     # own size carries no signal about its external tables -- so it is
     # named in notes instead of appearing in per_artifact.
-    assert names == {"par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "grid", "config"}
+    obs_names = {f"obs_ens/{k}" for k in (0, 1) if k in run.obs_ens}
+    assert obs_names
+    assert names == {
+        "par_ens/0",
+        "par_agg/0",
+        "par_ens/1",
+        "par_agg/1",
+        "grid",
+        "config",
+        *obs_names,
+    }
     assert any(note.startswith("par_cell:") for note in estimate.notes)
     assert any("control" in note for note in estimate.notes)
 
@@ -785,6 +795,7 @@ def test_estimate_bytes_total_matches_the_ratio_arithmetic(tmp_path):
         _CONFIG_BYTES,
         _GRID_SOURCE_RATIO,
         _PAR_AGG_SOURCE_RATIO,
+        _OBS_ENS_SOURCE_RATIO,
         _PAR_ENS_SOURCE_RATIO,
     )
 
@@ -800,6 +811,8 @@ def test_estimate_bytes_total_matches_the_ratio_arithmetic(tmp_path):
         source_bytes = run.par_ens[iteration].stat().st_size
         expected += int(source_bytes * _PAR_ENS_SOURCE_RATIO)
         expected += int(source_bytes * _PAR_AGG_SOURCE_RATIO)
+        if iteration in run.obs_ens:
+            expected += int(run.obs_ens[iteration].stat().st_size * _OBS_ENS_SOURCE_RATIO)
     if run.grid is not None:
         expected += int(run.grid.stat().st_size * _GRID_SOURCE_RATIO)
 

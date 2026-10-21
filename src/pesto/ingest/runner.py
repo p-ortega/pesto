@@ -450,6 +450,34 @@ def _select_iterations(numbered: list[int]) -> list[int]:
     return [ordered[0], ordered[-1]]
 
 
+def observation_iterations(
+    run: RunLayout, iterations: Sequence[int] | None = None
+) -> tuple[list[int], tuple[str, ...]]:
+    """Which iterations' observation ensembles one ingest of ``run`` reads,
+    and a note for each of them that has no observation file.
+
+    The same first and last iteration as the parameters (D-01): the given
+    ``iterations`` when the caller passed any, else the parameter default
+    when the run has a numbered parameter ensemble, else the first and last
+    numbered observation file. A selected iteration with no observation
+    file stays in the list so the note can name it; planning skips it.
+    """
+    if iterations is not None:
+        selected = list(iterations)
+    else:
+        numbered_par = [k for k in run.par_ens if isinstance(k, int)]
+        if numbered_par:
+            selected = _select_iterations(numbered_par)
+        else:
+            selected = _select_iterations([k for k in run.obs_ens if isinstance(k, int)])
+    notes = tuple(
+        f"no observation ensemble file was found for iteration {k}"
+        for k in selected
+        if run.obs_ens.get(k) is None
+    )
+    return selected, notes
+
+
 def _should_retry(manifest: Manifest, name: str, base: Path, sources: Sequence[str]) -> bool:
     """Should artifact ``name`` be read again on this ingest?
 
@@ -503,7 +531,9 @@ def plan_artifacts(
     its cached tables; then ``grid`` and ``par_cell`` when a grid file
     exists; then ``obs_index``, which needs the control table only; then an
     ensemble and a summary for each selected iteration in
-    ascending order, ensemble before summary; then ``pp_factors`` when the
+    ascending order, ensemble before summary; then an observation ensemble
+    for each iteration :func:`observation_iterations` selects that has an
+    observation file; then ``pp_factors`` when the
     run carries pilot-point files; then ``config``. A caller watching rows
     go past sees the same sequence every time this is called for the same
     run and layout.
@@ -522,7 +552,8 @@ def plan_artifacts(
     ``par_cell`` the control sources and the grid file, ``obs_index`` the
     control sources alone, a summary that
     iteration's ensemble file and then the control sources, an ensemble the
-    same and, when one exists, the grid file too, ``pp_factors`` its own
+    same and, when one exists, the grid file too, an observation ensemble its
+    observation file and then the control sources, ``pp_factors`` its own
     files, the grid file and the control sources, and ``config`` the control
     sources and, when one exists, the grid file. A run with no grid file
     plans no ``grid`` and no ``par_cell`` artifact. No artifact lists a path
@@ -635,7 +666,8 @@ def plan_artifacts(
             )
         )
 
-    for iteration in selected:
+    obs_selected, _obs_notes = observation_iterations(run, iterations)
+    for iteration in obs_selected:
         obs_source = run.obs_ens.get(iteration)
         if obs_source is None:
             continue
@@ -739,8 +771,14 @@ roughly fixed-size fact sheet whose size does not scale with the run, so a
 flat, slightly generous estimate stands in for a ratio against any source
 file."""
 
+_OBS_ENS_SOURCE_RATIO = 0.26
+"""Reuses the measured parameter ratio: an observation ensemble is float32
+out of the same sparse-COO dialect, so the cache payload sits at the same
+fraction of the source file. A dense ``.bin`` source errs low in the same
+way (see ``_PAR_ENS_SOURCE_RATIO``)."""
+
 _DENSE_BIN_NOTE = (
-    "par_ens/par_agg: these figures assume the sparse-COO .jcb dialect -- a dense "
+    "par_ens/par_agg/obs_ens: these figures assume the sparse-COO .jcb dialect -- a dense "
     ".bin ensemble produces roughly twice the cache this estimate reports, so the "
     "total is a floor for that dialect, not a midpoint"
 )
@@ -811,6 +849,22 @@ def estimate_bytes(
         agg_bytes = int(source_bytes * _PAR_AGG_SOURCE_RATIO)
         per_artifact.append((f"par_agg/{iteration}", agg_bytes))
         total += agg_bytes
+
+    obs_selected, obs_notes = observation_iterations(run, iterations)
+    notes.extend(f"obs_ens: {note}" for note in obs_notes)
+    for iteration in obs_selected:
+        obs_source = run.obs_ens.get(iteration)
+        if obs_source is None:
+            continue
+        try:
+            obs_source_bytes = obs_source.stat().st_size
+        except OSError as exc:
+            notes.append(f"obs_ens/{iteration}: could not stat {obs_source.name}: {exc}")
+            continue
+        sized_an_ensemble = True
+        obs_bytes = int(obs_source_bytes * _OBS_ENS_SOURCE_RATIO)
+        per_artifact.append((f"obs_ens/{iteration}", obs_bytes))
+        total += obs_bytes
 
     if sized_an_ensemble:
         notes.append(_DENSE_BIN_NOTE)

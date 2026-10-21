@@ -412,6 +412,111 @@ def test_a_block_size_smaller_than_the_index_gives_the_same_stored_values(tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# which iterations (D-01), and the size estimate
+# ---------------------------------------------------------------------------
+
+
+def _planned_obs_names(run_dir, tmp_path, iterations=None):
+    planned = plan_artifacts(
+        discover(run_dir), CacheLayout(root=tmp_path / "cache"), iterations=iterations
+    )
+    return [a.name for a in planned if a.kind == "obs_ens"]
+
+
+def test_observation_iterations_follow_the_parameters_not_the_files_on_disk(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, iterations=(0, 1, 2, 3, 4), par_iterations=(0, 1))
+
+    assert _planned_obs_names(run_dir, tmp_path) == ["obs_ens/0", "obs_ens/1"]
+
+
+def test_a_run_with_no_parameter_ensemble_plans_its_first_and_last_observation_file(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, iterations=(0, 1, 2, 3), par_iterations=())
+
+    assert _planned_obs_names(run_dir, tmp_path) == ["obs_ens/0", "obs_ens/3"]
+
+
+def test_an_observation_only_run_ingests_its_first_and_last_observation_file(
+    tmp_path, in_process
+):
+    run, layout = _ingest(tmp_path, iterations=(0, 1, 2, 3), par_iterations=())
+
+    states = _states(layout)
+    assert states["obs_ens/0"].state == "ok"
+    assert states["obs_ens/3"].state == "ok"
+    assert "obs_ens/1" not in states
+    stored = load_obs_ensemble(3, layout)
+    assert not isinstance(stored, ReadFailure), stored
+    np.testing.assert_array_equal(
+        np.asarray(stored.values)[np.argsort(load_obs_index(layout).order)],
+        run.values[3].T.astype(np.float32),
+    )
+
+
+def test_a_parameter_iteration_without_an_observation_file_is_named_and_the_rest_still_runs(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, iterations=(0,), par_iterations=(0, 5))
+    run = discover(run_dir)
+
+    selected, notes = runner.observation_iterations(run)
+
+    assert selected == [0, 5]
+    assert notes == ("no observation ensemble file was found for iteration 5",)
+    assert _planned_obs_names(run_dir, tmp_path) == ["obs_ens/0"]
+    cache_root = tmp_path / "cache"
+    ingest_run(run_dir, cache_root=cache_root)
+    assert _states(CacheLayout(root=cache_root))["obs_ens/0"].state == "ok"
+
+
+def test_given_iterations_are_used_for_observations_too(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, iterations=(0, 1, 2, 3), par_iterations=(0, 1, 2, 3))
+    run = discover(run_dir)
+
+    selected, notes = runner.observation_iterations(run, [2])
+
+    assert selected == [2]
+    assert notes == ()
+    assert _planned_obs_names(run_dir, tmp_path, iterations=[2]) == ["obs_ens/2"]
+
+
+def test_a_run_with_no_observation_file_plans_no_obs_ens(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, iterations=(), par_iterations=(0, 1))
+
+    assert _planned_obs_names(run_dir, tmp_path) == []
+
+
+def test_the_estimate_sizes_each_obs_ens_with_the_parameter_ratio_and_the_dense_note_names_it(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir)
+
+    estimate = runner.estimate_bytes(discover(run_dir))
+
+    sized = dict(estimate.per_artifact)
+    for iteration in (0, 1):
+        assert sized[f"obs_ens/{iteration}"] == int(
+            run.obs_ens[iteration].stat().st_size * runner._OBS_ENS_SOURCE_RATIO
+        )
+    assert runner._OBS_ENS_SOURCE_RATIO == 0.26
+    assert any("obs_ens" in note and "dense" in note for note in estimate.notes)
+
+
+def test_the_estimate_names_an_iteration_that_has_no_observation_file(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, iterations=(0,), par_iterations=(0, 5))
+
+    estimate = runner.estimate_bytes(discover(run_dir))
+
+    assert "obs_ens: no observation ensemble file was found for iteration 5" in estimate.notes
+
+
+# ---------------------------------------------------------------------------
 # real runs (slow; skipped when the benchmark folder is absent)
 # ---------------------------------------------------------------------------
 
