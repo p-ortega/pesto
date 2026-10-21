@@ -413,10 +413,43 @@ class SyntheticRun:
     decoy_paths: tuple[Path, ...]
     tpl_path: Path
     ins_path: Path
+    adjusted_weights_path: Path | None = None
+
+
+# The header pestpp writes on case.K.pdc.csv.
+PDC_HEADER = (
+    "name,obs_mean,obs_std,obs_min,obs_max,obs_stat_min,obs_stat_max,"
+    "sim_mean,sim_std,sim_min,sim_max,sim_stat_min,sim_stat_max,distance"
+)
+_PHI_STAT_COLUMNS = ("iteration", "total_runs", "mean", "standard_deviation", "min", "max")
 
 
 def _write_phi_csv(path: Path) -> Path:
     path.write_text("iteration,total_runs,phi\n0,1,1.0\n")
+    return path
+
+
+def _write_phi_realization_csv(
+    path: Path, real_names: list[str], iterations: tuple[int, ...]
+) -> Path:
+    """A phi file in the real shape: iteration, total_runs, four statistics,
+    then one column per realization and one row per iteration. The values
+    are placeholders, not a computed phi."""
+    header = ",".join((*_PHI_STAT_COLUMNS, *real_names))
+    lines = [header]
+    for row, iteration in enumerate(iterations):
+        phis = [10.0 * (row + 1) + i for i in range(len(real_names))]
+        mean = sum(phis) / len(phis)
+        spread = (sum((v - mean) ** 2 for v in phis) / len(phis)) ** 0.5
+        cells = [iteration, (row + 1) * len(real_names), mean, spread, min(phis), max(phis), *phis]
+        lines.append(",".join(str(c) for c in cells))
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _write_pdc_csv(path: Path) -> Path:
+    """A prior-data-conflict file with pestpp's header and no conflict rows."""
+    path.write_text(PDC_HEADER + "\n")
     return path
 
 
@@ -506,15 +539,20 @@ def make_run(
         writer(obs_path, obs_values, real_names, obs_entity_names)
         obs_ens[iteration] = obs_path
 
-    phi_paths = {
-        suffix: _write_phi_csv(root / f"{case}.phi.{suffix}.csv") for suffix in _PHI_SUFFIXES
-    }
+    phi_paths = {}
+    for suffix in _PHI_SUFFIXES:
+        phi_path = root / f"{case}.phi.{suffix}.csv"
+        if suffix in ("actual", "meas"):
+            _write_phi_realization_csv(phi_path, real_names, iterations)
+        else:
+            _write_phi_csv(phi_path)
+        phi_paths[suffix] = phi_path
 
     pdc_paths: dict[int, Path] = {}
     pcs_paths: dict[int, Path] = {}
     reinflate_pcs_paths: dict[int, Path] = {}
     for iteration in iterations:
-        pdc_paths[iteration] = _write_small_csv(root / f"{case}.{iteration}.pdc.csv")
+        pdc_paths[iteration] = _write_pdc_csv(root / f"{case}.{iteration}.pdc.csv")
         pcs_paths[iteration] = _write_small_csv(root / f"{case}.{iteration}.pcs.csv")
         reinflate_pcs_paths[iteration] = _write_small_csv(
             root / f"{case}.{iteration}.reinflate.pcs.csv"
@@ -549,6 +587,7 @@ def make_run(
             )
 
     decoy_paths: tuple[Path, ...] = ()
+    adjusted_weights_path: Path | None = None
     if extras:
         # Both end in a real ensemble extension and neither is an
         # ensemble, which keeps discovery's filename matching honest rather
@@ -556,9 +595,17 @@ def make_run(
         # that is a pilot-point factor file now, which these runs do not carry.
         decoy1 = root / "coarse.boundary.layer10.bin"
         decoy1.write_bytes(b"decoy, not an ensemble")
-        decoy2 = root / f"{case}.adjusted.weights.bin"
+        decoy2 = root / f"{case}.weights.bin"
         decoy2.write_bytes(b"decoy, not an ensemble")
         decoy_paths = (decoy1, decoy2)
+
+        # The control weights are all 1.0, so every observation has a column.
+        adjusted_weights_path = write_jcb_ensemble(
+            root / f"{case}.adjusted.weights.jcb",
+            np.ones((n_real, n_obs)),
+            real_names,
+            obs_entity_names,
+        )
 
     tpl_path = root / f"{case}.tpl"
     tpl_path.write_text("ptf ~\n~par0~\n")
@@ -584,4 +631,5 @@ def make_run(
         decoy_paths=decoy_paths,
         tpl_path=tpl_path,
         ins_path=ins_path,
+        adjusted_weights_path=adjusted_weights_path,
     )

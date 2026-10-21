@@ -35,6 +35,8 @@ def _all_layout_paths(layout):
         paths.append(layout.grid)
     if layout.noise is not None:
         paths.append(layout.noise)
+    if layout.adjusted_weights is not None:
+        paths.append(layout.adjusted_weights)
     if layout.starting_par_ens is not None:
         paths.append(layout.starting_par_ens)
     if layout.starting_obs_ens is not None:
@@ -55,6 +57,7 @@ def _layout_shape(layout):
         "pcs_keys": set(layout.pcs),
         "grid_present": layout.grid is not None,
         "noise_present": layout.noise is not None,
+        "adjusted_weights_present": layout.adjusted_weights is not None,
         "starting_par_ens_present": layout.starting_par_ens is not None,
         "starting_obs_ens_present": layout.starting_obs_ens is not None,
     }
@@ -237,6 +240,45 @@ def test_two_files_matching_the_noise_ensemble_slot_produce_an_ambiguity(tmp_pat
     assert ambiguities[0].note() in layout.notes
 
 
+def test_the_adjusted_weights_file_is_found_and_never_taken_for_an_ensemble(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    weights = _touch(tmp_path / "case.adjusted.weights.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.adjusted_weights == weights
+    assert not layout.par_ens and not layout.obs_ens and layout.noise is None
+    assert layout.ambiguities == ()
+
+
+def test_the_adjusted_weights_name_is_matched_case_insensitively(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    weights = _touch(tmp_path / "case.ADJUSTED.Weights.JCB")
+
+    assert discover(tmp_path).adjusted_weights == weights
+
+
+def test_a_run_without_adjusted_weights_reports_none(tmp_path):
+    make_run(tmp_path, extras=False, iterations=(0,))
+
+    assert discover(tmp_path).adjusted_weights is None
+
+
+def test_two_files_matching_the_adjusted_weights_slot_produce_an_ambiguity(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    bin_path = _touch(tmp_path / "case.adjusted.weights.bin")
+    jcb_path = _touch(tmp_path / "case.adjusted.weights.jcb")
+
+    layout = discover(tmp_path)
+
+    assert layout.adjusted_weights == bin_path  # "bin" sorts before "jcb"
+    ambiguities = [a for a in layout.ambiguities if a.slot == "adjusted weights matrix"]
+    assert len(ambiguities) == 1
+    assert ambiguities[0].chosen == bin_path.name
+    assert jcb_path.name in ambiguities[0].rejected
+    assert ambiguities[0].note() in layout.notes
+
+
 def test_two_control_files_produce_an_ambiguity_and_case_comes_from_the_chosen_one(tmp_path):
     write_control_file(tmp_path / "aaa.pst", par_names=["p0"], obs_names=["o0"])
     write_control_file(tmp_path / "zzz.pst", par_names=["p0"], obs_names=["o0"])
@@ -268,6 +310,11 @@ def test_two_control_files_produce_an_ambiguity_and_case_comes_from_the_chosen_o
             _touch(root / "case.obs+noise.bin"),
             _touch(root / "case.obs+noise.jcb"),
             "measurement-noise ensemble",
+        ),
+        lambda root: (
+            _touch(root / "case.adjusted.weights.bin"),
+            _touch(root / "case.adjusted.weights.jcb"),
+            "adjusted weights matrix",
         ),
     ],
 )
@@ -362,7 +409,9 @@ def test_decoy_files_sharing_an_ensemble_extension_are_not_reported_as_ensembles
         + list(layout.pcs.values())
         + ([layout.grid] if layout.grid else [])
         + ([layout.noise] if layout.noise else [])
+        + ([layout.adjusted_weights] if layout.adjusted_weights else [])
     )
+    assert layout.adjusted_weights == run.adjusted_weights_path
     for decoy in run.decoy_paths:
         assert decoy not in all_paths
 
@@ -760,6 +809,7 @@ def test_inventory_matches_every_artifact_the_generator_wrote_in_both_directions
     expected.update(run.pcs_paths.values())
     expected.update(run.reinflate_pcs_paths.values())
     expected.add(run.grid_path)
+    expected.add(run.adjusted_weights_path)
     if run.starting_par_en is not None:
         expected.add(run.starting_par_en)
     if run.starting_obs_en is not None:
@@ -797,7 +847,10 @@ def test_forecast_run_reports_the_real_directorys_full_inventory(forecast_run):
 
     all_paths = _all_layout_paths(layout)
     assert not any("factors." in str(path) for path in all_paths)
-    assert not any("adjusted" in path.name for path in all_paths)
+    # The adjusted weights have their own slot; no other slot may hold them.
+    assert not any(
+        "adjusted" in path.name for path in all_paths if path != layout.adjusted_weights
+    )
 
 
 def test_a_run_holding_only_one_ensemble_kind_reports_the_other_as_empty_in_both_directions(

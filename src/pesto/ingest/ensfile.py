@@ -108,25 +108,28 @@ def sniff(path: Path) -> str:
     return "binary"
 
 
-def _read_binary_matrix(file_path: Path) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]]:
+def _read_binary_matrix(
+    file_path: Path, dtype: type = np.float32
+) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]]:
     """Read a dense/JCO binary ensemble via ``pyemu.Matrix.from_binary``,
     the one entry point that dispatches all three binary dialects
     (RESEARCH.md Pattern 1). Values are cast to float32 immediately -- a
     measured near-free downcast -- so any later transpose for a
     variable-major file is a view over an already-float32 array, not a
-    second copy."""
+    second copy. ``dtype`` is float32 unless a caller needs the file's own
+    float64 values."""
     from pesto.warm import load_pyemu
 
     pyemu = load_pyemu()
     matrix = pyemu.Matrix.from_binary(str(file_path))
-    values = np.ascontiguousarray(matrix.x, dtype=np.float32)
+    values = np.ascontiguousarray(matrix.x, dtype=dtype)
     row_names = tuple(matrix.row_names)
     col_names = tuple(matrix.col_names)
     return values, row_names, col_names
 
 
 def _read_csv_matrix(
-    file_path: Path, notes: list[str]
+    file_path: Path, notes: list[str], dtype: type = np.float32
 ) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]]:
     """Read a CSV ensemble: the header row (after its first, label, cell)
     carries the column names, and each data row's first cell carries that
@@ -168,7 +171,7 @@ def _read_csv_matrix(
     else:
         raw_values = np.zeros((0, len(col_names_list)), dtype=np.float64)
 
-    values = np.ascontiguousarray(raw_values, dtype=np.float32)
+    values = np.ascontiguousarray(raw_values, dtype=dtype)
     return values, tuple(row_names_list), tuple(col_names_list)
 
 

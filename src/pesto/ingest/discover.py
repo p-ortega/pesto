@@ -145,6 +145,8 @@ class RunLayout:
     # Files named in external sections, in file order; a missing one is
     # still listed, with a note.
     external_tables: tuple[Path, ...] = ()
+    # The weights pestpp actually used, case.adjusted.weights.{jcb,jco,bin,csv}.
+    adjusted_weights: Path | None = None
 
     def par_ensemble(self, iteration: IterationKey) -> Path | None:
         return self.par_ens.get(iteration)
@@ -393,10 +395,11 @@ def discover(run_dir: Path) -> RunLayout:
 
     Matching rules require the case prefix, the iteration segment and the
     artifact-kind segment together wherever all three apply. Both real
-    benchmark directories hold hundreds of pilot-point factor files and an
-    adjusted-weights matrix that end in a real ensemble extension; a rule
-    matching on extension or case prefix alone would report all of them as
-    ensembles and hand later phases ingest jobs that cannot succeed. The
+    benchmark directories hold hundreds of pilot-point factor files that end
+    in a real ensemble extension; a rule matching on extension or case prefix
+    alone would report all of them as ensembles and hand later phases ingest
+    jobs that cannot succeed. The adjusted-weights matrix
+    (``case.adjusted.weights.*``) has its own slot and is never an ensemble. The
     grid file is the one exception -- it is matched by extension alone,
     because real runs name it after the model, not the case.
 
@@ -513,6 +516,9 @@ def discover(run_dir: Path) -> RunLayout:
     noise_re = re.compile(
         rf"^{escaped_case}\.{re.escape('obs+noise')}\.(?:{_ENS_EXTS})$", re.IGNORECASE
     )
+    adjusted_weights_re = re.compile(
+        rf"^{escaped_case}\.adjusted\.weights\.(?:{_ENS_EXTS})$", re.IGNORECASE
+    )
 
     # Every bucket below accumulates candidates only -- (display_name, path)
     # pairs in the order the scan saw them. Nothing here is a result: the
@@ -527,6 +533,7 @@ def discover(run_dir: Path) -> RunLayout:
     pcs_candidates: dict[tuple[IterationKey, str], list[tuple[str, Path]]] = {}
     grid_candidates: list[tuple[str, Path]] = []
     noise_candidates: list[tuple[str, Path]] = []
+    adjusted_weights_candidates: list[tuple[str, Path]] = []
     mult2model: Path | None = None
     factor_files: list[Path] = []
 
@@ -556,6 +563,11 @@ def discover(run_dir: Path) -> RunLayout:
         match = noise_re.match(name)
         if match:
             noise_candidates.append((name, candidate))
+            continue
+
+        match = adjusted_weights_re.match(name)
+        if match:
+            adjusted_weights_candidates.append((name, candidate))
             continue
 
         match = pcs_re.match(name)
@@ -669,6 +681,15 @@ def discover(run_dir: Path) -> RunLayout:
             ambiguities.append(ambiguity)
             notes.append(ambiguity.note())
 
+    adjusted_weights: Path | None = None
+    if adjusted_weights_candidates:
+        adjusted_weights, ambiguity = choose_one(
+            "adjusted weights matrix", adjusted_weights_candidates
+        )
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
     iterations = tuple(
         sorted(
             k
@@ -708,4 +729,5 @@ def discover(run_dir: Path) -> RunLayout:
         notes=tuple(notes),
         ambiguities=tuple(ambiguities),
         external_tables=external_tables,
+        adjusted_weights=adjusted_weights,
     )
