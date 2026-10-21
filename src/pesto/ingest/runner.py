@@ -29,7 +29,9 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
-from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, write_obs_index
+from pesto.ingest.obsens import write_obs_ensemble
+from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
+from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.parcell import load_par_cell, write_par_cell
 from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
@@ -63,11 +65,14 @@ class PlannedArtifact:
     """
 
     name: str
-    # "control" | "grid" | "par_cell" | "obs_index" | "par_ens" | "par_agg" | "pp_factors" | "config"
+    # "control" | "grid" | "par_cell" | "obs_index" | "par_ens" | "par_agg" | "obs_ens"
+    # | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
+    # Names of artifacts this one is built from; it runs only when each is ok.
+    needs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -313,6 +318,35 @@ def _write_obs_index_artifact(cache_root: str) -> "WrittenArtifact | ReadFailure
     if isinstance(index, ReadFailure):
         return index
     return write_obs_index(index, layout)
+
+
+def _write_obs_ens_artifact(
+    source: str, cache_root: str, iteration: int
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for one iteration's observation ensemble: reads the file
+    through the memory guard against the cached control table's observation
+    names, then stores it observation-major in the cached ``obs_index``
+    order. Runs only inside a process created for it."""
+    name = f"obs_ens/{iteration}"
+    layout = CacheLayout(root=Path(cache_root))
+    index = load_obs_index(layout)
+    if isinstance(index, ReadFailure):
+        return ReadFailure(
+            name=name,
+            path=index.path,
+            reason=f"{name}: the obs_index could not be read: {index.reason}",
+        )
+    loaded = load_control_table(layout, "obs", columns=["obsnme"])
+    if isinstance(loaded, ReadFailure):
+        return ReadFailure(
+            name=name, path=loaded.path, reason=f"{name}: the control table: {loaded.reason}"
+        )
+    table, _notes = loaded
+    control_names = table.column("obsnme").to_pylist()
+    data = read_obs_file(Path(source), control_names, artifact=name)
+    if isinstance(data, ReadFailure):
+        return data
+    return write_obs_ensemble(data, index, iteration, layout)
 
 
 def _write_grid_artifact(
@@ -601,6 +635,28 @@ def plan_artifacts(
             )
         )
 
+    for iteration in selected:
+        obs_source = run.obs_ens.get(iteration)
+        if obs_source is None:
+            continue
+        # _dispatch reads the observation file from sources[0]; the file is
+        # hashed once here and reused by later artifacts that list it.
+        obs_sources = _unique((str(obs_source), *control_sources))
+        artifacts.append(
+            PlannedArtifact(
+                name=f"obs_ens/{iteration}",
+                kind="obs_ens",
+                sources=obs_sources,
+                outputs=(
+                    str(layout.obs_ens(iteration)),
+                    str(layout.obs_ens_meta(iteration)),
+                    str(layout.obs_reals(iteration)),
+                ),
+                source_bytes=_size_of(obs_sources),
+                needs=("obs_index",),
+            )
+        )
+
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
         pp_sources.insert(0, str(run.mult2model))
@@ -847,6 +903,9 @@ def _dispatch(
     if artifact.kind == "par_agg":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_par_agg_artifact, (artifact.sources[0], cache_root, iteration)
+    if artifact.kind == "obs_ens":
+        iteration = int(artifact.name.split("/", 1)[1])
+        return _write_obs_ens_artifact, (artifact.sources[0], cache_root, iteration)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
@@ -865,7 +924,7 @@ def _dispatch(
 # Artifacts whose worker reads the cached control table. ``grid`` reads only
 # the grid file and ``control`` is the one that writes the table.
 _CONTROL_DEPENDENTS = frozenset(
-    {"par_cell", "obs_index", "par_ens", "par_agg", "pp_factors", "config"}
+    {"par_cell", "obs_index", "par_ens", "par_agg", "obs_ens", "pp_factors", "config"}
 )
 
 

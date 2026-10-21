@@ -196,6 +196,8 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     par_ens_names = [pa.name for pa in planned if pa.kind == "par_ens"]
     par_agg_names = [pa.name for pa in planned if pa.kind == "par_agg"]
     config_names = [pa.name for pa in planned if pa.kind == "config"]
+    obs_index_names = [pa.name for pa in planned if pa.kind == "obs_index"]
+    obs_ens_names = [pa.name for pa in planned if pa.kind == "obs_ens"]
 
     body = {
         "fresh": fresh,
@@ -204,6 +206,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
             "map": _capability(manifest, required=grid_names + par_cell_names, any_of=par_ens_names),
             "stats": _capability(manifest, required=[], any_of=par_agg_names),
             "chips": _capability(manifest, required=config_names, any_of=[]),
+            "obs": _capability(manifest, required=obs_index_names, any_of=obs_ens_names),
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
