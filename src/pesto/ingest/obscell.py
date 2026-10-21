@@ -223,6 +223,22 @@ def load_obs_cell(layout: CacheLayout) -> ObsCellTable | ReadFailure:
     if missing:
         return _failure(parquet_path, f"{parquet_path.name} has no column named {missing[0]!r}")
 
+    # The digest only covers the observation order, so sites reordered by a
+    # control edit would pass it; the names say which site each row is.
+    stored = tuple(str(v) for v in frame["site"])
+    wrong = [
+        (i, a, b)
+        for i, (a, b) in enumerate(zip_longest(stored, index.sites["site"].astype(str), fillvalue="<none>"))
+        if a != b
+    ]
+    if wrong:
+        return _failure(
+            parquet_path,
+            f"{parquet_path.name} does not list the same sites as the cached obs_index; first "
+            f"difference is at position {wrong[0][0]}, {wrong[0][1]!r} against {wrong[0][2]!r}, "
+            f"{len(wrong)} position(s) differ; ingest again",
+        )
+
     return ObsCellTable(
         site_id=frame["site_id"].to_numpy(dtype=np.int64),
         site=tuple(str(v) for v in frame["site"]),

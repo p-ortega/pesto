@@ -41,12 +41,13 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_mesh
+from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsindex import build_obs_index, write_obs_index
 from pesto.ingest.parcell import write_par_cell
 from pesto.ingest.ppfactors import build_pp_index, write_pp_index
 from pesto.ingest.runner import plan_artifacts
 from pesto.ingest.tables import write_control
-from pesto.model import GridShape, GroupResolution, ParCells, fan_polygons
+from pesto.model import GridShape, GroupResolution, ObsCells, ParCells, fan_polygons
 
 CASE = "synthetic"
 
@@ -295,6 +296,17 @@ def write_synthetic_run(dest: Path) -> Path:
             if isinstance(obs_index, ReadFailure):
                 raise AssertionError(f"synthetic fixture could not index observations: {obs_index.reason}")
             written = write_obs_index(obs_index, layout)
+        elif artifact.kind == "obs_cell":
+            # The fixture has no observations, so the table is empty with every column.
+            no_sites = ObsCells(
+                cell=np.zeros(0, dtype=np.int32),
+                layer=np.zeros(0, dtype=np.int32),
+                site=(),
+                groups=(),
+                summary="synthetic fixture has no observation sites",
+                notes=(),
+            )
+            written = write_obs_cell(no_sites, obs_index.sites, obs_index.order_digest, layout)
         elif artifact.kind == "pp_factors":
             index = build_pp_index(
                 run_dir,

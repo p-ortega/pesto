@@ -27,7 +27,7 @@ from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.runner import Progress, ingest_run, plan_artifacts
 from pesto.ingest.tables import load_control_tables, write_control
-from pesto.model import GridShape, GroupResolution, ParCells, fan_polygons
+from pesto.model import GridShape, GroupResolution, ObsCells, ParCells, fan_polygons
 
 from .fixtures import make_run, write_control_file
 
@@ -79,6 +79,28 @@ class _StubAdapter:
             groups=groups,
             summary="stub placed the first group",
             notes=("stub note",),
+            point_xy=None,
+        )
+
+    def locate_obs(self, sites):
+        names = tuple(str(v) for v in sites.index)
+        n = len(names)
+        groups = tuple(
+            GroupResolution(
+                group=g,
+                rule="stub",
+                mapped=int((sites["obgnme"].astype(str) == g).sum()),
+                total=int((sites["obgnme"].astype(str) == g).sum()),
+            )
+            for g in dict.fromkeys(sites["obgnme"].astype(str))
+        )
+        return ObsCells(
+            cell=(np.arange(n) % 2).astype(np.int32),
+            layer=np.zeros(n, dtype=np.int32),
+            site=names,
+            groups=groups,
+            summary="stub placed every site",
+            notes=(),
             point_xy=None,
         )
 
@@ -141,6 +163,7 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
         "grid",
         "par_cell",
         "obs_index",
+        "obs_cell",
         "par_ens/0",
         "par_agg/0",
         "par_ens/1",
@@ -150,7 +173,7 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
     ]
 
 
-def test_a_run_with_no_grid_file_plans_no_grid_and_no_par_cell(tmp_path):
+def test_a_run_with_no_grid_file_plans_no_grid_no_par_cell_and_no_obs_cell(tmp_path):
     run_dir, run, cache_root = _make(tmp_path, iterations=(0,))
     run.grid_path.unlink()
 
@@ -180,6 +203,7 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
         "grid",
         "par_cell",
         "obs_index",
+        "obs_cell",
         "par_ens/0",
         "par_agg/0",
         *_obs_ens_names(run, (0,)),
