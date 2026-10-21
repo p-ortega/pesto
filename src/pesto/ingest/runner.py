@@ -31,7 +31,7 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
-from pesto.ingest.obsagg import write_obs_agg
+from pesto.ingest.obsagg import write_noise_agg, write_obs_agg
 from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsens import write_obs_ensemble
 from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
@@ -69,8 +69,8 @@ class PlannedArtifact:
     """
 
     name: str
-    # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "par_ens" | "par_agg" | "obs_ens"
-    # | "obs_agg" | "pp_factors" | "config"
+    # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
+    # | "par_agg" | "obs_ens" | "obs_agg" | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
@@ -391,6 +391,33 @@ def _write_obs_agg_artifact(
     return write_obs_agg(iteration, CacheLayout(root=Path(cache_root)))
 
 
+def _write_noise_agg_artifact(source: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
+    """The worker for the noise band: reads the run's obs+noise file through
+    the memory guard against the cached control table's observation names,
+    then stores per-observation statistics without the base realization.
+    Runs only inside a process created for it."""
+    name = "noise_agg"
+    layout = CacheLayout(root=Path(cache_root))
+    index = load_obs_index(layout)
+    if isinstance(index, ReadFailure):
+        return ReadFailure(
+            name=name,
+            path=index.path,
+            reason=f"{name}: the obs_index could not be read: {index.reason}",
+        )
+    loaded = load_control_table(layout, "obs", columns=["obsnme"])
+    if isinstance(loaded, ReadFailure):
+        return ReadFailure(
+            name=name, path=loaded.path, reason=f"{name}: the control table: {loaded.reason}"
+        )
+    table, _notes = loaded
+    control_names = table.column("obsnme").to_pylist()
+    data = read_obs_file(Path(source), control_names, artifact=name)
+    if isinstance(data, ReadFailure):
+        return data
+    return write_noise_agg(data, index, Path(source).name, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -572,7 +599,9 @@ def plan_artifacts(
     ``run`` will attempt: ``control`` first, so every later worker can read
     its cached tables; then ``grid`` and ``par_cell`` when a grid file
     exists; then ``obs_index``, which needs the control table only; then
-    ``obs_cell`` when a grid file exists, which needs ``obs_index``; then an
+    ``obs_cell`` when a grid file exists, which needs ``obs_index``; then
+    ``noise_agg`` when the run has an obs+noise file (never a starting
+    observation ensemble), which needs ``obs_index``; then an
     ensemble and a summary for each selected iteration in
     ascending order, ensemble before summary; then an observation ensemble
     for each iteration :func:`observation_iterations` selects that has an
@@ -694,6 +723,24 @@ def plan_artifacts(
                     str(layout.obs_cell_meta),
                 ),
                 source_bytes=_size_of(obs_cell_sources),
+                needs=("obs_index",),
+            )
+        )
+
+    if run.noise is not None:
+        # Only the obs+noise file pestpp used; a starting observation
+        # ensemble is never the noise band.
+        noise_sources = _unique((str(run.noise), *control_sources))
+        artifacts.append(
+            PlannedArtifact(
+                name="noise_agg",
+                kind="noise_agg",
+                sources=noise_sources,
+                outputs=(
+                    str(layout.noise_agg),
+                    str(layout.noise_agg_meta),
+                ),
+                source_bytes=_size_of(noise_sources),
                 needs=("obs_index",),
             )
         )
@@ -1050,6 +1097,8 @@ def _dispatch(
     if artifact.kind == "obs_agg":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_obs_agg_artifact, (cache_root, iteration)
+    if artifact.kind == "noise_agg":
+        return _write_noise_agg_artifact, (artifact.sources[0], cache_root)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
@@ -1078,6 +1127,7 @@ _CONTROL_DEPENDENTS = frozenset(
         "par_agg",
         "obs_ens",
         "obs_agg",
+        "noise_agg",
         "pp_factors",
         "config",
     }
