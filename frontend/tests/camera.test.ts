@@ -12,7 +12,7 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
-import { Camera } from '../src/gl/camera'
+import { Camera, MAX_ZOOM_FROM_FIT, MIN_ZOOM_FROM_FIT, wheelZoomFactor } from '../src/gl/camera'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -295,6 +295,140 @@ describe('the canvas pan, zoom and keyboard reach', () => {
     for (const el of Array.from(root.querySelectorAll('[tabindex]'))) {
       expect(Number(el.getAttribute('tabindex'))).toBeLessThanOrEqual(0)
     }
+  })
+})
+
+describe('the canvas wheel zoom follows the distance scrolled', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('a small wheel step zooms a little: deltaY -1 gives a factor above 1 and below 1.01', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const zoomSpy = vi.spyOn(Camera.prototype, 'zoomAt')
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaY: -1 }))
+
+    expect(zoomSpy).toHaveBeenCalledTimes(1)
+    const factor = zoomSpy.mock.calls[0][2]
+    expect(factor).toBeGreaterThan(1)
+    expect(factor).toBeLessThan(1.01)
+  })
+
+  it('a sideways swipe (deltaY 0) neither zooms nor is left to scroll or swipe back the page', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const zoomSpy = vi.spyOn(Camera.prototype, 'zoomAt')
+
+    const event = new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaX: 25, deltaY: 0, cancelable: true })
+    canvas.dispatchEvent(event)
+
+    expect(zoomSpy).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('a pinch (ctrlKey) of deltaY -10 zooms 1.1x', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const zoomSpy = vi.spyOn(Camera.prototype, 'zoomAt')
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaY: -10, ctrlKey: true }))
+
+    expect(zoomSpy).toHaveBeenCalledWith(200, 150, 1.1)
+  })
+})
+
+describe('wheelZoomFactor', () => {
+  const scroll = (deltaY: number, deltaMode = 0, ctrlKey = false) => ({ deltaY, deltaMode, ctrlKey })
+
+  it('one 100 px notch up is 1.1x, a 1 px step is a hundredth of that, a notch down is its inverse', () => {
+    expect(wheelZoomFactor(scroll(-100), 800)).toBeCloseTo(1.1, 12)
+    expect(wheelZoomFactor(scroll(-1), 800)).toBeCloseTo(1.1 ** 0.01, 12)
+    expect(wheelZoomFactor(scroll(100), 800)).toBeCloseTo(1 / 1.1, 12)
+  })
+
+  it('gives null for no vertical distance and for a distance that is not a finite number', () => {
+    expect(wheelZoomFactor(scroll(0), 800)).toBeNull()
+    expect(wheelZoomFactor(scroll(Number.NaN), 800)).toBeNull()
+    expect(wheelZoomFactor(scroll(Number.POSITIVE_INFINITY), 800)).toBeNull()
+    expect(wheelZoomFactor(scroll(Number.NEGATIVE_INFINITY), 800)).toBeNull()
+  })
+
+  it('counts a line as 40 px and a page as the canvas height', () => {
+    expect(wheelZoomFactor(scroll(-3, 1), 800)).toBeCloseTo(wheelZoomFactor(scroll(-120, 0), 800)!, 12)
+    expect(wheelZoomFactor(scroll(1, 2), 800)).toBeCloseTo(wheelZoomFactor(scroll(800, 0), 800)!, 12)
+  })
+
+  it('takes 10 px per 1.1x step for a pinch, ten times the scroll rate', () => {
+    expect(wheelZoomFactor(scroll(-10, 0, true), 800)).toBeCloseTo(1.1, 12)
+    const pinch = Math.log(wheelZoomFactor(scroll(-1, 0, true), 800)!)
+    const plain = Math.log(wheelZoomFactor(scroll(-1, 0, false), 800)!)
+    expect(pinch / plain).toBeCloseTo(10, 9)
+  })
+})
+
+describe('Camera.zoomAt bounds', () => {
+  const scaleOf = (camera: Camera, width: number): number => (camera.matrix()[0] * width) / 2
+
+  it('keeps the scale between a tenth and a thousand times the scale of the last fit', () => {
+    expect(MIN_ZOOM_FROM_FIT).toBe(0.1)
+    expect(MAX_ZOOM_FROM_FIT).toBe(1000)
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const fitScale = scaleOf(camera, 800)
+
+    camera.zoomAt(300, 200, 1e9)
+    expect(scaleOf(camera, 800) / fitScale).toBeCloseTo(1000, 3)
+
+    camera.zoomAt(300, 200, 1e-18)
+    expect(scaleOf(camera, 800) / fitScale).toBeCloseTo(0.1, 6)
+  })
+
+  it('keeps the world point under the pointer still at either limit', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const before = camera.screenToWorld(300, 200)
+
+    camera.zoomAt(300, 200, 1e9)
+    const atMax = camera.screenToWorld(300, 200)
+    expect(atMax[0]).toBeCloseTo(before[0], 6)
+    expect(atMax[1]).toBeCloseTo(before[1], 6)
+
+    camera.zoomAt(500, 100, 1e-18)
+    const mid = camera.screenToWorld(500, 100)
+    camera.zoomAt(500, 100, 1e-9)
+    const atMin = camera.screenToWorld(500, 100)
+    expect(atMin[0]).toBeCloseTo(mid[0], 6)
+    expect(atMin[1]).toBeCloseTo(mid[1], 6)
+  })
+
+  it('ignores a factor that is not a positive finite number', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const before = Array.from(camera.matrix())
+    for (const factor of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      camera.zoomAt(300, 200, factor)
+      expect(Array.from(camera.matrix())).toEqual(before)
+    }
+  })
+
+  it('fitAnimated sets the same fit reference as fit, from its target, at its start', () => {
+    vi.stubGlobal('requestAnimationFrame', vi.fn())
+    const fitted = new Camera(800, 480)
+    fitted.fit([0, 100, 0, 100])
+    const fitScale = scaleOf(fitted, 800)
+
+    const animated = new Camera(800, 480)
+    animated.fitAnimated([0, 100, 0, 100], vi.fn(), { reduced: false })
+    animated.zoomAt(300, 200, 1e9)
+    expect(scaleOf(animated, 800) / fitScale).toBeCloseTo(1000, 3)
+    vi.unstubAllGlobals()
   })
 })
 
