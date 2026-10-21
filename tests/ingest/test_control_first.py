@@ -117,6 +117,12 @@ def _make(tmp_path, **kwargs):
     return run_dir, run, tmp_path / "cache"
 
 
+def _obs_ens_names(run, iterations) -> list[str]:
+    """The obs_ens names a plan holds for ``iterations``, read from the run's
+    own record of which observation files exist."""
+    return [f"obs_ens/{k}" for k in iterations if k in run.obs_ens]
+
+
 # ---------------------------------------------------------------------------
 # plan order
 # ---------------------------------------------------------------------------
@@ -127,7 +133,8 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
 ):
     run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
 
-    planned = plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))
+    run = discover(run_dir)
+    planned = plan_artifacts(run, CacheLayout(root=cache_root))
 
     assert [a.name for a in planned] == [
         "control",
@@ -138,6 +145,7 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
+        *_obs_ens_names(run, (0, 1)),
         "config",
     ]
 
@@ -146,13 +154,15 @@ def test_a_run_with_no_grid_file_plans_no_grid_and_no_par_cell(tmp_path):
     run_dir, run, cache_root = _make(tmp_path, iterations=(0,))
     run.grid_path.unlink()
 
-    planned = plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))
+    run = discover(run_dir)
+    planned = plan_artifacts(run, CacheLayout(root=cache_root))
 
     assert [a.name for a in planned] == [
         "control",
         "obs_index",
         "par_ens/0",
         "par_agg/0",
+        *_obs_ens_names(run, (0,)),
         "config",
     ]
 
@@ -162,7 +172,8 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
     (run_dir / "mult2model_info.csv").write_text("org_file,model_file,fac_file,pp_file\n")
     (run_dir / "g1pp_inst0pp.fac").write_text("x\n")
 
-    names = [a.name for a in plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))]
+    run = discover(run_dir)
+    names = [a.name for a in plan_artifacts(run, CacheLayout(root=cache_root))]
 
     assert names == [
         "control",
@@ -171,6 +182,7 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
         "obs_index",
         "par_ens/0",
         "par_agg/0",
+        *_obs_ens_names(run, (0,)),
         "pp_factors",
         "config",
     ]
