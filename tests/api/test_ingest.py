@@ -238,6 +238,47 @@ def test_editing_only_the_external_table_makes_control_stale_and_grid_fresh(tmp_
     assert by_name["grid"]["stale"] is False
 
 
+def test_editing_only_the_external_table_makes_everything_built_from_control_stale(tmp_path):
+    run_dir = _make_run_with_external_table(tmp_path)
+    cache_root = tmp_path / "cache"
+    _mark_every_planned_artifact_ok(run_dir, CacheLayout(root=cache_root))
+
+    (run_dir / "case.par_data.csv").write_text("parnme,parlbnd\np0,0.5\n")
+
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    by_name = {a["name"]: a for a in response.json()["artifacts"]}
+    for name in ("control", "par_cell", "par_ens/0", "par_agg/0", "config"):
+        assert by_name[name]["stale"] is True, name
+    assert by_name["grid"]["stale"] is False
+
+
+def test_a_record_made_before_the_tables_were_sources_reports_stale_without_a_rewrite_notice(
+    tmp_path,
+):
+    run_dir = _make_run_with_external_table(tmp_path)
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    table = run_dir / "case.par_data.csv"
+    manifest = Manifest.empty(str(run_dir))
+    for planned in _planned_for(run_dir, layout):
+        old_sources = [
+            SourceFingerprint.of(Path(s)) for s in planned.sources if Path(s) != table
+        ]
+        _mark_ok_with_file(manifest, layout, planned.name, sources=old_sources)
+    manifest.save(layout)
+
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    body = response.json()
+    by_name = {a["name"]: a for a in body["artifacts"]}
+    assert body["fresh"] is False
+    assert body["rewrite"] is None
+    for name in ("control", "par_cell", "par_ens/0", "par_agg/0", "config"):
+        assert by_name[name]["stale"] is True, name
+    assert by_name["grid"]["stale"] is False
+
+
 def test_fresh_false_and_every_artifact_absent_on_a_foreign_cache_version(tmp_path):
     run_dir = _make_run(tmp_path)
     cache_root = tmp_path / "cache"
