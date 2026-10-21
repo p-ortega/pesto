@@ -35,7 +35,9 @@ from pesto.ingest.obsagg import write_noise_agg, write_obs_agg
 from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsens import write_obs_ensemble
 from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
+from pesto.ingest.obspdc import FIRST_ITERATION, compute_pdc, read_pdc_file, write_pdc
 from pesto.ingest.obsread import read_obs_file
+from pesto.ingest.obsweights import read_adjusted_weights
 from pesto.ingest.parcell import load_par_cell, write_par_cell
 from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
@@ -70,7 +72,7 @@ class PlannedArtifact:
 
     name: str
     # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
-    # | "par_agg" | "obs_ens" | "obs_agg" | "pp_factors" | "config"
+    # | "par_agg" | "obs_ens" | "obs_agg" | "pdc" | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
@@ -418,6 +420,43 @@ def _write_noise_agg_artifact(source: str, cache_root: str) -> "WrittenArtifact 
     return write_noise_agg(data, index, Path(source).name, layout)
 
 
+def _write_pdc_artifact(
+    cache_root: str, iteration: int, pdc_file: str | None, weights_file: str | None
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for one iteration's prior-data conflict. With ``pdc_file``
+    it reads pestpp's own file; without, it computes from the cached
+    statistics, using the adjusted weights in ``weights_file`` when there is
+    one. Which of the two is decided by the plan, never here."""
+    name = f"pdc/{iteration}"
+    layout = CacheLayout(root=Path(cache_root))
+    index = load_obs_index(layout)
+    if isinstance(index, ReadFailure):
+        return ReadFailure(
+            name=name,
+            path=index.path,
+            reason=f"{name}: the obs_index could not be read: {index.reason}",
+        )
+    loaded = load_control_table(layout, "obs", columns=["obsnme"])
+    if isinstance(loaded, ReadFailure):
+        return ReadFailure(
+            name=name, path=loaded.path, reason=f"{name}: the control table: {loaded.reason}"
+        )
+    table, _notes = loaded
+    control_names = table.column("obsnme").to_pylist()
+    if pdc_file is not None:
+        result = read_pdc_file(Path(pdc_file), index, control_names, artifact=name)
+    else:
+        weights = None
+        if weights_file is not None:
+            weights = read_adjusted_weights(Path(weights_file), control_names, artifact=name)
+            if isinstance(weights, ReadFailure):
+                return weights
+        result = compute_pdc(iteration, layout, weights)
+    if isinstance(result, ReadFailure):
+        return result
+    return write_pdc(result, iteration, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -592,6 +631,69 @@ def _unique(sources: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(sources))
 
 
+def _plan_pdc(
+    artifacts: list[PlannedArtifact],
+    run: RunLayout,
+    layout: CacheLayout,
+    iteration: int,
+    control_sources: tuple[str, ...],
+) -> None:
+    """Add ``pdc/K`` to the plan: a read of pestpp's file when it exists, a
+    computation only when it does not, nothing when neither can be done."""
+    how = pdc_source_for(run, iteration)
+    if how == "none":
+        return
+    outputs = (str(layout.pdc(iteration)), str(layout.pdc_meta(iteration)))
+    if how == "file":
+        sources = _unique((str(run.pdc[iteration]), *control_sources))
+        needs: tuple[str, ...] = ("obs_index",)
+    else:
+        # The same observation and noise files the statistics were built
+        # from, so an edit to either makes this stale as well.
+        # Iteration 0 is checked before pestpp adjusts any weight, so it never reads them.
+        uses_weights = run.adjusted_weights is not None and iteration != FIRST_ITERATION
+        weights = (str(run.adjusted_weights),) if uses_weights else ()
+        sources = _unique(
+            (str(run.obs_ens[iteration]), str(run.noise), *weights, *control_sources)
+        )
+        needs = ("obs_index", f"obs_agg/{iteration}", "noise_agg")
+    artifacts.append(
+        PlannedArtifact(
+            name=f"pdc/{iteration}",
+            kind="pdc",
+            sources=sources,
+            outputs=outputs,
+            source_bytes=_size_of(sources),
+            needs=needs,
+        )
+    )
+
+
+def pdc_source_for(run: RunLayout, iteration: int) -> str:
+    """How ``pdc/K`` would be made: ``"file"`` when pestpp wrote
+    ``case.K.pdc.csv`` (it is read, never recomputed), ``"computed"`` only
+    when that file is absent and both an observation ensemble for K and an
+    obs+noise file exist, else ``"none"``."""
+    if run.pdc.get(iteration) is not None:
+        return "file"
+    if run.noise is not None and run.obs_ens.get(iteration) is not None:
+        return "computed"
+    return "none"
+
+
+def _pdc_inputs(run: RunLayout, iteration: int) -> tuple[str | None, str | None]:
+    """The pdc file and the adjusted weights file a worker is handed: the
+    file when pestpp wrote one (no weights needed), else the weights file
+    when the run has one and the iteration is after the first."""
+    pdc_file = run.pdc.get(iteration)
+    if pdc_file is not None:
+        return str(pdc_file), None
+    weights = run.adjusted_weights
+    if weights is None or iteration == FIRST_ITERATION:
+        return None, None
+    return None, str(weights)
+
+
 def plan_artifacts(
     run: RunLayout, layout: CacheLayout, iterations: Sequence[int] | None = None
 ) -> tuple[PlannedArtifact, ...]:
@@ -605,7 +707,10 @@ def plan_artifacts(
     ensemble and a summary for each selected iteration in
     ascending order, ensemble before summary; then an observation ensemble
     for each iteration :func:`observation_iterations` selects that has an
-    observation file; then ``pp_factors`` when the
+    observation file, each followed by that iteration's ``pdc/K``: a read of
+    pestpp's own ``case.K.pdc.csv`` when it exists, a computation from the
+    cached statistics only when it does not and an obs+noise file exists,
+    and nothing when neither is possible; then ``pp_factors`` when the
     run carries pilot-point files; then ``config``. A caller watching rows
     go past sees the same sequence every time this is called for the same
     run and layout.
@@ -777,6 +882,7 @@ def plan_artifacts(
     for iteration in obs_selected:
         obs_source = run.obs_ens.get(iteration)
         if obs_source is None:
+            _plan_pdc(artifacts, run, layout, iteration, control_sources)
             continue
         # _dispatch reads the observation file from sources[0]; the file is
         # hashed once here and reused by later artifacts that list it.
@@ -810,6 +916,7 @@ def plan_artifacts(
                 needs=("obs_index", f"obs_ens/{iteration}"),
             )
         )
+        _plan_pdc(artifacts, run, layout, iteration, control_sources)
 
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
@@ -1080,6 +1187,8 @@ def _dispatch(
     cell_note: str | None,
     grid_path: str | None,
     first_iteration: int | None,
+    pdc_file: str | None = None,
+    weights_file: str | None = None,
 ) -> tuple[Callable, tuple]:
     """Which worker function runs this artifact, and with what arguments --
     every argument a string, an int, or ``None``, so nothing but picklable
@@ -1099,6 +1208,9 @@ def _dispatch(
         return _write_obs_agg_artifact, (cache_root, iteration)
     if artifact.kind == "noise_agg":
         return _write_noise_agg_artifact, (artifact.sources[0], cache_root)
+    if artifact.kind == "pdc":
+        iteration = int(artifact.name.split("/", 1)[1])
+        return _write_pdc_artifact, (cache_root, iteration, pdc_file, weights_file)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
@@ -1128,6 +1240,7 @@ _CONTROL_DEPENDENTS = frozenset(
         "obs_ens",
         "obs_agg",
         "noise_agg",
+        "pdc",
         "pp_factors",
         "config",
     }
@@ -1367,6 +1480,11 @@ def ingest_run(
                 )
             )
 
+        pdc_file, weights_file = (
+            _pdc_inputs(run, int(artifact.name.split("/", 1)[1]))
+            if artifact.kind == "pdc"
+            else (None, None)
+        )
         worker_fn, worker_args = _dispatch(
             artifact,
             str(run_dir),
@@ -1375,6 +1493,8 @@ def ingest_run(
             _cell_note_for(manifest, planned) if artifact.kind == "par_ens" else None,
             grid_path,
             first_iteration,
+            pdc_file,
+            weights_file,
         )
 
         start = time.perf_counter()

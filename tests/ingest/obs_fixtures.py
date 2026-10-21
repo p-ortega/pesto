@@ -20,6 +20,7 @@ from pesto.ingest.control import ControlTables
 
 from .fixtures import (
     _ENSEMBLE_WRITERS,
+    PDC_HEADER,
     control_ordered_names,
     sample_values,
     survivor_names,
@@ -192,6 +193,23 @@ class ObsRun:
     noise_path: Path | None = None
     noise_real_names: list[str] | None = None
     noise_values: np.ndarray | None = None
+    pdc_path: Path | None = None
+    pdc_rows: list[dict] | None = None
+    adjusted_weights_path: Path | None = None
+
+
+PDC_NUMBER_COLUMNS = PDC_HEADER.split(",")[1:]
+
+
+def write_pdc_csv(path: Path, rows: list[dict], header: str = PDC_HEADER) -> Path:
+    """Write a pestpp-shaped pdc file. Each row maps ``name`` and any of the
+    thirteen number columns to text or numbers; a missing number is blank."""
+    columns = header.split(",")
+    lines = [header]
+    for row in rows:
+        lines.append(",".join(str(row.get(column, "")) for column in columns))
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def make_obs_run(
@@ -211,6 +229,9 @@ def make_obs_run(
     noise_real_names: list[str] | None = None,
     noise_format: str = "jcb",
     pestpp_options: dict | None = None,
+    noise_shift: float = 0.0,
+    with_pdc: bool = False,
+    adjusted_weights: np.ndarray | None = None,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
@@ -227,7 +248,16 @@ def make_obs_run(
     (``r1, base, r2, r3`` by default), observation columns hash-ordered.
     ``ObsRun.noise_values`` holds every row of it in control order.
     ``pestpp_options`` go into the control file, for example
-    ``{"ies_obs_en": "noise_oe.jcb"}``."""
+    ``{"ies_obs_en": "noise_oe.jcb"}``. ``noise_shift`` is added to every
+    noise value (a multiple of 1/256 keeps them exact in float32), so a test
+    can make the noise band sit away from the simulated one.
+
+    ``with_pdc=True`` writes ``<case>.0.pdc.csv`` as pestpp does, with two
+    rows: the first observation's name in upper case (so it matches the
+    control name only after case folding) and the second as written.
+    ``adjusted_weights`` is an ``(n_real, n_obs)`` array in control order,
+    written as ``<case>.adjusted.weights.jcb`` with the run's realization
+    names."""
     from pesto.warm import load_pyemu
     from model.fixtures import write_disv_grb
 
@@ -297,7 +327,7 @@ def make_obs_run(
         if noise_real_names is None:
             noise_real_names = ["r1", "base", "r2", "r3"]
         noise_writer, noise_ext = _ENSEMBLE_WRITERS[noise_format]
-        noise_values = sample_values(len(noise_real_names), n_obs, seed=4242)
+        noise_values = sample_values(len(noise_real_names), n_obs, seed=4242) + noise_shift
         noise_order = sorted(
             range(n_obs), key=lambda i: hashlib.sha256(obs_names[i].encode()).hexdigest()
         )
@@ -308,6 +338,27 @@ def make_obs_run(
             noise_real_names,
             [obs_names[i] for i in noise_order],
         )
+
+    pdc_path = None
+    pdc_rows = None
+    if with_pdc and len(obs_names) >= 2:
+        pdc_rows = [
+            {
+                "name": obs_names[0].upper(),
+                **{c: 10.0 + i for i, c in enumerate(PDC_NUMBER_COLUMNS)},
+            },
+            {
+                "name": obs_names[1],
+                **{c: 20.5 + i for i, c in enumerate(PDC_NUMBER_COLUMNS)},
+            },
+        ]
+        pdc_path = write_pdc_csv(root / f"{case}.0.pdc.csv", pdc_rows)
+
+    weights_path = None
+    if adjusted_weights is not None:
+        weights_array = np.asarray(adjusted_weights, dtype=np.float64)
+        weights_path = root / f"{case}.adjusted.weights.jcb"
+        _ENSEMBLE_WRITERS["jcb"][0](weights_path, weights_array, real_names, obs_names)
 
     grid_path = root / "coarse.disv.grb"
     if grid:
@@ -330,4 +381,7 @@ def make_obs_run(
         noise_path=noise_path,
         noise_real_names=noise_real_names if with_noise else None,
         noise_values=noise_values,
+        pdc_path=pdc_path,
+        pdc_rows=pdc_rows,
+        adjusted_weights_path=weights_path,
     )
