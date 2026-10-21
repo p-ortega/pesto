@@ -441,6 +441,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
             for name in (
                 *((f"obs_ens/{k}", f"obs_agg/{k}") if k in run.obs_ens else ()),
                 *((f"pdc/{k}",) if k in run.pdc else ()),
+                *((f"phi_check/{k}",) if k in run.obs_ens and run.phi.get("actual") else ()),
             )
         ],
         "config",

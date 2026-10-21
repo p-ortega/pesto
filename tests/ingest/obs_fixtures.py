@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from pesto.ingest.control import ControlTables
+from pesto.ingest.obsindex import FLAG_GREATER, FLAG_LESS, SENTINEL_LIMIT, inequality_flag
 
 from .fixtures import (
     _ENSEMBLE_WRITERS,
@@ -196,6 +197,9 @@ class ObsRun:
     pdc_path: Path | None = None
     pdc_rows: list[dict] | None = None
     adjusted_weights_path: Path | None = None
+    phi_path: Path | None = None
+    phi_values: dict[int, dict[str, float]] | None = None
+    phi_weights: np.ndarray | None = None
 
 
 PDC_NUMBER_COLUMNS = PDC_HEADER.split(",")[1:]
@@ -208,6 +212,66 @@ def write_pdc_csv(path: Path, rows: list[dict], header: str = PDC_HEADER) -> Pat
     lines = [header]
     for row in rows:
         lines.append(",".join(str(row.get(column, "")) for column in columns))
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def phi_columns(real_names: list[str]) -> list[str]:
+    """The realization columns of a generated phi file: the reverse of the
+    run's order, so no test can pass by reading them by position."""
+    return list(reversed(real_names))
+
+
+def phi_weight_factors(n_real: int, n_obs: int) -> np.ndarray:
+    """Per realization and observation multipliers (all multiples of 1/2), some
+    zero, so adjusted weights differ from the control weights."""
+    cycle = np.array([1.0, 0.5, 2.0, 0.0, 1.5])
+    return cycle[(np.add.outer(np.arange(n_real), np.arange(n_obs)) % cycle.size)]
+
+
+def phi_from(
+    values: np.ndarray, rows: list[dict], weights: np.ndarray
+) -> np.ndarray:
+    """phi per realization in float64: sum of (weight times residual) squared
+    over observations with a real obsval and a weight above 0, one-sided for
+    inequality groups. ``values`` and ``weights`` are (n_real, n_obs) in
+    control order."""
+    n_real = values.shape[0]
+    phi = np.zeros(n_real, dtype=np.float64)
+    for j, row in enumerate(rows):
+        obsval = float(row["obsval"])
+        if not np.isfinite(obsval) or abs(obsval) >= SENTINEL_LIMIT:
+            continue
+        resid = np.asarray(values[:, j], dtype=np.float64) - obsval
+        flag = inequality_flag(row["obgnme"])
+        if flag == FLAG_GREATER:
+            resid = np.minimum(resid, 0.0)
+        elif flag == FLAG_LESS:
+            resid = np.maximum(resid, 0.0)
+        w = np.asarray(weights[:, j], dtype=np.float64)
+        phi += np.where(w > 0, (w * resid) ** 2, 0.0)
+    return phi
+
+
+def write_phi_actual(
+    path: Path, real_names: list[str], phi_by_iteration: dict[int, dict[str, float]]
+) -> Path:
+    """Write a phi file in pestpp's shape: the six leading columns, then one
+    column per realization in ``phi_columns`` order, one row per iteration."""
+    columns = phi_columns(real_names)
+    lines = [",".join(["iteration", "total_runs", "mean", "standard_deviation", "min", "max", *columns])]
+    for iteration, phi in phi_by_iteration.items():
+        numbers = [phi[name] for name in columns]
+        cells = [
+            iteration,
+            len(columns),
+            float(np.mean(numbers)),
+            float(np.std(numbers)),
+            min(numbers),
+            max(numbers),
+            *numbers,
+        ]
+        lines.append(",".join(repr(c) if isinstance(c, float) else str(c) for c in cells))
     path.write_text("\n".join(lines) + "\n")
     return path
 
@@ -232,6 +296,7 @@ def make_obs_run(
     noise_shift: float = 0.0,
     with_pdc: bool = False,
     adjusted_weights: np.ndarray | None = None,
+    with_phi: bool = False,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
@@ -257,7 +322,14 @@ def make_obs_run(
     control name only after case folding) and the second as written.
     ``adjusted_weights`` is an ``(n_real, n_obs)`` array in control order,
     written as ``<case>.adjusted.weights.jcb`` with the run's realization
-    names."""
+    names.
+
+    ``with_phi=True`` writes ``<case>.phi.actual.csv`` with, for each iteration, the phi
+    of every realization computed in float64 from the generated values and the adjusted
+    weights, in reversed column order. Unless ``adjusted_weights`` is given it also writes
+    ``<case>.adjusted.weights.jcb`` for the observations that have a weight and a real
+    obsval, with weights that differ from the control weights and some zero.
+    ``ObsRun.phi_values`` holds the phi per iteration and realization name."""
     from pesto.warm import load_pyemu
     from model.fixtures import write_disv_grb
 
@@ -355,10 +427,35 @@ def make_obs_run(
         pdc_path = write_pdc_csv(root / f"{case}.0.pdc.csv", pdc_rows)
 
     weights_path = None
+    phi_weights = None
     if adjusted_weights is not None:
         weights_array = np.asarray(adjusted_weights, dtype=np.float64)
         weights_path = root / f"{case}.adjusted.weights.jcb"
         _ENSEMBLE_WRITERS["jcb"][0](weights_path, weights_array, real_names, obs_names)
+        phi_weights = weights_array
+    elif with_phi:
+        has_value = [
+            float(row["obsval"]) < SENTINEL_LIMIT and float(row["weight"]) > 0 for row in rows
+        ]
+        phi_weights = np.zeros((n_real, n_obs), dtype=np.float64)
+        factors = phi_weight_factors(n_real, n_obs)
+        for j, row in enumerate(rows):
+            if has_value[j]:
+                phi_weights[:, j] = float(row["weight"]) * factors[:, j]
+        columns = [j for j in reversed(range(n_obs)) if has_value[j]]
+        weights_path = root / f"{case}.adjusted.weights.jcb"
+        _ENSEMBLE_WRITERS["jcb"][0](
+            weights_path, phi_weights[:, columns], real_names, [obs_names[j] for j in columns]
+        )
+
+    phi_path = None
+    phi_values = None
+    if with_phi:
+        phi_values = {}
+        for iteration in iterations:
+            phi = phi_from(values[iteration], rows, phi_weights)
+            phi_values[iteration] = {name: float(phi[r]) for r, name in enumerate(real_names)}
+        phi_path = write_phi_actual(root / f"{case}.phi.actual.csv", real_names, phi_values)
 
     grid_path = root / "coarse.disv.grb"
     if grid:
@@ -384,4 +481,7 @@ def make_obs_run(
         pdc_path=pdc_path,
         pdc_rows=pdc_rows,
         adjusted_weights_path=weights_path,
+        phi_path=phi_path,
+        phi_values=phi_values,
+        phi_weights=phi_weights,
     )
