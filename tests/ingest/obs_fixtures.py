@@ -189,6 +189,9 @@ class ObsRun:
     obs_ens: dict[int, Path]
     values: dict[int, np.ndarray]
     rows: list[dict]
+    noise_path: Path | None = None
+    noise_real_names: list[str] | None = None
+    noise_values: np.ndarray | None = None
 
 
 def make_obs_run(
@@ -204,6 +207,10 @@ def make_obs_run(
     real_names: list[str] | None = None,
     n_par: int = 6,
     grid: bool = False,
+    with_noise: bool = False,
+    noise_real_names: list[str] | None = None,
+    noise_format: str = "jcb",
+    pestpp_options: dict | None = None,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
@@ -213,7 +220,14 @@ def make_obs_run(
     generator.
 
     ``grid=True`` writes a real single-layer vertex grid file instead of the
-    placeholder and, unless ``sites`` is given, uses ``GRID_SITES``."""
+    placeholder and, unless ``sites`` is given, uses ``GRID_SITES``.
+
+    ``with_noise=True`` also writes ``<case>.obs+noise.<ext>`` in the
+    ``noise_format`` ensemble format, realizations named ``noise_real_names``
+    (``r1, base, r2, r3`` by default), observation columns hash-ordered.
+    ``ObsRun.noise_values`` holds every row of it in control order.
+    ``pestpp_options`` go into the control file, for example
+    ``{"ies_obs_en": "noise_oe.jcb"}``."""
     from pesto.warm import load_pyemu
     from model.fixtures import write_disv_grb
 
@@ -235,6 +249,8 @@ def make_obs_run(
     pyemu = load_pyemu()
     pst = pyemu.Pst.from_par_obs_names(par_names=par_names, obs_names=obs_names)
     pst.control_data.noptmax = 3
+    if pestpp_options:
+        pst.pestpp_options.update(pestpp_options)
     # from_par_obs_names sorts the names; the control file must keep this order.
     pst.observation_data = pst.observation_data.loc[obs_names].copy()
     data = pst.observation_data
@@ -275,6 +291,24 @@ def make_obs_run(
         writer(path, sample_values(n_real, n_par, seed=iteration), real_names, par_names)
         par_ens[iteration] = path
 
+    noise_path = None
+    noise_values = None
+    if with_noise:
+        if noise_real_names is None:
+            noise_real_names = ["r1", "base", "r2", "r3"]
+        noise_writer, noise_ext = _ENSEMBLE_WRITERS[noise_format]
+        noise_values = sample_values(len(noise_real_names), n_obs, seed=4242)
+        noise_order = sorted(
+            range(n_obs), key=lambda i: hashlib.sha256(obs_names[i].encode()).hexdigest()
+        )
+        noise_path = root / f"{case}.obs+noise.{noise_ext}"
+        noise_writer(
+            noise_path,
+            noise_values[:, noise_order],
+            noise_real_names,
+            [obs_names[i] for i in noise_order],
+        )
+
     grid_path = root / "coarse.disv.grb"
     if grid:
         write_disv_grb(grid_path, nlay=1, inactive_layer=0, inactive_cell=1)
@@ -293,4 +327,7 @@ def make_obs_run(
         obs_ens=obs_ens,
         values=values,
         rows=rows,
+        noise_path=noise_path,
+        noise_real_names=noise_real_names if with_noise else None,
+        noise_values=noise_values,
     )

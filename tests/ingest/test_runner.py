@@ -441,6 +441,52 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
     assert [a.name for a in second] == names
 
 
+def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_artifacts(tmp_path):
+    from .obs_fixtures import make_obs_run as make_noise_run
+
+    run_dir = tmp_path / "run"
+    made = make_noise_run(run_dir, grid=True, with_noise=True)
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = plan_artifacts(run, layout)
+    names = [a.name for a in planned]
+
+    assert names == [
+        "control",
+        "grid",
+        "par_cell",
+        "obs_index",
+        "obs_cell",
+        "noise_agg",
+        "par_ens/0",
+        "par_agg/0",
+        "par_ens/1",
+        "par_agg/1",
+        "obs_ens/0",
+        "obs_agg/0",
+        "obs_ens/1",
+        "obs_agg/1",
+        "config",
+    ]
+    noise = next(a for a in planned if a.name == "noise_agg")
+    assert noise.sources[0] == str(made.noise_path)
+    assert noise.needs == ("obs_index",)
+    assert noise.outputs == (str(layout.noise_agg), str(layout.noise_agg_meta))
+    assert [a.name for a in plan_artifacts(run, layout)] == names
+
+
+def test_plan_artifacts_has_no_noise_agg_for_a_run_without_an_obs_noise_file(tmp_path):
+    from .obs_fixtures import make_obs_run as make_noise_run
+
+    run_dir = tmp_path / "run"
+    make_noise_run(run_dir, grid=True)
+
+    planned = plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))
+
+    assert "noise_agg" not in [a.name for a in planned]
+
+
 def _needing(*names: str) -> PlannedArtifact:
     return PlannedArtifact(
         name="obs_ens/0", kind="obs_ens", sources=(), outputs=(), source_bytes=0, needs=names

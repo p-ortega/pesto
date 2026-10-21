@@ -539,6 +539,103 @@ def test_capability_obs_stats_for_a_run_with_no_observation_file_says_why(tmp_pa
     }
 
 
+def _noise_capability(app, token):
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    return response.json()["capabilities"]["noise"]
+
+
+NO_NOISE_REASON = (
+    "no case.obs+noise file was found for this run; pesto never uses a starting "
+    "observation ensemble as the noise band"
+)
+
+
+def test_capability_noise_is_available_once_noise_agg_is_ok(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _noise_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_noise_is_blocked_before_anything_is_ingested(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _noise_capability(app, token)
+
+    assert capability["available"] is False
+    assert [b["artifact"] for b in capability["blocked_by"]] == ["noise_agg"]
+
+
+def test_capability_noise_names_noise_agg_and_its_recorded_reason(
+    tmp_path, in_process, monkeypatch
+):
+    from pesto.ingest.failures import ReadFailure as Failure
+
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        runner_module,
+        "_write_noise_agg_artifact",
+        lambda source, cache_root: Failure(
+            name="noise_agg", path="x", reason="the noise band would not write"
+        ),
+    )
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+    capability = _noise_capability(app, token)
+
+    assert capability["available"] is False
+    assert capability["blocked_by"] == [
+        {"artifact": "noise_agg", "reason": "the noise band would not write"}
+    ]
+    # Observations and their statistics are unaffected.
+    assert _obs_capability(app, token) == {"available": True, "blocked_by": []}
+    assert _obs_stats_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_noise_for_a_run_with_no_obs_noise_file_says_why(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    assert _noise_capability(app, token) == {
+        "available": False,
+        "blocked_by": [{"artifact": "noise_agg", "reason": NO_NOISE_REASON}],
+    }
+
+
+def test_capability_noise_for_a_run_with_only_a_starting_ensemble_says_why(tmp_path, in_process):
+    from ingest.fixtures import sample_values
+
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir, pestpp_options={"ies_obs_en": "noise_oe.jcb"})
+    from ingest.fixtures import _ENSEMBLE_WRITERS
+
+    _ENSEMBLE_WRITERS["jcb"][0](
+        run_dir / "noise_oe.jcb",
+        sample_values(5, len(run.obs_names), seed=7),
+        ["a", "b", "c", "d", "e"],
+        run.obs_names,
+    )
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _noise_capability(app, token) == {
+        "available": False,
+        "blocked_by": [{"artifact": "noise_agg", "reason": NO_NOISE_REASON}],
+    }
+
+
 # --- the byte estimate (GET /estimate) --------------------------------------
 
 

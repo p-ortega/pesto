@@ -187,6 +187,23 @@ def _obs_capability(
     return {"available": False, "blocked_by": [{"artifact": missing_artifact, "reason": reason}]}
 
 
+NO_NOISE_REASON = (
+    "no case.obs+noise file was found for this run; pesto never uses a starting "
+    "observation ensemble as the noise band"
+)
+
+
+def _noise_capability(manifest: Manifest, noise_names: list[str]) -> dict[str, Any]:
+    """Whether the noise band exists. Only an obs+noise file makes one, so
+    with none planned the reason says that and what pesto will not do."""
+    if noise_names:
+        return _capability(manifest, required=noise_names, any_of=[])
+    return {
+        "available": False,
+        "blocked_by": [{"artifact": "noise_agg", "reason": NO_NOISE_REASON}],
+    }
+
+
 @router.get("/state")
 async def get_ingest_state(request: Request) -> JSONResponse:
     resolved = _resolve(request)
@@ -223,6 +240,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     obs_index_names = [pa.name for pa in planned if pa.kind == "obs_index"]
     obs_ens_names = [pa.name for pa in planned if pa.kind == "obs_ens"]
     obs_agg_names = [pa.name for pa in planned if pa.kind == "obs_agg"]
+    noise_names = [pa.name for pa in planned if pa.kind == "noise_agg"]
 
     body = {
         "fresh": fresh,
@@ -241,6 +259,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
                 obs_ens_names=obs_agg_names,
                 missing_artifact="obs_agg",
             ),
+            "noise": _noise_capability(manifest, noise_names),
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
