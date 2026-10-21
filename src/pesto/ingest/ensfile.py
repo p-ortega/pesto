@@ -372,20 +372,14 @@ def read_ensemble(
 
     ``kind`` states what the caller believes ``path`` holds, and is
     validated first, before any file is opened. ``kind="par"`` (the default)
-    is the only path this function actually reads. ``kind="obs"`` refuses
-    without reading the file's contents, saying plainly that pesto does not
-    read observation ensemble values yet and that orientation can currently
-    only be validated against the control file's parameter table (02-REVIEW.md
-    CR-01; reading observation ensemble content is out of M0's scope, and
-    ``kind`` is the seam a later milestone widens).
-
-    That refusal states whether the file is on disk rather than assuming it,
-    because the two cases are different answers: a file that exists is one
-    M0 can report by existence and name, while a path that is not there is
-    a file M0 can report nothing about at all. Deciding this costs one
-    read-only stat and no open (02-REVIEW.md IN-01 -- claiming a file "was
-    found and named" without looking is an answer given where the function
-    could not tell).
+    matches the file against the control file's parameter table.
+    ``kind="obs"`` reads through ``pesto.ingest.obsread.read_obs_file``: the
+    header is sized and checked against this machine's memory before
+    anything is read, and the file's observation names are matched to
+    ``tables.obs["obsnme"]``. It needs a control table whose observation
+    rows were loaded; a schema-only table returns a ``ReadFailure`` saying
+    so, and a path that is not on disk returns one saying the file is not
+    on disk.
 
     Any value other than ``"par"`` or ``"obs"`` refuses with a
     ``ReadFailure`` naming the value given and the two values this function
@@ -408,32 +402,29 @@ def read_ensemble(
     file_path = Path(path)
 
     if kind == "obs":
-        if file_path.exists():
-            found = (
-                f"{file_path.name} was found and named, but pesto "
-                f"does not read observation ensemble values yet"
+        from pesto.ingest.obsread import read_obs_file
+
+        if tables is None:
+            return ReadFailure(
+                name=file_path.name,
+                path=str(file_path),
+                reason=(
+                    f"{file_path.name}: reading an observation ensemble needs the control "
+                    f"table's observation names to match against, and no control table was given."
+                ),
             )
-            advice = (
-                "Its existence and name are everything M0 reports about it; "
-                'kind="obs" is the seam that widens once observation ensemble '
-                "reading is supported."
+        try:
+            control_names = list(tables.obs["obsnme"])
+        except TypeError as exc:
+            return ReadFailure(
+                name=file_path.name,
+                path=str(file_path),
+                reason=(
+                    f"{file_path.name}: cannot match observation names because the control "
+                    f"table's {exc}"
+                ),
             )
-        else:
-            found = (
-                f"{file_path.name} is not on disk at {file_path}, and pesto "
-                f"does not read observation ensemble values yet"
-            )
-            advice = (
-                "M0 reports nothing about this file: it was neither found nor read."
-            )
-        return ReadFailure(
-            name=file_path.name,
-            path=str(file_path),
-            reason=(
-                f"{found} -- orientation can only be validated against the "
-                f"control file's parameter table in M0. {advice}"
-            ),
-        )
+        return read_obs_file(file_path, control_names, artifact=file_path.name)
     if kind != "par":
         return ReadFailure(
             name=file_path.name,
