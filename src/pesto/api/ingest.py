@@ -227,6 +227,36 @@ def _pdc_capability(manifest: Manifest, run, pdc_names: list[str]) -> dict[str, 
     return {"available": False, "blocked_by": [{"artifact": "pdc", "reason": reason}]}
 
 
+NO_PHI_FILE_REASON = "no case.phi.actual.csv was found for this run"
+PHI_NOTE_PREFIXES = ("phi mismatch", "phi not checked")
+
+
+def _phi_check_capability(manifest: Manifest, run, phi_names: list[str]) -> dict[str, Any]:
+    """Whether phi was checked against pestpp's file. A check that found a
+    mismatch is still available; its summary is in ``notes`` so the result is
+    never hidden."""
+    if phi_names:
+        capability = _capability(manifest, required=phi_names, any_of=[])
+        notes = [
+            note
+            for name in phi_names
+            if (artifact := manifest.artifacts.get(name)) is not None and artifact.state == "ok"
+            for note in artifact.notes
+            if note.startswith(PHI_NOTE_PREFIXES)
+        ]
+        if notes:
+            capability["notes"] = notes
+        return capability
+    if run.phi.get("actual") is None:
+        reason = NO_PHI_FILE_REASON
+    else:
+        reason = (
+            "no observation ensemble file was found for the ingested iterations, "
+            "so phi cannot be recomputed"
+        )
+    return {"available": False, "blocked_by": [{"artifact": "phi_check", "reason": reason}]}
+
+
 @router.get("/state")
 async def get_ingest_state(request: Request) -> JSONResponse:
     resolved = _resolve(request)
@@ -265,6 +295,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     obs_agg_names = [pa.name for pa in planned if pa.kind == "obs_agg"]
     noise_names = [pa.name for pa in planned if pa.kind == "noise_agg"]
     pdc_names = [pa.name for pa in planned if pa.kind == "pdc"]
+    phi_names = [pa.name for pa in planned if pa.kind == "phi_check"]
 
     body = {
         "fresh": fresh,
@@ -285,6 +316,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
             ),
             "noise": _noise_capability(manifest, noise_names),
             "pdc": _pdc_capability(manifest, run, pdc_names),
+            "phi_check": _phi_check_capability(manifest, run, phi_names),
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
