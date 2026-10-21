@@ -29,8 +29,9 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
+from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, write_obs_index
 from pesto.ingest.parcell import load_par_cell, write_par_cell
-from pesto.ingest.tables import load_control_tables, write_control
+from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
 @dataclass(frozen=True)
 class Progress:
@@ -62,7 +63,8 @@ class PlannedArtifact:
     """
 
     name: str
-    kind: str  # "control" | "grid" | "par_cell" | "par_ens" | "par_agg" | "pp_factors" | "config"
+    # "control" | "grid" | "par_cell" | "obs_index" | "par_ens" | "par_agg" | "pp_factors" | "config"
+    kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
@@ -293,6 +295,26 @@ def _write_par_cell_artifact(grid_path: str, cache_root: str) -> "WrittenArtifac
     return write_par_cell(cells, tables.par, layout)
 
 
+def _write_obs_index_artifact(cache_root: str) -> "WrittenArtifact | ReadFailure":
+    """The worker for the ``obs_index`` artifact: reads only the observation
+    columns it needs from the cached control table (the table can hold
+    millions of rows), then writes the seven index files under ``control/``."""
+    layout = CacheLayout(root=Path(cache_root))
+    loaded = load_control_table(
+        layout,
+        "obs",
+        columns=["obsnme", "obgnme"],
+        optional_columns=["obsval", "weight", "datetime", "time", *IDENTITY_COLUMNS],
+    )
+    if isinstance(loaded, ReadFailure):
+        return loaded
+    table, notes = loaded
+    index = build_obs_index(table, notes)
+    if isinstance(index, ReadFailure):
+        return index
+    return write_obs_index(index, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -445,7 +467,8 @@ def plan_artifacts(
     """The whole, deterministically ordered list of artifacts one ingest of
     ``run`` will attempt: ``control`` first, so every later worker can read
     its cached tables; then ``grid`` and ``par_cell`` when a grid file
-    exists; then an ensemble and a summary for each selected iteration in
+    exists; then ``obs_index``, which needs the control table only; then an
+    ensemble and a summary for each selected iteration in
     ascending order, ensemble before summary; then ``pp_factors`` when the
     run carries pilot-point files; then ``config``. A caller watching rows
     go past sees the same sequence every time this is called for the same
@@ -462,7 +485,8 @@ def plan_artifacts(
     Each artifact names the source files it depends on. Call the control
     file followed by every table it names in an external section the control
     sources: ``control`` lists exactly those, ``grid`` the grid file alone,
-    ``par_cell`` the control sources and the grid file, a summary that
+    ``par_cell`` the control sources and the grid file, ``obs_index`` the
+    control sources alone, a summary that
     iteration's ensemble file and then the control sources, an ensemble the
     same and, when one exists, the grid file too, ``pp_factors`` its own
     files, the grid file and the control sources, and ``config`` the control
@@ -529,6 +553,25 @@ def plan_artifacts(
         config_sources = par_cell_sources
     else:
         config_sources = control_sources
+
+    # Needs the control table only, so a grid edit never touches it.
+    artifacts.append(
+        PlannedArtifact(
+            name="obs_index",
+            kind="obs_index",
+            sources=control_sources,
+            outputs=(
+                str(layout.obs_order),
+                str(layout.obs_time),
+                str(layout.obs_value),
+                str(layout.obs_flags),
+                str(layout.obs_sites),
+                str(layout.obs_groups),
+                str(layout.obs_index_meta),
+            ),
+            source_bytes=_size_of(control_sources),
+        )
+    )
 
     for iteration in selected:
         source = run.par_ens.get(iteration)
@@ -741,6 +784,11 @@ def estimate_bytes(
             "rather than from any source file's size -- excluded rather than guessed"
         )
 
+    notes.append(
+        "obs_index: a few files whose size follows the control table's observation count "
+        "rather than any source file's size -- excluded rather than guessed"
+    )
+
     if run.mult2model is not None or run.factor_files:
         notes.append(
             "pp_factors: a small index of pilot-point groups whose size does not follow "
@@ -805,6 +853,8 @@ def _dispatch(
         return _write_grid_artifact, (grid_path, cache_root)
     if artifact.kind == "par_cell":
         return _write_par_cell_artifact, (grid_path, cache_root)
+    if artifact.kind == "obs_index":
+        return _write_obs_index_artifact, (cache_root,)
     if artifact.kind == "pp_factors":
         return _write_pp_factors_artifact, (run_dir, grid_path, cache_root)
     if artifact.kind == "config":
@@ -814,7 +864,9 @@ def _dispatch(
 
 # Artifacts whose worker reads the cached control table. ``grid`` reads only
 # the grid file and ``control`` is the one that writes the table.
-_CONTROL_DEPENDENTS = frozenset({"par_cell", "par_ens", "par_agg", "pp_factors", "config"})
+_CONTROL_DEPENDENTS = frozenset(
+    {"par_cell", "obs_index", "par_ens", "par_agg", "pp_factors", "config"}
+)
 
 
 def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
