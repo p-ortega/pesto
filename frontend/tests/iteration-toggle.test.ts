@@ -733,6 +733,64 @@ describe('the Go to realization box on the map', () => {
     await vi.waitFor(() => expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '0', realization: 'r017', stat: null }))
     expect(sliderLabel(root)).toBe('r017')
   })
+
+  const refusalOf = (root: HTMLElement): string => {
+    const id = (root.querySelector('[aria-label="Go to realization"]') as HTMLElement).getAttribute('aria-describedby')
+    return (id ? root.querySelector(`#${id}`)?.textContent : '') ?? ''
+  }
+
+  it('refuses a name the shown iteration lacks and draws nothing in its place', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('realization r001 is not in iteration 3'))
+    const callsBefore = stub.valuesCalls.length
+    const noticeBefore = drawnNotice(root)
+
+    setInput(root, 'Go to realization', 'r001', 'change')
+
+    expect(refusalOf(root)).toBe('realization "r001" is not in iteration 3')
+    expect(stub.valuesCalls.length).toBe(callsBefore)
+    expect(stub.valuesCalls.some((c) => c.iteration === '3' && c.realization === 'r001')).toBe(false)
+    expect(drawnNotice(root)).toBe(noticeBefore)
+    expect(sliderLabel(root)).toBe('—')
+  })
+
+  it('draws a name the new iteration holds, and clears the refusal and the drawn-realization notice', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    setInput(root, 'Realization', '1')
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
+    await choose(root, store, '3')
+    await vi.waitFor(() => expect(drawnNotice(root)).toContain('r001'))
+    setInput(root, 'Go to realization', 'r001', 'change')
+    expect(refusalOf(root)).not.toBe('')
+
+    setInput(root, 'Go to realization', 'base', 'change')
+
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '3', realization: 'base', stat: null }))
+    await vi.waitFor(() => expect(drawnNotice(root)).toBe(''))
+    expect(refusalOf(root)).toBe('')
+    expect(sliderLabel(root)).toBe('base')
+  })
+
+  it('offers only the shown iteration names and drops an earlier refusal after a switch', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store)
+    const box = root.querySelector('[aria-label="Go to realization"]') as HTMLElement
+    const names = () =>
+      Array.from(root.querySelectorAll(`datalist#${box.getAttribute('list')} option`)).map((o) => o.getAttribute('value'))
+    expect(names()).toEqual(['base', 'r001', 'r017'])
+    setInput(root, 'Go to realization', 'nope', 'change')
+    expect(refusalOf(root)).toBe('realization "nope" is not in iteration 0')
+
+    await choose(root, store, '3')
+
+    await vi.waitFor(() => expect(names()).toEqual(['r017', 'base']))
+    expect(refusalOf(root)).toBe('')
+  })
 })
 
 describe('a layer another view sets while a field fetch is out', () => {
