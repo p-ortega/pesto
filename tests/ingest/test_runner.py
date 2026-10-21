@@ -435,7 +435,14 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
-        *[name for k in (0, 1) if k in run.obs_ens for name in (f"obs_ens/{k}", f"obs_agg/{k}")],
+        *[
+            name
+            for k in (0, 1)
+            for name in (
+                *((f"obs_ens/{k}", f"obs_agg/{k}") if k in run.obs_ens else ()),
+                *((f"pdc/{k}",) if k in run.pdc else ()),
+            )
+        ],
         "config",
     ]
     assert [a.name for a in second] == names
@@ -465,8 +472,10 @@ def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_a
         "par_agg/1",
         "obs_ens/0",
         "obs_agg/0",
+        "pdc/0",
         "obs_ens/1",
         "obs_agg/1",
+        "pdc/1",
         "config",
     ]
     noise = next(a for a in planned if a.name == "noise_agg")
@@ -485,6 +494,73 @@ def test_plan_artifacts_has_no_noise_agg_for_a_run_without_an_obs_noise_file(tmp
     planned = plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))
 
     assert "noise_agg" not in [a.name for a in planned]
+
+
+def test_plan_artifacts_plans_pdc_after_obs_agg_as_a_file_read_or_a_computation_never_both(
+    tmp_path,
+):
+    from .obs_fixtures import make_obs_run as make_noise_run
+
+    run_dir = tmp_path / "run"
+    made = make_noise_run(run_dir, with_noise=True, with_pdc=True)
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = {a.name: a for a in plan_artifacts(run, layout)}
+    names = [a.name for a in plan_artifacts(run, layout)]
+
+    # Iteration 0 has pestpp's file, so it is read; iteration 1 has none, so it is computed.
+    assert names.index("pdc/0") == names.index("obs_agg/0") + 1
+    assert names.index("pdc/1") == names.index("obs_agg/1") + 1
+    file_read, computed = planned["pdc/0"], planned["pdc/1"]
+    assert file_read.sources[0] == str(made.pdc_path)
+    assert file_read.needs == ("obs_index",)
+    assert str(made.obs_ens[0]) not in file_read.sources
+    assert str(run.noise) not in file_read.sources
+    assert computed.sources[:2] == (str(made.obs_ens[1]), str(made.noise_path))
+    assert computed.needs == ("obs_index", "obs_agg/1", "noise_agg")
+    assert file_read.outputs == (str(layout.pdc(0)), str(layout.pdc_meta(0)))
+
+
+def test_plan_artifacts_lists_the_adjusted_weights_file_as_a_source_of_a_computed_pdc_after_iteration_0(tmp_path):
+    from .obs_fixtures import make_obs_run as make_noise_run
+
+    run_dir = tmp_path / "run"
+    made = make_noise_run(run_dir, with_noise=True, adjusted_weights=np.ones((4, 7)))
+    run = discover(run_dir)
+
+    planned = {a.name: a for a in plan_artifacts(run, CacheLayout(root=tmp_path / "cache"))}
+
+    # Iteration 0 is checked before pestpp adjusts any weight, so it never reads the file.
+    assert str(made.adjusted_weights_path) not in planned["pdc/0"].sources
+    assert str(made.adjusted_weights_path) in planned["pdc/1"].sources
+
+
+def test_plan_artifacts_reads_a_pdc_file_even_when_the_iteration_has_no_observation_file(
+    tmp_path,
+):
+    from .obs_fixtures import make_obs_run as make_noise_run
+
+    run_dir = tmp_path / "run"
+    make_noise_run(run_dir, iterations=(1,), par_iterations=(0, 1), with_pdc=True)
+
+    names = [a.name for a in plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))]
+
+    assert "pdc/0" in names and "obs_ens/0" not in names
+    assert "obs_agg/1" in names and "pdc/1" not in names
+
+
+def test_plan_artifacts_has_no_pdc_for_a_run_with_neither_a_pdc_file_nor_an_obs_noise_file(
+    tmp_path,
+):
+    from .obs_fixtures import make_obs_run as make_noise_run
+
+    run_dir = tmp_path / "run"
+    make_noise_run(run_dir)
+
+    names = [a.name for a in plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))]
+
+    assert not any(name.startswith("pdc/") for name in names)
 
 
 def _needing(*names: str) -> PlannedArtifact:

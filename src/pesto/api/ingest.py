@@ -204,6 +204,29 @@ def _noise_capability(manifest: Manifest, noise_names: list[str]) -> dict[str, A
     }
 
 
+def _pdc_capability(manifest: Manifest, run, pdc_names: list[str]) -> dict[str, Any]:
+    """Whether prior-data conflict is stored. It comes from pestpp's own
+    file, or is computed when that file is absent and an obs+noise file
+    exists. Iterations with neither are named, planned or not."""
+    from pesto.ingest.runner import observation_iterations, pdc_source_for
+
+    selected, _notes = observation_iterations(run)
+    neither = [k for k in selected if pdc_source_for(run, k) == "none"]
+    listed = ", ".join(str(k) for k in neither)
+    reason = (
+        "no pestpp pdc file and no obs+noise file to compute one from, "
+        f"for iteration(s) {listed}"
+    )
+    if pdc_names:
+        capability = _capability(manifest, required=pdc_names, any_of=[])
+        if neither:
+            capability["notes"] = [reason]
+        return capability
+    if not neither:
+        reason = "no iteration was selected, so there is no prior-data conflict to read"
+    return {"available": False, "blocked_by": [{"artifact": "pdc", "reason": reason}]}
+
+
 @router.get("/state")
 async def get_ingest_state(request: Request) -> JSONResponse:
     resolved = _resolve(request)
@@ -241,6 +264,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     obs_ens_names = [pa.name for pa in planned if pa.kind == "obs_ens"]
     obs_agg_names = [pa.name for pa in planned if pa.kind == "obs_agg"]
     noise_names = [pa.name for pa in planned if pa.kind == "noise_agg"]
+    pdc_names = [pa.name for pa in planned if pa.kind == "pdc"]
 
     body = {
         "fresh": fresh,
@@ -260,6 +284,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
                 missing_artifact="obs_agg",
             ),
             "noise": _noise_capability(manifest, noise_names),
+            "pdc": _pdc_capability(manifest, run, pdc_names),
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
