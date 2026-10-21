@@ -40,6 +40,14 @@ export function renderIterationToggle(el: HTMLElement, opts: IterationToggleOpti
   el.style.display = 'flex'
   el.style.flexDirection = 'row'
   el.style.gap = 'var(--space-sm)'
+  el.style.alignItems = 'center'
+
+  // The group's aria-label already says Iteration, so a screen reader would hear this twice.
+  const label = document.createElement('span')
+  label.classList.add('label')
+  label.textContent = 'Iteration'
+  label.setAttribute('aria-hidden', 'true')
+  el.appendChild(label)
 
   const buttons = new Map<number, HTMLButtonElement>()
   for (const iteration of opts.iterations) {
