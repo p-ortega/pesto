@@ -133,6 +133,7 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
         "control",
         "grid",
         "par_cell",
+        "obs_index",
         "par_ens/0",
         "par_agg/0",
         "par_ens/1",
@@ -147,7 +148,13 @@ def test_a_run_with_no_grid_file_plans_no_grid_and_no_par_cell(tmp_path):
 
     planned = plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))
 
-    assert [a.name for a in planned] == ["control", "par_ens/0", "par_agg/0", "config"]
+    assert [a.name for a in planned] == [
+        "control",
+        "obs_index",
+        "par_ens/0",
+        "par_agg/0",
+        "config",
+    ]
 
 
 def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_path):
@@ -161,6 +168,7 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
         "control",
         "grid",
         "par_cell",
+        "obs_index",
         "par_ens/0",
         "par_agg/0",
         "pp_factors",

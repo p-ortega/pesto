@@ -428,6 +428,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "control",
         "grid",
         "par_cell",
+        "obs_index",
         "par_ens/0",
         "par_agg/0",
         "par_ens/1",
@@ -469,6 +470,7 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
     )
     assert planned["grid"].sources == (str(run.grid),)
     assert planned["par_cell"].sources == (*control_sources, str(run.grid))
+    assert planned["obs_index"].sources == control_sources
     assert planned["par_ens/0"].sources == (
         str(run.par_ens[0]),
         *control_sources,

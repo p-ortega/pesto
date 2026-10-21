@@ -41,6 +41,7 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_mesh
+from pesto.ingest.obsindex import build_obs_index, write_obs_index
 from pesto.ingest.parcell import write_par_cell
 from pesto.ingest.ppfactors import build_pp_index, write_pp_index
 from pesto.ingest.runner import plan_artifacts
@@ -287,6 +288,13 @@ def write_synthetic_run(dest: Path) -> Path:
             written = write_mesh(mesh, grid_shape, layout)
         elif artifact.kind == "par_cell":
             written = write_par_cell(_cells(), tables.par, layout)
+        elif artifact.kind == "obs_index":
+            import pyarrow as pa
+
+            obs_index = build_obs_index(pa.Table.from_pandas(tables.obs, preserve_index=False))
+            if isinstance(obs_index, ReadFailure):
+                raise AssertionError(f"synthetic fixture could not index observations: {obs_index.reason}")
+            written = write_obs_index(obs_index, layout)
         elif artifact.kind == "pp_factors":
             index = build_pp_index(
                 run_dir,
