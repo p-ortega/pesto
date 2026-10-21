@@ -35,7 +35,7 @@ from pesto.ingest.obsagg import write_noise_agg, write_obs_agg
 from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsens import write_obs_ensemble
 from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
-from pesto.ingest.obspdc import compute_pdc, read_pdc_file, write_pdc
+from pesto.ingest.obspdc import FIRST_ITERATION, compute_pdc, read_pdc_file, write_pdc
 from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.obsweights import read_adjusted_weights
 from pesto.ingest.parcell import load_par_cell, write_par_cell
@@ -650,7 +650,9 @@ def _plan_pdc(
     else:
         # The same observation and noise files the statistics were built
         # from, so an edit to either makes this stale as well.
-        weights = (str(run.adjusted_weights),) if run.adjusted_weights is not None else ()
+        # Iteration 0 is checked before pestpp adjusts any weight, so it never reads them.
+        uses_weights = run.adjusted_weights is not None and iteration != FIRST_ITERATION
+        weights = (str(run.adjusted_weights),) if uses_weights else ()
         sources = _unique(
             (str(run.obs_ens[iteration]), str(run.noise), *weights, *control_sources)
         )
@@ -682,12 +684,14 @@ def pdc_source_for(run: RunLayout, iteration: int) -> str:
 def _pdc_inputs(run: RunLayout, iteration: int) -> tuple[str | None, str | None]:
     """The pdc file and the adjusted weights file a worker is handed: the
     file when pestpp wrote one (no weights needed), else the weights file
-    when the run has one."""
+    when the run has one and the iteration is after the first."""
     pdc_file = run.pdc.get(iteration)
     if pdc_file is not None:
         return str(pdc_file), None
     weights = run.adjusted_weights
-    return None, (str(weights) if weights is not None else None)
+    if weights is None or iteration == FIRST_ITERATION:
+        return None, None
+    return None, str(weights)
 
 
 def plan_artifacts(

@@ -63,10 +63,20 @@ SOURCE_COMPUTED = "computed"
 
 FILE_RULE = "read from the prior-data conflict file pestpp wrote"
 COMPUTED_RULE = (
-    "candidates have a real obsval and a weight above 0; a two-sided observation is in "
+    "candidates have a real obsval and a weight above 0 (the control weight at iteration 0, "
+    "the adjusted weight in at least one realization after it); a two-sided observation is in "
     "conflict when max(noise_min - sim_max, sim_min - noise_max) > 0, a greater-than group "
     "when noise_min - sim_max > 0, a less-than group when sim_min - noise_max > 0; that "
     "value is the distance"
+)
+# pestpp checks the starting ensemble for conflict before it adjusts any weight, and the
+# one adjusted weights file in a run holds the weights after that first drop, so it
+# would hide exactly the observations the iteration 0 file lists (seen on a real run).
+FIRST_ITERATION = 0
+FIRST_ITERATION_WEIGHTS_NOTE = (
+    "iteration 0 is checked before pestpp adjusts any weight, so the control file's weights "
+    "decide which observations can be in conflict; the adjusted weights file holds the "
+    "weights after that first check and is not used here"
 )
 NO_WEIGHTS_FILE_NOTE = (
     "no adjusted weights file was found for this run, so the control file's weights (above 0) "
@@ -253,7 +263,9 @@ def compute_pdc(
     """Reconstruct prior-data conflict from the cached statistics: the
     simulated ensemble's ``obs_agg/K`` and the noise band ``noise_agg``.
     Used only when pestpp's own file is absent. Every row is labelled
-    ``computed``. Never raises."""
+    ``computed``. Never raises. At iteration 0 ``weights`` is ignored and the
+    control file's weights decide the candidates; from iteration 1 on the
+    adjusted weights do, or the control weights with a note when there are none."""
     name = f"pdc/{iteration}"
     try:
         index = load_obs_index(layout)
@@ -290,7 +302,11 @@ def compute_pdc(
             f"({noise.n_real_used} realization(s), base {noise.base})"
         ]
         has_target = (index.flags & FLAG_HAS_TARGET) != 0
-        if weights is None:
+        if iteration == FIRST_ITERATION:
+            candidate = has_target & ((index.flags & FLAG_WEIGHTED) != 0)
+            weights_source = "control file weights (iteration 0 is checked before weights change)"
+            notes.append(FIRST_ITERATION_WEIGHTS_NOTE)
+        elif weights is None:
             candidate = has_target & ((index.flags & FLAG_WEIGHTED) != 0)
             weights_source = "control file weights (no adjusted weights file was found)"
             notes.append(NO_WEIGHTS_FILE_NOTE)
