@@ -19,6 +19,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol, Sequence, runtime_checkable
 
+import pandas as pd
+
 from pesto.cache.layout import CacheLayout, for_run
 from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
 from pesto.cache.runconfig import build_config, write_config
@@ -29,6 +31,7 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
+from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsens import write_obs_ensemble
 from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
 from pesto.ingest.obsread import read_obs_file
@@ -65,7 +68,7 @@ class PlannedArtifact:
     """
 
     name: str
-    # "control" | "grid" | "par_cell" | "obs_index" | "par_ens" | "par_agg" | "obs_ens"
+    # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "par_ens" | "par_agg" | "obs_ens"
     # | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
@@ -320,6 +323,36 @@ def _write_obs_index_artifact(cache_root: str) -> "WrittenArtifact | ReadFailure
     return write_obs_index(index, layout)
 
 
+def _write_obs_cell_artifact(grid_path: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
+    """The worker for the ``obs_cell`` artifact: places every site of the
+    cached ``obs_index`` on the grid, never from the control file, and writes
+    ``grid/obs_cell.parquet`` and its sidecar."""
+    layout = CacheLayout(root=Path(cache_root))
+    index = load_obs_index(layout)
+    if isinstance(index, ReadFailure):
+        return ReadFailure(
+            name="obs_cell",
+            path=index.path,
+            reason=f"obs_cell: the obs_index could not be read: {index.reason}",
+        )
+    sites = index.sites
+    # The adapter reads names off the index and group off obgnme; the
+    # identity columns go in as read.
+    table = pd.DataFrame({"obgnme": sites["group"].astype(str).to_numpy()})
+    for column in IDENTITY_COLUMNS:
+        if column in sites.columns:
+            table[column] = sites[column].to_numpy()
+    table.index = pd.Index(sites["site"].astype(str).to_numpy(), name="obsnme")
+    # Deferred import: nothing under pesto.ingest may name pesto.model at
+    # module level (test_no_ingest_file_imports_anything_from_model).
+    from pesto.model.mf6 import Mf6Adapter
+
+    cells = Mf6Adapter(Path(grid_path)).locate_obs(table)
+    if isinstance(cells, ReadFailure):
+        return cells
+    return write_obs_cell(cells, sites, index.order_digest, layout)
+
+
 def _write_obs_ens_artifact(
     source: str, cache_root: str, iteration: int
 ) -> "WrittenArtifact | ReadFailure":
@@ -529,7 +562,8 @@ def plan_artifacts(
     """The whole, deterministically ordered list of artifacts one ingest of
     ``run`` will attempt: ``control`` first, so every later worker can read
     its cached tables; then ``grid`` and ``par_cell`` when a grid file
-    exists; then ``obs_index``, which needs the control table only; then an
+    exists; then ``obs_index``, which needs the control table only; then
+    ``obs_cell`` when a grid file exists, which needs ``obs_index``; then an
     ensemble and a summary for each selected iteration in
     ascending order, ensemble before summary; then an observation ensemble
     for each iteration :func:`observation_iterations` selects that has an
@@ -550,13 +584,13 @@ def plan_artifacts(
     file followed by every table it names in an external section the control
     sources: ``control`` lists exactly those, ``grid`` the grid file alone,
     ``par_cell`` the control sources and the grid file, ``obs_index`` the
-    control sources alone, a summary that
+    control sources alone, ``obs_cell`` the control sources and the grid file, a summary that
     iteration's ensemble file and then the control sources, an ensemble the
     same and, when one exists, the grid file too, an observation ensemble its
     observation file and then the control sources, ``pp_factors`` its own
     files, the grid file and the control sources, and ``config`` the control
     sources and, when one exists, the grid file. A run with no grid file
-    plans no ``grid`` and no ``par_cell`` artifact. No artifact lists a path
+    plans no ``grid``, no ``par_cell`` and no ``obs_cell`` artifact. No artifact lists a path
     twice.
     """
     if iterations is None:
@@ -637,6 +671,23 @@ def plan_artifacts(
             source_bytes=_size_of(control_sources),
         )
     )
+
+    if grid_path is not None:
+        # Kept apart from the ensembles: a grid edit makes only this stale.
+        obs_cell_sources = _unique((*control_sources, str(grid_path)))
+        artifacts.append(
+            PlannedArtifact(
+                name="obs_cell",
+                kind="obs_cell",
+                sources=obs_cell_sources,
+                outputs=(
+                    str(layout.obs_cell),
+                    str(layout.obs_cell_meta),
+                ),
+                source_bytes=_size_of(obs_cell_sources),
+                needs=("obs_index",),
+            )
+        )
 
     for iteration in selected:
         source = run.par_ens.get(iteration)
@@ -894,6 +945,12 @@ def estimate_bytes(
             "rather than from any source file's size -- excluded rather than guessed"
         )
 
+    if run.grid is not None:
+        notes.append(
+            "obs_cell: one row per observation site, whose size follows the control table's "
+            "site count rather than any source file's size -- excluded rather than guessed"
+        )
+
     notes.append(
         "obs_index: a few files whose size follows the control table's observation count "
         "rather than any source file's size -- excluded rather than guessed"
@@ -968,6 +1025,8 @@ def _dispatch(
         return _write_par_cell_artifact, (grid_path, cache_root)
     if artifact.kind == "obs_index":
         return _write_obs_index_artifact, (cache_root,)
+    if artifact.kind == "obs_cell":
+        return _write_obs_cell_artifact, (grid_path, cache_root)
     if artifact.kind == "pp_factors":
         return _write_pp_factors_artifact, (run_dir, grid_path, cache_root)
     if artifact.kind == "config":
@@ -978,7 +1037,7 @@ def _dispatch(
 # Artifacts whose worker reads the cached control table. ``grid`` reads only
 # the grid file and ``control`` is the one that writes the table.
 _CONTROL_DEPENDENTS = frozenset(
-    {"par_cell", "obs_index", "par_ens", "par_agg", "obs_ens", "pp_factors", "config"}
+    {"par_cell", "obs_index", "obs_cell", "par_ens", "par_agg", "obs_ens", "pp_factors", "config"}
 )
 
 

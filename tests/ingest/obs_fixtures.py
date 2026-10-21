@@ -65,6 +65,25 @@ DEFAULT_SITES = (
 )
 
 
+# Three sites for a real vertex grid: icpl with a layer, icpl with a blank layer,
+# and x, y alone (inside cell 1). The grid is single-layer because the xyz rule
+# needs a layer from z or from the name, and obs_index carries neither.
+GRID_SITES = (
+    SiteSpec(
+        "gw_icpl", "oname:hds_otype:lst_usecol:icpl-a", (None,), "none",
+        extras={"icpl": "0", "layer": "0"},
+    ),
+    SiteSpec(
+        "gw_icpl", "oname:hds_otype:lst_usecol:icpl-b", (None,), "none",
+        extras={"icpl": "2", "layer": None},
+    ),
+    SiteSpec(
+        "gw_xy", "oname:hds_otype:lst_usecol:xy-c", (None,), "none",
+        extras={"x": "1.5", "y": "0.6"},
+    ),
+)
+
+
 def _text(value) -> str | None:
     if value is None:
         return None
@@ -176,7 +195,7 @@ def make_obs_run(
     root: Path,
     *,
     case: str = "case",
-    sites=DEFAULT_SITES,
+    sites=None,
     iterations: tuple[int, ...] = (0, 1),
     par_iterations: tuple[int, ...] | None = None,
     n_real: int = 4,
@@ -184,14 +203,22 @@ def make_obs_run(
     hash_ordered: bool = False,
     real_names: list[str] | None = None,
     n_par: int = 6,
+    grid: bool = False,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
     ``iterations`` by default; pass ``()`` for an observation-only run) and
     observation ensembles for ``iterations``. Everything lands under
     ``root``. Values come from ``np.random.default_rng``, never the global
-    generator."""
+    generator.
+
+    ``grid=True`` writes a real single-layer vertex grid file instead of the
+    placeholder and, unless ``sites`` is given, uses ``GRID_SITES``."""
     from pesto.warm import load_pyemu
+    from model.fixtures import write_disv_grb
+
+    if sites is None:
+        sites = GRID_SITES if grid else DEFAULT_SITES
 
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -249,7 +276,10 @@ def make_obs_run(
         par_ens[iteration] = path
 
     grid_path = root / "coarse.disv.grb"
-    grid_path.write_bytes(b"synthetic grid file placeholder, not a real .grb")
+    if grid:
+        write_disv_grb(grid_path, nlay=1, inactive_layer=0, inactive_cell=1)
+    else:
+        grid_path.write_bytes(b"synthetic grid file placeholder, not a real .grb")
 
     return ObsRun(
         root=root,
