@@ -449,7 +449,14 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
         str(run.grid),
     }
     assert set(planned["par_agg/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
-    assert planned["control"].sources == (str(run.pst_path),)
+    assert run.external_tables
+    assert planned["control"].sources == (
+        str(run.pst_path),
+        *(str(p) for p in run.external_tables),
+    )
+    assert planned["control"].source_bytes == sum(
+        Path(s).stat().st_size for s in planned["control"].sources
+    )
     assert planned["grid"].sources == (str(run.grid),)
     assert planned["par_cell"].sources == (str(run.pst_path), str(run.grid))
     assert set(planned["config"].sources) == {str(run.pst_path), str(run.grid)}
