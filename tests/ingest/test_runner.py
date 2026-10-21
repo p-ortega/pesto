@@ -311,9 +311,27 @@ def test_should_retry_declines_only_an_unchanged_failed_artifact(tmp_path):
 
     manifest = ingest_run(run_dir, cache_root=cache_root)
 
-    assert _should_retry(manifest, "par_ens/1", run_dir) is False
-    assert _should_retry(manifest, "par_ens/0", run_dir) is True
-    assert _should_retry(manifest, "par_ens/999", run_dir) is True
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))}
+    sources = planned["par_ens/1"].sources
+
+    assert _should_retry(manifest, "par_ens/1", run_dir, sources) is False
+    assert _should_retry(manifest, "par_ens/0", run_dir, planned["par_ens/0"].sources) is True
+    assert _should_retry(manifest, "par_ens/999", run_dir, sources) is True
+
+
+def test_should_retry_reads_a_failed_artifact_again_when_the_planned_source_names_changed(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cache_root = tmp_path / "cache"
+    run = make_run(run_dir, iterations=(0, 1))
+    write_corrupt_ensemble(run.par_ens[1], "truncated_header")
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))}
+    sources = planned["par_ens/1"].sources
+
+    assert _should_retry(manifest, "par_ens/1", run_dir, sources) is False
+    assert _should_retry(manifest, "par_ens/1", run_dir, (*sources, str(run_dir / "extra.csv"))) is True
+    assert _should_retry(manifest, "par_ens/1", run_dir, sources[:-1]) is True
 
 
 def test_replacing_the_corrupt_file_with_a_readable_one_reingests_to_ok(tmp_path):
@@ -443,23 +461,24 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
 
     planned = {a.name: a for a in plan_artifacts(run, layout)}
 
-    assert set(planned["par_ens/0"].sources) == {
-        str(run.par_ens[0]),
-        str(run.pst_path),
-        str(run.grid),
-    }
-    assert set(planned["par_agg/0"].sources) == {str(run.par_ens[0]), str(run.pst_path)}
     assert run.external_tables
-    assert planned["control"].sources == (
-        str(run.pst_path),
-        *(str(p) for p in run.external_tables),
-    )
+    control_sources = (str(run.pst_path), *(str(p) for p in run.external_tables))
+    assert planned["control"].sources == control_sources
     assert planned["control"].source_bytes == sum(
         Path(s).stat().st_size for s in planned["control"].sources
     )
     assert planned["grid"].sources == (str(run.grid),)
-    assert planned["par_cell"].sources == (str(run.pst_path), str(run.grid))
-    assert set(planned["config"].sources) == {str(run.pst_path), str(run.grid)}
+    assert planned["par_cell"].sources == (*control_sources, str(run.grid))
+    assert planned["par_ens/0"].sources == (
+        str(run.par_ens[0]),
+        *control_sources,
+        str(run.grid),
+    )
+    assert planned["par_agg/0"].sources == (str(run.par_ens[0]), *control_sources)
+    assert planned["config"].sources == (*control_sources, str(run.grid))
+    for artifact in planned.values():
+        assert len(set(artifact.sources)) == len(artifact.sources), artifact.name
+        assert artifact.source_bytes == sum(Path(s).stat().st_size for s in artifact.sources)
 
 
 def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
@@ -476,10 +495,29 @@ def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
     assert "grid" not in names
     assert "par_cell" not in names
     config = next(a for a in planned if a.name == "config")
-    assert config.sources == (str(run.pst_path),)
+    control_sources = (str(run.pst_path), *(str(p) for p in run.external_tables))
+    assert config.sources == control_sources
     par_ens = next(a for a in planned if a.name == "par_ens/0")
-    assert set(par_ens.sources) == {str(run.par_ens[0]), str(run.pst_path)}
+    assert par_ens.sources == (str(run.par_ens[0]), *control_sources)
     assert not any(note.startswith("par_cell:") for note in estimate_bytes(run).notes)
+
+
+def test_pp_factors_keeps_its_own_files_and_ends_with_every_control_source(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0,))
+    (run_dir / "mult2model_info.csv").write_text("org_file,model_file,fac_file,pp_file\n")
+    (run_dir / "g1pp_inst0pp.fac").write_text("x\n")
+    run = discover(run_dir)
+
+    planned = {a.name: a for a in plan_artifacts(run, CacheLayout(root=tmp_path / "cache"))}
+
+    control_sources = planned["control"].sources
+    pp = planned["pp_factors"].sources
+    assert pp[0] == str(run_dir / "mult2model_info.csv")
+    assert pp[-len(control_sources) :] == control_sources
+    assert str(run.grid) in pp[: -len(control_sources)]
+    assert len(set(pp)) == len(pp)
 
 
 def test_ingest_run_writes_every_artifact_kind_and_each_reads_back_through_its_own_reader(
@@ -853,10 +891,11 @@ def test_the_failed_artifacts_recorded_sources_hold_exactly_what_could_be_finger
 
     artifact = manifest.artifacts["par_ens/0"]
     assert artifact.state == "failed"
-    # par_ens/0 depends on the vanished ensemble file plus the control and
-    # grid files, which can still be fingerprinted -- only those two survive.
+    # par_ens/0 depends on the vanished ensemble file plus the control file,
+    # its external tables and the grid file, which can still be
+    # fingerprinted -- only those survive.
     assert sorted(s.path for s in artifact.sources) == sorted(
-        [run.pst_path.name, run.grid_path.name]
+        [run.pst_path.name, *(p.name for p in discover(run_dir).external_tables), run.grid_path.name]
     )
 
 
@@ -900,23 +939,25 @@ def test_the_run_directory_is_unchanged_by_the_fingerprint_failure_case(tmp_path
     assert before == after
 
 
-def test_a_whole_run_ingest_with_every_source_present_records_two_sources_and_fails_nothing_new(
+def test_a_whole_run_ingest_with_every_source_present_records_every_source_and_fails_nothing_new(
     tmp_path,
 ):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     cache_root = tmp_path / "cache"
     make_run(run_dir, iterations=(0, 1))
+    n_control = len(plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))[0].sources)
 
     rows: list[Progress] = []
     manifest = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
 
     for name, artifact in manifest.artifacts.items():
         if name.startswith("par_agg/"):
-            assert len(artifact.sources) == 2, (name, artifact.sources)
+            # The ensemble, then everything control read.
+            assert len(artifact.sources) == 1 + n_control, (name, artifact.sources)
         if name.startswith("par_ens/"):
-            # The ensemble and the control file, and the grid its map block follows.
-            assert len(artifact.sources) == 3, (name, artifact.sources)
+            # The same, and the grid its map block follows.
+            assert len(artifact.sources) == 2 + n_control, (name, artifact.sources)
         if name not in _GRID_BOUND:  # the synthetic fixture's grid always fails
             assert artifact.state == "ok", (name, artifact.reason)
 
