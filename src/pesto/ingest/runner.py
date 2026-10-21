@@ -938,6 +938,22 @@ def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
     return f"{name} depends on control, which failed: {why or 'it was not read in this ingest'}"
 
 
+def _needs_failure_reason(manifest: Manifest, artifact: PlannedArtifact) -> str | None:
+    """Why ``artifact`` cannot run: an artifact it needs is not recorded ok.
+    ``None`` when every one is fine. The first one that is not ok names the
+    reason, with the reason that artifact recorded."""
+    for needed in artifact.needs:
+        found = manifest.artifacts.get(needed)
+        if found is not None and found.state == "ok":
+            continue
+        why = found.reason if found is not None and found.reason else None
+        return (
+            f"{artifact.name} depends on {needed}, which failed: "
+            f"{why or 'it was not read in this ingest'}"
+        )
+    return None
+
+
 def _fingerprint_as_control_read_them(
     manifest: Manifest, sources: Sequence[str]
 ) -> tuple[list[SourceFingerprint], tuple[str, ...]]:
@@ -1033,7 +1049,10 @@ def ingest_run(
     else:
         selected = list(iterations)
 
-    planned = plan_artifacts(run, layout, iterations=selected)
+    # The caller's own argument goes through unchanged, so the plan can tell
+    # "none given" (it then picks observation iterations by its own rule)
+    # from a list the caller chose.
+    planned = plan_artifacts(run, layout, iterations=iterations)
     first_iteration = selected[0] if selected else None
 
     grid_path = str(run.grid) if run.grid is not None else None
@@ -1097,28 +1116,31 @@ def ingest_run(
                 )
             continue
 
+        blocked = None
         if artifact.kind in _CONTROL_DEPENDENTS:
             blocked = _control_failure_reason(manifest, artifact.name)
-            if blocked is not None:
-                sources, unfingerprinted = _fingerprint_sources(artifact.sources)
-                if unfingerprinted:
-                    blocked = f"{blocked}; also, {'; '.join(unfingerprinted)}"
-                manifest.mark_failed(artifact.name, blocked, sources=sources)
-                manifest.save(layout)
-                if on_progress is not None:
-                    on_progress(
-                        Progress(
-                            artifact=artifact.name,
-                            state="failed",
-                            index=index,
-                            total=total,
-                            source_bytes=artifact.source_bytes,
-                            written_bytes=0,
-                            seconds=0.0,
-                            reason=blocked,
-                        )
+        if blocked is None:
+            blocked = _needs_failure_reason(manifest, artifact)
+        if blocked is not None:
+            sources, unfingerprinted = _fingerprint_sources(artifact.sources)
+            if unfingerprinted:
+                blocked = f"{blocked}; also, {'; '.join(unfingerprinted)}"
+            manifest.mark_failed(artifact.name, blocked, sources=sources)
+            manifest.save(layout)
+            if on_progress is not None:
+                on_progress(
+                    Progress(
+                        artifact=artifact.name,
+                        state="failed",
+                        index=index,
+                        total=total,
+                        source_bytes=artifact.source_bytes,
+                        written_bytes=0,
+                        seconds=0.0,
+                        reason=blocked,
                     )
-                continue
+                )
+            continue
 
         if on_progress is not None:
             on_progress(
