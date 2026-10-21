@@ -827,17 +827,31 @@ def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
     return f"{name} depends on control, which failed: {why or 'it was not read in this ingest'}"
 
 
-def _as_control_read_them(
-    manifest: Manifest, sources: list[SourceFingerprint]
-) -> list[SourceFingerprint]:
-    """``sources`` with the control file's fingerprint swapped for the one
-    ``control`` recorded. A dependent is built from the table control cached,
-    so a .pst edited while it ran must leave it stale, not fresh."""
+def _fingerprint_as_control_read_them(
+    manifest: Manifest, sources: Sequence[str]
+) -> tuple[list[SourceFingerprint], tuple[str, ...]]:
+    """Fingerprints for a control dependent's ``sources``, taking each file
+    ``control`` recorded from control's own record and hashing only the
+    rest.
+
+    A dependent is built from the table control cached, so a file edited
+    while it ran must leave it stale, not fresh -- and control's record is
+    what makes that so. It also means a 398 MB observation table that seven
+    artifacts list is hashed once per ingest, not eight times.
+    """
     control = manifest.artifacts.get("control")
-    if control is None:
-        return sources
-    recorded = {s.path: s for s in control.sources}
-    return [recorded.get(s.path, s) for s in sources]
+    recorded = {s.path: s for s in control.sources} if control is not None else {}
+    fingerprints: list[SourceFingerprint] = []
+    unfingerprinted: list[str] = []
+    for raw in sources:
+        known = recorded.get(Path(raw).name)
+        if known is not None:
+            fingerprints.append(known)
+            continue
+        found, missing = _fingerprint_sources([raw])
+        fingerprints.extend(found)
+        unfingerprinted.extend(missing)
+    return fingerprints, tuple(unfingerprinted)
 
 
 def _cell_note_for(manifest: Manifest, planned: Sequence[PlannedArtifact]) -> str | None:
@@ -1022,9 +1036,12 @@ def ingest_run(
         ok, result = _run_isolated(worker_fn, *worker_args)
         seconds = time.perf_counter() - start
 
-        sources, unfingerprinted = _fingerprint_sources(artifact.sources)
         if artifact.kind in _CONTROL_DEPENDENTS:
-            sources = _as_control_read_them(manifest, sources)
+            sources, unfingerprinted = _fingerprint_as_control_read_them(
+                manifest, artifact.sources
+            )
+        else:
+            sources, unfingerprinted = _fingerprint_sources(artifact.sources)
 
         notes: tuple[str, ...] = ()
         if ok and isinstance(result, WrittenArtifact) and not unfingerprinted:
