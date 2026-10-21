@@ -140,9 +140,14 @@ def _make(tmp_path, **kwargs):
 
 
 def _obs_ens_names(run, iterations) -> list[str]:
-    """The obs_ens names a plan holds for ``iterations``, read from the run's
-    own record of which observation files exist."""
-    return [f"obs_ens/{k}" for k in iterations if k in run.obs_ens]
+    """The obs_ens and obs_agg names a plan holds for ``iterations``, read from
+    the run's own record of which observation files exist; each obs_agg
+    follows its obs_ens."""
+    names: list[str] = []
+    for k in iterations:
+        if k in run.obs_ens:
+            names.extend([f"obs_ens/{k}", f"obs_agg/{k}"])
+    return names
 
 
 # ---------------------------------------------------------------------------

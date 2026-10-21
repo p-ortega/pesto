@@ -88,7 +88,9 @@ class ParSummary:
     __hash__ = None
 
 
-def summarise(values: np.ndarray, names: Sequence[str]) -> tuple[pd.DataFrame, list[str]]:
+def summarise(
+    values: np.ndarray, names: Sequence[str], noun: str = "parameter"
+) -> tuple[pd.DataFrame, list[str]]:
     """Summarise a realization-major ``(n_real, n_par)`` float32 array into
     one row per parameter: ``parnme``, ``mean``, ``std``, ``min``, ``max``,
     the five columns in ``PERCENTILES`` and ``n_valid``.
@@ -113,6 +115,9 @@ def summarise(values: np.ndarray, names: Sequence[str]) -> tuple[pd.DataFrame, l
     exactly one valid realization gets that value for min, max, mean and
     every quantile, and a missing value for std -- a standard deviation
     over one sample is not a number this function states.
+
+    ``noun`` is the word the no-valid-realizations note uses for a column;
+    observation summaries pass ``"observation"``.
     """
     values = np.asarray(values, dtype=np.float32)
     n_real, n_par = values.shape
@@ -160,7 +165,7 @@ def summarise(values: np.ndarray, names: Sequence[str]) -> tuple[pd.DataFrame, l
     for idx, name in enumerate(names):
         if n_valid[idx] == 0:
             notes.append(
-                f"parameter {name!r} has no valid realizations; all statistics are missing"
+                f"{noun} {name!r} has no valid realizations; all statistics are missing"
             )
 
     data: dict[str, object] = {
