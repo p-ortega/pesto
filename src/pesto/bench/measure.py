@@ -45,7 +45,8 @@ _PROBE_NOT_RUN = "not run (pass --obs-probe to time one observation file)"
 _PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
     "counted from the artifact plan: each artifact that names a source reads it "
-    "once in its worker and once more to checksum it"
+    "once in its worker and once more to checksum it, except the control file and "
+    "its tables, which only the control artifact reads"
 )
 
 
@@ -94,9 +95,14 @@ def source_files(run_dir: Path, cache_dir: Path) -> list[SourceFile]:
 
 def source_reads(run_dir: Path, cache_dir: Path) -> list[SourceRead]:
     counts: dict[Path, int] = {}
+    control_files: set[Path] = set()
     for artifact in _planned(run_dir, cache_dir):
         for source in artifact.sources:
             path = Path(source).resolve()
+            if artifact.name == "control":
+                control_files.add(path)
+            elif path in control_files:
+                continue
             counts[path] = counts.get(path, 0) + 2
     return [SourceRead(name=p.name, bytes=_size(p), reads_implied=n) for p, n in counts.items()]
 

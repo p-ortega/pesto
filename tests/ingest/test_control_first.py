@@ -21,7 +21,7 @@ import pytest
 import pesto.ingest.runner as runner
 import pesto.model.mf6 as mf6_module
 from pesto.cache.layout import CacheLayout
-from pesto.cache.manifest import Manifest, WrittenArtifact
+from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
 from pesto.ingest.control import read_control
 from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
@@ -173,17 +173,22 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
 # ---------------------------------------------------------------------------
 
 
-def test_a_pst_edited_while_a_dependent_runs_leaves_that_dependent_stale(
-    tmp_path, in_process, monkeypatch
+@pytest.mark.parametrize(
+    "file_name, appended",
+    [("case.pst", "\n* edited mid-ingest\n"), ("case.par_data.csv", "\n")],
+)
+def test_a_control_file_edited_while_a_dependent_runs_leaves_that_dependent_stale(
+    tmp_path, in_process, monkeypatch, file_name, appended
 ):
     """The summary is built from the table control cached before the edit, so
     it must not be recorded fresh against the edited file."""
     run_dir, run, cache_root = _make(tmp_path, iterations=(0,))
+    edited = run_dir / file_name
     real = runner._write_par_agg_artifact
 
     def _edited_during_the_worker(*args):
         result = real(*args)
-        run.pst_path.write_text(run.pst_path.read_text() + "\n* edited mid-ingest\n")
+        edited.write_text(edited.read_text() + appended)
         return result
 
     monkeypatch.setattr(runner, "_write_par_agg_artifact", _edited_during_the_worker)
@@ -195,6 +200,192 @@ def test_a_pst_edited_while_a_dependent_runs_leaves_that_dependent_stale(
     assert manifest.artifacts["par_agg/0"].state == "ok"
     for name in ("control", "par_agg/0", "config"):
         assert manifest.is_stale(name, layout, planned[name].sources), name
+
+
+# ---------------------------------------------------------------------------
+# an edit to a table the .pst names
+# ---------------------------------------------------------------------------
+
+
+def _set_parlbnd(csv_path, parameter, value):
+    frame = pd.read_csv(csv_path, low_memory=False)
+    frame.loc[frame["parnme"] == parameter, "parlbnd"] = value
+    frame.to_csv(csv_path, index=False)
+
+
+def test_a_parlbnd_edit_in_the_external_table_rereads_control_and_its_dependents_not_grid(
+    tmp_path, in_process
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+    ingest_run(run_dir, cache_root=cache_root)
+    _set_parlbnd(run_dir / "case.par_data.csv", "par0", 0.25)
+
+    rows: list[Progress] = []
+    ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    final = {r.artifact: r.state for r in rows if r.state != "started"}
+    for name in ("control", "par_cell", "par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "config"):
+        assert final[name] == "ok", name
+    assert final["grid"] == "skipped"
+    tables = load_control_tables(CacheLayout(root=cache_root))
+    par = tables.par.set_index("parnme")
+    assert float(par.loc["par0", "parlbnd"]) == 0.25
+
+
+# ---------------------------------------------------------------------------
+# each control file is hashed once per ingest
+# ---------------------------------------------------------------------------
+
+
+def _control_file_names(run_dir):
+    run = discover(run_dir)
+    return [run.pst_path.name, *(p.name for p in run.external_tables)]
+
+
+def test_each_file_control_reads_is_hashed_exactly_once_per_ingest(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+    hashed: list[str] = []
+    real = SourceFingerprint.of
+
+    def _counting(path):
+        hashed.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(SourceFingerprint, "of", staticmethod(_counting))
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    names = _control_file_names(run_dir)
+    assert len(names) > 1
+    for name in names:
+        assert hashed.count(name) == 1, name
+
+
+def test_every_dependent_records_the_fingerprints_control_recorded(tmp_path, in_process):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    recorded = {s.path: s for s in manifest.artifacts["control"].sources}
+    assert set(recorded) == set(_control_file_names(run_dir))
+    for name in ("par_cell", "par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "config"):
+        artifact = manifest.artifacts[name]
+        assert artifact.state == "ok", name
+        for source in artifact.sources:
+            if source.path in recorded:
+                assert source == recorded[source.path], (name, source.path)
+
+
+def test_a_dependent_blocked_by_a_failed_control_still_records_what_it_could_fingerprint(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0,))
+    monkeypatch.setattr(
+        runner,
+        "read_control",
+        lambda path: ReadFailure(name="control", path=str(path), reason="the control file is corrupt"),
+    )
+
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    expected = set(_control_file_names(run_dir))
+    for name in ("par_cell", "par_ens/0", "par_agg/0", "config"):
+        assert {s.path for s in manifest.artifacts[name].sources} >= expected, name
+
+
+# ---------------------------------------------------------------------------
+# the run directory is left as found
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(run_dir):
+    return {
+        str(p.relative_to(run_dir)): (
+            (p.stat().st_size, p.stat().st_mtime_ns) if p.is_file() else None
+        )
+        for p in run_dir.rglob("*")
+    }
+
+
+def test_ingesting_leaves_the_run_directory_exactly_as_found(tmp_path, in_process):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0, 1))
+
+    before = _snapshot(run_dir)
+    ingest_run(run_dir, cache_root=cache_root)
+    assert _snapshot(run_dir) == before
+
+    _set_parlbnd(run_dir / "case.par_data.csv", "par0", 0.25)
+    before_second = _snapshot(run_dir)
+    ingest_run(run_dir, cache_root=cache_root)
+    assert _snapshot(run_dir) == before_second
+
+
+# ---------------------------------------------------------------------------
+# retry rule for a failed control
+# ---------------------------------------------------------------------------
+
+
+def test_a_control_recorded_failed_against_the_pst_alone_is_read_again(
+    tmp_path, in_process, count_control_reads
+):
+    run_dir, run, cache_root = _make(tmp_path, iterations=(0,))
+    ingest_run(run_dir, cache_root=cache_root)
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed(
+        "control",
+        "recorded by an older version",
+        sources=[manifest.artifacts["control"].sources[0]],
+    )
+    manifest.save(layout)
+    assert manifest.artifacts["control"].sources[0].path == run.pst_path.name
+    count_control_reads.clear()
+
+    second = ingest_run(run_dir, cache_root=cache_root)
+
+    assert len(count_control_reads) == 1
+    assert second.artifacts["control"].state == "ok"
+
+
+def test_a_control_that_failed_on_unchanged_sources_is_still_declined(
+    tmp_path, in_process, monkeypatch, count_control_reads
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0,))
+
+    def _broken(path):
+        return ReadFailure(name="control", path=str(path), reason="the control file is corrupt")
+
+    monkeypatch.setattr(runner, "read_control", _broken)
+    ingest_run(run_dir, cache_root=cache_root)
+    count_control_reads.clear()
+
+    ingest_run(run_dir, cache_root=cache_root)
+
+    assert count_control_reads == []
+
+
+def test_a_missing_external_table_fails_control_by_name_and_the_next_ingest_reads_it_again(
+    tmp_path, in_process
+):
+    run_dir, _, cache_root = _make(tmp_path, iterations=(0,))
+    table = run_dir / "case.par_data.csv"
+    kept = table.read_bytes()
+    table.unlink()
+
+    first = ingest_run(run_dir, cache_root=cache_root)
+
+    assert first.artifacts["control"].state == "failed"
+    assert "case.par_data.csv" in first.artifacts["control"].reason
+    for name in ("par_cell", "par_ens/0", "par_agg/0", "config"):
+        assert first.artifacts[name].state == "failed", name
+        assert "depends on control" in first.artifacts[name].reason
+
+    table.write_bytes(kept)
+    second = ingest_run(run_dir, cache_root=cache_root)
+
+    assert second.artifacts["control"].state == "ok"
 
 
 # ---------------------------------------------------------------------------

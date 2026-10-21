@@ -394,7 +394,7 @@ def _select_iterations(numbered: list[int]) -> list[int]:
     return [ordered[0], ordered[-1]]
 
 
-def _should_retry(manifest: Manifest, name: str, base: Path) -> bool:
+def _should_retry(manifest: Manifest, name: str, base: Path, sources: Sequence[str]) -> bool:
     """Should artifact ``name`` be read again on this ingest?
 
     Decision (04-CONTEXT.md's Claude's Discretion item, resolved here): a
@@ -406,11 +406,19 @@ def _should_retry(manifest: Manifest, name: str, base: Path) -> bool:
     manifest, one in any state other than ``"failed"``, a failed artifact
     with a changed source, or a failed artifact with no recorded sources at
     all -- is read again.
+
+    So is a failed artifact whose recorded source names differ from the
+    planned ``sources``, the rule ``Manifest.is_stale`` applies to ``ok``
+    artifacts. A failure recorded before the plan listed a source (or one
+    that could not fingerprint a missing file) would otherwise never be read
+    again, because the sources it did record still match.
     """
     artifact = manifest.artifacts.get(name)
     if artifact is None or artifact.state != "failed":
         return True
     if not artifact.sources:
+        return True
+    if {s.path for s in artifact.sources} != {Path(s).name for s in sources}:
         return True
     return not all(source.matches(base) for source in artifact.sources)
 
@@ -420,6 +428,15 @@ def _stat_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _size_of(sources: Sequence[str]) -> int:
+    return sum(_stat_size(Path(s)) for s in sources)
+
+
+def _unique(sources: Sequence[str]) -> tuple[str, ...]:
+    """``sources`` without repeats, in first-seen order."""
+    return tuple(dict.fromkeys(sources))
 
 
 def plan_artifacts(
@@ -442,14 +459,16 @@ def plan_artifacts(
     and re-reading the file to write the same bytes twice is time spent for
     nothing.
 
-    Each artifact names the source files it depends on: a summary against
-    that iteration's ensemble file and the control file, an ensemble against
-    the same two and, when one exists, the grid file too,
-    ``control`` against the control file, ``grid`` against the grid file,
-    ``par_cell`` against the control file and the grid file, and ``config``
-    against the control file and, when one exists, the grid file too. A run
-    with no grid file plans no ``grid`` and no ``par_cell`` artifact, and
-    ``config`` fingerprints only the control file.
+    Each artifact names the source files it depends on. Call the control
+    file followed by every table it names in an external section the control
+    sources: ``control`` lists exactly those, ``grid`` the grid file alone,
+    ``par_cell`` the control sources and the grid file, a summary that
+    iteration's ensemble file and then the control sources, an ensemble the
+    same and, when one exists, the grid file too, ``pp_factors`` its own
+    files, the grid file and the control sources, and ``config`` the control
+    sources and, when one exists, the grid file. A run with no grid file
+    plans no ``grid`` and no ``par_cell`` artifact. No artifact lists a path
+    twice.
     """
     if iterations is None:
         numbered = [k for k in run.par_ens if isinstance(k, int)]
@@ -458,25 +477,29 @@ def plan_artifacts(
         selected = list(iterations)
 
     pst_path = run.pst_path
-    pst_bytes = _stat_size(pst_path)
     grid_path = run.grid
+    # The control file first (workers and failure messages name sources[0]),
+    # then every table it names in an external section. Every artifact built
+    # from the control table lists all of them.
+    control_sources = _unique((str(pst_path), *(str(p) for p in run.external_tables)))
 
     artifacts: list[PlannedArtifact] = [
         PlannedArtifact(
             name="control",
             kind="control",
-            sources=(str(pst_path),),
+            sources=control_sources,
             outputs=(
                 str(layout.control / "par.parquet"),
                 str(layout.control / "obs.parquet"),
                 str(layout.control / "notes.json"),
             ),
-            source_bytes=pst_bytes,
+            source_bytes=_size_of(control_sources),
         )
     ]
 
     if grid_path is not None:
         grid_bytes = _stat_size(grid_path)
+        par_cell_sources = _unique((*control_sources, str(grid_path)))
         artifacts.append(
             PlannedArtifact(
                 name="grid",
@@ -495,37 +518,34 @@ def plan_artifacts(
             PlannedArtifact(
                 name="par_cell",
                 kind="par_cell",
-                sources=(str(pst_path), str(grid_path)),
+                sources=par_cell_sources,
                 outputs=(
                     str(layout.grid / "par_cell.parquet"),
                     str(layout.grid / "par_cell.json"),
                 ),
-                source_bytes=pst_bytes + grid_bytes,
+                source_bytes=_size_of(par_cell_sources),
             )
         )
-        config_sources = (str(pst_path), str(grid_path))
-        config_bytes = pst_bytes + grid_bytes
+        config_sources = par_cell_sources
     else:
-        config_sources = (str(pst_path),)
-        config_bytes = pst_bytes
+        config_sources = control_sources
 
     for iteration in selected:
         source = run.par_ens.get(iteration)
         if source is None:
             continue
-        source_bytes = _stat_size(source) + pst_bytes
-        sources = (str(source), str(pst_path))
+        # _dispatch reads the ensemble file from sources[0].
+        sources = _unique((str(source), *control_sources))
         # The map block follows the grid, so an edited grid must make the
         # ensemble stale too; the summary never looks at cells.
-        ens_sources = sources + ((str(grid_path),) if grid_path is not None else ())
-        ens_bytes = source_bytes + (_stat_size(grid_path) if grid_path is not None else 0)
+        ens_sources = _unique(sources + ((str(grid_path),) if grid_path is not None else ()))
         artifacts.append(
             PlannedArtifact(
                 name=f"par_ens/{iteration}",
                 kind="par_ens",
                 sources=ens_sources,
                 outputs=(str(layout.par_ens(iteration)),),
-                source_bytes=ens_bytes,
+                source_bytes=_size_of(ens_sources),
             )
         )
         artifacts.append(
@@ -534,7 +554,7 @@ def plan_artifacts(
                 kind="par_agg",
                 sources=sources,
                 outputs=(str(layout.par_agg(iteration)),),
-                source_bytes=source_bytes,
+                source_bytes=_size_of(sources),
             )
         )
 
@@ -548,14 +568,15 @@ def plan_artifacts(
         pp_sources.extend(str(p) for p in sorted(run.run_dir.glob("ppoints.*.csv")))
         if grid_path is not None:
             pp_sources.append(str(grid_path))
-        pp_sources.append(str(pst_path))
+        pp_sources.extend(control_sources)
+        pp_sources_final = _unique(pp_sources)
         artifacts.append(
             PlannedArtifact(
                 name="pp_factors",
                 kind="pp_factors",
-                sources=tuple(pp_sources),
+                sources=pp_sources_final,
                 outputs=(str(layout.pp_index),),
-                source_bytes=sum(_stat_size(Path(s)) for s in pp_sources),
+                source_bytes=_size_of(pp_sources_final),
             )
         )
 
@@ -565,7 +586,7 @@ def plan_artifacts(
             kind="config",
             sources=config_sources,
             outputs=(str(layout.config),),
-            source_bytes=config_bytes,
+            source_bytes=_size_of(config_sources),
         )
     )
 
@@ -806,17 +827,31 @@ def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
     return f"{name} depends on control, which failed: {why or 'it was not read in this ingest'}"
 
 
-def _as_control_read_them(
-    manifest: Manifest, sources: list[SourceFingerprint]
-) -> list[SourceFingerprint]:
-    """``sources`` with the control file's fingerprint swapped for the one
-    ``control`` recorded. A dependent is built from the table control cached,
-    so a .pst edited while it ran must leave it stale, not fresh."""
+def _fingerprint_as_control_read_them(
+    manifest: Manifest, sources: Sequence[str]
+) -> tuple[list[SourceFingerprint], tuple[str, ...]]:
+    """Fingerprints for a control dependent's ``sources``, taking each file
+    ``control`` recorded from control's own record and hashing only the
+    rest.
+
+    A dependent is built from the table control cached, so a file edited
+    while it ran must leave it stale, not fresh -- and control's record is
+    what makes that so. It also means a 398 MB observation table that seven
+    artifacts list is hashed once per ingest, not eight times.
+    """
     control = manifest.artifacts.get("control")
-    if control is None:
-        return sources
-    recorded = {s.path: s for s in control.sources}
-    return [recorded.get(s.path, s) for s in sources]
+    recorded = {s.path: s for s in control.sources} if control is not None else {}
+    fingerprints: list[SourceFingerprint] = []
+    unfingerprinted: list[str] = []
+    for raw in sources:
+        known = recorded.get(Path(raw).name)
+        if known is not None:
+            fingerprints.append(known)
+            continue
+        found, missing = _fingerprint_sources([raw])
+        fingerprints.extend(found)
+        unfingerprinted.extend(missing)
+    return fingerprints, tuple(unfingerprinted)
 
 
 def _cell_note_for(manifest: Manifest, planned: Sequence[PlannedArtifact]) -> str | None:
@@ -931,7 +966,7 @@ def ingest_run(
             seen_paths[output_path] = artifact.name
 
         existing = manifest.artifacts.get(artifact.name)
-        declined_retry = not _should_retry(manifest, artifact.name, run_dir)
+        declined_retry = not _should_retry(manifest, artifact.name, run_dir, artifact.sources)
         fresh = (not declined_retry) and (not manifest.is_stale(artifact.name, layout, artifact.sources))
         if declined_retry or fresh:
             written_bytes = sum(f.bytes for f in existing.files) if existing is not None else 0
@@ -1001,9 +1036,12 @@ def ingest_run(
         ok, result = _run_isolated(worker_fn, *worker_args)
         seconds = time.perf_counter() - start
 
-        sources, unfingerprinted = _fingerprint_sources(artifact.sources)
         if artifact.kind in _CONTROL_DEPENDENTS:
-            sources = _as_control_read_them(manifest, sources)
+            sources, unfingerprinted = _fingerprint_as_control_read_them(
+                manifest, artifact.sources
+            )
+        else:
+            sources, unfingerprinted = _fingerprint_sources(artifact.sources)
 
         notes: tuple[str, ...] = ()
         if ok and isinstance(result, WrittenArtifact) and not unfingerprinted:
