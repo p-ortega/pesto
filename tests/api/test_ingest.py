@@ -636,6 +636,93 @@ def test_capability_noise_for_a_run_with_only_a_starting_ensemble_says_why(tmp_p
     }
 
 
+def _pdc_capability(app, token):
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    return response.json()["capabilities"]["pdc"]
+
+
+NEITHER_PDC_REASON = (
+    "no pestpp pdc file and no obs+noise file to compute one from, for iteration(s) 0, 1"
+)
+
+
+def test_capability_pdc_is_available_once_pestpps_file_is_read(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True, with_pdc=True)
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _pdc_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_pdc_is_available_when_it_was_computed_from_the_noise_file(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _pdc_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_pdc_is_blocked_before_anything_is_ingested(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True, with_pdc=True)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _pdc_capability(app, token)
+
+    assert capability["available"] is False
+    assert [b["artifact"] for b in capability["blocked_by"]] == ["pdc/0", "pdc/1"]
+
+
+def test_capability_pdc_for_a_run_with_neither_file_says_which_iterations(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    assert _pdc_capability(app, token) == {
+        "available": False,
+        "blocked_by": [{"artifact": "pdc", "reason": NEITHER_PDC_REASON}],
+    }
+
+
+def test_capability_pdc_names_the_artifact_and_its_recorded_reason(
+    tmp_path, in_process, monkeypatch
+):
+    from pesto.ingest.failures import ReadFailure as Failure
+
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True, with_pdc=True)
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        runner_module,
+        "_write_pdc_artifact",
+        lambda cache_root, iteration, pdc_file, weights_file: Failure(
+            name=f"pdc/{iteration}", path="x", reason=f"pdc/{iteration}: would not read"
+        ),
+    )
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+    capability = _pdc_capability(app, token)
+
+    assert capability["available"] is False
+    assert capability["blocked_by"] == [
+        {"artifact": "pdc/0", "reason": "pdc/0: would not read"},
+        {"artifact": "pdc/1", "reason": "pdc/1: would not read"},
+    ]
+    # Observations, their statistics and the noise band are unaffected.
+    assert _obs_capability(app, token) == {"available": True, "blocked_by": []}
+    assert _obs_stats_capability(app, token) == {"available": True, "blocked_by": []}
+    assert _noise_capability(app, token) == {"available": True, "blocked_by": []}
+
+
 # --- the byte estimate (GET /estimate) --------------------------------------
 
 
