@@ -155,7 +155,9 @@ def test_a_grid_file_truncated_to_half_its_bytes_costs_one_read_failure_from_eve
     adapter = Mf6Adapter(truncated)
 
     par = pd.DataFrame({"pargp": ["g"], "idx0": [0], "idx1": [0]})
-    obs = pd.DataFrame({"obsnme": ["obs:a"]})
+    obs = pd.DataFrame(
+        {"obgnme": ["g"], "icpl": ["0"], "layer": ["0"]}, index=pd.Index(["obs:a"], name="obsnme")
+    )
 
     for result in (
         adapter.grid_mesh(),
@@ -221,7 +223,9 @@ def test_a_bad_file_is_parsed_once_no_matter_how_many_methods_are_called(tmp_pat
 
     adapter = Mf6Adapter(garbage)
     par = pd.DataFrame({"pargp": ["g"], "idx0": [0], "idx1": [0]})
-    obs = pd.DataFrame({"obsnme": ["obs:a"]})
+    obs = pd.DataFrame(
+        {"obgnme": ["g"], "icpl": ["0"], "layer": ["0"]}, index=pd.Index(["obs:a"], name="obsnme")
+    )
 
     adapter.grid_mesh()
     adapter.grid_shape()
@@ -306,7 +310,9 @@ def test_reading_a_good_and_a_corrupt_grid_file_never_writes_to_their_directory(
     before = _directory_snapshot(tmp_path)
 
     par = pd.DataFrame({"pargp": ["g"], "idx0": [0], "idx1": [0]})
-    obs = pd.DataFrame({"obsnme": ["obs:a"]})
+    obs = pd.DataFrame(
+        {"obgnme": ["g"], "icpl": ["0"], "layer": ["0"]}, index=pd.Index(["obs:a"], name="obsnme")
+    )
 
     for path in (good, corrupt):
         adapter = Mf6Adapter(path)
