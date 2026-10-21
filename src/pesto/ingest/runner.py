@@ -39,6 +39,7 @@ from pesto.ingest.obspdc import FIRST_ITERATION, compute_pdc, read_pdc_file, wri
 from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.obsweights import read_adjusted_weights
 from pesto.ingest.parcell import load_par_cell, write_par_cell
+from pesto.ingest.phicheck import check_phi, write_phi_check
 from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
 @dataclass(frozen=True)
@@ -72,7 +73,7 @@ class PlannedArtifact:
 
     name: str
     # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
-    # | "par_agg" | "obs_ens" | "obs_agg" | "pdc" | "pp_factors" | "config"
+    # | "par_agg" | "obs_ens" | "obs_agg" | "pdc" | "phi_check" | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
@@ -457,6 +458,33 @@ def _write_pdc_artifact(
     return write_pdc(result, iteration, layout)
 
 
+def _write_phi_check_artifact(
+    cache_root: str, iteration: int, phi_file: str, weights_file: str | None
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for one iteration's phi check: recompute phi from the cached
+    observation ensemble, using the adjusted weights in ``weights_file`` when
+    the run has them, and compare it with ``phi_file`` by realization name."""
+    name = f"phi_check/{iteration}"
+    layout = CacheLayout(root=Path(cache_root))
+    weights = None
+    if weights_file is not None:
+        loaded = load_control_table(layout, "obs", columns=["obsnme"])
+        if isinstance(loaded, ReadFailure):
+            return ReadFailure(
+                name=name, path=loaded.path, reason=f"{name}: the control table: {loaded.reason}"
+            )
+        table, _notes = loaded
+        weights = read_adjusted_weights(
+            Path(weights_file), table.column("obsnme").to_pylist(), artifact=name
+        )
+        if isinstance(weights, ReadFailure):
+            return weights
+    result = check_phi(iteration, layout, Path(phi_file), weights)
+    if isinstance(result, ReadFailure):
+        return result
+    return write_phi_check(result, iteration, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -669,6 +697,32 @@ def _plan_pdc(
     )
 
 
+def _plan_phi_check(
+    artifacts: list[PlannedArtifact],
+    run: RunLayout,
+    layout: CacheLayout,
+    iteration: int,
+    control_sources: tuple[str, ...],
+) -> None:
+    """Add ``phi_check/K`` to the plan when the run has ``case.phi.actual.csv``.
+    It reads the cached observation ensemble for K, so it needs ``obs_ens/K``."""
+    phi_file = run.phi.get("actual")
+    if phi_file is None:
+        return
+    weights = (str(run.adjusted_weights),) if run.adjusted_weights is not None else ()
+    sources = _unique((str(run.obs_ens[iteration]), str(phi_file), *weights, *control_sources))
+    artifacts.append(
+        PlannedArtifact(
+            name=f"phi_check/{iteration}",
+            kind="phi_check",
+            sources=sources,
+            outputs=(str(layout.phi_check(iteration)),),
+            source_bytes=_size_of(sources),
+            needs=("obs_index", f"obs_ens/{iteration}"),
+        )
+    )
+
+
 def pdc_source_for(run: RunLayout, iteration: int) -> str:
     """How ``pdc/K`` would be made: ``"file"`` when pestpp wrote
     ``case.K.pdc.csv`` (it is read, never recomputed), ``"computed"`` only
@@ -710,7 +764,8 @@ def plan_artifacts(
     observation file, each followed by that iteration's ``pdc/K``: a read of
     pestpp's own ``case.K.pdc.csv`` when it exists, a computation from the
     cached statistics only when it does not and an obs+noise file exists,
-    and nothing when neither is possible; then ``pp_factors`` when the
+    and nothing when neither is possible, then ``phi_check/K`` when the run
+    has ``case.phi.actual.csv``; then ``pp_factors`` when the
     run carries pilot-point files; then ``config``. A caller watching rows
     go past sees the same sequence every time this is called for the same
     run and layout.
@@ -917,6 +972,7 @@ def plan_artifacts(
             )
         )
         _plan_pdc(artifacts, run, layout, iteration, control_sources)
+        _plan_phi_check(artifacts, run, layout, iteration, control_sources)
 
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
@@ -1189,6 +1245,7 @@ def _dispatch(
     first_iteration: int | None,
     pdc_file: str | None = None,
     weights_file: str | None = None,
+    phi_file: str | None = None,
 ) -> tuple[Callable, tuple]:
     """Which worker function runs this artifact, and with what arguments --
     every argument a string, an int, or ``None``, so nothing but picklable
@@ -1211,6 +1268,9 @@ def _dispatch(
     if artifact.kind == "pdc":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_pdc_artifact, (cache_root, iteration, pdc_file, weights_file)
+    if artifact.kind == "phi_check":
+        iteration = int(artifact.name.split("/", 1)[1])
+        return _write_phi_check_artifact, (cache_root, iteration, phi_file, weights_file)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
@@ -1241,6 +1301,7 @@ _CONTROL_DEPENDENTS = frozenset(
         "obs_agg",
         "noise_agg",
         "pdc",
+        "phi_check",
         "pp_factors",
         "config",
     }
@@ -1485,6 +1546,10 @@ def ingest_run(
             if artifact.kind == "pdc"
             else (None, None)
         )
+        phi_file = None
+        if artifact.kind == "phi_check":
+            phi_file = str(run.phi["actual"])
+            weights_file = str(run.adjusted_weights) if run.adjusted_weights is not None else None
         worker_fn, worker_args = _dispatch(
             artifact,
             str(run_dir),
@@ -1495,6 +1560,7 @@ def ingest_run(
             first_iteration,
             pdc_file,
             weights_file,
+            phi_file,
         )
 
         start = time.perf_counter()

@@ -143,14 +143,16 @@ def _make(tmp_path, **kwargs):
 def _obs_ens_names(run, iterations) -> list[str]:
     """The obs_ens and obs_agg names a plan holds for ``iterations``, read from
     the run's own record of which observation files exist; each obs_agg
-    follows its obs_ens, and a pdc/K follows when pestpp wrote that
-    iteration's pdc file."""
+    follows its obs_ens, a pdc/K follows when pestpp wrote that
+    iteration's pdc file, and a phi_check/K follows when the run has a phi.actual file."""
     names: list[str] = []
     for k in iterations:
         if k in run.obs_ens:
             names.extend([f"obs_ens/{k}", f"obs_agg/{k}"])
         if k in run.pdc:
             names.append(f"pdc/{k}")
+        if k in run.obs_ens and run.phi.get("actual") is not None:
+            names.append(f"phi_check/{k}")
     return names
 
 

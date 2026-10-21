@@ -723,6 +723,90 @@ def test_capability_pdc_names_the_artifact_and_its_recorded_reason(
     assert _noise_capability(app, token) == {"available": True, "blocked_by": []}
 
 
+def _phi_check_capability(app, token):
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    return response.json()["capabilities"]["phi_check"]
+
+
+def test_capability_phi_check_is_available_once_phi_was_checked(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_phi=True)
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _phi_check_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_phi_check_is_blocked_before_anything_is_ingested(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_phi=True)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _phi_check_capability(app, token)
+
+    assert capability["available"] is False
+    assert [b["artifact"] for b in capability["blocked_by"]] == ["phi_check/0", "phi_check/1"]
+
+
+def test_capability_phi_check_for_a_run_without_a_phi_file_says_so(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    assert _phi_check_capability(app, token) == {
+        "available": False,
+        "blocked_by": [
+            {"artifact": "phi_check", "reason": "no case.phi.actual.csv was found for this run"}
+        ],
+    }
+
+
+def test_capability_phi_check_for_a_phi_file_with_no_observation_file_names_the_missing_file(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_phi=True, iterations=(), par_iterations=(0, 1))
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _phi_check_capability(app, token)
+
+    assert capability["available"] is False
+    assert capability["blocked_by"][0]["artifact"] == "phi_check"
+    assert "no observation ensemble file" in capability["blocked_by"][0]["reason"]
+
+
+def test_capability_phi_check_names_the_artifact_and_its_recorded_reason(
+    tmp_path, in_process, monkeypatch
+):
+    from pesto.ingest.failures import ReadFailure as Failure
+
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_phi=True)
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        runner_module,
+        "_write_phi_check_artifact",
+        lambda cache_root, iteration, phi_file, weights_file: Failure(
+            name=f"phi_check/{iteration}", path="x", reason=f"phi_check/{iteration}: would not read"
+        ),
+    )
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+    capability = _phi_check_capability(app, token)
+
+    assert capability["available"] is False
+    assert capability["blocked_by"] == [
+        {"artifact": "phi_check/0", "reason": "phi_check/0: would not read"},
+        {"artifact": "phi_check/1", "reason": "phi_check/1: would not read"},
+    ]
+    # Observations and their statistics are unaffected.
+    assert _obs_capability(app, token) == {"available": True, "blocked_by": []}
+    assert _obs_stats_capability(app, token) == {"available": True, "blocked_by": []}
+
+
 # --- the byte estimate (GET /estimate) --------------------------------------
 
 
