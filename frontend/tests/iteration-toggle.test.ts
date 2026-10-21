@@ -713,6 +713,28 @@ describe('a realization or group the new iteration lacks', () => {
   })
 })
 
+describe('the Go to realization box on the map', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    delete (window as { __pestoFrames?: unknown }).__pestoFrames
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('draws the realization typed into the box', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+
+    setInput(root, 'Go to realization', 'r017', 'change')
+
+    await vi.waitFor(() => expect(stub.valuesCalls.at(-1)).toEqual({ iteration: '0', realization: 'r017', stat: null }))
+    expect(sliderLabel(root)).toBe('r017')
+  })
+})
+
 describe('a layer another view sets while a field fetch is out', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
