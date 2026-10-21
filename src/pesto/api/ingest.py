@@ -163,12 +163,30 @@ def _capability(manifest: Manifest, required: list[str], any_of: list[str]) -> d
     return {"available": available, "blocked_by": blocked_by}
 
 
+def _obs_capability(
+    manifest: Manifest, run, *, obs_index_names: list[str], obs_ens_names: list[str]
+) -> dict[str, Any]:
+    """Whether observations are usable. With no observation ensemble planned
+    there is nothing to wait for, so the one reason says why: no file in the
+    run at all, or none at the iterations the parameters use."""
+    if obs_ens_names:
+        return _capability(manifest, required=obs_index_names, any_of=obs_ens_names)
+    from pesto.ingest.runner import observation_iterations
+
+    _selected, notes = observation_iterations(run)
+    if run.obs_ens and notes:
+        reason = notes[0]
+    else:
+        reason = "no observation ensemble file was found for this run"
+    return {"available": False, "blocked_by": [{"artifact": "obs_ens", "reason": reason}]}
+
+
 @router.get("/state")
 async def get_ingest_state(request: Request) -> JSONResponse:
     resolved = _resolve(request)
     if isinstance(resolved, JSONResponse):
         return resolved
-    run_path, layout, _run, planned, manifest = resolved
+    run_path, layout, run, planned, manifest = resolved
 
     artifacts_out: list[dict[str, Any]] = []
     fresh = True
@@ -206,7 +224,9 @@ async def get_ingest_state(request: Request) -> JSONResponse:
             "map": _capability(manifest, required=grid_names + par_cell_names, any_of=par_ens_names),
             "stats": _capability(manifest, required=[], any_of=par_agg_names),
             "chips": _capability(manifest, required=config_names, any_of=[]),
-            "obs": _capability(manifest, required=obs_index_names, any_of=obs_ens_names),
+            "obs": _obs_capability(
+                manifest, run, obs_index_names=obs_index_names, obs_ens_names=obs_ens_names
+            ),
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
