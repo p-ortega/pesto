@@ -646,6 +646,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // camera.screenToWorld then pickAtWorld on a canvas click -- both are
   // null until loadAndDraw lands, so a click before then is a no-op.
   function handleCanvasClick(event: MouseEvent): void {
+    // The click that ends a pan selects nothing.
+    if (gestureWasDrag) {
+      gestureWasDrag = false
+      return
+    }
     if (!camera || !meshGeom || loadingIteration !== null) return
     const rect = canvas.getBoundingClientRect()
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width
@@ -730,17 +735,29 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // positions, in the canvas's own pixel space, fed straight to
   // camera.pan -- the same "grab and move" a drag on any map surface uses.
   let dragLast: [number, number] | null = null
+  let dragPointerId: number | null = null
+  let dragStart: [number, number] = [0, 0]
+  // A press that moves further than this is a pan, not a click (CSS pixels).
+  const DRAG_CLICK_SLOP = 4
+  let gestureWasDrag = false
 
   canvas.addEventListener('pointerdown', (event) => {
-    if (!camera) return
+    // A drag released off the canvas may fire no click, so the mark must not outlive the press.
+    gestureWasDrag = false
+    if (!camera || event.button !== 0 || dragPointerId !== null) return
     dragLast = canvasPoint(event)
+    dragPointerId = event.pointerId
+    dragStart = [event.clientX, event.clientY]
     if (typeof canvas.setPointerCapture === 'function') {
       canvas.setPointerCapture(event.pointerId)
     }
   })
 
   canvas.addEventListener('pointermove', (event) => {
-    if (!camera || !dragLast) return
+    if (!camera || !dragLast || event.pointerId !== dragPointerId) return
+    if (Math.hypot(event.clientX - dragStart[0], event.clientY - dragStart[1]) > DRAG_CLICK_SLOP) {
+      gestureWasDrag = true
+    }
     const point = canvasPoint(event)
     camera.pan(point[0] - dragLast[0], point[1] - dragLast[1])
     dragLast = point
@@ -748,8 +765,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   })
 
   function endDrag(event: PointerEvent): void {
-    if (!dragLast) return
+    if (!dragLast || event.pointerId !== dragPointerId) return
     dragLast = null
+    dragPointerId = null
     if (typeof canvas.releasePointerCapture === 'function') {
       canvas.releasePointerCapture(event.pointerId)
     }
