@@ -29,7 +29,9 @@ from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
-from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, write_obs_index
+from pesto.ingest.obsens import write_obs_ensemble
+from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
+from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.parcell import load_par_cell, write_par_cell
 from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
@@ -63,11 +65,14 @@ class PlannedArtifact:
     """
 
     name: str
-    # "control" | "grid" | "par_cell" | "obs_index" | "par_ens" | "par_agg" | "pp_factors" | "config"
+    # "control" | "grid" | "par_cell" | "obs_index" | "par_ens" | "par_agg" | "obs_ens"
+    # | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
     source_bytes: int
+    # Names of artifacts this one is built from; it runs only when each is ok.
+    needs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -315,6 +320,35 @@ def _write_obs_index_artifact(cache_root: str) -> "WrittenArtifact | ReadFailure
     return write_obs_index(index, layout)
 
 
+def _write_obs_ens_artifact(
+    source: str, cache_root: str, iteration: int
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for one iteration's observation ensemble: reads the file
+    through the memory guard against the cached control table's observation
+    names, then stores it observation-major in the cached ``obs_index``
+    order. Runs only inside a process created for it."""
+    name = f"obs_ens/{iteration}"
+    layout = CacheLayout(root=Path(cache_root))
+    index = load_obs_index(layout)
+    if isinstance(index, ReadFailure):
+        return ReadFailure(
+            name=name,
+            path=index.path,
+            reason=f"{name}: the obs_index could not be read: {index.reason}",
+        )
+    loaded = load_control_table(layout, "obs", columns=["obsnme"])
+    if isinstance(loaded, ReadFailure):
+        return ReadFailure(
+            name=name, path=loaded.path, reason=f"{name}: the control table: {loaded.reason}"
+        )
+    table, _notes = loaded
+    control_names = table.column("obsnme").to_pylist()
+    data = read_obs_file(Path(source), control_names, artifact=name)
+    if isinstance(data, ReadFailure):
+        return data
+    return write_obs_ensemble(data, index, iteration, layout)
+
+
 def _write_grid_artifact(
     grid_path: str, cache_root: str
 ) -> "WrittenArtifact | ReadFailure | None":
@@ -416,6 +450,34 @@ def _select_iterations(numbered: list[int]) -> list[int]:
     return [ordered[0], ordered[-1]]
 
 
+def observation_iterations(
+    run: RunLayout, iterations: Sequence[int] | None = None
+) -> tuple[list[int], tuple[str, ...]]:
+    """Which iterations' observation ensembles one ingest of ``run`` reads,
+    and a note for each of them that has no observation file.
+
+    The same first and last iteration as the parameters (D-01): the given
+    ``iterations`` when the caller passed any, else the parameter default
+    when the run has a numbered parameter ensemble, else the first and last
+    numbered observation file. A selected iteration with no observation
+    file stays in the list so the note can name it; planning skips it.
+    """
+    if iterations is not None:
+        selected = list(iterations)
+    else:
+        numbered_par = [k for k in run.par_ens if isinstance(k, int)]
+        if numbered_par:
+            selected = _select_iterations(numbered_par)
+        else:
+            selected = _select_iterations([k for k in run.obs_ens if isinstance(k, int)])
+    notes = tuple(
+        f"no observation ensemble file was found for iteration {k}"
+        for k in selected
+        if run.obs_ens.get(k) is None
+    )
+    return selected, notes
+
+
 def _should_retry(manifest: Manifest, name: str, base: Path, sources: Sequence[str]) -> bool:
     """Should artifact ``name`` be read again on this ingest?
 
@@ -469,7 +531,9 @@ def plan_artifacts(
     its cached tables; then ``grid`` and ``par_cell`` when a grid file
     exists; then ``obs_index``, which needs the control table only; then an
     ensemble and a summary for each selected iteration in
-    ascending order, ensemble before summary; then ``pp_factors`` when the
+    ascending order, ensemble before summary; then an observation ensemble
+    for each iteration :func:`observation_iterations` selects that has an
+    observation file; then ``pp_factors`` when the
     run carries pilot-point files; then ``config``. A caller watching rows
     go past sees the same sequence every time this is called for the same
     run and layout.
@@ -488,7 +552,8 @@ def plan_artifacts(
     ``par_cell`` the control sources and the grid file, ``obs_index`` the
     control sources alone, a summary that
     iteration's ensemble file and then the control sources, an ensemble the
-    same and, when one exists, the grid file too, ``pp_factors`` its own
+    same and, when one exists, the grid file too, an observation ensemble its
+    observation file and then the control sources, ``pp_factors`` its own
     files, the grid file and the control sources, and ``config`` the control
     sources and, when one exists, the grid file. A run with no grid file
     plans no ``grid`` and no ``par_cell`` artifact. No artifact lists a path
@@ -601,6 +666,29 @@ def plan_artifacts(
             )
         )
 
+    obs_selected, _obs_notes = observation_iterations(run, iterations)
+    for iteration in obs_selected:
+        obs_source = run.obs_ens.get(iteration)
+        if obs_source is None:
+            continue
+        # _dispatch reads the observation file from sources[0]; the file is
+        # hashed once here and reused by later artifacts that list it.
+        obs_sources = _unique((str(obs_source), *control_sources))
+        artifacts.append(
+            PlannedArtifact(
+                name=f"obs_ens/{iteration}",
+                kind="obs_ens",
+                sources=obs_sources,
+                outputs=(
+                    str(layout.obs_ens(iteration)),
+                    str(layout.obs_ens_meta(iteration)),
+                    str(layout.obs_reals(iteration)),
+                ),
+                source_bytes=_size_of(obs_sources),
+                needs=("obs_index",),
+            )
+        )
+
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
         pp_sources.insert(0, str(run.mult2model))
@@ -683,8 +771,14 @@ roughly fixed-size fact sheet whose size does not scale with the run, so a
 flat, slightly generous estimate stands in for a ratio against any source
 file."""
 
+_OBS_ENS_SOURCE_RATIO = 0.26
+"""Reuses the measured parameter ratio: an observation ensemble is float32
+out of the same sparse-COO dialect, so the cache payload sits at the same
+fraction of the source file. A dense ``.bin`` source errs low in the same
+way (see ``_PAR_ENS_SOURCE_RATIO``)."""
+
 _DENSE_BIN_NOTE = (
-    "par_ens/par_agg: these figures assume the sparse-COO .jcb dialect -- a dense "
+    "par_ens/par_agg/obs_ens: these figures assume the sparse-COO .jcb dialect -- a dense "
     ".bin ensemble produces roughly twice the cache this estimate reports, so the "
     "total is a floor for that dialect, not a midpoint"
 )
@@ -755,6 +849,22 @@ def estimate_bytes(
         agg_bytes = int(source_bytes * _PAR_AGG_SOURCE_RATIO)
         per_artifact.append((f"par_agg/{iteration}", agg_bytes))
         total += agg_bytes
+
+    obs_selected, obs_notes = observation_iterations(run, iterations)
+    notes.extend(f"obs_ens: {note}" for note in obs_notes)
+    for iteration in obs_selected:
+        obs_source = run.obs_ens.get(iteration)
+        if obs_source is None:
+            continue
+        try:
+            obs_source_bytes = obs_source.stat().st_size
+        except OSError as exc:
+            notes.append(f"obs_ens/{iteration}: could not stat {obs_source.name}: {exc}")
+            continue
+        sized_an_ensemble = True
+        obs_bytes = int(obs_source_bytes * _OBS_ENS_SOURCE_RATIO)
+        per_artifact.append((f"obs_ens/{iteration}", obs_bytes))
+        total += obs_bytes
 
     if sized_an_ensemble:
         notes.append(_DENSE_BIN_NOTE)
@@ -847,6 +957,9 @@ def _dispatch(
     if artifact.kind == "par_agg":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_par_agg_artifact, (artifact.sources[0], cache_root, iteration)
+    if artifact.kind == "obs_ens":
+        iteration = int(artifact.name.split("/", 1)[1])
+        return _write_obs_ens_artifact, (artifact.sources[0], cache_root, iteration)
     if artifact.kind == "control":
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
@@ -865,7 +978,7 @@ def _dispatch(
 # Artifacts whose worker reads the cached control table. ``grid`` reads only
 # the grid file and ``control`` is the one that writes the table.
 _CONTROL_DEPENDENTS = frozenset(
-    {"par_cell", "obs_index", "par_ens", "par_agg", "pp_factors", "config"}
+    {"par_cell", "obs_index", "par_ens", "par_agg", "obs_ens", "pp_factors", "config"}
 )
 
 
@@ -877,6 +990,22 @@ def _control_failure_reason(manifest: Manifest, name: str) -> str | None:
         return None
     why = control.reason if control is not None and control.reason else None
     return f"{name} depends on control, which failed: {why or 'it was not read in this ingest'}"
+
+
+def _needs_failure_reason(manifest: Manifest, artifact: PlannedArtifact) -> str | None:
+    """Why ``artifact`` cannot run: an artifact it needs is not recorded ok.
+    ``None`` when every one is fine. The first one that is not ok names the
+    reason, with the reason that artifact recorded."""
+    for needed in artifact.needs:
+        found = manifest.artifacts.get(needed)
+        if found is not None and found.state == "ok":
+            continue
+        why = found.reason if found is not None and found.reason else None
+        return (
+            f"{artifact.name} depends on {needed}, which failed: "
+            f"{why or 'it was not read in this ingest'}"
+        )
+    return None
 
 
 def _fingerprint_as_control_read_them(
@@ -974,7 +1103,10 @@ def ingest_run(
     else:
         selected = list(iterations)
 
-    planned = plan_artifacts(run, layout, iterations=selected)
+    # The caller's own argument goes through unchanged, so the plan can tell
+    # "none given" (it then picks observation iterations by its own rule)
+    # from a list the caller chose.
+    planned = plan_artifacts(run, layout, iterations=iterations)
     first_iteration = selected[0] if selected else None
 
     grid_path = str(run.grid) if run.grid is not None else None
@@ -1038,28 +1170,31 @@ def ingest_run(
                 )
             continue
 
+        blocked = None
         if artifact.kind in _CONTROL_DEPENDENTS:
             blocked = _control_failure_reason(manifest, artifact.name)
-            if blocked is not None:
-                sources, unfingerprinted = _fingerprint_sources(artifact.sources)
-                if unfingerprinted:
-                    blocked = f"{blocked}; also, {'; '.join(unfingerprinted)}"
-                manifest.mark_failed(artifact.name, blocked, sources=sources)
-                manifest.save(layout)
-                if on_progress is not None:
-                    on_progress(
-                        Progress(
-                            artifact=artifact.name,
-                            state="failed",
-                            index=index,
-                            total=total,
-                            source_bytes=artifact.source_bytes,
-                            written_bytes=0,
-                            seconds=0.0,
-                            reason=blocked,
-                        )
+        if blocked is None:
+            blocked = _needs_failure_reason(manifest, artifact)
+        if blocked is not None:
+            sources, unfingerprinted = _fingerprint_sources(artifact.sources)
+            if unfingerprinted:
+                blocked = f"{blocked}; also, {'; '.join(unfingerprinted)}"
+            manifest.mark_failed(artifact.name, blocked, sources=sources)
+            manifest.save(layout)
+            if on_progress is not None:
+                on_progress(
+                    Progress(
+                        artifact=artifact.name,
+                        state="failed",
+                        index=index,
+                        total=total,
+                        source_bytes=artifact.source_bytes,
+                        written_bytes=0,
+                        seconds=0.0,
+                        reason=blocked,
                     )
-                continue
+                )
+            continue
 
         if on_progress is not None:
             on_progress(

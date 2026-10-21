@@ -112,19 +112,22 @@ class StoredEnsemble:
     __hash__ = None
 
 
-def write_par_reals(
-    real_names: Sequence[str], iteration: int, layout: CacheLayout
+def write_reals(
+    real_names: Sequence[str], iteration: int, layout: CacheLayout, kind: str = "par"
 ) -> CacheFile | ReadFailure:
-    """Write the per-iteration realization index: the names exactly as read
-    from the source file, in file order -- no sorting, no case folding, no
-    whitespace stripping -- because a later comparison between iteration 0
-    and iteration N joins on these strings.
+    """Write the per-iteration realization index of a ``kind`` ("par" or
+    "obs") ensemble: the names exactly as read from the source file, in file
+    order -- no sorting, no case folding, no whitespace stripping -- because
+    a later comparison between iteration 0 and iteration N joins on these
+    strings.
 
     A name occurring more than once is kept, not deduplicated; a note names
     it and how many times it appeared.
     """
-    name = f"par_reals/{iteration}"
-    target = layout.par_reals(iteration)
+    if kind not in ("par", "obs"):
+        raise ValueError(f"write_reals: kind must be 'par' or 'obs', not {kind!r}")
+    name = f"{kind}_reals/{iteration}"
+    target = layout.par_reals(iteration) if kind == "par" else layout.obs_reals(iteration)
     try:
         counts: dict[str, int] = {}
         for real_name in real_names:
@@ -149,6 +152,12 @@ def write_par_reals(
             path=str(target),
             reason=f"failed to write realization index for iteration {iteration}: {exc}",
         )
+
+
+def write_par_reals(
+    real_names: Sequence[str], iteration: int, layout: CacheLayout
+) -> CacheFile | ReadFailure:
+    return write_reals(real_names, iteration, layout, "par")
 
 
 def _remove_written(

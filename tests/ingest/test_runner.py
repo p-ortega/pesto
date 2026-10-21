@@ -433,9 +433,41 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
+        *[f"obs_ens/{k}" for k in (0, 1) if k in run.obs_ens],
         "config",
     ]
     assert [a.name for a in second] == names
+
+
+def _needing(*names: str) -> PlannedArtifact:
+    return PlannedArtifact(
+        name="obs_ens/0", kind="obs_ens", sources=(), outputs=(), source_bytes=0, needs=names
+    )
+
+
+def test_an_artifact_depends_on_what_it_needs_with_that_artifacts_own_reason():
+    manifest = Manifest.empty("run")
+    manifest.mark_failed("obs_index", "the order file would not write")
+
+    reason = runner_module._needs_failure_reason(manifest, _needing("obs_index"))
+
+    assert reason == (
+        "obs_ens/0 depends on obs_index, which failed: the order file would not write"
+    )
+
+
+def test_an_artifact_that_needs_something_not_read_in_this_ingest_says_so():
+    reason = runner_module._needs_failure_reason(Manifest.empty("run"), _needing("obs_index"))
+
+    assert reason == "obs_ens/0 depends on obs_index, which failed: it was not read in this ingest"
+
+
+def test_an_artifact_whose_needs_are_all_ok_is_not_blocked():
+    manifest = Manifest.empty("run")
+    manifest.mark_ok("obs_index", sources=[], files=(), seconds=0.1)
+
+    assert runner_module._needs_failure_reason(manifest, _needing("obs_index")) is None
+    assert runner_module._needs_failure_reason(manifest, _needing()) is None
 
 
 def test_plan_artifacts_collapses_the_degenerate_noptmax_case(tmp_path):
@@ -694,7 +726,17 @@ def test_estimate_bytes_sizes_every_artifact_without_opening_a_source_file(tmp_p
     # "control" is deliberately never sized -- a PstFrom-style .pst file's
     # own size carries no signal about its external tables -- so it is
     # named in notes instead of appearing in per_artifact.
-    assert names == {"par_ens/0", "par_agg/0", "par_ens/1", "par_agg/1", "grid", "config"}
+    obs_names = {f"obs_ens/{k}" for k in (0, 1) if k in run.obs_ens}
+    assert obs_names
+    assert names == {
+        "par_ens/0",
+        "par_agg/0",
+        "par_ens/1",
+        "par_agg/1",
+        "grid",
+        "config",
+        *obs_names,
+    }
     assert any(note.startswith("par_cell:") for note in estimate.notes)
     assert any("control" in note for note in estimate.notes)
 
@@ -753,6 +795,7 @@ def test_estimate_bytes_total_matches_the_ratio_arithmetic(tmp_path):
         _CONFIG_BYTES,
         _GRID_SOURCE_RATIO,
         _PAR_AGG_SOURCE_RATIO,
+        _OBS_ENS_SOURCE_RATIO,
         _PAR_ENS_SOURCE_RATIO,
     )
 
@@ -768,6 +811,8 @@ def test_estimate_bytes_total_matches_the_ratio_arithmetic(tmp_path):
         source_bytes = run.par_ens[iteration].stat().st_size
         expected += int(source_bytes * _PAR_ENS_SOURCE_RATIO)
         expected += int(source_bytes * _PAR_AGG_SOURCE_RATIO)
+        if iteration in run.obs_ens:
+            expected += int(run.obs_ens[iteration].stat().st_size * _OBS_ENS_SOURCE_RATIO)
     if run.grid is not None:
         expected += int(run.grid.stat().st_size * _GRID_SOURCE_RATIO)
 
