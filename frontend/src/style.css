@@ -193,7 +193,9 @@ body {
    same convention as every other panel, so its text never sits directly on
    the page plane. Positioning is a separate concern -- see the four
    .floating-* role classes below. */
+/* Each panel takes its own presses and wheels back from the see-through cluster. */
 .floating {
+  pointer-events: auto;
   background: var(--surface);
   border: 1px solid var(--hairline);
   padding: var(--space-sm);
@@ -212,6 +214,11 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  /* A touch drag pans the map instead of scrolling the page. */
+  touch-action: none;
+  /* A press never starts a text selection. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* The right panel: a tab bar over one panel per tab. A hidden panel stays
@@ -344,6 +351,8 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-md);
+  /* Its see-through parts swallowed drags and wheels meant for the map. */
+  pointer-events: none;
 }
 
 /* A header chip: one fact in its own small surface, so the run's
