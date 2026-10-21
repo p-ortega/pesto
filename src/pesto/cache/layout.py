@@ -200,6 +200,78 @@ class CacheLayout:
     def par_agg_notes(self, iteration: int) -> Path:
         return self.agg / f"par_{iteration}.notes.json"
 
+    # Observation artifacts. Every path the observation ingest writes is named
+    # here so no later module composes one itself. They live in the folders
+    # ensure() already makes, so the cache version does not change.
+
+    @property
+    def obs_order(self) -> Path:
+        return self.control / "obs_order.i32"
+
+    @property
+    def obs_time(self) -> Path:
+        return self.control / "obs_time.f64"
+
+    @property
+    def obs_value(self) -> Path:
+        return self.control / "obs_value.f64"
+
+    @property
+    def obs_flags(self) -> Path:
+        return self.control / "obs_flags.u8"
+
+    @property
+    def obs_sites(self) -> Path:
+        return self.control / "obs_sites.parquet"
+
+    @property
+    def obs_groups(self) -> Path:
+        return self.control / "obs_groups.parquet"
+
+    @property
+    def obs_index_meta(self) -> Path:
+        return self.control / "obs_index.json"
+
+    @property
+    def obs_cell(self) -> Path:
+        return self.grid / "obs_cell.parquet"
+
+    @property
+    def obs_cell_meta(self) -> Path:
+        return self.grid / "obs_cell.json"
+
+    @property
+    def noise_agg(self) -> Path:
+        return self.agg / "noise.f32"
+
+    @property
+    def noise_agg_meta(self) -> Path:
+        return self.agg / "noise.json"
+
+    def obs_ens(self, iteration: int) -> Path:
+        return self.ens / f"obs_{iteration}.f32"
+
+    def obs_ens_meta(self, iteration: int) -> Path:
+        return self.ens / f"obs_{iteration}.json"
+
+    def obs_reals(self, iteration: int) -> Path:
+        return self.reals / f"obs_{iteration}.reals.json"
+
+    def obs_agg(self, iteration: int) -> Path:
+        return self.agg / f"obs_{iteration}.f32"
+
+    def obs_agg_meta(self, iteration: int) -> Path:
+        return self.agg / f"obs_{iteration}.json"
+
+    def pdc(self, iteration: int) -> Path:
+        return self.agg / f"pdc_{iteration}.parquet"
+
+    def pdc_meta(self, iteration: int) -> Path:
+        return self.agg / f"pdc_{iteration}.json"
+
+    def phi_check(self, iteration: int) -> Path:
+        return self.agg / f"phi_check_{iteration}.json"
+
 
 def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
     """Resolve this run's cache root, ensure a git-tracked run directory

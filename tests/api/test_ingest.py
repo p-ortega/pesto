@@ -36,7 +36,11 @@ from pesto.api.app import create_app
 from pesto.api.ingest import _display_folder
 from pesto.cache.layout import CACHE_VERSION, CacheLayout, run_id_for
 from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint
+from ingest.obs_fixtures import make_obs_run
+from ingest.test_control_first import in_process  # noqa: F401  (a fixture, used by name)
 from pesto.ingest.discover import discover
+from pesto.ingest.failures import ReadFailure
+from pesto.ingest.obsindex import load_obs_index
 from pesto.ingest.runner import Progress, plan_artifacts
 
 BASE_URL = "http://127.0.0.1"
@@ -248,7 +252,7 @@ def test_editing_only_the_external_table_makes_everything_built_from_control_sta
     app, token = _app_for(run_dir, cache_root)
     response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
     by_name = {a["name"]: a for a in response.json()["artifacts"]}
-    for name in ("control", "par_cell", "par_ens/0", "par_agg/0", "config"):
+    for name in ("control", "par_cell", "obs_index", "par_ens/0", "par_agg/0", "config"):
         assert by_name[name]["stale"] is True, name
     assert by_name["grid"]["stale"] is False
 
@@ -274,7 +278,7 @@ def test_a_record_made_before_the_tables_were_sources_reports_stale_without_a_re
     by_name = {a["name"]: a for a in body["artifacts"]}
     assert body["fresh"] is False
     assert body["rewrite"] is None
-    for name in ("control", "par_cell", "par_ens/0", "par_agg/0", "config"):
+    for name in ("control", "par_cell", "obs_index", "par_ens/0", "par_agg/0", "config"):
         assert by_name[name]["stale"] is True, name
     assert by_name["grid"]["stale"] is False
 
@@ -1059,3 +1063,42 @@ def test_the_state_never_sends_an_absolute_cache_folder(tmp_path, monkeypatch):
 
     assert response.json()["rewrite"]["folder"] == "…/Scratch/cache"
     assert str(tmp_path) not in response.text
+
+
+def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
+    """Every file and folder under ``root`` with its size and mtime, so a
+    test can prove nothing under it was written, created or touched."""
+    return {
+        str(path.relative_to(root)): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+    }
+
+
+def test_the_state_route_lists_obs_index_and_an_observation_edit_makes_only_it_stale(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    run = make_obs_run(run_dir)
+    cache_root = tmp_path / "cache"
+    before = _snapshot(run_dir)
+
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+    index = load_obs_index(CacheLayout(root=cache_root))
+
+    assert not isinstance(index, ReadFailure), index
+    assert _snapshot(run_dir) == before
+
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    by_name = {a["name"]: a for a in response.json()["artifacts"]}
+    assert by_name["obs_index"]["kind"] == "obs_index"
+    assert by_name["obs_index"]["state"] == "ok"
+    assert by_name["obs_index"]["stale"] is False
+    assert _snapshot(run_dir) == before
+
+    run.obs_data_path.write_text(run.obs_data_path.read_text() + "\n")
+
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    by_name = {a["name"]: a for a in response.json()["artifacts"]}
+    assert by_name["obs_index"]["stale"] is True
+    assert by_name["grid"]["stale"] is False
