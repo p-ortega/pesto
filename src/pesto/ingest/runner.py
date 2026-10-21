@@ -445,7 +445,8 @@ def plan_artifacts(
     Each artifact names the source files it depends on: a summary against
     that iteration's ensemble file and the control file, an ensemble against
     the same two and, when one exists, the grid file too,
-    ``control`` against the control file, ``grid`` against the grid file,
+    ``control`` against the control file followed by every table the control
+    file names in an external section, ``grid`` against the grid file,
     ``par_cell`` against the control file and the grid file, and ``config``
     against the control file and, when one exists, the grid file too. A run
     with no grid file plans no ``grid`` and no ``par_cell`` artifact, and
@@ -460,18 +461,21 @@ def plan_artifacts(
     pst_path = run.pst_path
     pst_bytes = _stat_size(pst_path)
     grid_path = run.grid
+    # The control file first (workers and failure messages name sources[0]),
+    # then every table it names in an external section.
+    control_sources = (str(pst_path), *(str(p) for p in run.external_tables))
 
     artifacts: list[PlannedArtifact] = [
         PlannedArtifact(
             name="control",
             kind="control",
-            sources=(str(pst_path),),
+            sources=control_sources,
             outputs=(
                 str(layout.control / "par.parquet"),
                 str(layout.control / "obs.parquet"),
                 str(layout.control / "notes.json"),
             ),
-            source_bytes=pst_bytes,
+            source_bytes=sum(_stat_size(Path(s)) for s in control_sources),
         )
     ]
 
