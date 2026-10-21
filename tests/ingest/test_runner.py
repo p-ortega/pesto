@@ -435,7 +435,14 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
-        *[name for k in (0, 1) if k in run.obs_ens for name in (f"obs_ens/{k}", f"obs_agg/{k}")],
+        *[
+            name
+            for k in (0, 1)
+            for name in (
+                *((f"obs_ens/{k}", f"obs_agg/{k}") if k in run.obs_ens else ()),
+                *((f"pdc/{k}",) if k in run.pdc else ()),
+            )
+        ],
         "config",
     ]
     assert [a.name for a in second] == names
@@ -465,8 +472,10 @@ def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_a
         "par_agg/1",
         "obs_ens/0",
         "obs_agg/0",
+        "pdc/0",
         "obs_ens/1",
         "obs_agg/1",
+        "pdc/1",
         "config",
     ]
     noise = next(a for a in planned if a.name == "noise_agg")
