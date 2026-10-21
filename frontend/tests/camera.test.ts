@@ -12,7 +12,8 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
-import { Camera } from '../src/gl/camera'
+import { loadRealStylesheet } from './support/run-together'
+import { Camera, MAX_ZOOM_FROM_FIT, MIN_ZOOM_FROM_FIT, wheelZoomFactor } from '../src/gl/camera'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -295,6 +296,247 @@ describe('the canvas pan, zoom and keyboard reach', () => {
     for (const el of Array.from(root.querySelectorAll('[tabindex]'))) {
       expect(Number(el.getAttribute('tabindex'))).toBeLessThanOrEqual(0)
     }
+  })
+})
+
+describe('the canvas wheel zoom follows the distance scrolled', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('a small wheel step zooms a little: deltaY -1 gives a factor above 1 and below 1.01', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const zoomSpy = vi.spyOn(Camera.prototype, 'zoomAt')
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaY: -1 }))
+
+    expect(zoomSpy).toHaveBeenCalledTimes(1)
+    const factor = zoomSpy.mock.calls[0][2]
+    expect(factor).toBeGreaterThan(1)
+    expect(factor).toBeLessThan(1.01)
+  })
+
+  it('a sideways swipe (deltaY 0) neither zooms nor is left to scroll or swipe back the page', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const zoomSpy = vi.spyOn(Camera.prototype, 'zoomAt')
+
+    const event = new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaX: 25, deltaY: 0, cancelable: true })
+    canvas.dispatchEvent(event)
+
+    expect(zoomSpy).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('a pinch (ctrlKey) of deltaY -10 zooms 1.1x', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const zoomSpy = vi.spyOn(Camera.prototype, 'zoomAt')
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { clientX: 200, clientY: 150, deltaY: -10, ctrlKey: true }))
+
+    expect(zoomSpy).toHaveBeenCalledWith(200, 150, 1.1)
+  })
+})
+
+describe('drags start anywhere the map shows and the release click selects nothing', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  const pointer = (type: string, init: { x: number; y: number; id?: number; button?: number }): PointerEvent =>
+    new PointerEvent(type, { clientX: init.x, clientY: init.y, pointerId: init.id ?? 1, button: init.button ?? 0, bubbles: true })
+
+  const readoutText = (root: HTMLElement): string => root.querySelector('.floating-bottom-right')?.textContent ?? ''
+
+  it('the see-through cluster gives up pointer events, each panel takes its own back, and the canvas takes touch drags', async () => {
+    loadRealStylesheet()
+    const root = await mountReady()
+    const cluster = root.querySelector('.floating-top-left') as HTMLElement
+    expect(getComputedStyle(cluster).pointerEvents).toBe('none')
+    const panels = Array.from(cluster.querySelectorAll('.floating'))
+    expect(panels.length).toBeGreaterThan(0)
+    for (const panel of panels) expect(getComputedStyle(panel).pointerEvents).toBe('auto')
+    expect(getComputedStyle(root.querySelector('.floating-bottom-left') as HTMLElement).pointerEvents).toBe('auto')
+    expect(getComputedStyle(root.querySelector('.floating-bottom-right') as HTMLElement).pointerEvents).toBe('auto')
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    expect(getComputedStyle(canvas).touchAction).toBe('none')
+    expect(getComputedStyle(canvas).userSelect).toBe('none')
+  })
+
+  it('only the primary button pans: a right or middle drag does not move the map', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, button: 2 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80, button: 2 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, button: 1 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80, button: 1 }))
+    expect(panSpy).not.toHaveBeenCalled()
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, button: 0 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    expect(panSpy).toHaveBeenCalledWith(30, -20)
+  })
+
+  it('only the pointer that started the drag moves the map: a second finger does nothing', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, id: 1 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 300, y: 300, id: 2 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 330, y: 280, id: 2 }))
+    expect(panSpy).not.toHaveBeenCalled()
+
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80, id: 1 }))
+    expect(panSpy).toHaveBeenCalledWith(30, -20)
+  })
+
+  it('the click that ends a drag of more than 4 CSS pixels selects nothing', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const before = readoutText(root)
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 130, clientY: 80, bubbles: true }))
+
+    expect(pickSpy).not.toHaveBeenCalled()
+    expect(readoutText(root)).toBe(before)
+  })
+
+  it('a click after a move of 4 CSS pixels or less still picks the cell', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 103, y: 100 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 103, y: 100 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 103, clientY: 100, bubbles: true }))
+
+    expect(pickSpy).toHaveBeenCalled()
+  })
+
+  it('a drag released off the canvas with no click does not eat the next real click', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 140, y: 100 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 140, y: 100 }))
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 50, y: 50 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 50, y: 50 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 50, clientY: 50, bubbles: true }))
+
+    expect(pickSpy).toHaveBeenCalled()
+  })
+})
+
+describe('wheelZoomFactor', () => {
+  const scroll = (deltaY: number, deltaMode = 0, ctrlKey = false) => ({ deltaY, deltaMode, ctrlKey })
+
+  it('one 100 px notch up is 1.1x, a 1 px step is a hundredth of that, a notch down is its inverse', () => {
+    expect(wheelZoomFactor(scroll(-100), 800)).toBeCloseTo(1.1, 12)
+    expect(wheelZoomFactor(scroll(-1), 800)).toBeCloseTo(1.1 ** 0.01, 12)
+    expect(wheelZoomFactor(scroll(100), 800)).toBeCloseTo(1 / 1.1, 12)
+  })
+
+  it('gives null for no vertical distance and for a distance that is not a finite number', () => {
+    expect(wheelZoomFactor(scroll(0), 800)).toBeNull()
+    expect(wheelZoomFactor(scroll(Number.NaN), 800)).toBeNull()
+    expect(wheelZoomFactor(scroll(Number.POSITIVE_INFINITY), 800)).toBeNull()
+    expect(wheelZoomFactor(scroll(Number.NEGATIVE_INFINITY), 800)).toBeNull()
+  })
+
+  it('counts a line as 40 px and a page as the canvas height', () => {
+    expect(wheelZoomFactor(scroll(-3, 1), 800)).toBeCloseTo(wheelZoomFactor(scroll(-120, 0), 800)!, 12)
+    expect(wheelZoomFactor(scroll(1, 2), 800)).toBeCloseTo(wheelZoomFactor(scroll(800, 0), 800)!, 12)
+  })
+
+  it('takes 10 px per 1.1x step for a pinch, ten times the scroll rate', () => {
+    expect(wheelZoomFactor(scroll(-10, 0, true), 800)).toBeCloseTo(1.1, 12)
+    const pinch = Math.log(wheelZoomFactor(scroll(-1, 0, true), 800)!)
+    const plain = Math.log(wheelZoomFactor(scroll(-1, 0, false), 800)!)
+    expect(pinch / plain).toBeCloseTo(10, 9)
+  })
+})
+
+describe('Camera.zoomAt bounds', () => {
+  const scaleOf = (camera: Camera, width: number): number => (camera.matrix()[0] * width) / 2
+
+  it('keeps the scale between a tenth and a thousand times the scale of the last fit', () => {
+    expect(MIN_ZOOM_FROM_FIT).toBe(0.1)
+    expect(MAX_ZOOM_FROM_FIT).toBe(1000)
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const fitScale = scaleOf(camera, 800)
+
+    camera.zoomAt(300, 200, 1e9)
+    expect(scaleOf(camera, 800) / fitScale).toBeCloseTo(1000, 3)
+
+    camera.zoomAt(300, 200, 1e-18)
+    expect(scaleOf(camera, 800) / fitScale).toBeCloseTo(0.1, 6)
+  })
+
+  it('keeps the world point under the pointer still at either limit', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const before = camera.screenToWorld(300, 200)
+
+    camera.zoomAt(300, 200, 1e9)
+    const atMax = camera.screenToWorld(300, 200)
+    expect(atMax[0]).toBeCloseTo(before[0], 6)
+    expect(atMax[1]).toBeCloseTo(before[1], 6)
+
+    camera.zoomAt(500, 100, 1e-18)
+    const mid = camera.screenToWorld(500, 100)
+    camera.zoomAt(500, 100, 1e-9)
+    const atMin = camera.screenToWorld(500, 100)
+    expect(atMin[0]).toBeCloseTo(mid[0], 6)
+    expect(atMin[1]).toBeCloseTo(mid[1], 6)
+  })
+
+  it('ignores a factor that is not a positive finite number', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const before = Array.from(camera.matrix())
+    for (const factor of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      camera.zoomAt(300, 200, factor)
+      expect(Array.from(camera.matrix())).toEqual(before)
+    }
+  })
+
+  it('fitAnimated sets the same fit reference as fit, from its target, at its start', () => {
+    vi.stubGlobal('requestAnimationFrame', vi.fn())
+    const fitted = new Camera(800, 480)
+    fitted.fit([0, 100, 0, 100])
+    const fitScale = scaleOf(fitted, 800)
+
+    const animated = new Camera(800, 480)
+    animated.fitAnimated([0, 100, 0, 100], vi.fn(), { reduced: false })
+    animated.zoomAt(300, 200, 1e9)
+    expect(scaleOf(animated, 800) / fitScale).toBeCloseTo(1000, 3)
+    vi.unstubAllGlobals()
   })
 })
 
