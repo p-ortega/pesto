@@ -52,9 +52,9 @@ _NO_OBS_PLANNED = "no observation ensemble was planned for this run"
 _PROBE_NOT_RUN = "not run (pass --obs-probe to time one observation file)"
 _PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
-    "counted from the artifact plan: each artifact that names a source reads it "
-    "once in its worker and once more to checksum it, except the control file and "
-    "its tables, which only the control artifact reads"
+    "counted from the artifact plan: an artifact that names a source reads it once in its "
+    "worker and once more to checksum it, unless the control artifact or an artifact it "
+    "needs already read that file, in which case it reads the cache instead"
 )
 
 
@@ -104,12 +104,17 @@ def source_files(run_dir: Path, cache_dir: Path) -> list[SourceFile]:
 def source_reads(run_dir: Path, cache_dir: Path) -> list[SourceRead]:
     counts: dict[Path, int] = {}
     control_files: set[Path] = set()
+    read_by: dict[str, set[Path]] = {}
     for artifact in _planned(run_dir, cache_dir):
+        paths = {Path(source).resolve() for source in artifact.sources}
+        read_by[artifact.name] = paths
+        # A file an artifact it needs also lists was read there; this one reads the cache.
+        already_read = set().union(*(read_by.get(need, set()) for need in artifact.needs))
         for source in artifact.sources:
             path = Path(source).resolve()
             if artifact.name == "control":
                 control_files.add(path)
-            elif path in control_files:
+            elif path in control_files or path in already_read:
                 continue
             counts[path] = counts.get(path, 0) + 2
     return [SourceRead(name=p.name, bytes=_size(p), reads_implied=n) for p, n in counts.items()]

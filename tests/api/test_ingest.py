@@ -470,6 +470,75 @@ def test_capability_obs_is_available_when_one_of_two_observation_files_is_ok(
     assert body["capabilities"]["obs"] == {"available": True, "blocked_by": []}
 
 
+def _obs_stats_capability(app, token):
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    return response.json()["capabilities"]["obs_stats"]
+
+
+def test_capability_obs_stats_is_available_once_obs_agg_is_ok(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+
+    assert _obs_stats_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_obs_stats_is_blocked_before_anything_is_ingested(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _obs_stats_capability(app, token)
+
+    assert capability["available"] is False
+    assert {b["artifact"] for b in capability["blocked_by"]} == {"obs_agg/0", "obs_agg/1"}
+
+
+def test_capability_obs_stats_blocked_names_obs_agg_and_its_recorded_reason(
+    tmp_path, in_process, monkeypatch
+):
+    from pesto.ingest.failures import ReadFailure as Failure
+
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        runner_module,
+        "_write_obs_agg_artifact",
+        lambda cache_root, iteration: Failure(
+            name=f"obs_agg/{iteration}", path="x", reason="the statistics would not write"
+        ),
+    )
+    runner_module.ingest_run(run_dir, cache_root=cache_root)
+
+    app, token = _app_for(run_dir, cache_root)
+    capability = _obs_stats_capability(app, token)
+
+    assert capability["available"] is False
+    by_artifact = {b["artifact"]: b["reason"] for b in capability["blocked_by"]}
+    assert by_artifact == {
+        "obs_agg/0": "the statistics would not write",
+        "obs_agg/1": "the statistics would not write",
+    }
+    # The ensembles themselves are fine, so obs is still available.
+    assert _obs_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_obs_stats_for_a_run_with_no_observation_file_says_why(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0, 3))
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    assert _obs_stats_capability(app, token) == {
+        "available": False,
+        "blocked_by": [
+            {"artifact": "obs_agg", "reason": "no observation ensemble file was found for this run"}
+        ],
+    }
+
+
 # --- the byte estimate (GET /estimate) --------------------------------------
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from ingest.fixtures import make_run
+from ingest.obs_fixtures import make_obs_run
 
 from pesto.bench import measure
 from pesto.bench.measure import (
@@ -216,6 +217,20 @@ def test_source_reads_count_a_worker_read_and_a_checksum_read_per_artifact(tmp_p
     # par_ens and par_agg of one iteration both name its ensemble file.
     assert reads["case.0.par.jcb"].reads_implied == 4
     assert reads["case.0.par.jcb"].bytes == os.stat(run_dir / "case.0.par.jcb").st_size
+
+
+def test_source_reads_count_an_observation_file_for_the_artifact_that_reads_it(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    reads = {r.name: r for r in source_reads(run_dir, tmp_path / "cache")}
+    # obs_ens/0 reads the file; obs_agg/0 needs obs_ens/0 and reads the cache.
+    assert reads["case.0.obs.jcb"].reads_implied == 2
+    assert reads["case.1.obs.jcb"].reads_implied == 2
+    # A parameter ensemble is still named by two artifacts that each read it.
+    assert reads["case.0.par.jcb"].reads_implied == 4
+    assert "reads the cache" in measure.source_reads_note()
 
 
 def test_source_reads_count_a_file_control_lists_for_control_alone(tmp_path: Path) -> None:

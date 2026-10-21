@@ -435,7 +435,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
-        *[f"obs_ens/{k}" for k in (0, 1) if k in run.obs_ens],
+        *[name for k in (0, 1) if k in run.obs_ens for name in (f"obs_ens/{k}", f"obs_agg/{k}")],
         "config",
     ]
     assert [a.name for a in second] == names
@@ -1189,3 +1189,14 @@ def test_estimate_bytes_names_pp_factors_instead_of_guessing_its_size(tmp_path):
     estimate = estimate_bytes(discover(tmp_path))
     assert any(note.startswith("pp_factors:") for note in estimate.notes)
     assert all(name != "pp_factors" for name, _ in estimate.per_artifact)
+
+
+def test_estimate_bytes_names_obs_agg_as_following_the_observation_count(tmp_path):
+    make_run(tmp_path, iterations=(0,), extras=False)
+    run = discover(tmp_path)
+    assert run.obs_ens
+
+    estimate = estimate_bytes(run)
+
+    assert any(note.startswith("obs_agg/K:") and "excluded rather than guessed" in note for note in estimate.notes)
+    assert all(not name.startswith("obs_agg") for name, _ in estimate.per_artifact)
