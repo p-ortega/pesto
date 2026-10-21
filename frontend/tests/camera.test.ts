@@ -435,6 +435,75 @@ describe('drags start anywhere the map shows and the release click selects nothi
     expect(pickSpy).toHaveBeenCalled()
   })
 
+  it('a press from the same pointer after a lost release starts a new drag instead of freezing the map', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    // A macOS ctrl-click opens the context menu and the browser swallows the pointerup.
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 200, y: 200 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 230, y: 180 }))
+
+    expect(panSpy).toHaveBeenCalledWith(expect.closeTo(30, 6), expect.closeTo(-20, 6))
+  })
+
+  it('losing pointer capture without a release ends the drag, so the next press pans', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, id: 1 }))
+    canvas.dispatchEvent(pointer('lostpointercapture', { x: 100, y: 100, id: 1 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80, id: 1 }))
+    expect(panSpy).not.toHaveBeenCalled()
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 200, y: 200, id: 2 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 230, y: 180, id: 2 }))
+    expect(panSpy).toHaveBeenCalledWith(expect.closeTo(30, 6), expect.closeTo(-20, 6))
+  })
+
+  it('a second finger whose first finger lost capture takes over the drag', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.hasPointerCapture = () => false
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, id: 1 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 200, y: 200, id: 2 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 230, y: 180, id: 2 }))
+
+    expect(panSpy).toHaveBeenCalledWith(expect.closeTo(30, 6), expect.closeTo(-20, 6))
+  })
+
+  it('a refused pointer capture does not stop the map from panning later', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.setPointerCapture = () => {
+      throw new DOMException('no active pointer', 'NotFoundError')
+    }
+    const panSpy = vi.spyOn(Camera.prototype, 'pan')
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80 }))
+    expect(panSpy).toHaveBeenCalledWith(expect.closeTo(30, 6), expect.closeTo(-20, 6))
+  })
+
+  it('a second finger touching mid-drag does not let the release click of the first finger select a cell', async () => {
+    const root = await mountReady()
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.hasPointerCapture = (id: number) => id === 1
+
+    canvas.dispatchEvent(pointer('pointerdown', { x: 100, y: 100, id: 1 }))
+    canvas.dispatchEvent(pointer('pointermove', { x: 130, y: 80, id: 1 }))
+    canvas.dispatchEvent(pointer('pointerdown', { x: 300, y: 300, id: 2 }))
+    canvas.dispatchEvent(pointer('pointerup', { x: 130, y: 80, id: 1 }))
+    const pickSpy = vi.spyOn(Camera.prototype, 'screenToWorld')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: 130, clientY: 80, bubbles: true }))
+
+    expect(pickSpy).not.toHaveBeenCalled()
+  })
+
   it('a drag released off the canvas with no click does not eat the next real click', async () => {
     const root = await mountReady()
     const canvas = root.querySelector('canvas') as HTMLCanvasElement

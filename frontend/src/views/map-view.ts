@@ -742,14 +742,25 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let gestureWasDrag = false
 
   canvas.addEventListener('pointerdown', (event) => {
+    if (!camera || event.button !== 0) return
+    // Ignore a second finger, but not a press that follows a lost release: the
+    // same pointer again, or another one after the first lost capture.
+    if (
+      dragPointerId !== null &&
+      event.pointerId !== dragPointerId &&
+      canvas.hasPointerCapture?.(dragPointerId) !== false
+    ) {
+      return
+    }
     // A drag released off the canvas may fire no click, so the mark must not outlive the press.
     gestureWasDrag = false
-    if (!camera || event.button !== 0 || dragPointerId !== null) return
     dragLast = canvasPoint(event)
     dragPointerId = event.pointerId
     dragStart = [event.clientX, event.clientY]
-    if (typeof canvas.setPointerCapture === 'function') {
-      canvas.setPointerCapture(event.pointerId)
+    try {
+      canvas.setPointerCapture?.(event.pointerId)
+    } catch {
+      // The drag still works on canvas events; capture only helps when the pointer leaves it.
     }
   })
 
@@ -774,6 +785,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
   canvas.addEventListener('pointerup', endDrag)
   canvas.addEventListener('pointercancel', endDrag)
+  canvas.addEventListener('lostpointercapture', (event) => {
+    if (event.pointerId !== dragPointerId) return
+    dragLast = null
+    dragPointerId = null
+  })
 
   // Wheel-to-zoom (D-15): the zoom follows the distance scrolled and zoomAt
   // holds the world point under the cursor fixed, so the grid stays under the pointer.
