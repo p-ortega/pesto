@@ -439,6 +439,37 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
     assert [a.name for a in second] == names
 
 
+def _needing(*names: str) -> PlannedArtifact:
+    return PlannedArtifact(
+        name="obs_ens/0", kind="obs_ens", sources=(), outputs=(), source_bytes=0, needs=names
+    )
+
+
+def test_an_artifact_depends_on_what_it_needs_with_that_artifacts_own_reason():
+    manifest = Manifest.empty("run")
+    manifest.mark_failed("obs_index", "the order file would not write")
+
+    reason = runner_module._needs_failure_reason(manifest, _needing("obs_index"))
+
+    assert reason == (
+        "obs_ens/0 depends on obs_index, which failed: the order file would not write"
+    )
+
+
+def test_an_artifact_that_needs_something_not_read_in_this_ingest_says_so():
+    reason = runner_module._needs_failure_reason(Manifest.empty("run"), _needing("obs_index"))
+
+    assert reason == "obs_ens/0 depends on obs_index, which failed: it was not read in this ingest"
+
+
+def test_an_artifact_whose_needs_are_all_ok_is_not_blocked():
+    manifest = Manifest.empty("run")
+    manifest.mark_ok("obs_index", sources=[], files=(), seconds=0.1)
+
+    assert runner_module._needs_failure_reason(manifest, _needing("obs_index")) is None
+    assert runner_module._needs_failure_reason(manifest, _needing()) is None
+
+
 def test_plan_artifacts_collapses_the_degenerate_noptmax_case(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
