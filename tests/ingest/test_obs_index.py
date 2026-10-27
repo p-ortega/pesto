@@ -786,3 +786,58 @@ def test_a_digest_that_names_a_part_this_reader_does_not_know_is_refused(tmp_pat
 
     assert isinstance(failure, ReadFailure)
     assert "'pixels'" in failure.reason
+
+
+# ---------------------------------------------------------------------------
+# z reaches the site table
+# ---------------------------------------------------------------------------
+
+
+def _adapter_table(index):
+    """The site table as the obs_cell worker hands it to the adapter."""
+    import pandas as pd
+
+    from pesto.ingest.obsindex import IDENTITY_COLUMNS
+
+    sites = index.sites
+    table = pd.DataFrame({"obgnme": sites["group"].astype(str).to_numpy()})
+    for column in IDENTITY_COLUMNS:
+        if column in sites.columns:
+            table[column] = sites[column].to_numpy()
+    table.index = pd.Index(sites["site"].astype(str).to_numpy(), name="obsnme")
+    return table
+
+
+def test_z_is_kept_on_the_site_row_as_the_text_given():
+    index = _build([_row("s_time:1.0", x="0.5", y="0.5", z="7.0")])
+
+    assert index.sites.iloc[0]["z"] == "7.0"
+
+
+def test_an_x_y_z_site_is_placed_on_the_layer_that_holds_z(tmp_path):
+    from model.fixtures import write_disv_grb
+
+    from pesto.model.mf6 import Mf6Adapter
+
+    rows = [
+        _row("upper", x="0.5", y="0.5", z="7.0"),
+        _row("lower", x="0.5", y="0.5", z="2.0"),
+    ]
+    adapter = Mf6Adapter(write_disv_grb(tmp_path / "g.disv.grb", nlay=2, xorigin=0.0, yorigin=0.0))
+
+    result = adapter.locate_obs(_adapter_table(_build(rows)))
+
+    placed = dict(zip(result.site, zip(result.cell.tolist(), result.layer.tolist())))
+    assert placed == {"upper": (0, 0), "lower": (0, 1)}
+
+
+def test_an_x_y_site_with_no_z_stays_unplaced_on_a_two_layer_grid(tmp_path):
+    from model.fixtures import write_disv_grb
+
+    from pesto.model.mf6 import Mf6Adapter
+
+    adapter = Mf6Adapter(write_disv_grb(tmp_path / "g.disv.grb", nlay=2, xorigin=0.0, yorigin=0.0))
+
+    result = adapter.locate_obs(_adapter_table(_build([_row("flat", x="0.5", y="0.5")])))
+
+    assert result.placed_sites == 0

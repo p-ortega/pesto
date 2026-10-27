@@ -48,7 +48,7 @@ SENTINEL_LIMIT = 1e20
 # The same tags pyemu applies to the lower-cased group name.
 LESS_TAGS = ("l_", "less", ">@")
 GREATER_TAGS = ("g_", "greater", "<@")
-IDENTITY_COLUMNS = ("id", "x", "y", "icpl", "layer", "k", "i", "j")
+IDENTITY_COLUMNS = ("id", "x", "y", "z", "icpl", "layer", "k", "i", "j")
 # The parts the digest is taken over, in the order they are hashed.
 DIGEST_PARTS = ("order", "time", "value", "flags", "sites")
 OLD_DIGEST_NOTE = (
