@@ -352,15 +352,19 @@ def _write_obs_cell_artifact(
     table.index = pd.Index(sites["site"].astype(str).to_numpy(), name="obsnme")
     # Deferred import: nothing under pesto.ingest may name pesto.model at
     # module level (test_no_ingest_file_imports_anything_from_model).
-    from pesto.model.mf6 import Mf6Adapter, observation_input_files
+    from pesto.model import ObsCells
+    from pesto.model.mf6 import Mf6Adapter, note_missing_observation_input, observation_input_files
 
-    if observation_input_files(Path(run_dir)):
+    has_model_input = bool(observation_input_files(Path(run_dir)))
+    if has_model_input:
         adapter = Mf6Adapter(Path(grid_path), model_dir=Path(run_dir))
     else:
         adapter = Mf6Adapter(Path(grid_path))
     cells = adapter.locate_obs(table)
     if isinstance(cells, ReadFailure):
         return cells
+    if not has_model_input and isinstance(cells, ObsCells):
+        cells = note_missing_observation_input(cells)
     return write_obs_cell(cells, sites, index.order_digest, layout)
 
 
