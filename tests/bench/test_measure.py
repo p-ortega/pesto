@@ -279,6 +279,11 @@ def test_source_reads_agree_with_the_checksums_a_real_ingest_takes(
     for name, implied in reads.items():
         assert hashed.count(name) == implied // 2, name
 
+    # obs_1to1 lists both observation files but names the artifacts that read them, so it reads none.
+    plan = measure._planned(run_dir, cache_dir)
+    assert "obs_1to1" in [artifact.name for artifact in plan]
+    assert measure._reads_by_artifact(plan)["obs_1to1"] == ()
+
 
 def test_source_reads_count_a_file_control_lists_for_control_alone(tmp_path: Path) -> None:
     run_dir = _small_run(tmp_path)
