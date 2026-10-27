@@ -34,8 +34,9 @@ from pesto.ingest.obs1to1 import (
     load_obs_1to1,
     rms_of_mean_residual,
 )
-from pesto.ingest.obsagg import OBS_STATS
+from pesto.ingest.obsagg import OBS_STATS, RESIDUAL_TEXT
 from pesto.ingest.obsindex import FLAG_HAS_TARGET, FLAG_WEIGHTED, SENTINEL_LIMIT
+from pesto.ingest.parhist import shared_edge_histogram
 
 router = APIRouter(prefix="/api/run")
 
@@ -591,4 +592,138 @@ async def get_obs_points(request: Request, params: Annotated[ObsPointsQuery, Que
         "not_in_group": not_in_group,
         "unknown": unknown,
     }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+INEQUALITY_NOTE = (
+    "this is an inequality group; the residual shown is plain simulated minus observed, "
+    "not one-sided"
+)
+
+
+def _no_residual_reason(n_sentinel: int, n_no_value: int, no_valid: dict[str, int | None]) -> str:
+    parts = []
+    if n_sentinel:
+        parts.append(f"{n_sentinel} sentinel")
+    if n_no_value:
+        parts.append(f"{n_no_value} without a numeric value")
+    for slot, count in no_valid.items():
+        if count:
+            parts.append(f"{count} with no valid realization at the {slot} iteration")
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return f"no observation in this group has a residual{detail}"
+
+
+def _build_resid_hist(state, cache_root, group: str, first: int, last: int | None):
+    """The residual histogram of one group as the JSON-ready answer, or a ``ReadFailure``."""
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return index
+    span = _group_range(index, group)
+    if span is None:
+        return ReadFailure(name="obs_index", path="obs_index", reason=f"obs_index: no group named {group!r}")
+    start, stop = span
+    aggs = _load_aggs(state, cache_root, [first] if last is None else [first, last])
+    if isinstance(aggs, ReadFailure):
+        return aggs
+
+    flags = index.flags[start:stop]
+    value = index.value[start:stop]
+    target = (flags & FLAG_HAS_TARGET) != 0
+    n_no_value = int(np.isnan(value).sum())
+    n_sentinel = int((np.abs(value) >= SENTINEL_LIMIT).sum())
+    n_zero_weight = int((target & ((flags & FLAG_WEIGHTED) == 0)).sum())
+    inequality = index.groups.loc[index.groups["group"] == group, "inequality"]
+    inequality = str(inequality.iloc[0]) if len(inequality) else "none"
+
+    values, no_valid = [], {}
+    for slot, (_iteration, agg) in zip(("first", "last"), aggs):
+        resid = np.asarray(agg.values[_RESID_ROW, start:stop], dtype=np.float64)[target]
+        finite = np.isfinite(resid)
+        values.append(resid[finite])
+        no_valid[slot] = int((~finite).sum())
+    pair = {"first": no_valid["first"], "last": no_valid.get("last")}
+
+    body = {
+        "group": group,
+        "residual": RESIDUAL_TEXT,
+        "inequality": inequality,
+        "inequality_note": INEQUALITY_NOTE if inequality != "none" else None,
+        "edges": [],
+        "first": None,
+        "last": None,
+        "n_outside": {"first": 0, "last": 0},
+        "left_out": {
+            "no_value": n_no_value,
+            "sentinel": n_sentinel,
+            "no_valid_realization": {"first": pair["first"], "last": pair["last"] or 0},
+        },
+        "n_zero_weight": n_zero_weight,
+        "refused": None,
+        "notes": [],
+    }
+    notes = body["notes"]
+    if last is None:
+        notes.append(f"only iteration {first} has observation statistics, so one series is drawn")
+    if n_zero_weight:
+        notes.append(f"{n_zero_weight} zero-weight observation(s) with a target are included")
+    if n_sentinel or n_no_value:
+        notes.append(
+            f"{n_sentinel + n_no_value} observation(s) have no measured value "
+            f"({n_sentinel} sentinel, {n_no_value} without a numeric value) and are left out"
+        )
+    for (iteration, _agg), slot in zip(aggs, ("first", "last")):
+        if no_valid[slot]:
+            notes.append(
+                f"iteration {iteration}: {no_valid[slot]} observation(s) have no valid realization "
+                "and are left out"
+            )
+
+    if sum(v.size for v in values) == 0:
+        body["refused"] = _no_residual_reason(n_sentinel, n_no_value, pair)
+        return body
+    shared = shared_edge_histogram(values[0], values[1] if last is not None else None, subject="group")
+    if shared.refused is not None:
+        body["refused"] = shared.refused
+        return body
+
+    body["edges"] = [float(v) for v in shared.edges]
+    for key, (iteration, _agg), series in zip(("first", "last"), aggs, (shared.first, shared.last)):
+        body[key] = {
+            "iteration": int(iteration),
+            "n": series.n,
+            "counts": [int(v) for v in series.counts],
+            "density": [float(v) for v in series.density],
+        }
+    return body
+
+
+@router.get("/obs/resid_hist")
+async def get_obs_resid_hist(request: Request, params: Annotated[ObsGroupQuery, Query()]) -> Response:
+    """One group's ensemble-mean residual, simulated minus observed, at the first and last
+    observation iteration on shared edges. Every observation left out is counted by reason."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return problem_from_failure(404, index)
+    if _group_range(index, params.group) is None:
+        return _unknown_group(params.group, "obs_index")
+    ends = _ends(Manifest.load(CacheLayout(root=Path(cache_root))))
+    if ends is None:
+        return _no_ensemble()
+    first, last = ends
+    names = ("obs_index", *(f"obs_agg/{k}" for k in (first, last) if k is not None))
+    body = obscache.memoised(
+        state,
+        cache_root,
+        ("resid_hist", params.group, first, last),
+        names,
+        lambda layout: _build_resid_hist(state, cache_root, params.group, first, last),
+    )
+    if isinstance(body, ReadFailure):
+        return problem_from_failure(404, body)
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
