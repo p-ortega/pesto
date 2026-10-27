@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .fixtures import write_control_file, write_jcb_ensemble
+from .fixtures import _ENSEMBLE_WRITERS, write_control_file
 
 LOG_BOUNDS = (0.01, 1000.0)
 NONE_BOUNDS = (-1000.0, 1000.0)
@@ -121,6 +121,7 @@ def make_par_view_run(
     nonpositive_log: bool = False,
     overrides: dict[tuple[int, str], np.ndarray] | None = None,
     rename_in_last: dict[str, str] | None = None,
+    ensemble_format: str = "jcb",
     pcs_rows: list[dict] | None = None,
     seed: int = 0,
 ) -> ParViewRun:
@@ -250,11 +251,14 @@ def make_par_view_run(
     if near_zero and none_cols:
         col = none_cols[0]
         column = values[first][:, col]
-        centred = column - column.mean()
-        sd = centred.std()
+        # The mean that matters is the one over the realizations both files share.
+        shared = {n for n in last_names} if len(ordered) > 1 else set(real_names[first])
+        use = [i for i, n in enumerate(real_names[first]) if n in shared]
+        centred = column - column[use].mean()
+        sd = centred[use].std()
         values[first][:, col] = np.round((centred + 0.005 * sd) * 256.0) / 256.0
         # Rounding to 1/256 must leave the mean below one percent of the sd.
-        assert abs(values[first][:, col].mean()) < 0.01 * values[first][:, col].std()
+        assert abs(values[first][use, col].mean()) < 0.01 * values[first][use, col].std()
     if zero_sd and len(none_cols) > 1:
         values[first][:, none_cols[1]] = 17.0
     if nonpositive_log and log_cols:
@@ -263,8 +267,9 @@ def make_par_view_run(
         values[iteration][:, par_names.index(pname)] = np.asarray(column, dtype=np.float64)
 
     for iteration in ordered:
-        path = root / f"{case}.{iteration}.par.jcb"
-        write_jcb_ensemble(path, values[iteration], real_names[iteration], par_names)
+        writer, extension = _ENSEMBLE_WRITERS[ensemble_format]
+        path = root / f"{case}.{iteration}.par.{extension}"
+        writer(path, values[iteration], real_names[iteration], par_names)
         par_ens[iteration] = path
 
     pcs_path = None
