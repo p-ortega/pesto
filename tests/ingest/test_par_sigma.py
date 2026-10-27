@@ -13,12 +13,13 @@ import json
 import numpy as np
 
 from pesto.cache.layout import CacheLayout
-from pesto.ingest.failures import ReadFailure
-from pesto.ingest.parview import load_par_groups
-from pesto.ingest.runner import Progress, ingest_run, plan_artifacts
+from pesto.ingest import parview
 from pesto.ingest.discover import discover
+from pesto.ingest.failures import ReadFailure
+from pesto.ingest.parview import group_sigma_ratio, load_par_groups
+from pesto.ingest.runner import Progress, ingest_run, plan_artifacts
 
-from .par_fixtures import make_par_view_run, numeric_space
+from .par_fixtures import DEFAULT_GROUPS, make_par_view_run, numeric_space, parameter_names
 from .test_control_first import in_process  # noqa: F401  (a fixture, used by name)
 
 REINFLATED = dict(
@@ -140,3 +141,160 @@ def test_touching_the_run_record_makes_par_groups_stale_and_leaves_par_change_fr
     touched = {r.artifact for r in rows if r.state != "skipped"}
     assert touched == {"par_groups"}
     assert manifest.artifacts["par_change"].state == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Unchecked, outside the range, disagreeing sources, one iteration, no spread
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_with_nothing_to_check_shows_the_ratio_with_a_warning_naming_what_was_looked_for(
+    tmp_path, in_process  # noqa: F811
+):
+    run, layout = _ingest(tmp_path)
+    groups, top = _groups(layout)
+
+    ratio = groups["hk_pp"]["sigma_ratio"]
+    expected = _expected_ratios(run, "hk_pp")
+    assert top["reinflation"]["verdict"] == "unchecked"
+    assert ratio["state"] == "unchecked"
+    assert abs(ratio["median"] - float(np.median(expected))) < 1e-12
+    assert ratio["reason"].startswith("Reinflation could not be checked")
+    for text in ("run record", "case.N.reinflate.pcs.csv", "ies_n_iter_reinflate"):
+        assert text in ratio["reason"], (text, ratio["reason"])
+
+
+def test_a_reinflation_before_the_first_ingested_iteration_is_listed_but_does_not_refuse(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, layout = _ingest(tmp_path, iterations=(4, 6), noptmax=6, rec={"reinflations": (4,)})
+    groups, top = _groups(layout)
+
+    assert groups["hk_pp"]["sigma_ratio"]["state"] == "shown"
+    assert top["reinflation"]["verdict"] == "none_found"
+    finding = top["reinflation"]["findings"][0]
+    assert finding["iteration"] == 4
+    assert finding["in_range"] is False
+    assert any("outside" in note and "iteration 4" in note for note in top["reinflation"]["notes"])
+
+
+def test_sources_that_place_the_reinflation_differently_refuse_and_name_both_iterations(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, layout = _ingest(
+        tmp_path,
+        iterations=(0, 4),
+        noptmax=5,
+        pestpp_options={"ies_n_iter_reinflate": "3,999"},
+        rec={"reinflations": (3,)},
+    )
+    groups, _top = _groups(layout)
+
+    ratio = groups["hk_pp"]["sigma_ratio"]
+    assert ratio["state"] == "refused"
+    assert "sources disagree" in ratio["reason"]
+    assert "iteration 3" in ratio["reason"] and "iteration 4" in ratio["reason"]
+    assert "case.rec" in ratio["reason"] and "ies_n_iter_reinflate" in ratio["reason"]
+
+
+def test_one_ingested_iteration_refuses_the_ratio_because_there_is_no_after(tmp_path, in_process):  # noqa: F811
+    _run, layout = _ingest(tmp_path, iterations=(0,), rec=True)
+    groups, _top = _groups(layout)
+
+    ratio = groups["hk_pp"]["sigma_ratio"]
+    assert ratio["state"] == "refused"
+    assert ratio["reason"] == "only iteration 0 was ingested, so there is no before and after"
+    assert ratio["median"] is None
+
+
+def test_a_group_where_no_parameter_had_spread_is_refused_with_that_reason(tmp_path, in_process):  # noqa: F811
+    spec = next(g for g in DEFAULT_GROUPS if g.name == "rch_gr")
+    constant = {(0, name): np.full(6, 17.0) for name in parameter_names(spec)}
+    _run, layout = _ingest(tmp_path, rec=True, overrides=constant)
+    groups, _top = _groups(layout)
+
+    ratio = groups["rch_gr"]["sigma_ratio"]
+    assert ratio["state"] == "refused"
+    assert ratio["reason"] == "no parameter in this group had any spread at the first iteration"
+    assert ratio["n_used"] == 0 and ratio["n_no_spread"] == 3
+    assert groups["hk_pp"]["sigma_ratio"]["state"] == "shown"
+
+
+def test_a_parameter_with_no_spread_is_counted_and_the_rest_still_give_a_ratio(tmp_path, in_process):  # noqa: F811
+    run, layout = _ingest(tmp_path, rec=True, zero_sd=True)
+    groups, _top = _groups(layout)
+
+    ratio = groups["rch_gr"]["sigma_ratio"]
+    assert ratio["state"] == "shown"
+    assert (ratio["n_used"], ratio["n_no_spread"]) == (2, 1)
+    assert abs(ratio["median"] - float(np.median(_expected_ratios(run, "rch_gr")))) < 1e-12
+
+
+def test_a_log_group_takes_its_ratios_in_log10_space(tmp_path, in_process):  # noqa: F811
+    spec = next(g for g in DEFAULT_GROUPS if g.name == "hk_pp")
+    names = parameter_names(spec)
+    first_names = [f"r{i}" for i in range(6)]
+    last_names = [n for n in reversed(first_names) if n != "r2"]
+    # Multiples of a quarter, so the float32 cache holds every value exactly.
+    first = {n: np.array([2.0, 4.0, 8.0, 16.0, 32.0, 64.0]) * (i + 1) / 4.0 for i, n in enumerate(names)}
+    last = {n: first[n] * (1.0 + 0.5 * i) for i, n in enumerate(names)}
+    overrides = {}
+    for name in names:
+        overrides[(0, name)] = first[name]
+        overrides[(1, name)] = np.array([last[name][first_names.index(r)] for r in last_names])
+    _run, layout = _ingest(tmp_path, rec=True, overrides=overrides)
+    groups, _top = _groups(layout)
+
+    keep = [first_names.index(r) for r in first_names if r != "r2"]
+    log_ratios = np.array(
+        [np.std(np.log10(last[n][keep])) / np.std(np.log10(first[n][keep])) for n in names]
+    )
+    native_ratios = np.array([np.std(last[n][keep]) / np.std(first[n][keep]) for n in names])
+    ratio = groups["hk_pp"]["sigma_ratio"]
+    assert abs(ratio["median"] - float(np.median(log_ratios))) < 1e-12
+    assert abs(ratio["p10"] - float(np.percentile(log_ratios, 10))) < 1e-12
+    assert abs(ratio["p90"] - float(np.percentile(log_ratios, 90))) < 1e-12
+    assert abs(ratio["median"] - float(np.median(native_ratios))) > 1e-3
+
+
+def test_missing_numbers_are_null_in_the_file_and_never_nan(tmp_path, in_process):  # noqa: F811
+    _run, layout = _ingest(tmp_path, iterations=(0,), rec=True)
+
+    parsed = json.loads(layout.par_groups.read_text(), parse_constant=_no_constant)
+    assert all(g["sigma_ratio"]["median"] is None for g in parsed["groups"])
+
+
+def test_a_stray_nan_makes_the_write_fail_loudly(tmp_path, in_process, monkeypatch):  # noqa: F811
+    run, layout = _ingest(tmp_path, rec=True)
+    real = parview.group_sigma_ratio
+
+    def with_nan(*args):
+        return {**real(*args), "median": float("nan")}
+
+    monkeypatch.setattr(parview, "group_sigma_ratio", with_nan)
+    result = parview.write_par_groups(run.root, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "failed to write the group summary" in result.reason
+
+
+def test_a_group_with_no_spread_anywhere_gives_no_numbers_and_says_why():
+    result = group_sigma_ratio([0.0, 0.0], [1.0, 2.0], [True, True])
+
+    assert result["median"] is None
+    assert result["n_no_spread"] == 2
+    assert result["reason"] == "no parameter in this group had any spread at the first iteration"
+
+
+def test_group_sigma_ratio_is_numpys_median_and_linear_percentiles_over_parameters_with_spread():
+    sd_first = np.array([0.5, 1.0, 0.0, 2.0, 4.0, 3.0])
+    sd_last = np.array([0.25, 0.5, 9.0, 1.0, 4.0, 1.0])
+    included = np.array([True, True, True, True, True, False])
+    ratios = np.array([0.5, 0.5, 0.5, 1.0])
+
+    result = group_sigma_ratio(sd_first, sd_last, included)
+
+    assert result["n_used"] == 4 and result["n_no_spread"] == 1
+    assert abs(result["median"] - float(np.median(ratios))) < 1e-12
+    assert abs(result["p10"] - float(np.percentile(ratios, 10))) < 1e-12
+    assert abs(result["p90"] - float(np.percentile(ratios, 90))) < 1e-12
