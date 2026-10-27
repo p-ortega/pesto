@@ -461,6 +461,20 @@ describe('the parameter detail', () => {
     expect(host.textContent).toContain('posterior, iteration 6: mean 0.7, sd 0.1 (of the log10 values)')
   })
 
+  it('says how many realizations were left out, with the reason as the hover text', () => {
+    const reason = 'a realization present in only one iteration is left out'
+    const { host } = mountParameter({ ok: true, payload: values({ left_out: { count: 3, reason } }) })
+
+    expect(host.textContent).toContain('3 realizations left out: present in only one iteration')
+    expect(host.querySelector(`[title="${reason}"]`)).not.toBeNull()
+  })
+
+  it('says nothing about left-out realizations when none were left out', () => {
+    const { host } = mountParameter({ ok: true, payload: values() })
+
+    expect(host.textContent).not.toContain('left out')
+  })
+
   it('shows an excluded parameter\'s stored reason and draws nothing', () => {
     const reason = 'fixed: the parameter does not move'
     const { host, calls } = mountParameter({
