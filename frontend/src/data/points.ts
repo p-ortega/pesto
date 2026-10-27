@@ -55,3 +55,17 @@ export function pickPoint(points: DrawnPoints, wx: number, wy: number, maxDistan
   }
   return best
 }
+
+// Every dot within reach, nearest first and equal distances by index, so stacked sites are all returned.
+export function pickPointsWithin(points: DrawnPoints, wx: number, wy: number, maxDistance: number): number[] {
+  const limit = maxDistance * maxDistance
+  const hits: Array<{ i: number; d2: number }> = []
+  for (let i = 0; i < points.rows.length; i++) {
+    const dx = points.xy[2 * i] - wx
+    const dy = points.xy[2 * i + 1] - wy
+    const d2 = dx * dx + dy * dy
+    if (d2 <= limit) hits.push({ i, d2 })
+  }
+  hits.sort((a, b) => a.d2 - b.d2 || a.i - b.i)
+  return hits.map((h) => h.i)
+}

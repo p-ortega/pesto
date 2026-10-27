@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { gridPointXy } from '../src/data/client'
-import { isPointGroup, pickPoint, pointsOnLayer } from '../src/data/points'
+import { isPointGroup, pickPoint, pickPointsWithin, pointsOnLayer } from '../src/data/points'
 
 const id = (parnme: string, pargp: string) => ({ parnme, pargp, partrans: 'log' })
 const joined = [id('a', 'k'), id('b', 'k'), id('c', 'k'), id('d', 'ss')]
@@ -30,6 +30,20 @@ describe('pickPoint', () => {
   })
   it('returns null when nothing is close enough', () => {
     expect(pickPoint(p, 5, 0, 3)).toBeNull()
+  })
+})
+
+describe('pickPointsWithin', () => {
+  const stacked = { rows: Int32Array.from([0, 1, 2]), xy: new Float32Array([0, 0, 0, 0, 5, 0]) }
+  it('returns both of two dots at the same position, never just one', () => {
+    expect(pickPointsWithin(stacked, 0.1, 0, 1)).toEqual([0, 1])
+  })
+  it('lists every dot in reach, nearest first and equal distances by index', () => {
+    expect(pickPointsWithin(stacked, 0.1, 0, 10)).toEqual([0, 1, 2])
+    expect(pickPointsWithin(stacked, 4, 0, 10)).toEqual([2, 0, 1])
+  })
+  it('returns an empty list when nothing is in reach', () => {
+    expect(pickPointsWithin(stacked, 2.5, 3, 1)).toEqual([])
   })
 })
 
