@@ -39,6 +39,7 @@ from pesto.ingest.obspdc import FIRST_ITERATION, compute_pdc, read_pdc_file, wri
 from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.obsweights import read_adjusted_weights
 from pesto.ingest.parcell import load_par_cell, write_par_cell
+from pesto.ingest.parview import write_par_change, write_par_groups
 from pesto.ingest.phicheck import check_phi, write_phi_check
 from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
@@ -73,7 +74,8 @@ class PlannedArtifact:
 
     name: str
     # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
-    # | "par_agg" | "obs_ens" | "obs_agg" | "pdc" | "phi_check" | "pp_factors" | "config"
+    # | "par_agg" | "par_change" | "par_groups" | "obs_ens" | "obs_agg" | "pdc" | "phi_check"
+    # | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
@@ -276,6 +278,22 @@ def _write_par_agg_artifact(
     if isinstance(data, ReadFailure):
         return data
     return write_par_agg(data, tables, iteration, layout)
+
+
+def _write_par_change_artifact(
+    cache_root: str, first: int, last: int
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for the per-parameter change between the first and last
+    iteration: reads both cached ensembles, never the source files."""
+    return write_par_change(first, last, CacheLayout(root=Path(cache_root)))
+
+
+def _write_par_groups_artifact(
+    run_dir: str, cache_root: str
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for the per-group summary: reads ``par_change``, the control
+    table, ``par_cell`` when it is there and the last iteration's pcs file."""
+    return write_par_groups(Path(run_dir), CacheLayout(root=Path(cache_root)))
 
 
 def _write_control_artifact(pst_path: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
@@ -759,6 +777,53 @@ def _pdc_inputs(run: RunLayout, iteration: int) -> tuple[str | None, str | None]
     return None, str(weights)
 
 
+def _plan_par_view(
+    artifacts: list[PlannedArtifact],
+    run: RunLayout,
+    layout: CacheLayout,
+    selected: Sequence[int],
+    control_sources: tuple[str, ...],
+) -> None:
+    """Plan ``par_change`` and then ``par_groups`` after the parameter
+    ensembles, or nothing when no parameter ensemble was planned.
+
+    ``par_groups`` lists both ensemble files as well, so a rewritten ensemble
+    makes it stale along with the change table it is built from."""
+    planned = sorted({k for k in selected if run.par_ens.get(k) is not None})
+    if not planned:
+        return
+    first, last = planned[0], planned[-1]
+    ensembles = _unique((str(run.par_ens[first]), str(run.par_ens[last])))
+    change_sources = _unique((*ensembles, *control_sources))
+    artifacts.append(
+        PlannedArtifact(
+            name="par_change",
+            kind="par_change",
+            sources=change_sources,
+            outputs=(str(layout.par_change), str(layout.par_change_meta)),
+            source_bytes=_size_of(change_sources),
+            needs=tuple(f"par_ens/{k}" for k in dict.fromkeys((first, last))),
+        )
+    )
+    extras = list(ensembles)
+    if run.grid is not None:
+        extras.append(str(run.grid))
+    pcs = run.pcs_file(last)
+    if pcs is not None:
+        extras.append(str(pcs))
+    group_sources = _unique((*control_sources, *extras))
+    artifacts.append(
+        PlannedArtifact(
+            name="par_groups",
+            kind="par_groups",
+            sources=group_sources,
+            outputs=(str(layout.par_groups),),
+            source_bytes=_size_of(group_sources),
+            needs=("par_change",),
+        )
+    )
+
+
 def plan_artifacts(
     run: RunLayout, layout: CacheLayout, iterations: Sequence[int] | None = None
 ) -> tuple[PlannedArtifact, ...]:
@@ -770,7 +835,10 @@ def plan_artifacts(
     ``noise_agg`` when the run has an obs+noise file (never a starting
     observation ensemble), which needs ``obs_index``; then an
     ensemble and a summary for each selected iteration in
-    ascending order, ensemble before summary; then an observation ensemble
+    ascending order, ensemble before summary; then ``par_change`` (the
+    per-parameter change between the first and last iteration, which needs
+    both cached ensembles) and ``par_groups`` (the per-group summary, which
+    needs ``par_change``) when a parameter ensemble is planned; then an observation ensemble
     for each iteration :func:`observation_iterations` selects that has an
     observation file, each followed by that iteration's ``pdc/K``: a read of
     pestpp's own ``case.K.pdc.csv`` when it exists, a computation from the
@@ -796,7 +864,10 @@ def plan_artifacts(
     control sources alone, ``obs_cell`` the control sources and the grid file, a summary that
     iteration's ensemble file and then the control sources, an ensemble the
     same and, when one exists, the grid file too, an observation ensemble its
-    observation file and then the control sources, ``pp_factors`` its own
+    observation file and then the control sources, ``par_change`` both ensemble
+    files and then the control sources, ``par_groups`` the control sources, both
+    ensemble files, the grid file and the last iteration's plain pcs file, each
+    only when it exists, ``pp_factors`` its own
     files, the grid file and the control sources, and ``config`` the control
     sources and, when one exists, the grid file. A run with no grid file
     plans no ``grid``, no ``par_cell`` and no ``obs_cell`` artifact. No artifact lists a path
@@ -948,6 +1019,8 @@ def plan_artifacts(
                 source_bytes=_size_of(sources),
             )
         )
+
+    _plan_par_view(artifacts, run, layout, selected, control_sources)
 
     obs_selected, _obs_notes = observation_iterations(run, iterations)
     for iteration in obs_selected:
@@ -1201,6 +1274,13 @@ def estimate_bytes(
             "site count rather than any source file's size -- excluded rather than guessed"
         )
 
+    if any(planned.startswith("par_ens/") for planned, _ in per_artifact):
+        notes.append(
+            "par_change/par_groups: one row per parameter and one entry per group, whose size "
+            "follows the parameter count rather than any source file's size -- excluded rather "
+            "than guessed"
+        )
+
     if any(run.obs_ens.get(k) is not None for k in obs_selected):
         notes.append(
             "obs_agg/K: statistics per observation, whose size follows the observation count "
@@ -1273,6 +1353,12 @@ def _dispatch(
     if artifact.kind == "par_agg":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_par_agg_artifact, (artifact.sources[0], cache_root, iteration)
+    if artifact.kind == "par_change":
+        # The planned needs name the iterations, "par_ens/F" then "par_ens/L".
+        ends = [int(need.split("/", 1)[1]) for need in artifact.needs]
+        return _write_par_change_artifact, (cache_root, ends[0], ends[-1])
+    if artifact.kind == "par_groups":
+        return _write_par_groups_artifact, (run_dir, cache_root)
     if artifact.kind == "obs_ens":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_obs_ens_artifact, (artifact.sources[0], cache_root, iteration)
@@ -1313,6 +1399,8 @@ _CONTROL_DEPENDENTS = frozenset(
         "obs_cell",
         "par_ens",
         "par_agg",
+        "par_change",
+        "par_groups",
         "obs_ens",
         "obs_agg",
         "noise_agg",
