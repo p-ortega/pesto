@@ -623,7 +623,7 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
         with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
             text = handle.read()
     except OSError as exc:
-        return None, f"{path.name} could not be read: {_base_names(str(exc))}"
+        return None, f"{path.name} could not be read: {_base_names(str(exc), path.parent)}"
     replaced = text.count("\ufffd")
     reader = csv.reader(io.StringIO(text, newline=""))
     header = next(reader, None)
@@ -811,9 +811,16 @@ def _pesto_figure(included: pd.DataFrame, n_common: int) -> dict:
 _ABSOLUTE_PATH = re.compile(r"(?<![\w.:])/(?:[^/\s'\"]+/)+([^\s/'\"]+)")
 
 
-def _base_names(text: str) -> str:
+def _base_names(text: str, *folders: Path) -> str:
     """``text`` with every absolute path cut down to its file name, so a note
-    that travels to the browser never carries a folder layout."""
+    that travels to the browser never carries a folder layout.
+
+    The ``folders`` the caller knows about are cut out first as whole strings,
+    because the pattern below stops at a space in a folder name."""
+    for folder in sorted(map(str, folders), key=len, reverse=True):
+        for sep in ("/", "\\"):
+            text = text.replace(folder + sep, "")
+        text = text.replace(folder, Path(folder).name)
     return _ABSOLUTE_PATH.sub(r"\1", text)
 
 
@@ -973,7 +980,7 @@ def _read_record(run: RunLayout) -> RecFacts | ReadFailure | None:
         return ReadFailure(
             name="rec",
             path=str(run.rec),
-            reason=f"could not read the run record: {_base_names(str(exc))}",
+            reason=f"could not read the run record: {_base_names(str(exc), run.rec.parent)}",
         )
 
 
@@ -988,7 +995,7 @@ def _assess_reinflation(
         options = ReadFailure(
             name="control file",
             path=str(run.pst_path),
-            reason=f"could not read the options in the control file: {_base_names(str(exc))}",
+            reason=f"could not read the options in the control file: {_base_names(str(exc), run.pst_path.parent)}",
         )
     verdict = assess_reinflation(run, first, last, rec, options)
     return verdict, options if isinstance(options, ControlOptions) else None
@@ -1146,7 +1153,7 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
             pcs_path = run_layout.pcs_file(last)
         except Exception as exc:
             run_notes.append(
-                f"the run folder could not be searched for a pcs.csv file: {_base_names(str(exc))}"
+                f"the run folder could not be searched for a pcs.csv file: {_base_names(str(exc), Path(run_dir))}"
             )
         rec = _read_record(run_layout) if run_layout is not None else None
         pcs, pcs_note = _read_pcs(pcs_path, last)
