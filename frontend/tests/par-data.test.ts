@@ -106,6 +106,12 @@ describe('fetchParValues', () => {
     expect(result).toEqual({ ok: true, payload: body })
   })
 
+  it('fails when the table has no included column, rather than reading every parameter as included', async () => {
+    stubArrowFetch(200, ipc({ parnme: ['p1'], mean_change_pct: [4] }))
+
+    await expect(fetchParChange('hk')).rejects.toThrow('included')
+  })
+
   it('turns the drill-down limit 409 into a result carrying the stored reason', async () => {
     const detail = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
     stubFetch(409, { type: 'about:blank', title: 'drill-down is not offered for this group', status: 409, artifact: 'par_groups', detail })

@@ -278,6 +278,7 @@ function readChangeRows(buffer: ArrayBuffer): ParChangeRow[] {
   if (!parnme) throw new Error('the change table is missing parnme')
   const column = (name: string) => table.getChild(name)
   const included = column('included')
+  if (!included) throw new Error('the change table is missing included')
   const excludedReason = column('excluded_reason')
   const meanChange = column('mean_change_pct')
   const meanRefused = column('mean_change_refused')
@@ -288,7 +289,7 @@ function readChangeRows(buffer: ArrayBuffer): ParChangeRow[] {
   for (let i = 0; i < table.numRows; i++) {
     rows[i] = {
       parnme: String(parnme.get(i)),
-      included: included === null ? true : Boolean(included.get(i)),
+      included: Boolean(included.get(i)),
       excluded_reason: textOrNull(excludedReason?.get(i)),
       mean_change_pct: finiteOrNull(meanChange?.get(i)),
       mean_change_refused: textOrNull(meanRefused?.get(i)),
