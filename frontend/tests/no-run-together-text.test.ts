@@ -37,6 +37,7 @@ import { renderChips, renderHeader, renderNotice, renderStatusBar } from '../src
 import { renderLegend, type LegendOptions } from '../src/ui/legend'
 import { renderSelectionControls } from '../src/ui/controls'
 import { renderParamsPanel } from '../src/ui/params-panel'
+import { renderConfigPanel } from '../src/ui/config-panel'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore } from '../src/state/selection'
 import { renderGroupPicker } from '../src/ui/group-picker'
@@ -345,6 +346,34 @@ describe('params-panel.ts (WINDOWS.md #13)', () => {
     })
     for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
     expectNoRunTogetherText(el, 'params-panel.ts renderParamsPanel')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// frontend/src/ui/config-panel.ts
+// ---------------------------------------------------------------------------
+
+describe('config-panel.ts (WINDOWS.md #13)', () => {
+  it('renderConfigPanel: a value, its source, extra readings and the warning never run together', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    const read = (source: string, value: boolean | null, shown: string) => ({ source, value, shown, evidence: '', extra: null })
+    renderConfigPanel(el, {
+      config: {
+        facts: [
+          {
+            key: 'noise',
+            label: 'Measurement noise',
+            readings: [read('run record', false, 'no noise'), read('control file', true, 'noise on'), read('files present', null, 'file present')],
+            agree: false,
+            looked_for: [],
+            note: 'decided by the run record',
+          },
+          { key: 'reinflation', label: 'Reinflation', readings: [], agree: null, looked_for: ['case.rec'], note: 'not found' },
+        ],
+      },
+    })
+    expectNoRunTogetherText(el, 'config-panel.ts renderConfigPanel')
   })
 })
 

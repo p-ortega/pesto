@@ -12,6 +12,7 @@ import { emptySelection } from '../state/rules'
 import { createSelectionStore, type SelectionStore } from '../state/selection'
 import { renderDivider } from '../ui/divider'
 import { renderNotice } from '../ui/chrome'
+import { renderConfigPanel, type ConfigPanelHandle } from '../ui/config-panel'
 import { renderParamsPanel, type ParamsPanelHandle } from '../ui/params-panel'
 import { renderTabs } from '../ui/tabs'
 import { mountMapView, openingIteration, type MapViewFields, type MapViewHandle, type RunConfig } from './map-view'
@@ -121,11 +122,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     return groupsRead
   }
 
+  let configHandle: ConfigPanelHandle | null = null
+
   const tabs = renderTabs(rightPanelHost, {
     tabs: [
       { id: 'params', label: 'Params', onShow: () => paramsHandle?.onShow(), onHide: () => paramsHandle?.onHide() },
       { id: 'obs', label: 'Obs' },
-      { id: 'config', label: 'Config' },
+      { id: 'config', label: 'Config', onShow: () => configHandle?.onShow(), onHide: () => configHandle?.onHide() },
     ],
     initial: currentTab,
     onSelect: (id) => {
@@ -135,23 +138,16 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     },
   })
 
-  // D-08: Obs and Config are clickable and say what will appear there.
-  for (const [id, title, detail] of [
-    [
-      'obs',
-      'Observations will show here',
-      'Spaghetti plots per site with the noise band, and 1:1 and residual plots per group.',
-    ],
-    [
-      'config',
-      'How the run was set up will show here',
-      'Noise, regularization, localization and whether base survived each iteration, each with its source.',
-    ],
-  ]) {
-    const noteHost = tabs.panel(id)
-    noteHost.classList.add('surface')
-    renderNotice(noteHost, { title, detail, tone: 'info' })
-  }
+  // D-08: Obs is clickable and says what will appear there.
+  const obsHost = tabs.panel('obs')
+  obsHost.classList.add('surface')
+  renderNotice(obsHost, {
+    title: 'Observations will show here',
+    detail: 'Spaghetti plots per site with the noise band, and 1:1 and residual plots per group.',
+    tone: 'info',
+  })
+
+  configHandle = renderConfigPanel(tabs.panel('config'), { config: opts.config })
 
   // Started before the map view mounts, so it is the first request the page
   // makes, ahead of the mesh and parmap fetches. A failed read is not

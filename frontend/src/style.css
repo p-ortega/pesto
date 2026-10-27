@@ -435,6 +435,47 @@ body {
   margin-top: var(--space-sm);
 }
 
+/* The Config tab: a heading, then one row per setup fact in a pane that
+   scrolls inside the frame. A fact's value and its source sit side by side
+   with a real gap, and extra readings hang under it. */
+.config-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.config-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: var(--space-md);
+}
+
+.config-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.config-main,
+.config-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+  overflow-wrap: anywhere;
+}
+
+.config-line {
+  padding-left: var(--space-md);
+}
+
+.config-source,
+.config-muted {
+  color: var(--ink-muted);
+}
+
 /* The estimate gate is a short read: one panel, a comfortable measure,
    the figures and notes stacked with the standard gap. */
 .estimate-panel {
