@@ -7,11 +7,32 @@
 // `progress.ts` already do for their own screens.
 
 import { tableFromIPC } from 'apache-arrow'
-import { ApiError } from '../data/client'
-import { fetchParGroups, type ParGroupRow, type ParGroupsPayload, type ParGroupsResult } from '../data/par'
+import { ApiError, type Capability } from '../data/client'
+import { LatestWins } from '../data/latest-wins'
+import {
+  fetchParChange,
+  fetchParGroups,
+  fetchParHist,
+  fetchParValues,
+  type ParChangeResult,
+  type ParChangeRow,
+  type ParGroupRow,
+  type ParGroupsPayload,
+  type ParGroupsResult,
+  type ParHistResult,
+  type ParValuesResult,
+} from '../data/par'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import type { UnmappedGroup } from './group-picker'
+import {
+  formatChange,
+  formatRatio,
+  renderGroupDetail,
+  renderParameterDetail,
+  type DetailHandle,
+  type GroupDetailBase,
+} from './params-detail'
 
 export interface ParamsPanelOptions {
   /** The same D-07 unmapped list the group picker's disclosure builds --
@@ -29,6 +50,8 @@ export interface ParamsPanelOptions {
   /** Reads the group summary. The shell passes one that keeps its answer, so a
    *  panel drawn again does not ask again. */
   loadGroups?: () => Promise<ParGroupsResult>
+  /** What the run's ingest said about the parameter view. When it is not available, the detail names why instead of drawing. */
+  parView?: Capability
 }
 
 interface ParamRow {
@@ -83,11 +106,11 @@ function readParamRows(buffer: ArrayBuffer): ParamRow[] {
   return rows
 }
 
-function describeFailure(error: unknown): { artifact: string; reason: string } {
+function describeFailure(error: unknown, fallback = 'meta'): { artifact: string; reason: string } {
   if (error instanceof ApiError) {
-    return { artifact: error.problem.artifact ?? 'meta', reason: error.problem.detail ?? error.problem.title }
+    return { artifact: error.problem.artifact ?? fallback, reason: error.problem.detail ?? error.problem.title }
   }
-  return { artifact: 'meta', reason: error instanceof Error ? error.message : String(error) }
+  return { artifact: fallback, reason: error instanceof Error ? error.message : String(error) }
 }
 
 function renderFailure(host: HTMLElement, artifact: string, reason: string): void {
@@ -99,7 +122,52 @@ function renderFailure(host: HTMLElement, artifact: string, reason: string): voi
   })
 }
 
-function appendRowCells(rowEl: HTMLElement, row: ParamRow): void {
+/** One cell of the change columns: the text, and the title that says where it came from or why there is none. */
+interface FigureCell {
+  text: string
+  title: string
+}
+
+interface ChangeCells {
+  mean: FigureCell
+  sd: FigureCell
+  shift: FigureCell
+}
+
+function figureCell(value: number | null, format: (value: number) => string, whyNot: string | null, fallback: string): FigureCell {
+  return value === null ? { text: '—', title: whyNot ?? fallback } : { text: format(value), title: '' }
+}
+
+function changeCellsFor(row: ChangeRowState): ChangeCells {
+  const same = (cell: FigureCell): ChangeCells => ({ mean: cell, sd: cell, shift: cell })
+  if (row.kind === 'loading') return same({ text: '…', title: 'Loading the change figures' })
+  if (row.kind === 'none') return same({ text: '—', title: row.reason })
+  if (!row.found) return same({ text: '—', title: 'the change table has no row for this parameter' })
+  const change = row.change
+  if (!change.included) return same({ text: '—', title: change.excluded_reason ?? 'this parameter is left out of the change figures' })
+  return {
+    mean: figureCell(change.mean_change_pct, formatChange, change.mean_change_refused, 'no mean change figure'),
+    sd: figureCell(change.sd_change_pct, formatChange, change.sd_change_refused, 'no sd change figure'),
+    shift: figureCell(change.mean_shift_sd, formatRatio, null, 'no shift: the parameter had no spread in the first iteration'),
+  }
+}
+
+type ChangeRowState =
+  | { kind: 'loading' }
+  | { kind: 'none'; reason: string }
+  | { kind: 'ready'; found: false }
+  | { kind: 'ready'; found: true; change: ParChangeRow }
+
+function appendFigure(rowEl: HTMLElement, column: string, cell: FigureCell): void {
+  const el = document.createElement('span')
+  el.dataset.column = column
+  el.classList.add('tabular-nums')
+  el.textContent = cell.text
+  if (cell.title !== '') el.title = cell.title
+  rowEl.appendChild(el)
+}
+
+function appendRowCells(rowEl: HTMLElement, row: ParamRow, change: ChangeCells): void {
   const nameEl = document.createElement('span')
   nameEl.classList.add('body', 'truncate')
   nameEl.textContent = row.parnme
@@ -125,6 +193,10 @@ function appendRowCells(rowEl: HTMLElement, row: ParamRow): void {
   const partransEl = document.createElement('span')
   partransEl.textContent = row.partrans ?? '—'
   rowEl.appendChild(partransEl)
+
+  appendFigure(rowEl, 'mean_change', change.mean)
+  appendFigure(rowEl, 'sd_change', change.sd)
+  appendFigure(rowEl, 'shift', change.shift)
 }
 
 // A virtual scroll over a `.scroll-pane`: a spacer sized to the full row
@@ -134,14 +206,21 @@ function appendRowCells(rowEl: HTMLElement, row: ParamRow): void {
 //
 // Returns `redraw`, the same windowing the scroll handler runs, so the panel
 // can recompute the window when it is shown again at its real height.
-function renderTable(host: HTMLElement, rows: ParamRow[], isHidden: () => boolean): () => void {
+function renderTable(
+  host: HTMLElement,
+  rows: ParamRow[],
+  isHidden: () => boolean,
+  changeFor: (parnme: string) => ChangeRowState,
+  selected: () => string | null,
+  pick: (parnme: string) => void,
+): () => void {
   host.textContent = ''
 
   // One header row above the windowed table, with the same column rule as
   // every data row (style.css `.param-header`), so the labels line up.
   const headerEl = document.createElement('div')
   headerEl.classList.add('param-header')
-  for (const text of ['Parameter', 'Group', 'Lower', 'Upper', 'Transform']) {
+  for (const text of ['Parameter', 'Group', 'Lower', 'Upper', 'Transform', 'Mean change', 'SD change', 'Shift (prior sd)']) {
     const cell = document.createElement('span')
     cell.classList.add('label')
     cell.textContent = text
@@ -181,7 +260,18 @@ function renderTable(host: HTMLElement, rows: ParamRow[], isHidden: () => boolea
       rowEl.style.right = '0'
       rowEl.style.display = 'flex'
       rowEl.style.gap = 'var(--space-sm)'
-      appendRowCells(rowEl, rows[i])
+      rowEl.tabIndex = 0
+      rowEl.dataset.parameter = rows[i].parnme
+      rowEl.setAttribute('aria-selected', String(rows[i].parnme === selected()))
+      appendRowCells(rowEl, rows[i], changeCellsFor(changeFor(rows[i].parnme)))
+      const name = rows[i].parnme
+      rowEl.addEventListener('click', () => pick(name))
+      rowEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          pick(name)
+        }
+      })
       rowsHost.appendChild(rowEl)
     }
   }
@@ -251,10 +341,6 @@ function layerText(row: ParGroupRow): string {
   return value === null ? NOT_STATED : String(value)
 }
 
-function formatChange(value: number): string {
-  return `${Number(value.toPrecision(3))}%`
-}
-
 function pestoText(row: ParGroupRow): string {
   const figure = row.change.pesto
   return figure === null || figure.mean_change_pct === null ? NO_FIGURE : formatChange(figure.mean_change_pct)
@@ -267,6 +353,19 @@ function pestoTitle(row: ParGroupRow): string {
   const counts = `${figure.n_used} parameters used, ${figure.n_refused_near_zero} refused as near zero`
   if (figure.mean_change_pct === null) return `${figure.label}: no parameter had a usable mean change (${counts})`
   return `${figure.label}; ${counts}`
+}
+
+function sigmaText(row: ParGroupRow): string {
+  const { state, median } = row.sigma_ratio
+  if (state === 'refused' || median === null) return 'not shown'
+  return state === 'unchecked' ? `${formatRatio(median)} ⚠` : formatRatio(median)
+}
+
+// The title is the stored sentence for anything but a plain ratio.
+function sigmaTitle(row: ParGroupRow): string {
+  const { state, reason, n_used } = row.sigma_ratio
+  if (state === 'shown') return n_used === null ? '' : `median over ${n_used} parameters`
+  return reason ?? 'no reason was recorded'
 }
 
 function pestppText(row: ParGroupRow): string {
@@ -298,7 +397,7 @@ function groupCell(column: string, text: string, title: string, extraClasses: st
   return cell
 }
 
-type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp'
+type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp' | 'sigma'
 type SortDirection = 'ascending' | 'descending'
 
 const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
@@ -308,6 +407,7 @@ const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
   { column: 'n_par', label: 'Parameters' },
   { column: 'pesto', label: 'Mean change, pesto' },
   { column: 'pestpp', label: 'Mean change, pestpp' },
+  { column: 'sigma', label: 'Sigma ratio' },
 ]
 
 // What a column sorts on. null is "no value" and always sorts last; a layer
@@ -326,6 +426,8 @@ function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
       return row.change.pesto?.mean_change_pct ?? null
     case 'pestpp':
       return row.change.pestpp.mean_change
+    case 'sigma':
+      return row.sigma_ratio.state === 'refused' ? null : row.sigma_ratio.median
   }
 }
 
@@ -388,6 +490,7 @@ function renderGroupRow(
   rowEl.appendChild(groupCell('n_par', String(row.n_par), parCountTitle(row), ['tabular-nums']))
   rowEl.appendChild(groupCell('pesto', pestoText(row), pestoTitle(row), ['tabular-nums']))
   rowEl.appendChild(groupCell('pestpp', pestppText(row), pestppTitle(row), ['tabular-nums']))
+  rowEl.appendChild(groupCell('sigma', sigmaText(row), sigmaTitle(row), ['tabular-nums']))
   rowEl.addEventListener('click', () => pick(row.group))
   rowEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -426,6 +529,22 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
 
   let hidden = opts.startHidden === true
   let redrawTable: (() => void) | null = null
+  // The detail asks the server only for a group that is chosen while the tab is shown.
+  let detailPending = false
+  let drawnFor: string | null = null
+  let detailHandle: DetailHandle | null = null
+  let parameterHandle: DetailHandle | null = null
+  let selectedParameter: string | null = null
+  type ChangeState =
+    | { kind: 'none'; reason: string }
+    | { kind: 'loading' }
+    | { kind: 'ready'; byName: Map<string, ParChangeRow> }
+  const NO_CHANGE = 'the change figures are not loaded'
+  let changeState: ChangeState = { kind: 'none', reason: NO_CHANGE }
+  const histSlot = new LatestWins<ParHistResult>()
+  const changeSlot = new LatestWins<ParChangeResult>()
+  const valuesSlot = new LatestWins<ParValuesResult>()
+  const blocked = opts.parView !== undefined && !opts.parView.available ? opts.parView : null
   // A browser drops the scroll offset of a box that is not displayed, so the
   // offsets are kept here while the panel is hidden.
   const savedScroll = new Map<Element, number>()
@@ -440,9 +559,19 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   groupsHost.classList.add('params-groups')
   el.appendChild(groupsHost)
 
+  const detailHost = document.createElement('div')
+  detailHost.classList.add('params-detail-host')
+  makeFocusable(detailHost, 'Group detail')
+  el.appendChild(detailHost)
+
   const tableHost = document.createElement('div')
   tableHost.classList.add('params-table')
   el.appendChild(tableHost)
+
+  const parameterHost = document.createElement('div')
+  parameterHost.classList.add('params-detail-host')
+  makeFocusable(parameterHost, 'Parameter detail')
+  el.appendChild(parameterHost)
 
   let groups: ParGroupsPayload | null = null
   let groupsRequested = false
@@ -559,6 +688,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
           renderGroupsFailure(answer.artifact, answer.reason)
         }
         renderDetail()
+        refreshGroupDetail()
       },
       (error: unknown) => {
         const { artifact, reason } = describeFailure(error)
@@ -602,7 +732,155 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       return
     }
     const shown = rows.filter((row) => chosen.has(row.pargp))
-    redrawTable = renderTable(tableHost, shown, () => hidden)
+    redrawTable = renderTable(tableHost, shown, () => hidden, changeFor, () => selectedParameter, pickParameter)
+  }
+
+  function changeFor(parnme: string): ChangeRowState {
+    if (changeState.kind === 'loading') return { kind: 'loading' }
+    if (changeState.kind === 'none') return { kind: 'none', reason: changeState.reason }
+    const change = changeState.byName.get(parnme)
+    return change === undefined ? { kind: 'ready', found: false } : { kind: 'ready', found: true, change }
+  }
+
+  function dropDetail(): void {
+    histSlot.cancel()
+    changeSlot.cancel()
+    detailHandle?.destroy()
+    detailHandle = null
+    detailHost.textContent = ''
+    drawnFor = null
+  }
+
+  function dropParameter(): void {
+    valuesSlot.cancel()
+    parameterHandle?.destroy()
+    parameterHandle = null
+    parameterHost.textContent = ''
+    selectedParameter = null
+  }
+
+  function setChange(result: ParChangeResult): void {
+    if (result.ok) {
+      changeState = { kind: 'ready', byName: new Map(result.payload.map((change) => [change.parnme, change])) }
+    } else {
+      changeState = { kind: 'none', reason: `${result.artifact}: ${result.reason}` }
+      parameterHost.textContent = ''
+      renderNotice(parameterHost, {
+        title: 'The change figures could not be read',
+        detail: `${result.artifact}: ${result.reason}`,
+        tone: 'warning',
+      })
+    }
+    if (!hidden) redrawTable?.()
+  }
+
+  function drawGroup(base: GroupDetailBase, hist: ParHistResult): void {
+    detailHandle?.destroy()
+    detailHandle = renderGroupDetail(detailHost, { ...base, hist })
+  }
+
+  // One group at a time: a hidden panel only notes the choice, and each fetch
+  // goes through its own slot so an older answer is never drawn.
+  function refreshGroupDetail(): void {
+    if (hidden) {
+      detailPending = true
+      return
+    }
+    detailPending = false
+    if (blocked !== null) {
+      const why = blocked.blockedBy.map((entry) => `${entry.artifact}: ${entry.reason}`).join(' ')
+      dropDetail()
+      renderNotice(detailHost, {
+        title: 'The parameter view is not available',
+        detail: why === '' ? 'no reason was recorded' : why,
+        tone: 'serious',
+      })
+      changeState = { kind: 'none', reason: why === '' ? 'the parameter view is not available' : why }
+      return
+    }
+    const chosen = [...chosenGroups()]
+    if (chosen.length === 0) {
+      dropDetail()
+      return
+    }
+    if (chosen.length > 1) {
+      dropDetail()
+      renderNotice(detailHost, { title: 'Choose one group to see its histograms and change', tone: 'info' })
+      return
+    }
+    const group = chosen[0]
+    if (groups === null || drawnFor === group) return
+    const row = groups.groups.find((entry) => entry.group === group)
+    if (row === undefined) {
+      dropDetail()
+      renderNotice(detailHost, {
+        title: 'No detail for this group',
+        detail: `the group summary holds no group named ${group}`,
+        tone: 'info',
+      })
+      return
+    }
+    dropDetail()
+    drawnFor = group
+    const base: GroupDetailBase = {
+      row,
+      single: groups.single_iteration,
+      left_out: groups.left_out,
+      reinflationNotes: groups.reinflation?.notes,
+      isHidden: () => hidden,
+    }
+    detailHandle = renderGroupDetail(detailHost, { ...base, hist: null })
+    void histSlot.run(group, (signal) => fetchParHist(group, { signal })).then(
+      (result) => {
+        if (!result.stale) drawGroup(base, result.value)
+      },
+      (error: unknown) => drawGroup(base, { ok: false, ...describeFailure(error, 'par_hist') }),
+    )
+
+    if (row.drill_down.offered) {
+      changeState = { kind: 'loading' }
+      if (!hidden) redrawTable?.()
+      void changeSlot.run(group, (signal) => fetchParChange(group, { signal })).then(
+        (result) => {
+          if (!result.stale) setChange(result.value)
+        },
+        (error: unknown) => setChange({ ok: false, ...describeFailure(error, 'par_change') }),
+      )
+    } else {
+      changeState = { kind: 'none', reason: row.drill_down.reason ?? 'drill-down is not offered for this group' }
+    }
+  }
+
+  function drawParameter(parameter: string, values: ParValuesResult): void {
+    parameterHandle?.destroy()
+    parameterHandle = renderParameterDetail(parameterHost, { parameter, values, isHidden: () => hidden })
+  }
+
+  function pickParameter(parameter: string): void {
+    if (blocked !== null) return
+    selectedParameter = parameter
+    if (!hidden) redrawTable?.()
+    parameterHandle?.destroy()
+    parameterHandle = null
+    parameterHost.textContent = ''
+    const loading = document.createElement('div')
+    loading.classList.add('label')
+    loading.style.color = 'var(--ink-muted)'
+    loading.textContent = 'Loading distribution…'
+    parameterHost.appendChild(loading)
+    void valuesSlot.run(parameter, (signal) => fetchParValues(parameter, { signal })).then(
+      (result) => {
+        if (!result.stale) drawParameter(parameter, result.value)
+      },
+      (error: unknown) => drawParameter(parameter, { ok: false, ...describeFailure(error, 'par_change') }),
+    )
+  }
+
+  // A new choice drops everything drawn for the old one.
+  function selectionChanged(): void {
+    changeState = { kind: 'none', reason: NO_CHANGE }
+    drawnFor = null
+    dropParameter()
   }
 
   renderDetail()
@@ -625,7 +903,9 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     (selection) => selection.parGroups,
     () => {
       markRows()
+      selectionChanged()
       renderDetail()
+      refreshGroupDetail()
     },
   )
 
@@ -637,6 +917,8 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   return {
     onHide() {
       hidden = true
+      detailHandle?.onHide()
+      parameterHandle?.onHide()
       savedScroll.clear()
       for (const pane of el.querySelectorAll('.scroll-pane')) savedScroll.set(pane, pane.scrollTop)
     },
@@ -646,9 +928,18 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       redrawTable?.()
+      // A choice made while hidden is fetched now; otherwise the canvases redraw at their real size.
+      if (detailPending) refreshGroupDetail()
+      else detailHandle?.onShow()
+      parameterHandle?.onShow()
     },
     dispose() {
       unsubscribe()
+      histSlot.cancel()
+      changeSlot.cancel()
+      valuesSlot.cancel()
+      detailHandle?.destroy()
+      parameterHandle?.destroy()
     },
   }
 }

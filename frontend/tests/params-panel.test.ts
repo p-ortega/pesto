@@ -12,8 +12,15 @@ import type { ParGroupRow, ParGroupsPayload } from '../src/data/par'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
+import { createRecording2d } from './support/recording-2d'
 
-const parApi = vi.hoisted(() => ({ fetchParGroups: vi.fn(), fetchPlacement: vi.fn() }))
+const parApi = vi.hoisted(() => ({
+  fetchParGroups: vi.fn(),
+  fetchPlacement: vi.fn(),
+  fetchParHist: vi.fn(),
+  fetchParChange: vi.fn(),
+  fetchParValues: vi.fn(),
+}))
 vi.mock('../src/data/par', () => parApi)
 
 vi.mock('../src/gl/context', () => ({
@@ -89,6 +96,7 @@ function groupRow(group: string, over: Partial<ParGroupRow> = {}): ParGroupRow {
       },
       reason: null,
     },
+    sigma_ratio: { state: 'shown', median: 0.42, p10: 0.3, p90: 0.61, n_used: 3, n_no_spread: 0, reason: null },
     at_bounds_last: { near_lower: 0, near_upper: 0, n_counted: 3 },
     drill_down: { offered: true, reason: null },
     notes: [],
@@ -144,6 +152,10 @@ beforeEach(() => {
   parApi.fetchParGroups.mockReset()
   parApi.fetchParGroups.mockResolvedValue({ ok: false, artifact: 'par_groups', reason: 'not stubbed' })
   parApi.fetchPlacement.mockReset()
+  for (const name of ['fetchParHist', 'fetchParChange', 'fetchParValues'] as const) {
+    parApi[name].mockReset()
+    parApi[name].mockResolvedValue({ ok: false, artifact: 'par_hist', reason: 'not stubbed' })
+  }
 })
 
 describe('renderParamsPanel', () => {
@@ -787,5 +799,446 @@ describe('the status bar carries real figures (Task 3)', () => {
 
     const numericSpans = Array.from(statusBar.querySelectorAll('.tabular-nums'))
     expect(numericSpans.length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The detail under the group table: histograms, change, sigma ratio, and the
+// one-parameter drill-down. The canvas is a recording context.
+// ---------------------------------------------------------------------------
+
+const HIST_EDGES = Array.from({ length: 51 }, (_, i) => -2 + i * 0.1)
+const HIST_DENSITY = Array.from({ length: 50 }, (_, i) => 0.1 + (i % 4) * 0.05)
+
+function histAnswer(group: string, over: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    payload: {
+      group,
+      space: 'log10',
+      edges: HIST_EDGES,
+      first: { iteration: 0, n: 5, counts: HIST_DENSITY.map(() => 1), density: HIST_DENSITY },
+      last: { iteration: 6, n: 5, counts: HIST_DENSITY.map(() => 1), density: HIST_DENSITY },
+      n_common: 5,
+      left_out: { count: 0, reason: null },
+      excluded: {},
+      refused: null,
+      notes: [],
+      ...over,
+    },
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+function legendTexts(calls: { method: string; args: unknown[] }[]): string[] {
+  return calls.filter((c) => c.method === 'fillText').map((c) => String(c.args[0]))
+}
+
+function canvasLabels(el: HTMLElement): string[] {
+  return [...el.querySelectorAll('canvas')].map((c) => c.getAttribute('aria-label') ?? '')
+}
+
+const LIST_COLUMNS = {
+  parnme: ['hk1', 'hk2', 'hk3', 'rch1'],
+  pargp: ['hk', 'hk', 'hk', 'rch'],
+  parlbnd: [0.1, 0.1, 0.1, 0],
+  parubnd: [10, 10, 10, 1],
+  partrans: ['log', 'log', 'log', 'none'],
+}
+
+describe('the group detail under the table', () => {
+  let recording: ReturnType<typeof createRecording2d>
+
+  beforeEach(() => {
+    recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(200)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  async function mountWith(groupNames: string[], over: Partial<ParamsPanelOptions> = {}) {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer(groupNames.map((name) => groupRow(name))))
+    const store = over.store ?? makeStore()
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, parTable: Promise.resolve(parTableBuffer(LIST_COLUMNS)), ...over }))
+    if (over.startHidden !== true) await vi.waitFor(() => expect(groupRows(el).length).toBe(groupNames.length))
+    return { el, store, handle }
+  }
+
+  it('asks /par/hist for the chosen group once and draws its prior and posterior', async () => {
+    parApi.fetchParHist.mockResolvedValue(histAnswer('hk'))
+    const { el, store } = await mountWith(['hk', 'rch'])
+
+    groupRows(el)[0].click()
+    store.flush()
+
+    await vi.waitFor(() => expect(legendTexts(recording.calls)).toContain('posterior, iteration 6'))
+    expect(parApi.fetchParHist).toHaveBeenCalledTimes(1)
+    expect(parApi.fetchParHist.mock.calls[0][0]).toBe('hk')
+    expect(legendTexts(recording.calls)).toContain('prior, iteration 0')
+    expect(canvasLabels(el)[0]).toContain('hk')
+  })
+
+  it('draws only the latest group when an older answer arrives after a newer choice', async () => {
+    const answerA = deferred<unknown>()
+    const answerB = deferred<unknown>()
+    parApi.fetchParHist.mockImplementation((group: string) => (group === 'a' ? answerA.promise : answerB.promise))
+    const { el, store } = await mountWith(['a', 'b'])
+
+    groupRows(el)[0].click()
+    store.flush()
+    groupRows(el)[1].click()
+    store.flush()
+    answerB.resolve(histAnswer('b'))
+    await vi.waitFor(() => expect(canvasLabels(el).length).toBe(1))
+    answerA.resolve(histAnswer('a'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(canvasLabels(el).length).toBe(1)
+    expect(canvasLabels(el)[0]).toContain('group b')
+    expect(el.textContent).toContain('Group b')
+    expect(el.textContent).not.toContain('Group a')
+  })
+
+  it('makes no request while the tab is hidden, and asks once when it is shown', async () => {
+    parApi.fetchParHist.mockResolvedValue(histAnswer('hk'))
+    const { el, store, handle } = await mountWith(['hk'])
+
+    handle.onHide()
+    store.set({ parGroups: new Set(['hk']) }, 'test')
+    store.flush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(parApi.fetchParHist).not.toHaveBeenCalled()
+    expect(el.querySelector('canvas')).toBeNull()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(legendTexts(recording.calls)).toContain('prior, iteration 0'))
+    expect(parApi.fetchParHist).toHaveBeenCalledTimes(1)
+  })
+
+  it('makes no group or histogram request for a panel that starts hidden until it is shown', async () => {
+    parApi.fetchParHist.mockResolvedValue(histAnswer('hk'))
+    const { handle } = await mountWith(['hk'], { startHidden: true, store: makeStore(['hk']) })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(parApi.fetchParGroups).not.toHaveBeenCalled()
+    expect(parApi.fetchParHist).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(legendTexts(recording.calls)).toContain('prior, iteration 0'))
+    expect(parApi.fetchParHist).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the blocking artifact and its reason, and asks for nothing, when the parameter view is not available', async () => {
+    const { el } = await mountWith(['hk'], {
+      store: makeStore(['hk']),
+      parView: { available: false, blockedBy: [{ artifact: 'par_change', reason: 'the control file has no parameters' }] },
+    })
+
+    await vi.waitFor(() => expect(el.textContent).toContain('par_change: the control file has no parameters'))
+    expect(parApi.fetchParHist).not.toHaveBeenCalled()
+    expect(parApi.fetchParChange).not.toHaveBeenCalled()
+    expect(el.querySelector('canvas')).toBeNull()
+  })
+
+  it('shows a refused histogram as a notice and still shows the change and sigma ratio', async () => {
+    const reason = '2 log-transformed and 1 untransformed parameters cannot share one axis, so this group has no histogram'
+    parApi.fetchParHist.mockResolvedValue(histAnswer('hk', { space: null, edges: null, first: null, last: null, refused: reason }))
+    const { el, store } = await mountWith(['hk'])
+
+    groupRows(el)[0].click()
+    store.flush()
+
+    await vi.waitFor(() => expect(el.textContent).toContain(reason))
+    expect(el.querySelector('canvas')).toBeNull()
+    expect(el.textContent).toContain('sigma ratio 0.42')
+  })
+
+  it('names the artifact and reason when the histogram request fails', async () => {
+    parApi.fetchParHist.mockRejectedValue(
+      new ApiError({ type: 'about:blank', title: 'bad read', status: 502, artifact: 'par_hist', detail: 'the histogram file is damaged' }),
+    )
+    const { el, store } = await mountWith(['hk'])
+
+    groupRows(el)[0].click()
+    store.flush()
+
+    await vi.waitFor(() => expect(el.textContent).toContain('par_hist: the histogram file is damaged'))
+  })
+
+  it('redraws at the real size when a shown, hidden and shown tab comes back, without asking again', async () => {
+    parApi.fetchParHist.mockResolvedValue(histAnswer('hk'))
+    const { el, store, handle } = await mountWith(['hk'])
+    groupRows(el)[0].click()
+    store.flush()
+    await vi.waitFor(() => expect(legendTexts(recording.calls)).toContain('prior, iteration 0'))
+
+    handle.onHide()
+    recording.calls.length = 0
+    handle.onShow()
+
+    expect(legendTexts(recording.calls)).toContain('prior, iteration 0')
+    expect(parApi.fetchParHist).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the sigma ratio column in the group table', () => {
+  const REFUSED = 'Not shown: the ensemble was reinflated at iteration 4 (source: case.rec).'
+  const WARNING = 'Reinflation could not be checked: no run record was found.'
+
+  function sigmaGroups(): ParGroupRow[] {
+    return [
+      groupRow('a', { sigma_ratio: { state: 'shown', median: 0.7, p10: 0.5, p90: 0.9, n_used: 3, n_no_spread: 0, reason: null } }),
+      groupRow('b', { sigma_ratio: { state: 'refused', median: null, p10: null, p90: null, n_used: null, n_no_spread: null, reason: REFUSED } }),
+      groupRow('c', { sigma_ratio: { state: 'unchecked', median: 0.2, p10: 0.1, p90: 0.3, n_used: 3, n_no_spread: 0, reason: WARNING } }),
+    ]
+  }
+
+  async function mountSigma(): Promise<HTMLElement> {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer(sigmaGroups()))
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(3))
+    return el
+  }
+
+  it('shows the median, the median with a warning mark, or "not shown" with the stored reason as the title', async () => {
+    const el = await mountSigma()
+    const [a, b, c] = groupRows(el)
+
+    expect(cell(a, 'sigma').textContent).toBe('0.70')
+    expect(cell(b, 'sigma').textContent).toBe('not shown')
+    expect(cell(b, 'sigma').title).toBe(REFUSED)
+    expect(cell(c, 'sigma').textContent).toBe('0.20 ⚠')
+    expect(cell(c, 'sigma').title).toBe(WARNING)
+  })
+
+  it('shows no number for a refused ratio anywhere in its row', async () => {
+    const el = await mountSigma()
+
+    expect(groupRows(el)[1].querySelector('[data-column="sigma"]')!.textContent).not.toMatch(/\d/)
+  })
+
+  it('sorts on the ratio with a refused one last both ways', async () => {
+    const el = await mountSigma()
+    const button = el.querySelector<HTMLButtonElement>('[data-column="sigma"] button')!
+    const order = () => groupRows(el).map((r) => r.dataset.group)
+
+    button.click()
+    expect(order()).toEqual(['c', 'a', 'b'])
+    button.click()
+    expect(order()).toEqual(['a', 'c', 'b'])
+  })
+})
+
+describe('the change columns and the one-parameter drill-down', () => {
+  beforeEach(() => {
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(200)
+    parApi.fetchParHist.mockResolvedValue(histAnswer('hk'))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function change(parnme: string, over: Record<string, unknown> = {}) {
+    return {
+      parnme,
+      included: true,
+      excluded_reason: null,
+      mean_change_pct: 5,
+      mean_change_refused: null,
+      sd_change_pct: -20,
+      sd_change_refused: null,
+      mean_shift_sd: 0.25,
+      ...over,
+    }
+  }
+
+  function valuesAnswer(parameter: string, over: Record<string, unknown> = {}) {
+    return {
+      ok: true,
+      payload: {
+        parameter,
+        group: 'hk',
+        space: 'log10',
+        n_common: 5,
+        left_out: { count: 0, reason: null },
+        edges: HIST_EDGES,
+        first: { iteration: 0, n: 5, counts: HIST_DENSITY.map(() => 1), density: HIST_DENSITY, mean: 0.1, sd: 0.2 },
+        last: { iteration: 6, n: 5, counts: HIST_DENSITY.map(() => 1), density: HIST_DENSITY, mean: 0.3, sd: 0.1 },
+        refused: null,
+        notes: [],
+        ...over,
+      },
+    }
+  }
+
+  async function mountChosen(rows = [change('hk1'), change('hk2'), change('hk3')]) {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('rch')]))
+    parApi.fetchParChange.mockResolvedValue({ ok: true, payload: rows })
+    const store = makeStore(['hk'])
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ store, parTable: Promise.resolve(parTableBuffer(LIST_COLUMNS)) }))
+    await vi.waitFor(() => expect(el.querySelectorAll('.param-row').length).toBe(3))
+    return { el, store }
+  }
+
+  function paramRow(el: HTMLElement, name: string): HTMLElement {
+    return el.querySelector(`.param-row[data-parameter="${name}"]`) as HTMLElement
+  }
+
+  function figure(el: HTMLElement, name: string, column: string): HTMLElement {
+    return paramRow(el, name).querySelector(`[data-column="${column}"]`) as HTMLElement
+  }
+
+  it('asks /par/change for the chosen group once and shows mean change, sd change and shift beside the bounds', async () => {
+    const { el } = await mountChosen()
+
+    await vi.waitFor(() => expect(figure(el, 'hk1', 'mean_change').textContent).toBe('5%'))
+    expect(parApi.fetchParChange).toHaveBeenCalledTimes(1)
+    expect(parApi.fetchParChange.mock.calls[0][0]).toBe('hk')
+    expect(figure(el, 'hk1', 'sd_change').textContent).toBe('-20%')
+    expect(figure(el, 'hk1', 'shift').textContent).toBe('0.25')
+    const headings = [...el.querySelectorAll('.param-header span')].map((c) => c.textContent)
+    expect(headings).toEqual(['Parameter', 'Group', 'Lower', 'Upper', 'Transform', 'Mean change', 'SD change', 'Shift (prior sd)'])
+  })
+
+  it('joins change rows to the list by parameter name when their order differs', async () => {
+    const { el } = await mountChosen([
+      change('hk3', { mean_change_pct: 3 }),
+      change('hk1', { mean_change_pct: 1 }),
+      change('hk2', { mean_change_pct: 2 }),
+    ])
+
+    await vi.waitFor(() => expect(figure(el, 'hk1', 'mean_change').textContent).toBe('1%'))
+    expect(figure(el, 'hk2', 'mean_change').textContent).toBe('2%')
+    expect(figure(el, 'hk3', 'mean_change').textContent).toBe('3%')
+  })
+
+  it('shows a dash with the refusal reason as the title where a percent change was refused', async () => {
+    const reason = 'the prior mean is too close to zero for a percent change'
+    const { el } = await mountChosen([
+      change('hk1', { mean_change_pct: null, mean_change_refused: reason }),
+      change('hk2'),
+      change('hk3'),
+    ])
+
+    await vi.waitFor(() => expect(figure(el, 'hk2', 'mean_change').textContent).toBe('5%'))
+    expect(figure(el, 'hk1', 'mean_change').textContent).toBe('—')
+    expect(figure(el, 'hk1', 'mean_change').title).toBe(reason)
+  })
+
+  it('shows a dash with the reason for a parameter that was left out of the change figures', async () => {
+    const { el } = await mountChosen([
+      change('hk1', { included: false, excluded_reason: 'fixed: the parameter does not move', mean_change_pct: null }),
+      change('hk2'),
+      change('hk3'),
+    ])
+
+    await vi.waitFor(() => expect(figure(el, 'hk2', 'mean_change').textContent).toBe('5%'))
+    expect(figure(el, 'hk1', 'mean_change').textContent).toBe('—')
+    expect(figure(el, 'hk1', 'sd_change').title).toBe('fixed: the parameter does not move')
+  })
+
+  it('names the artifact and reason when the change figures cannot be read', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk')]))
+    parApi.fetchParChange.mockResolvedValue({ ok: false, artifact: 'par_change', reason: 'par_change.parquet is not in the cache' })
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ store: makeStore(['hk']), parTable: Promise.resolve(parTableBuffer(LIST_COLUMNS)) }))
+
+    await vi.waitFor(() => expect(el.textContent).toContain('par_change: par_change.parquet is not in the cache'))
+    expect(figure(el, 'hk1', 'mean_change').textContent).toBe('—')
+  })
+
+  it('draws the clicked parameter\'s own prior and posterior from /par/values', async () => {
+    parApi.fetchParValues.mockResolvedValue(valuesAnswer('hk2'))
+    const { el } = await mountChosen()
+
+    paramRow(el, 'hk2').click()
+
+    await vi.waitFor(() => expect(canvasLabels(el).some((label) => label.includes('hk2'))).toBe(true))
+    expect(parApi.fetchParValues).toHaveBeenCalledTimes(1)
+    expect(parApi.fetchParValues.mock.calls[0][0]).toBe('hk2')
+    expect(el.textContent).toContain('Parameter hk2')
+    expect(paramRow(el, 'hk2').getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('shows an excluded parameter\'s stored reason and draws nothing for it', async () => {
+    const reason = 'fixed: the parameter does not move'
+    parApi.fetchParValues.mockResolvedValue(valuesAnswer('hk1', { edges: null, first: null, last: null, refused: reason }))
+    const { el } = await mountChosen()
+
+    paramRow(el, 'hk1').click()
+
+    await vi.waitFor(() => expect(el.textContent).toContain(reason))
+    expect(canvasLabels(el).some((label) => label.includes('hk1'))).toBe(false)
+  })
+
+  it('shows the problem\'s detail as a notice when the group is over the drill-down limit', async () => {
+    const detail = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    parApi.fetchParValues.mockRejectedValue(
+      new ApiError({ type: 'about:blank', title: 'drill-down is not offered', status: 409, artifact: 'par_groups', detail }),
+    )
+    const { el } = await mountChosen()
+
+    paramRow(el, 'hk1').click()
+
+    await vi.waitFor(() => expect(el.textContent).toContain(detail))
+  })
+
+  it('draws only the latest parameter when an older answer arrives after a newer click', async () => {
+    const answerOne = deferred<unknown>()
+    const answerTwo = deferred<unknown>()
+    parApi.fetchParValues.mockImplementation((name: string) => (name === 'hk1' ? answerOne.promise : answerTwo.promise))
+    const { el } = await mountChosen()
+
+    paramRow(el, 'hk1').click()
+    paramRow(el, 'hk2').click()
+    answerTwo.resolve(valuesAnswer('hk2'))
+    await vi.waitFor(() => expect(canvasLabels(el).some((label) => label.includes('hk2'))).toBe(true))
+    answerOne.resolve(valuesAnswer('hk1'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(canvasLabels(el).some((label) => label.includes('hk1'))).toBe(false)
+    expect(el.textContent).toContain('Parameter hk2')
+    expect(el.textContent).not.toContain('Parameter hk1')
+  })
+
+  it('drops the parameter detail when another group is chosen', async () => {
+    parApi.fetchParValues.mockResolvedValue(valuesAnswer('hk2'))
+    const { el, store } = await mountChosen()
+    paramRow(el, 'hk2').click()
+    await vi.waitFor(() => expect(el.textContent).toContain('Parameter hk2'))
+
+    groupRows(el)[1].click()
+    store.flush()
+
+    expect(el.textContent).not.toContain('Parameter hk2')
+  })
+
+  it('makes no change request for a group the drill-down is not offered for', async () => {
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([groupRow('hk', { drill_down: { offered: false, reason: 'This group has 12,000 parameters.' } })]),
+    )
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ store: makeStore(['hk']), parTable: Promise.resolve(parTableBuffer(LIST_COLUMNS)) }))
+
+    await vi.waitFor(() => expect(el.textContent).toContain('This group has 12,000 parameters.'))
+    expect(parApi.fetchParChange).not.toHaveBeenCalled()
   })
 })
