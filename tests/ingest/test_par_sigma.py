@@ -138,8 +138,9 @@ def test_touching_the_run_record_makes_par_groups_stale_and_leaves_par_change_fr
     rows: list[Progress] = []
     manifest = ingest_run(run.root, cache_root=tmp_path / "cache", on_progress=rows.append)
 
+    # The setup facts read the run record too, so config is read again with par_groups.
     touched = {r.artifact for r in rows if r.state != "skipped"}
-    assert touched == {"par_groups"}
+    assert touched == {"par_groups", "config"}
     assert manifest.artifacts["par_change"].state == "ok"
 
 
