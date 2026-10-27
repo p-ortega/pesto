@@ -1621,7 +1621,9 @@ def ingest_run(
     # "none given" (it then picks observation iterations by its own rule)
     # from a list the caller chose.
     planned = plan_artifacts(run, layout, iterations=iterations)
-    first_iteration = selected[0] if selected else None
+    # The setup facts use the same iterations the Params tab does: those with an ensemble.
+    par_view = par_view_iterations(run, selected)
+    first_iteration = par_view[0] if par_view else None
 
     grid_path = str(run.grid) if run.grid is not None else None
 
@@ -1743,7 +1745,7 @@ def ingest_run(
             pdc_file,
             weights_file,
             phi_file,
-            tuple(selected),
+            tuple(par_view),
         )
 
         start = time.perf_counter()

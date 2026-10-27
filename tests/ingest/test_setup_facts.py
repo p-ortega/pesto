@@ -379,6 +379,16 @@ def test_the_route_serves_the_facts_and_their_version(tmp_path):
     assert body["n_par"] == 6
 
 
+def test_an_iteration_with_no_ensemble_is_not_in_the_setup_facts_range(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    cache_root = tmp_path / "cache"
+
+    manifest = ingest_run(run_dir, cache_root=cache_root, iterations=[0, 1, 7])
+
+    assert manifest.artifacts["config"].state == "ok"
+    assert json.loads((cache_root / "config.json").read_text())["par_iterations"] == [0, 1]
+
+
 def test_an_old_config_is_served_with_its_old_fields_and_a_note_never_as_not_found(tmp_path):
     run_dir, _ = _setup(tmp_path, rec=False)
     cache_root = tmp_path / "cache"
