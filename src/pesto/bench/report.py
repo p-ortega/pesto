@@ -14,7 +14,7 @@ from typing import Any
 from pesto.bench.limits import SPEED_LIMITS, passes, speed_limits_dict
 from pesto.cache._atomic import write_atomic_text
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TOOL = "pesto bench"
 
 
@@ -70,16 +70,23 @@ class ReadFloor:
 
 
 @dataclass(frozen=True)
-class ColdRead:
+class ResidentFile:
+    name: str
     bytes: int
+    resident_bytes: int
+
+
+@dataclass(frozen=True)
+class AsFoundCache:
+    """What the OS said was in memory before the as-found ingest, asked without reading any file."""
+
+    source_bytes: int
+    resident_bytes: int | None
+    resident_fraction: float | None
     files: int
-    first_seconds: float
-    first_mb_per_second: float | None
-    reread_seconds: float
-    reread_mb_per_second: float | None
-    ratio: float | None
-    proven_cold: bool
-    label: str  # "cold" | "not proven cold" | "not measured"
+    missing: list[str]
+    largest_resident: list[ResidentFile]
+    label: str  # "cold" | "not cold" | "not measured"
     method: str
     note: str
 
@@ -212,7 +219,7 @@ class BenchResult:
     observations: ObservationFacts | None = None
     # Why the server stage gave nothing, when it raised; None when it ran or was turned off.
     server_failure: str | None = None
-    cold_read: ColdRead | None = None
+    as_found_cache: AsFoundCache | None = None
     schema_version: int = SCHEMA_VERSION
     tool: str = TOOL
 
@@ -322,16 +329,17 @@ def _rate(value: float | None) -> str:
     return "n/a" if value is None else f"{value:,.0f} MB/s"
 
 
-def _cold_read_lines(result: BenchResult) -> list[str]:
-    cold = result.cold_read
-    if cold is None:
+def _as_found_lines(result: BenchResult) -> list[str]:
+    cache = result.as_found_cache
+    if cache is None:
         return []
-    ratio = "n/a" if cold.ratio is None else f"{cold.ratio:.2f}"
+    if cache.resident_fraction is None:
+        share = "no share"
+    else:
+        share = f"{cache.resident_fraction * 100:.2f}% of {_megabytes(cache.source_bytes)} in memory"
     return [
-        f"Cold read: {_megabytes(cold.bytes)} in {cold.files} files, first read "
-        f"{_rate(cold.first_mb_per_second)}, re-read {_rate(cold.reread_mb_per_second)}, "
-        f"ratio {ratio}, {cold.label} (method: {cold.method})",
-        f"  note: {cold.note}",
+        f"  As-found cache: {cache.label}, {share} before this ingest (method: {cache.method})",
+        f"  note: {cache.note}",
     ]
 
 
@@ -390,8 +398,8 @@ def format_table(result: BenchResult) -> str:
         )
         for note in ingest.notes:
             lines.append(f"  note: {note}")
-
-    lines.extend(_cold_read_lines(result))
+        if ingest is result.ingests[0]:
+            lines.extend(_as_found_lines(result))
 
     floor = result.read_floor
     if floor is not None:

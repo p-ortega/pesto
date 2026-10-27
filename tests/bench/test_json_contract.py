@@ -115,7 +115,15 @@ def test_the_server_and_observation_blocks_are_present(bench) -> None:
     assert body["server"]["values"]["statistic"]["count"] == 20
     assert "not implemented" not in body["observations"]["ingest"]
     assert body["observations"]["ingest"]
-    assert body["cold_read"]["label"] in ("cold", "not proven cold", "not measured")
+    assert "cold_read" not in body and body["schema_version"] == 2
+    block = body["as_found_cache"]
+    assert block["label"] in ("cold", "not cold", "not measured")
+    assert _number(block["source_bytes"]) and block["source_bytes"] > 0
+    if block["label"] != "not measured":
+        assert _number(block["resident_bytes"]) and _number(block["resident_fraction"])
+    assert isinstance(block["files"], int) and isinstance(block["missing"], list)
+    assert isinstance(block["largest_resident"], list)
+    assert isinstance(block["method"], str) and "sudo purge" in block["note"]
     for ingest in body["ingests"]:
         assert "read_mb_per_second" in ingest
     rows = {row["speed_limit"]: row for row in body["verdicts"]}
