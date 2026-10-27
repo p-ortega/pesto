@@ -71,7 +71,11 @@ async def get_run_config(request: Request) -> JSONResponse:
         "par_iterations": list(config.par_iterations),
     }
     if config.facts_version is None:
-        body["facts_note"] = "written before the setup facts existed; run the ingest again"
+        body["facts_note"] = (
+            f"{config.facts_problem}; run the ingest again"
+            if config.facts_problem
+            else "written before the setup facts existed; run the ingest again"
+        )
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
