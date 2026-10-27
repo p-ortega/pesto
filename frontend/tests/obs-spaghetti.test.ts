@@ -462,3 +462,223 @@ describe('the counts and the legend', () => {
     expectNoRunTogetherText(m.host, 'obs-spaghetti')
   })
 })
+
+describe('several sites', () => {
+  it('draws 8 of 10 selected sites top to bottom and counts the rest', async () => {
+    const m = mount()
+    select(m.store, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    await vi.waitFor(() => expect(count(m.gl, 'scissor')).toBe(8))
+
+    expect(count(m.gl, 'viewport')).toBe(8)
+    expect(count(m.gl, 'drawElements')).toBe(16)
+    expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(8)
+    expect(m.host.textContent).toContain('2 more selected sites are not drawn')
+    // The viewport's y counts from the bottom, so a panel lower on the page has a smaller y.
+    const ys = m.gl.filter((c) => c.method === 'viewport').map((c) => c.args[1] as number)
+    expect(ys).toEqual([...ys].sort((a, b) => b - a))
+    expect(new Set(ys).size).toBe(8)
+  })
+
+  it('says "1 more selected site is not drawn" for one over', async () => {
+    const m = mount()
+    select(m.store, [1, 2, 3, 4, 5, 6, 7, 8, 9])
+    await vi.waitFor(() => expect(count(m.gl, 'scissor')).toBe(8))
+
+    expect(m.host.textContent).toContain('1 more selected site is not drawn')
+  })
+
+  it('removes a deselected site from the layer', async () => {
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+    expect(count(m.gl, 'deleteTexture')).toBe(0)
+
+    select(m.store, [])
+    expect(count(m.gl, 'deleteTexture')).toBe(2)
+    expect(count(m.gl, 'deleteBuffer')).toBe(4)
+    expect(m.host.querySelectorAll('.obs-spaghetti-panel')).toHaveLength(0)
+  })
+
+  it('keeps a site it already holds when another is added, and asks only for the new one', async () => {
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+
+    select(m.store, [7, 8])
+    // One panel at once for the first site, one when the new site starts loading, two when it arrives.
+    await vi.waitFor(() => expect(count(m.gl, 'scissor')).toBe(4))
+
+    expect(obsApi.fetchObsSite.mock.calls.map((c) => c[0])).toEqual([7, 8])
+  })
+
+  it('shows a site the server refused with its reason, beside the others', async () => {
+    obsApi.fetchObsSite.mockImplementation(async (id: number) =>
+      id === 8
+        ? { ok: false, artifact: 'obs_index', reason: 'no such site' }
+        : { ok: true, payload: sitePayload({ site_id: id }) },
+    )
+    const m = mount()
+    select(m.store, [7, 8])
+    await vi.waitFor(() => expect(m.host.textContent).toContain('obs_index: no such site'))
+
+    expect(count(m.gl, 'scissor')).toBe(1)
+  })
+
+  it('refuses an answer that names a different site than the one asked for', async () => {
+    obsApi.fetchObsSite.mockResolvedValue({ ok: true, payload: sitePayload({ site_id: 99 }) })
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(m.host.textContent).toContain('the server answered for site 99, not site 7'))
+
+    expect(count(m.gl, 'drawElements')).toBe(0)
+  })
+})
+
+describe('the cursor at the map time', () => {
+  function timesAnswer(times: number[]) {
+    return { ok: true, payload: { group: 'gw_head', times, refused: null, notes: [] } }
+  }
+
+  // Cursor strokes are the only 1 px strokes in the accent colour.
+  function cursors(calls: Call2d[]): Call2d[] {
+    return calls.filter((c) => c.method === 'stroke' && c.state.strokeStyle === ACCENT)
+  }
+
+  function cursorX(calls: Call2d[]): number[] {
+    const out: number[] = []
+    calls.forEach((c, i) => {
+      if (c.method === 'stroke' && c.state.strokeStyle === ACCENT) out.push(calls[i - 2].args[0] as number)
+    })
+    return out
+  }
+
+  beforeEach(() => {
+    obsApi.fetchObsTimes.mockResolvedValue(timesAnswer([19000, 19010, 19020, 19030]))
+    obsApi.fetchObsSite.mockImplementation(async (id: number) => ({
+      ok: true,
+      payload: sitePayload({ site_id: id, group: id === 7 ? 'gw_head' : 'surface_flow' }),
+    }))
+  })
+
+  it('shows for a site of the group colouring the map, and not for a site of another group', async () => {
+    const m = mount()
+    select(m.store, [7, 8], { colour: { source: 'obs', stat: 'rmse' }, obsGroups: new Set(['gw_head']), timeIdx: 1 })
+    await vi.waitFor(() => expect(cursors(m.front)).toHaveLength(1))
+
+    expect(obsApi.fetchObsTimes).toHaveBeenCalledTimes(1)
+    expect(obsApi.fetchObsTimes.mock.calls[0][0]).toBe('gw_head')
+  })
+
+  it('does not show when the map is coloured by a parameter', async () => {
+    const m = mount()
+    select(m.store, [7], { colour: { source: 'par', stat: 'value' }, obsGroups: new Set(['gw_head']), timeIdx: 1 })
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+
+    expect(cursors(m.front)).toHaveLength(0)
+    expect(obsApi.fetchObsTimes).not.toHaveBeenCalled()
+  })
+
+  it('moves with the time index and redraws only the front layer, with no new request', async () => {
+    const m = mount()
+    select(m.store, [7], { colour: { source: 'obs', stat: 'rmse' }, obsGroups: new Set(['gw_head']), timeIdx: 1 })
+    await vi.waitFor(() => expect(cursors(m.front)).toHaveLength(1))
+    const before = { back: m.back.length, gl: m.gl.length, seriesAsks: obsApi.fetchObsSeries.mock.calls.length }
+    const x1 = cursorX(m.front)[0]
+
+    m.store.set({ timeIdx: 3 }, 'test')
+    m.store.flush()
+
+    const xs = cursorX(m.front)
+    expect(xs).toHaveLength(2)
+    expect(xs[1]).toBeGreaterThan(x1)
+    expect(m.back.length).toBe(before.back)
+    expect(m.gl.length).toBe(before.gl)
+    expect(obsApi.fetchObsSeries.mock.calls.length).toBe(before.seriesAsks)
+    expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(1)
+    expect(obsApi.fetchObsTimes).toHaveBeenCalledTimes(1)
+  })
+
+  it('says why when the times cannot be read, instead of silently drawing no cursor', async () => {
+    obsApi.fetchObsTimes.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no times' })
+    const m = mount()
+    select(m.store, [7], { colour: { source: 'obs', stat: 'rmse' }, obsGroups: new Set(['gw_head']), timeIdx: 1 })
+    await vi.waitFor(() => expect(m.host.textContent).toContain('The map-time cursor is not drawn: obs_index: no times'))
+
+    expect(cursors(m.front)).toHaveLength(0)
+  })
+})
+
+describe('a hidden tab and a lost context', () => {
+  it('fetches and draws nothing while hidden, and once when shown', async () => {
+    const m = mount({ startHidden: true })
+    select(m.store, [7])
+    expect(obsApi.fetchObsSite).not.toHaveBeenCalled()
+    expect(m.host.querySelector('canvas')).toBeNull()
+
+    m.handle.onShow()
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+    expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(1)
+  })
+
+  it('fetches nothing for a change made while hidden after it was shown, until it is shown again', async () => {
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+
+    m.handle.onHide()
+    select(m.store, [7, 8])
+    expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(1)
+    const quiet = m.gl.length
+
+    m.handle.onShow()
+    await vi.waitFor(() => expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(m.gl.length).toBeGreaterThan(quiet))
+    expect(obsApi.fetchObsSite.mock.calls.map((c) => c[0])).toEqual([7, 8])
+  })
+
+  it('draws the same lines after the context is lost and restored, with no new request', async () => {
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+    const firstDraw = m.gl.filter((c) => c.method === 'drawElements').map((c) => c.args)
+    const uploads = count(m.gl, 'bufferData')
+    const seriesAsks = obsApi.fetchObsSeries.mock.calls.length
+
+    m.glCanvas().dispatchEvent(new Event('webglcontextlost'))
+    m.glCanvas().dispatchEvent(new Event('webglcontextrestored'))
+
+    expect(count(m.gl, 'bufferData')).toBe(uploads * 2)
+    const draws = m.gl.filter((c) => c.method === 'drawElements').map((c) => c.args)
+    expect(draws).toEqual([...firstDraw, ...firstDraw])
+    expect(obsApi.fetchObsSeries.mock.calls.length).toBe(seriesAsks)
+    expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws no lines while the context is lost', async () => {
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+
+    m.glCanvas().dispatchEvent(new Event('webglcontextlost'))
+    m.handle.onHide()
+    m.handle.onShow()
+
+    expect(count(m.gl, 'drawElements')).toBe(2)
+  })
+
+  it('says so, and still draws the markers, when the browser has no WebGL2', async () => {
+    const m = mount({ createGl: () => null })
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.front, 'arc')).toBe(4))
+
+    expect(m.host.textContent).toContain('The realization lines could not be drawn')
+  })
+
+  it('stops following the selection once disposed', async () => {
+    const m = mount()
+    m.handle.dispose()
+    select(m.store, [7])
+
+    expect(obsApi.fetchObsSite).not.toHaveBeenCalled()
+  })
+})
