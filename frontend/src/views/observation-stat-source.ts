@@ -258,7 +258,70 @@ export function dotsFor(data: ObsGroupData, layer: number, allLayers: boolean): 
   return { rows: Int32Array.from(rows), xy, counts, lowestLayer }
 }
 
-type Loaded = { ok: true; data: ObsGroupData } | { ok: false; failed: ObsFailure }
+/** The frame's value for each dot, in dot order. */
+export function valuesForDots(frame: Float32Array, dots: ObsDots): Float32Array {
+  const out = new Float32Array(dots.rows.length)
+  for (let k = 0; k < dots.rows.length; k++) {
+    const row = dots.rows[k]
+    if (row >= frame.length) throw new Error(`the frame has ${frame.length} values but a dot belongs to site row ${row + 1}`)
+    out[k] = frame[row]
+  }
+  return out
+}
+
+export interface TimeCounts {
+  /** Dots whose site has a finite value in the frame. */
+  withValue: number
+  /** Sites of the whole group with an observation at this time but no finite value; n_at_time is not split by layer. */
+  withObservationNoValue: number
+  total: number
+}
+
+export function countsAtTime(frame: Float32Array, dots: ObsDots, nAtTime: number): TimeCounts {
+  let withValue = 0
+  for (let k = 0; k < dots.rows.length; k++) {
+    if (Number.isFinite(frame[dots.rows[k]])) withValue += 1
+  }
+  let finiteInFrame = 0
+  for (let i = 0; i < frame.length; i++) {
+    if (Number.isFinite(frame[i])) finiteInFrame += 1
+  }
+  return { withValue, withObservationNoValue: Math.max(0, nAtTime - finiteInFrame), total: dots.rows.length }
+}
+
+export interface TimePosition {
+  kind: string
+  times: readonly number[]
+  index: number
+}
+
+// Only these two kinds hold a time whose number means the same thing in every group; an ordinal axis is a position.
+const CARRYABLE_KINDS = ['numeric', 'datetime']
+
+/**
+ * Where the slider goes when the group changes. The same time value is kept only when both groups
+ * have it and count time the same way; a slider index is never reused as a position.
+ */
+export function carryTime(
+  previous: TimePosition | null,
+  next: { kind: string; times: readonly number[] },
+  describe: (kind: string, value: number) => string,
+): { index: number; note: string | null } {
+  if (next.times.length === 0) return { index: -1, note: 'this group has no time to show' }
+  const value = previous === null ? undefined : previous.times[previous.index]
+  if (previous === null || value === undefined) return { index: 0, note: null }
+  if (previous.kind !== next.kind || !CARRYABLE_KINDS.includes(next.kind)) {
+    return {
+      index: 0,
+      note: `the two groups count time differently (${previous.kind} and ${next.kind}), so the slider moved to this group's first time`,
+    }
+  }
+  const found = next.times.indexOf(value)
+  if (found >= 0) return { index: found, note: null }
+  return { index: 0, note: `this group has no observation at ${describe(previous.kind, value)}, so the slider moved to its first time` }
+}
+
+type Loaded ={ ok: true; data: ObsGroupData } | { ok: false; failed: ObsFailure }
 
 function dataOf(group: string, rows: ObsSiteRow[], times: ObsTimesPayload): ObsGroupData {
   const xy = new Float32Array(2 * rows.length)

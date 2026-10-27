@@ -11,8 +11,11 @@ vi.mock('../src/data/obs', () => mocks)
 
 import {
   FrameCache,
+  carryTime,
+  countsAtTime,
   createObservationStatSource,
   dotsFor,
+  valuesForDots,
   type ObsGroupData,
 } from '../src/views/observation-stat-source'
 
@@ -466,6 +469,97 @@ describe('FrameCache.want', () => {
     expect(calls.filter((c) => c.time !== 105).every((c) => c.signal?.aborted)).toBe(true)
     expect(cache.get(cache.key('g', 1, 105, 'mean'))).toBeUndefined()
     expect(await first).toEqual({ stale: true })
+  })
+})
+
+const describeTime = (kind: string, value: number): string => `day ${value} (${kind === 'numeric' ? 'model time' : kind})`
+
+describe('carryTime', () => {
+  it('keeps the same time value when the new group has it and the same kind', () => {
+    const carried = carryTime({ kind: 'numeric', times: [1, 9, 10], index: 1 }, { kind: 'numeric', times: [5, 9] }, describeTime)
+    expect(carried).toEqual({ index: 1, note: null })
+  })
+
+  it('finds the value by what it is, not by where it was', () => {
+    const carried = carryTime({ kind: 'numeric', times: [1, 2, 3, 9], index: 3 }, { kind: 'numeric', times: [9, 20] }, describeTime)
+    expect(carried).toEqual({ index: 0, note: null })
+  })
+
+  it('goes to the first time and says so when the new group lacks the value', () => {
+    const carried = carryTime({ kind: 'numeric', times: [1, 9], index: 1 }, { kind: 'numeric', times: [2, 3] }, describeTime)
+    expect(carried).toEqual({
+      index: 0,
+      note: 'this group has no observation at day 9 (model time), so the slider moved to its first time',
+    })
+  })
+
+  it('never carries a time across two time kinds even when the number is there', () => {
+    const carried = carryTime(
+      { kind: 'numeric', times: [18262], index: 0 },
+      { kind: 'datetime', times: [18000, 18262] },
+      describeTime,
+    )
+    expect(carried.index).toBe(0)
+    expect(carried.note).toContain('count time differently')
+  })
+
+  it('does not carry an ordinal position into another ordinal group', () => {
+    const kind = 'ordinal (no time found)'
+    const carried = carryTime({ kind, times: [0, 1, 2], index: 2 }, { kind, times: [0, 1, 2, 3] }, describeTime)
+    expect(carried.index).toBe(0)
+    expect(carried.note).not.toBeNull()
+  })
+
+  it('starts at the first time with nothing to carry and no note', () => {
+    expect(carryTime(null, { kind: 'numeric', times: [4, 5] }, describeTime)).toEqual({ index: 0, note: null })
+  })
+
+  it('starts at the first time when the previous index points at no time', () => {
+    const carried = carryTime({ kind: 'numeric', times: [], index: 0 }, { kind: 'numeric', times: [4] }, describeTime)
+    expect(carried).toEqual({ index: 0, note: null })
+  })
+
+  it('says a group with no times has nothing to show', () => {
+    expect(carryTime({ kind: 'numeric', times: [1], index: 0 }, { kind: 'numeric', times: [] }, describeTime)).toEqual({
+      index: -1,
+      note: 'this group has no time to show',
+    })
+    expect(carryTime(null, { kind: 'numeric', times: [] }, describeTime).index).toBe(-1)
+  })
+})
+
+describe('valuesForDots', () => {
+  it('picks frame values by the dots site rows', () => {
+    const dots = dotsFor(groupData(), 2, true)
+    const picked = valuesForDots(Float32Array.from([10, 11, 12, 13, 14]), dots)
+    expect(Array.from(picked)).toEqual([10, 11, 12, 13])
+  })
+
+  it('says so when a dot points past the end of the frame', () => {
+    const dots = dotsFor(groupData(), 2, true)
+    expect(() => valuesForDots(Float32Array.from([1, 2]), dots)).toThrow(/2 values/)
+  })
+})
+
+describe('countsAtTime', () => {
+  it('keeps sites with an observation but no value apart from sites with a value', () => {
+    const rows = [row({ siteId: 1 }), row({ siteId: 2 }), row({ siteId: 3 }), row({ siteId: 4 })]
+    const dots = dotsFor(groupData(rows), 2, false)
+    const counts = countsAtTime(Float32Array.from([1, Number.NaN, 2, Number.NaN]), dots, 3)
+    expect(counts).toEqual({ withValue: 2, withObservationNoValue: 1, total: 4 })
+  })
+
+  it('counts only the dots that are drawn', () => {
+    const dots = dotsFor(groupData(), 2, false)
+    const counts = countsAtTime(Float32Array.from([1, Number.NaN, 5, 6, 7]), dots, 4)
+    expect(counts.withValue).toBe(1)
+    expect(counts.total).toBe(2)
+  })
+
+  it('has no site with an observation and no value when every observed site has a value', () => {
+    const rows = [row({ siteId: 1 }), row({ siteId: 2 })]
+    const dots = dotsFor(groupData(rows), 2, false)
+    expect(countsAtTime(Float32Array.from([1, 2]), dots, 2)).toEqual({ withValue: 2, withObservationNoValue: 0, total: 2 })
   })
 })
 
