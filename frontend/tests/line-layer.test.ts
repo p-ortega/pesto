@@ -2,7 +2,7 @@
 // tests assert the index run and the calls made, never pixels.
 
 import { describe, expect, it } from 'vitest'
-import { LineLayer, RESTART_INDEX, buildStripIndices, type LineSeries } from '../src/gl/line-layer'
+import { LineLayer, RESTART_INDEX, buildStripIndices, type LinePanel, type LineSeries } from '../src/gl/line-layer'
 import { createRecordingGl } from './support/recording-gl'
 
 const R = RESTART_INDEX
@@ -99,5 +99,140 @@ describe('LineLayer tracer', () => {
     expect(vertex).toContain('texelFetch')
     expect(vertex.match(/\bin\s+\w+\s+a_\w+/g)).toEqual(['in float a_value'])
     expect(calls.filter((c) => c.method === 'enableVertexAttribArray')).toHaveLength(1)
+  })
+})
+
+function panel(keys: string[], x0 = 0): LinePanel {
+  return {
+    viewport: [0, 0, 100, 50],
+    xDomain: [x0, x0 + 2],
+    yDomain: [0, 5],
+    strips: keys.map((key) => ({ key, rgba: [0.1, 0.2, 0.3, 0.15] as [number, number, number, number] })),
+  }
+}
+
+describe('LineLayer panels', () => {
+  it('sets viewport and scissor once per panel and draws each strip with its own colour', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) layer.setSeries(key, series(3, 2))
+    calls.length = 0
+
+    const panels: LinePanel[] = [panel(['a', 'b']), panel(['c', 'd']), panel(['e', 'f'])]
+    panels[0].strips[1].rgba = [0.9, 0.8, 0.7, 0.5]
+    layer.draw(panels)
+
+    expect(calls.filter((c) => c.method === 'viewport')).toHaveLength(3)
+    expect(calls.filter((c) => c.method === 'scissor')).toHaveLength(3)
+    expect(calls.filter((c) => c.method === 'drawElements')).toHaveLength(6)
+    const colours = calls.filter((c) => c.method === 'uniform4f').map((c) => c.args.slice(1))
+    expect(colours).toHaveLength(6)
+    expect(colours[0]).toEqual([0.1, 0.2, 0.3, 0.15])
+    expect(colours[1]).toEqual([0.9, 0.8, 0.7, 0.5])
+  })
+
+  it('turns the scissor test on for the call and off after', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    calls.length = 0
+    layer.draw([panel(['a'])])
+    const states = calls.filter((c) => c.args[0] === 'SCISSOR_TEST').map((c) => c.method)
+    expect(states).toEqual(['enable', 'disable'])
+  })
+
+  it('uploads nothing when only the domain changes', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    layer.draw([panel(['a'])])
+    calls.length = 0
+    layer.draw([panel(['a'], 1)])
+    expect(calls.some((c) => ['bufferData', 'texImage2D', 'texSubImage2D'].includes(c.method))).toBe(false)
+    expect(calls.filter((c) => c.method === 'drawElements')).toHaveLength(1)
+  })
+
+  it('draws nothing and clears nothing for an empty panel list', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    calls.length = 0
+    layer.draw([])
+    expect(calls).toEqual([])
+  })
+
+  it('skips a strip whose key is unknown', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    calls.length = 0
+    layer.draw([panel(['a', 'missing'])])
+    expect(calls.filter((c) => c.method === 'drawElements')).toHaveLength(1)
+  })
+
+  it('refuses a series whose value count does not match its shape', () => {
+    const { gl } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    const bad = series(3, 2)
+    expect(() => layer.setSeries('a', { ...bad, nReal: 3 })).toThrow(/not 3 times x 3/)
+  })
+})
+
+describe('LineLayer lifetime', () => {
+  it('deletes the buffers and texture of a removed series and then skips it', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    calls.length = 0
+    layer.removeSeries('a')
+    const count = (m: string) => calls.filter((c) => c.method === m).length
+    expect(count('deleteBuffer')).toBe(2)
+    expect(count('deleteTexture')).toBe(1)
+    expect(count('deleteVertexArray')).toBe(1)
+    calls.length = 0
+    layer.draw([panel(['a'])])
+    expect(calls.filter((c) => c.method === 'drawElements')).toHaveLength(0)
+  })
+
+  it('replacing a series frees the old one first', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    calls.length = 0
+    layer.setSeries('a', series(3, 2))
+    expect(calls.filter((c) => c.method === 'deleteBuffer')).toHaveLength(2)
+  })
+
+  it('uploads every kept series again after a restored context, with the same bytes', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    layer.setSeries('b', series(4, 2, [1, 2, NaN_, 4, 5, 6, 7, 8]))
+    const firstUploads = calls.filter((c) => c.method === 'bufferData').map((c) => c.args)
+    const panels = [panel(['a']), panel(['b'])]
+    calls.length = 0
+    layer.draw(panels)
+    const before = calls.filter((c) => c.method === 'drawElements').map((c) => c.args)
+
+    calls.length = 0
+    layer.reupload()
+    const secondUploads = calls.filter((c) => c.method === 'bufferData').map((c) => c.args)
+    expect(secondUploads).toEqual(firstUploads)
+    expect(calls.filter((c) => c.method === 'texImage2D')).toHaveLength(2)
+
+    calls.length = 0
+    layer.draw(panels)
+    expect(calls.filter((c) => c.method === 'drawElements').map((c) => c.args)).toEqual(before)
+  })
+
+  it('frees every object on dispose', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new LineLayer(gl)
+    layer.setSeries('a', series(3, 2))
+    calls.length = 0
+    layer.dispose()
+    expect(calls.filter((c) => c.method === 'deleteProgram')).toHaveLength(1)
+    expect(calls.filter((c) => c.method === 'deleteBuffer')).toHaveLength(2)
+    expect(calls.filter((c) => c.method === 'deleteTexture')).toHaveLength(1)
   })
 })
