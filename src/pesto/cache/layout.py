@@ -272,6 +272,20 @@ class CacheLayout:
     def phi_check(self, iteration: int) -> Path:
         return self.agg / f"phi_check_{iteration}.json"
 
+    # The parameter view spans the first and last iteration, so none of these takes one.
+
+    @property
+    def par_change(self) -> Path:
+        return self.agg / "par_change.parquet"
+
+    @property
+    def par_change_meta(self) -> Path:
+        return self.agg / "par_change.json"
+
+    @property
+    def par_groups(self) -> Path:
+        return self.agg / "par_groups.json"
+
 
 def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
     """Resolve this run's cache root, ensure a git-tracked run directory

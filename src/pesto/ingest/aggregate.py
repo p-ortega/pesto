@@ -261,16 +261,28 @@ def _bound_label(col: int, names: Sequence[str] | None) -> str:
     return f"column {col}"
 
 
-def at_bounds_fraction(
+def near_bound_counts(
     values: np.ndarray,
     lower: np.ndarray,
     upper: np.ndarray,
     log_mask: np.ndarray,
     names: Sequence[str] | None = None,
     adjustable_mask: np.ndarray | None = None,
-) -> tuple[np.ndarray, list[str]]:
-    """The per-parameter fraction of realizations pestpp-ies's own rule
-    counts at or near a bound.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    """Per parameter, how many realizations pestpp-ies's own rule counts near
+    the lower bound and near the upper bound, how many held a number, and which
+    parameters cannot be counted at all.
+
+    Returns ``(n_lower, n_upper, n_valid, missing, notes)``. A parameter in
+    ``missing`` has no count to give -- its raw counts are not to be read:
+    a log parameter whose bound is not positive, a log parameter holding a
+    value it has no logarithm for, a parameter with no valid realization, and
+    (when ``adjustable_mask`` is given) a fixed or tied one. A log parameter
+    holding a non-positive value is missing rather than counted as not near,
+    because its logarithm is undefined and "not near" would be a guess.
+
+    This is the one place the near-bound rule lives; ``at_bounds_fraction``
+    and the parameter change table both build on it.
 
     The rule is read out of ``ParChangeSummarizer::update`` in the
     pestpp-ies source, not invented here: a value counts near the *upper*
@@ -317,7 +329,6 @@ def at_bounds_fraction(
     upper = np.asarray(upper, dtype=np.float64)
     log_mask = np.asarray(log_mask, dtype=bool)
 
-    n_real, n_par = values.shape
     notes: list[str] = []
 
     valid_mask = ~np.isnan(values)
@@ -331,6 +342,17 @@ def at_bounds_fraction(
         )
 
     apply_log = log_mask & ~log_bound_invalid
+
+    with np.errstate(invalid="ignore"):
+        no_logarithm = apply_log & (valid_mask & ~(values > 0)).any(axis=0)
+    stopped = np.nonzero(no_logarithm)[0]
+    if stopped.size:
+        shown = ", ".join(_bound_label(int(c), names) for c in stopped[:3])
+        notes.append(
+            f"{stopped.size} log-transformed parameter(s) hold a non-positive value, so "
+            f"the near-bound rule has no logarithm to apply; their count is missing; for "
+            f"example {shown}"
+        )
 
     lo = lower.copy()
     hi = upper.copy()
@@ -351,25 +373,43 @@ def at_bounds_fraction(
             & (v < (lo[np.newaxis, :] + np.abs(lo[np.newaxis, :]) * 0.01))
         )
 
-    count_near = near_upper.sum(axis=0) + near_lower.sum(axis=0)
-
-    fraction = np.full(n_par, np.nan, dtype=np.float64)
-    has_valid = n_valid > 0
-    fraction[has_valid] = count_near[has_valid] / n_valid[has_valid]
-    fraction[log_bound_invalid] = np.nan
+    n_upper = near_upper.sum(axis=0).astype(np.int64)
+    n_lower = near_lower.sum(axis=0).astype(np.int64)
+    missing = log_bound_invalid | no_logarithm | (n_valid == 0)
 
     if adjustable_mask is not None:
-        adjustable_mask = np.asarray(adjustable_mask, dtype=bool)
-        not_adjustable = ~adjustable_mask
+        not_adjustable = ~np.asarray(adjustable_mask, dtype=bool)
         n_not_adjustable = int(np.count_nonzero(not_adjustable))
         if n_not_adjustable:
-            fraction[not_adjustable] = np.nan
+            missing = missing | not_adjustable
             notes.append(
                 f"{n_not_adjustable} parameter(s) are fixed or tied, so pestpp-ies never "
                 f"adjusts them and its own near-bound rule never considers them either; "
                 f"their at-bounds value is recorded as missing"
             )
 
+    return n_lower, n_upper, n_valid.astype(np.int64), missing, notes
+
+
+def at_bounds_fraction(
+    values: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    log_mask: np.ndarray,
+    names: Sequence[str] | None = None,
+    adjustable_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[str]]:
+    """The per-parameter fraction of realizations pestpp-ies's own rule counts
+    at or near a bound: the near-lower and near-upper counts of
+    :func:`near_bound_counts` over the realizations that held a number, and
+    missing (NaN) wherever that function says the count is missing. The
+    arguments are the same; see it for the rule."""
+    n_lower, n_upper, n_valid, missing, notes = near_bound_counts(
+        values, lower, upper, log_mask, names=names, adjustable_mask=adjustable_mask
+    )
+    fraction = np.full(n_valid.shape[0], np.nan, dtype=np.float64)
+    counted = ~missing
+    fraction[counted] = (n_lower[counted] + n_upper[counted]) / n_valid[counted]
     return fraction, notes
 
 
