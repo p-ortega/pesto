@@ -379,12 +379,16 @@ def test_load_obs_cell_refuses_cells_built_for_an_obs_index_that_was_since_rebui
     assert "obs_index" in result.reason and "ingest again" in result.reason
 
 
-def test_load_obs_cell_refuses_cells_whose_sites_are_in_another_order_even_with_the_same_digest(
+def test_load_obs_cell_refuses_cells_whose_sites_are_in_another_order_even_with_a_matching_digest(
     tmp_path, in_process
 ):
     layout, old_digest = _swap_in_the_old_cells(tmp_path, tuple(reversed(GRID_SITES)))
-    # One observation per site, so the observation order alone cannot tell.
-    assert load_obs_index(layout).order_digest == old_digest
+    # The digest now covers the site table, so reordered sites already change it.
+    current = load_obs_index(layout).order_digest
+    assert current != old_digest
+    meta = json.loads(layout.obs_cell_meta.read_text())
+    meta["order_digest"] = current
+    layout.obs_cell_meta.write_text(json.dumps(meta))
 
     result = load_obs_cell(layout)
 

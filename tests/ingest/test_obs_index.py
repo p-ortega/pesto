@@ -644,3 +644,145 @@ def test_a_site_name_in_two_groups_is_two_sites_and_the_note_says_so():
     assert index.sites["group"].tolist() == ["less_x", "greater_x"]
     (note,) = _notes_with(index, "more than one group")
     assert note.startswith("1 ")
+
+
+# ---------------------------------------------------------------------------
+# the digest covers what dependents are built from (WR-02)
+# ---------------------------------------------------------------------------
+
+
+def test_an_edited_obsval_gives_a_new_digest_and_an_old_obs_agg_is_refused(tmp_path, in_process):
+    import dataclasses
+
+    from pesto.ingest.obsagg import load_obs_agg
+
+    from .obs_fixtures import DEFAULT_SITES
+
+    run_dir = tmp_path / "run"
+    cache_root = tmp_path / "cache"
+    make_obs_run(run_dir, iterations=(0,))
+    ingest_run(run_dir, cache_root=cache_root)
+    layout = CacheLayout(root=cache_root)
+    old = (layout.obs_agg(0).read_bytes(), layout.obs_agg_meta(0).read_bytes())
+    old_digest = load_obs_index(layout).order_digest
+    old_order = np.fromfile(layout.obs_order, dtype="<i4")
+
+    edited = (dataclasses.replace(DEFAULT_SITES[0], obsval=2.5), *DEFAULT_SITES[1:])
+    make_obs_run(run_dir, iterations=(0,), sites=edited)
+    ingest_run(run_dir, cache_root=cache_root)
+    new = load_obs_index(layout)
+    assert not isinstance(new, ReadFailure), new
+    assert new.order.tolist() == old_order.tolist()
+    assert new.order_digest != old_digest
+    layout.obs_agg(0).write_bytes(old[0])
+    layout.obs_agg_meta(0).write_bytes(old[1])
+
+    result = load_obs_agg(0, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert "ingest the run again" in result.reason
+
+
+def test_an_edited_weight_gives_a_new_digest_and_an_unchanged_table_gives_the_same():
+    rows = [_row("a_time:1.0"), _row("a_time:2.0"), _row("b_time:1.0", weight=0.0)]
+    base = _build(rows).order_digest
+
+    now_weighted = [dict(r) for r in rows]
+    now_weighted[2]["weight"] = 1.0
+
+    assert _build(now_weighted).order_digest != base
+    assert _build(rows).order_digest == base
+
+
+def test_an_edited_placement_column_gives_a_new_digest():
+    rows = [_row("a_time:1.0", icpl="1"), _row("b_time:1.0", icpl="2")]
+    moved = [dict(rows[0]), dict(rows[1], icpl="3")]
+
+    assert _build(moved).order_digest != _build(rows).order_digest
+
+
+def test_the_digest_is_stable_across_builds_and_a_write_and_load(tmp_path):
+    rows = [_row("a_time:2.0", icpl="1", layer=None), _row("a_time:1.0", icpl="1", layer=None)]
+    first = _build(rows)
+    layout = CacheLayout(root=tmp_path / "cache")
+    write_obs_index(first, layout)
+
+    assert _build(rows).order_digest == first.order_digest
+    back = load_obs_index(layout)
+    assert not isinstance(back, ReadFailure), back
+    assert back.order_digest == first.order_digest
+    assert json.loads(layout.obs_index_meta.read_text())["digest_covers"] == [
+        "order",
+        "time",
+        "value",
+        "flags",
+        "sites",
+    ]
+
+
+def test_the_arrays_written_do_not_change_with_the_new_digest(tmp_path):
+    rows = [_row("a_time:2.0", obsval=4.0), _row("a_time:1.0", obsval=5.0, weight=0.0)]
+    layout = CacheLayout(root=tmp_path / "cache")
+    write_obs_index(_build(rows), layout)
+
+    assert np.fromfile(layout.obs_order, dtype="<i4").tolist() == [1, 0]
+    assert np.fromfile(layout.obs_time, dtype="<f8").tolist() == [1.0, 2.0]
+    assert np.fromfile(layout.obs_value, dtype="<f8").tolist() == [5.0, 4.0]
+
+
+# ---------------------------------------------------------------------------
+# older sidecars, count checks, unknown digest parts
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_meta(layout, **changes):
+    meta = json.loads(layout.obs_index_meta.read_text())
+    meta.update(changes)
+    layout.obs_index_meta.write_text(json.dumps(meta))
+    return meta
+
+
+def test_an_older_sidecar_without_digest_covers_loads_with_an_order_only_note(tmp_path):
+    import hashlib
+
+    index = _build([_row("a_time:2.0"), _row("a_time:1.0")])
+    layout = CacheLayout(root=tmp_path / "cache")
+    write_obs_index(index, layout)
+    meta = json.loads(layout.obs_index_meta.read_text())
+    del meta["digest_covers"]
+    meta["order_digest"] = hashlib.sha256(index.order.astype("<i4").tobytes()).hexdigest()
+    layout.obs_index_meta.write_text(json.dumps(meta))
+
+    back = load_obs_index(layout)
+
+    assert not isinstance(back, ReadFailure), back
+    assert back.order_digest == meta["order_digest"]
+    (note,) = [n for n in back.notes if "order only" in n]
+    assert "before its digest covered times, values, flags and sites" in note
+
+
+@pytest.mark.parametrize("key, label", [("n_sites", "sites"), ("n_groups", "groups")])
+def test_a_site_or_group_count_that_disagrees_with_its_parquet_is_refused_with_both_numbers(
+    tmp_path, key, label
+):
+    index = _build([_row("a_time:1.0"), _row("b_time:1.0", group="h")])
+    layout = CacheLayout(root=tmp_path / "cache")
+    write_obs_index(index, layout)
+    _rewrite_meta(layout, **{key: 3})
+
+    failure = load_obs_index(layout)
+
+    assert isinstance(failure, ReadFailure)
+    assert f"says 3 {label}" in failure.reason and "holds 2 rows" in failure.reason
+
+
+def test_a_digest_that_names_a_part_this_reader_does_not_know_is_refused(tmp_path):
+    index = _build([_row("p1")])
+    layout = CacheLayout(root=tmp_path / "cache")
+    write_obs_index(index, layout)
+    _rewrite_meta(layout, digest_covers=["order", "pixels"])
+
+    failure = load_obs_index(layout)
+
+    assert isinstance(failure, ReadFailure)
+    assert "'pixels'" in failure.reason
