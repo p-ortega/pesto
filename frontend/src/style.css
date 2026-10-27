@@ -320,6 +320,36 @@ body {
   white-space: normal;
 }
 
+/* A heading you can sort on reads as the label it is, not as a raised button. */
+.sort-button {
+  display: inline-flex;
+  gap: var(--space-xs);
+  padding: 0;
+  border: 0;
+  background: none;
+  font-weight: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.group-header > [aria-sort='ascending'] .sort-button,
+.group-header > [aria-sort='descending'] .sort-button {
+  color: var(--ink-primary);
+  font-weight: 600;
+}
+
+.group-header > :nth-child(n + 4) .sort-button {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+/* The unmapped marker and its note sit under the group name. */
+.group-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
 .group-row {
   cursor: pointer;
   border-bottom: 1px solid var(--hairline);
