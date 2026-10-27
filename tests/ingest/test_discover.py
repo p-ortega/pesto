@@ -1115,3 +1115,37 @@ def test_discovery_lists_exactly_the_files_pyemu_opens_for_a_real_run(
     opened = _files_pyemu_opens(layout.pst_path, monkeypatch)
 
     assert {p.resolve() for p in layout.external_tables} == opened
+
+
+def test_the_run_record_is_found_by_the_case_name(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    rec = _touch(tmp_path / "case.rec")
+    _touch(tmp_path / "other.rec")
+
+    layout = discover(tmp_path)
+
+    assert layout.rec == rec
+    assert not any(".rec" in n for n in layout.notes)
+
+
+def test_a_run_without_a_run_record_has_none_and_no_note(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    _touch(tmp_path / "other.rec")
+
+    layout = discover(tmp_path)
+
+    assert layout.rec is None
+    assert not any(".rec" in n for n in layout.notes)
+
+
+def test_two_run_records_that_fit_the_case_leave_a_note(tmp_path):
+    write_control_file(tmp_path / "case.pst", par_names=["p0"], obs_names=["o0"])
+    upper = _touch(tmp_path / "case.REC")
+    _touch(tmp_path / "case.rec")
+    if len([p for p in tmp_path.iterdir() if p.name.lower() == "case.rec"]) < 2:
+        pytest.skip("this file system folds names that differ only in case")
+
+    layout = discover(tmp_path)
+
+    assert layout.rec == upper  # "case.REC" sorts before "case.rec"
+    assert any("run record" in n and "case.rec" in n for n in layout.notes)

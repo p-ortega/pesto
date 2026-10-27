@@ -147,6 +147,8 @@ class RunLayout:
     external_tables: tuple[Path, ...] = ()
     # The weights pestpp actually used, case.adjusted.weights.{jcb,jco,bin,csv}.
     adjusted_weights: Path | None = None
+    # The pestpp run record, case.rec; read by pesto.ingest.recfile.
+    rec: Path | None = None
 
     def par_ensemble(self, iteration: IterationKey) -> Path | None:
         return self.par_ens.get(iteration)
