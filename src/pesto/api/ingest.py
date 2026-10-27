@@ -278,12 +278,13 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     if isinstance(resolved, JSONResponse):
         return resolved
     run_path, layout, run, planned, manifest = resolved
+    from pesto.ingest.runner import is_planned_stale
 
     artifacts_out: list[dict[str, Any]] = []
     fresh = True
     for planned_artifact in planned:
         artifact = manifest.artifacts.get(planned_artifact.name)
-        stale = manifest.is_stale(planned_artifact.name, layout, planned_artifact.sources)
+        stale = is_planned_stale(manifest, layout, planned_artifact)
         if stale:
             fresh = False
         artifacts_out.append(

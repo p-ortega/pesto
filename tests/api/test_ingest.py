@@ -36,6 +36,7 @@ from pesto.api.app import create_app
 from pesto.api.ingest import _display_folder
 from pesto.cache.layout import CACHE_VERSION, CacheLayout, run_id_for
 from pesto.cache.manifest import CacheFile, Manifest, SourceFingerprint
+from pesto.cache.runconfig import FACTS_VERSION
 from ingest.obs_fixtures import make_obs_run
 from ingest.test_control_first import in_process  # noqa: F401  (a fixture, used by name)
 from pesto.ingest.discover import discover
@@ -87,6 +88,10 @@ def _mark_ok_with_file(manifest: Manifest, layout: CacheLayout, name: str, *, so
     layout.root.mkdir(parents=True, exist_ok=True)
     content = b"x" * 32
     file_name = name.replace("/", "_") + ".bin"
+    if name == "config":
+        # The state route also asks whether config.json carries the current facts version.
+        content = json.dumps({"facts_version": FACTS_VERSION}).encode()
+        file_name = layout.config.name
     (layout.root / file_name).write_bytes(content)
     manifest.mark_ok(
         name, sources=list(sources), files=(CacheFile(path=file_name, bytes=len(content)),), seconds=seconds
