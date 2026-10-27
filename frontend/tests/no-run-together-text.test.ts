@@ -37,6 +37,8 @@ import { renderChips, renderHeader, renderNotice, renderStatusBar } from '../src
 import { renderLegend, type LegendOptions } from '../src/ui/legend'
 import { renderSelectionControls } from '../src/ui/controls'
 import { renderParamsPanel } from '../src/ui/params-panel'
+import { emptySelection } from '../src/state/rules'
+import { createSelectionStore } from '../src/state/selection'
 import { renderGroupPicker } from '../src/ui/group-picker'
 import { createRecordingGl } from './support/recording-gl'
 import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
@@ -283,6 +285,53 @@ describe('params-panel.ts (WINDOWS.md #13)', () => {
     const bytes = ipc.buffer.slice(ipc.byteOffset, ipc.byteOffset + ipc.byteLength) as ArrayBuffer
     const el = document.createElement('div')
     document.body.appendChild(el)
+    const store = createSelectionStore({
+      initial: { ...emptySelection('run', 0), parGroups: new Set(['G1']) },
+      schedule: () => {},
+    })
+    const none = { fixed: 0, tied: 0, nonpositive_log: 0, no_values: 0, unknown_transform: 0 }
+    const groups = {
+      ok: true as const,
+      payload: {
+        first_iteration: 0,
+        last_iteration: 3,
+        n_common: 5,
+        single_iteration: false,
+        left_out: { count: 0, n_only_first: 0, n_only_last: 0, only_first: [], only_last: [], reason: null },
+        notes: [],
+        groups: ['G1', 'G2'].map((group) => ({
+          group,
+          n_par: 2,
+          n_included: 2,
+          excluded: none,
+          type: { value: 'array', source: 'parameter name', note: null },
+          layer: { value: 0, source: 'placement rule grid', note: null },
+          change: {
+            pesto: {
+              mean_change_pct: 12.5,
+              sd_change_pct: 4,
+              mean_shift_sd_median: 0.3,
+              n_used: 2,
+              n_refused_near_zero: 0,
+              n_no_spread: 0,
+              label: 'pesto, over the 5 realizations present in both iterations',
+            },
+            pestpp: {
+              mean_change: 11.8,
+              std_change: 3.9,
+              num_at_near_lbound: 0,
+              num_at_near_ubound: 0,
+              source: 'pestpp, case.3.pcs.csv',
+              note: null,
+            },
+            reason: null,
+          },
+          at_bounds_last: { near_lower: 0, near_upper: 0, n_counted: 2 },
+          drill_down: { offered: true, reason: null },
+          notes: [],
+        })),
+      },
+    }
     renderParamsPanel(el, {
       unmapped: [
         { group: 'G2', note: null },
@@ -290,6 +339,8 @@ describe('params-panel.ts (WINDOWS.md #13)', () => {
       ],
       artifactNotes: [{ artifact: 'par_ens/head', reason: 'group obs2 excluded' }],
       parTable: Promise.resolve(bytes),
+      store,
+      loadGroups: () => Promise.resolve(groups),
     })
     for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
     expectNoRunTogetherText(el, 'params-panel.ts renderParamsPanel')

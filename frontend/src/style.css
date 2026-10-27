@@ -284,6 +284,115 @@ body {
   box-sizing: border-box;
 }
 
+/* The group summary: one row per group, scrolling inside its own pane so a
+   run with hundreds of groups leaves room for the parameter list below. */
+.params-groups {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 45%;
+  margin-bottom: var(--space-sm);
+}
+
+.params-groups > [role='grid'] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.params-groups .scroll-pane {
+  flex: 1 1 auto;
+}
+
+.group-header,
+.group-row {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-xs);
+}
+
+.group-header {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.group-header > [role='columnheader'] {
+  white-space: normal;
+}
+
+/* A heading you can sort on reads as the label it is, not as a raised button. */
+.sort-button {
+  display: inline-flex;
+  gap: var(--space-xs);
+  padding: 0;
+  border: 0;
+  background: none;
+  font-weight: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.group-header > [aria-sort='ascending'] .sort-button,
+.group-header > [aria-sort='descending'] .sort-button {
+  color: var(--ink-primary);
+  font-weight: 600;
+}
+
+.group-header > :nth-child(n + 4) .sort-button {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+/* The unmapped marker and its note sit under the group name. */
+.group-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.group-row {
+  cursor: pointer;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* The chosen row gets a bar and a heavier weight, so it does not rest on colour alone. */
+.group-row[aria-selected='true'] {
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* The group summary's columns: group and type share the stretch, the rest keep a width. */
+.group-row > :nth-child(1),
+.group-header > :nth-child(1) {
+  flex: 3 1 0;
+  min-width: 0;
+}
+
+.group-row > :nth-child(2),
+.group-header > :nth-child(2) {
+  flex: 2 1 0;
+  min-width: 0;
+}
+
+.group-row > :nth-child(3),
+.group-header > :nth-child(3) {
+  flex: 0 0 4.5em;
+}
+
+.group-row > :nth-child(4),
+.group-header > :nth-child(4) {
+  flex: 0 0 5.5em;
+  text-align: right;
+}
+
+.group-row > :nth-child(5),
+.group-header > :nth-child(5),
+.group-row > :nth-child(6),
+.group-header > :nth-child(6) {
+  flex: 0 0 6.5em;
+  text-align: right;
+}
+
 .params-table {
   display: flex;
   flex-direction: column;

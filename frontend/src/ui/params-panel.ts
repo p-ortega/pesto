@@ -1,13 +1,15 @@
-// The Params panel (D-09): the run's own parameter table, the unmapped-
-// group list the picker's disclosure already names, and the per-artifact
-// notes the ingest recorded. Fetches its own copy of `/meta?kind=par` --
-// the same route `data/parmap.ts` reads for the join, but that module
-// never carries the bound columns this table needs, and this file owns
-// its own loading/failed/ready lifecycle the way `dir-picker.ts` and
+// The Params panel (D-09): the group summary on top, the chosen group's
+// parameters under it, the unmapped-group list the picker's disclosure
+// already names, and the per-artifact notes the ingest recorded. The
+// parameter list reads the one `/meta?kind=par` answer the map already
+// fetched (the bound columns are not in the map's own copy), and this file
+// owns its own loading/failed/ready lifecycle the way `dir-picker.ts` and
 // `progress.ts` already do for their own screens.
 
 import { tableFromIPC } from 'apache-arrow'
 import { ApiError } from '../data/client'
+import { fetchParGroups, type ParGroupRow, type ParGroupsPayload, type ParGroupsResult } from '../data/par'
+import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import type { UnmappedGroup } from './group-picker'
 
@@ -20,6 +22,13 @@ export interface ParamsPanelOptions {
   /** The one parameter table request the map made; the panel reads its answer
    *  instead of asking again. */
   parTable: Promise<ArrayBuffer>
+  /** The shared selection: a group row writes `parGroups` here, and the panel follows it. */
+  store: SelectionStore
+  /** True when the tab is not the open one: nothing is fetched until onShow. */
+  startHidden?: boolean
+  /** Reads the group summary. The shell passes one that keeps its answer, so a
+   *  panel drawn again does not ask again. */
+  loadGroups?: () => Promise<ParGroupsResult>
 }
 
 interface ParamRow {
@@ -225,66 +234,405 @@ function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: 
   el.appendChild(section)
 }
 
+const NOT_STATED = 'not stated'
+const NO_FIGURE = '—'
+
+function withSource(source: string | null, note: string | null): string {
+  if (source && note) return `${source}: ${note}`
+  return source ?? note ?? ''
+}
+
+function typeText(row: ParGroupRow): string {
+  return row.type.value ?? NOT_STATED
+}
+
+function layerText(row: ParGroupRow): string {
+  const value = row.layer.value
+  return value === null ? NOT_STATED : String(value)
+}
+
+function formatChange(value: number): string {
+  return `${Number(value.toPrecision(3))}%`
+}
+
+function pestoText(row: ParGroupRow): string {
+  const figure = row.change.pesto
+  return figure === null || figure.mean_change_pct === null ? NO_FIGURE : formatChange(figure.mean_change_pct)
+}
+
+// The title names the source of the figure, or says why there is none.
+function pestoTitle(row: ParGroupRow): string {
+  const figure = row.change.pesto
+  if (figure === null) return row.change.reason ?? 'pesto has no change figure for this group'
+  const counts = `${figure.n_used} parameters used, ${figure.n_refused_near_zero} refused as near zero`
+  if (figure.mean_change_pct === null) return `${figure.label}: no parameter had a usable mean change (${counts})`
+  return `${figure.label}; ${counts}`
+}
+
+function pestppText(row: ParGroupRow): string {
+  const value = row.change.pestpp.mean_change
+  return value === null ? NO_FIGURE : formatChange(value)
+}
+
+function pestppTitle(row: ParGroupRow): string {
+  const { source, note, mean_change } = row.change.pestpp
+  if (mean_change === null) return note ?? 'pestpp has no change figure for this group'
+  return note ? `${source}; ${note}` : (source ?? 'pestpp')
+}
+
+function parCountTitle(row: ParGroupRow): string {
+  const left = Object.entries(row.excluded)
+    .filter(([, n]) => n > 0)
+    .map(([kind, n]) => `${n} ${kind.replace(/_/g, ' ')}`)
+  const base = `${row.n_included} of ${row.n_par} adjustable`
+  return left.length > 0 ? `${base}; left out: ${left.join(', ')}` : base
+}
+
+function groupCell(column: string, text: string, title: string, extraClasses: string[] = []): HTMLElement {
+  const cell = document.createElement('span')
+  cell.setAttribute('role', 'gridcell')
+  cell.dataset.column = column
+  cell.classList.add('body', ...extraClasses)
+  cell.textContent = text
+  if (title !== '') cell.title = title
+  return cell
+}
+
+type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp'
+type SortDirection = 'ascending' | 'descending'
+
+const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
+  { column: 'group', label: 'Group' },
+  { column: 'type', label: 'Type' },
+  { column: 'layer', label: 'Layer' },
+  { column: 'n_par', label: 'Parameters' },
+  { column: 'pesto', label: 'Mean change, pesto' },
+  { column: 'pestpp', label: 'Mean change, pestpp' },
+]
+
+// What a column sorts on. null is "no value" and always sorts last; a layer
+// given as "several" sorts after every numbered layer.
+function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
+  switch (key) {
+    case 'group':
+      return row.group
+    case 'type':
+      return row.type.value
+    case 'layer':
+      return row.layer.value === 'several' ? Number.POSITIVE_INFINITY : row.layer.value
+    case 'n_par':
+      return row.n_par
+    case 'pesto':
+      return row.change.pesto?.mean_change_pct ?? null
+    case 'pestpp':
+      return row.change.pestpp.mean_change
+  }
+}
+
+// Stable over the order the server sent, which is the control file's: a tie keeps its place both ways.
+function sortedGroups(
+  groups: readonly ParGroupRow[],
+  sort: { key: SortKey; direction: SortDirection } | null,
+): ParGroupRow[] {
+  if (sort === null) return [...groups]
+  const sign = sort.direction === 'ascending' ? 1 : -1
+  return groups
+    .map((row, index) => ({ row, index, value: sortValue(row, sort.key) }))
+    .sort((a, b) => {
+      if (a.value === null || b.value === null) {
+        if (a.value === b.value) return a.index - b.index
+        return a.value === null ? 1 : -1
+      }
+      if (a.value === b.value) return a.index - b.index
+      return (a.value < b.value ? -1 : 1) * sign
+    })
+    .map((entry) => entry.row)
+}
+
+function renderGroupRow(
+  row: ParGroupRow,
+  chosen: boolean,
+  offMap: { note: string | null } | null,
+  pick: (group: string) => void,
+): HTMLElement {
+  const rowEl = document.createElement('div')
+  rowEl.classList.add('group-row')
+  rowEl.setAttribute('role', 'row')
+  rowEl.setAttribute('aria-selected', String(chosen))
+  rowEl.tabIndex = 0
+  rowEl.dataset.group = row.group
+  const groupEl = groupCell('group', row.group, row.group, ['truncate'])
+  if (offMap !== null) {
+    // The name keeps its own span so the second line sits under it.
+    groupEl.textContent = ''
+    groupEl.classList.remove('truncate')
+    groupEl.classList.add('group-name-cell')
+    const name = document.createElement('span')
+    name.classList.add('truncate')
+    name.textContent = row.group
+    groupEl.appendChild(name)
+    const marker = document.createElement('span')
+    marker.classList.add('label')
+    marker.textContent = 'not on the map'
+    groupEl.appendChild(marker)
+    if (offMap.note !== null) {
+      const note = document.createElement('span')
+      note.classList.add('label', 'wrap-note')
+      note.textContent = offMap.note
+      groupEl.appendChild(note)
+    }
+  }
+  rowEl.appendChild(groupEl)
+  rowEl.appendChild(groupCell('type', typeText(row), withSource(row.type.source, row.type.note), ['truncate']))
+  rowEl.appendChild(groupCell('layer', layerText(row), withSource(row.layer.source, row.layer.note)))
+  rowEl.appendChild(groupCell('n_par', String(row.n_par), parCountTitle(row), ['tabular-nums']))
+  rowEl.appendChild(groupCell('pesto', pestoText(row), pestoTitle(row), ['tabular-nums']))
+  rowEl.appendChild(groupCell('pestpp', pestppText(row), pestppTitle(row), ['tabular-nums']))
+  rowEl.addEventListener('click', () => pick(row.group))
+  rowEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      pick(row.group)
+    }
+  })
+  return rowEl
+}
+
+function describeGroupsFailure(artifact: string, reason: string): { title: string; detail: string } {
+  return { title: 'The group summary could not be read', detail: `${artifact}: ${reason}` }
+}
+
 /** What a tab bar calls when it hides or shows the panel. */
 export interface ParamsPanelHandle {
-  /** Restores the scroll positions and redraws the table for the panel's real height. */
+  /** Restores the scroll positions, redraws the table for the panel's real height, and fetches the group summary the first time. */
   onShow(): void
   /** Remembers the scroll positions and stops scroll-driven redraws. */
   onHide(): void
+  /** Stops following the shared selection. Called when a newer panel replaces this one. */
+  dispose(): void
 }
 
 /**
- * Fills `el` with the Params panel: the windowed parameter table, the
- * unmapped-group list and the per-artifact notes, in one `.surface` panel.
- * Fetches `/meta?kind=par` itself and owns the loading/failed/ready states
- * for that fetch -- no skeleton rows, and a failure names the artifact and
- * the reason in place of the table (E8).
+ * Fills `el` with the Params panel: the group summary, the chosen group's
+ * windowed parameter list, the unmapped-group list and the per-artifact
+ * notes, in one `.surface` panel. The parameter list reads the map's own
+ * `/meta?kind=par` answer and owns the loading/failed/ready states for it --
+ * no skeleton rows, and a failure names the artifact and the reason in place
+ * of the list (E8).
  */
 export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): ParamsPanelHandle {
   el.textContent = ''
   el.classList.add('surface', 'params-panel')
 
-  let hidden = false
+  let hidden = opts.startHidden === true
   let redrawTable: (() => void) | null = null
   // A browser drops the scroll offset of a box that is not displayed, so the
   // offsets are kept here while the panel is hidden.
   const savedScroll = new Map<Element, number>()
+  const loadGroups = opts.loadGroups ?? (() => fetchParGroups())
 
   const title = document.createElement('div')
   title.classList.add('heading')
   title.textContent = 'Params'
   el.appendChild(title)
 
+  const groupsHost = document.createElement('div')
+  groupsHost.classList.add('params-groups')
+  el.appendChild(groupsHost)
+
   const tableHost = document.createElement('div')
   tableHost.classList.add('params-table')
   el.appendChild(tableHost)
 
-  const loading = document.createElement('div')
-  loading.classList.add('label')
-  loading.style.color = 'var(--ink-muted)'
-  loading.textContent = 'Loading parameters…'
-  tableHost.appendChild(loading)
+  let groups: ParGroupsPayload | null = null
+  let groupsRequested = false
+  let rows: ParamRow[] | null = null
+  let tableFailure: { artifact: string; reason: string } | null = null
 
+  function chosenGroups(): ReadonlySet<string> {
+    return opts.store.get().parGroups
+  }
+
+  function pick(group: string): void {
+    opts.store.set({ parGroups: new Set([group]) }, 'params')
+  }
+
+  function markRows(): void {
+    const chosen = chosenGroups()
+    for (const rowEl of groupsHost.querySelectorAll<HTMLElement>('.group-row')) {
+      rowEl.setAttribute('aria-selected', String(chosen.has(rowEl.dataset.group ?? '')))
+    }
+  }
+
+  const offMap = new Map(opts.unmapped.map((entry) => [entry.group, entry.note]))
+  let sort: { key: SortKey; direction: SortDirection } | null = null
+  let groupsPane: HTMLElement | null = null
+
+  function fillRows(): void {
+    if (groups === null || groupsPane === null) return
+    groupsPane.textContent = ''
+    const chosen = chosenGroups()
+    for (const row of sortedGroups(groups.groups, sort)) {
+      const note = offMap.get(row.group)
+      groupsPane.appendChild(
+        renderGroupRow(row, chosen.has(row.group), note === undefined ? null : { note }, pick),
+      )
+    }
+  }
+
+  function markHeadings(): void {
+    for (const heading of groupsHost.querySelectorAll<HTMLElement>('.group-header [role="columnheader"]')) {
+      const mine = sort !== null && heading.dataset.column === sort.key
+      heading.setAttribute('aria-sort', mine ? sort!.direction : 'none')
+      const mark = heading.querySelector('.sort-mark')
+      if (mark) mark.textContent = mine ? (sort!.direction === 'ascending' ? '↑' : '↓') : ''
+    }
+  }
+
+  function sortBy(key: SortKey): void {
+    sort = sort !== null && sort.key === key
+      ? { key, direction: sort.direction === 'ascending' ? 'descending' : 'ascending' }
+      : { key, direction: 'ascending' }
+    markHeadings()
+    fillRows()
+  }
+
+  function renderGroups(): void {
+    groupsHost.textContent = ''
+    const grid = document.createElement('div')
+    grid.setAttribute('role', 'grid')
+    grid.setAttribute('aria-label', 'Parameter groups')
+    const header = document.createElement('div')
+    header.classList.add('group-header')
+    header.setAttribute('role', 'row')
+    for (const { column, label } of COLUMN_HEADINGS) {
+      const heading = document.createElement('span')
+      heading.setAttribute('role', 'columnheader')
+      heading.setAttribute('aria-sort', 'none')
+      heading.dataset.column = column
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.classList.add('label', 'sort-button')
+      const text = document.createElement('span')
+      text.textContent = label
+      const mark = document.createElement('span')
+      mark.classList.add('sort-mark')
+      mark.setAttribute('aria-hidden', 'true')
+      button.appendChild(text)
+      button.appendChild(mark)
+      button.addEventListener('click', () => sortBy(column))
+      heading.appendChild(button)
+      header.appendChild(heading)
+    }
+    grid.appendChild(header)
+
+    const pane = document.createElement('div')
+    pane.classList.add('scroll-pane')
+    makeFocusable(pane, 'Parameter groups')
+    grid.appendChild(pane)
+    groupsPane = pane
+    groupsHost.appendChild(grid)
+    fillRows()
+  }
+
+  function renderGroupsFailure(artifact: string, reason: string): void {
+    groupsHost.textContent = ''
+    const { title: noticeTitle, detail } = describeGroupsFailure(artifact, reason)
+    renderNotice(groupsHost, { title: noticeTitle, detail, tone: 'serious' })
+  }
+
+  // The first show asks once; a hidden panel draws and fetches nothing.
+  function requestGroups(): void {
+    if (groupsRequested) return
+    groupsRequested = true
+    const loading = document.createElement('div')
+    loading.classList.add('label')
+    loading.style.color = 'var(--ink-muted)'
+    loading.textContent = 'Loading groups…'
+    groupsHost.appendChild(loading)
+    void loadGroups().then(
+      (answer) => {
+        if (answer.ok) {
+          groups = answer.payload
+          renderGroups()
+        } else {
+          renderGroupsFailure(answer.artifact, answer.reason)
+        }
+        renderDetail()
+      },
+      (error: unknown) => {
+        const { artifact, reason } = describeFailure(error)
+        renderGroupsFailure(artifact, reason)
+        renderDetail()
+      },
+    )
+  }
+
+  function renderDetail(): void {
+    redrawTable = null
+    tableHost.textContent = ''
+    if (tableFailure !== null) {
+      renderFailure(tableHost, tableFailure.artifact, tableFailure.reason)
+      return
+    }
+    if (rows === null) {
+      const loading = document.createElement('div')
+      loading.classList.add('label')
+      loading.style.color = 'var(--ink-muted)'
+      loading.textContent = 'Loading parameters…'
+      tableHost.appendChild(loading)
+      return
+    }
+    const chosen = chosenGroups()
+    if (chosen.size === 0) {
+      renderNotice(tableHost, {
+        title: 'Choose a group above to list its parameters',
+        tone: 'info',
+      })
+      return
+    }
+    const refused = (groups?.groups ?? []).filter((row) => chosen.has(row.group) && !row.drill_down.offered)
+    if (refused.length > 0) {
+      const reasons = refused.map((row) => row.drill_down.reason ?? 'no reason was recorded')
+      renderNotice(tableHost, {
+        title: 'No parameter list for this group',
+        detail: refused.length === 1 ? reasons[0] : refused.map((row, i) => `${row.group}: ${reasons[i]}`).join(' '),
+        tone: 'info',
+      })
+      return
+    }
+    const shown = rows.filter((row) => chosen.has(row.pargp))
+    redrawTable = renderTable(tableHost, shown, () => hidden)
+  }
+
+  renderDetail()
   void opts.parTable.then(
     (buffer) => {
-      let rows: ParamRow[]
       try {
         rows = readParamRows(buffer)
       } catch (error) {
-        const { artifact, reason } = describeFailure(error)
-        renderFailure(tableHost, artifact, reason)
-        return
+        tableFailure = describeFailure(error)
       }
-      redrawTable = renderTable(tableHost, rows, () => hidden)
+      renderDetail()
     },
     (error: unknown) => {
-      const { artifact, reason } = describeFailure(error)
-      renderFailure(tableHost, artifact, reason)
+      tableFailure = describeFailure(error)
+      renderDetail()
+    },
+  )
+
+  const unsubscribe = opts.store.subscribe(
+    (selection) => selection.parGroups,
+    () => {
+      markRows()
+      renderDetail()
     },
   )
 
   renderUnmappedSection(el, opts.unmapped)
   renderNotesSection(el, opts.artifactNotes)
+
+  if (!hidden) requestGroups()
 
   return {
     onHide() {
@@ -294,9 +642,13 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
     onShow() {
       hidden = false
+      requestGroups()
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       redrawTable?.()
+    },
+    dispose() {
+      unsubscribe()
     },
   }
 }

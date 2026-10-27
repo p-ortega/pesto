@@ -178,22 +178,30 @@ export interface UnmappedEntry {
   note: string | null
 }
 
-// D-07: a group is drawable when at least one of its block rows places on
-// a real cell (cell !== -1, Phase 3's own -1 sentinel for "no rule
-// matched"); every other group in the control table is unmapped. The map
-// block carries only the parameters that placed, so a group none of whose
-// parameters placed never appears in it at all -- on a real PstFrom run
-// that is nearly every group -- which is why the groups are read from the
-// control table, which lists every parameter, and only the placed set from
-// the block. Order is first-seen in control-file order. The recorded
-// placement note (ParCells.notes) is not exposed by any route today, so
-// every unmapped entry carries `note: null` and falls back to the "no
-// placement rule matched" copy -- a real gap, not a silent guess.
+// What pesto recorded about one group's placement (GET /api/run/grid/placement).
+export interface RecordedPlacement {
+  rule: string
+  mapped: number
+  total: number
+  notes: readonly string[]
+}
+
+function recordedNote(group: string, placement: ReadonlyMap<string, RecordedPlacement> | undefined): string | null {
+  const recorded = placement?.get(group)
+  if (recorded === undefined) return null
+  if (recorded.notes.length > 0) return recorded.notes.join('; ')
+  if (recorded.rule === 'unmapped') return `${group} — no placement rule matched, placed 0 of ${recorded.total}`
+  return `${group} — placement rule ${recorded.rule} placed ${recorded.mapped} of ${recorded.total}`
+}
+
+// D-07: a group is drawable when a block row places on a real cell. An unmapped group's note is the
+// pilot-point refusal, else what pesto recorded for it, else null when the placement route never named it.
 export function computeGroupPlacement(
   identities: ParIdentity[],
   joined: Array<ParIdentity | null>,
   cells: Int32Array,
   ppIndex: PpIndex,
+  placement?: ReadonlyMap<string, RecordedPlacement>,
 ): { drawable: string[]; unmapped: UnmappedEntry[]; interpolated: string[] } {
   const order: string[] = []
   const seen = new Set<string>()
@@ -219,7 +227,7 @@ export function computeGroupPlacement(
       drawable.push(group)
     } else {
       const reason = refused.get(group)
-      unmapped.push({ group, note: reason === undefined ? null : `${group} — ${reason}` })
+      unmapped.push({ group, note: reason === undefined ? recordedNote(group, placement) : `${group} — ${reason}` })
     }
   }
   return { drawable, unmapped, interpolated: drawable.filter((g) => interpolated.has(g)) }
