@@ -116,7 +116,8 @@ def test_the_stored_file_is_valid_json_with_every_realization_in_it(tmp_path, in
     stored = json.loads(layout.phi_check(0).read_text())
     assert stored["status"] == "checked"
     assert {r["realization"] for r in stored["rows"]} == set(run.real_names)
-    assert all(set(r) == {"realization", "recomputed", "file", "rel_diff", "match"} for r in stored["rows"])
+    keys = {"realization", "recomputed", "file", "rel_diff", "match", "rounding_bound"}
+    assert all(set(r) == keys for r in stored["rows"])
     assert np.isfinite(stored["max_rel_diff"])
 
 
@@ -608,11 +609,11 @@ def test_weights_are_read_one_block_at_a_time(monkeypatch):
     values = rng.normal(size=(n_obs, n_real)).astype(np.float32)
     plain = rng.uniform(0.5, 2.0, size=(n_real, n_obs))
     rows = [2, 0, 1]
-    expected, _ = phicheck.recompute_phi(index, values, [0, 1, 2], _adjusted(plain), rows, None)
+    expected, _, _ = phicheck.recompute_phi(index, values, [0, 1, 2], _adjusted(plain), rows, None)
 
     monkeypatch.setattr(phicheck, "BLOCK_ROWS", 2)
     Recording.shapes = []
-    got, _ = phicheck.recompute_phi(
+    got, _, _ = phicheck.recompute_phi(
         index, values, [0, 1, 2], _adjusted(plain.view(Recording)), rows, None
     )
 
@@ -649,6 +650,102 @@ def test_the_module_does_not_import_the_examples_helper_it_never_uses():
 
     source = open(phicheck.__file__).read()
     assert "from pesto.ingest.obsread import" not in source
+
+
+# ---------------------------------------------------------------------------
+# float32 storage and the per-realization rounding bound
+# ---------------------------------------------------------------------------
+
+
+def _large_value_case():
+    """Observations near 1,000,000, where float32 steps are 0.0625: each true
+    value sits just off a step, so storing it moves phi by about 2 percent."""
+    from pesto.ingest import phicheck
+
+    obsval = 1_000_000.0
+    offsets = np.array([3.03, -4.03, 5.03, 6.03])
+    index = _small_index([obsval] * offsets.size)
+    true_sim = obsval + offsets
+    stored = np.zeros((offsets.size, 1), dtype=np.float32)
+    for position, row in enumerate(index.order):
+        stored[position, 0] = np.float32(true_sim[row])
+    weight = np.ones(offsets.size)
+    phi, bound, _notes = phicheck.recompute_phi(index, stored, [0], None, None, weight)
+    file_phi = float(np.sum(offsets**2))
+    return float(phi[0]), float(bound[0]), file_phi
+
+
+def test_a_difference_that_float32_storage_explains_is_a_match():
+    from pesto.ingest.phicheck import compare_phi
+
+    recomputed, bound, file_phi = _large_value_case()
+
+    plain, plain_match = compare_phi(recomputed, file_phi)
+    assert plain > PHI_TOLERANCE and plain_match is False
+    relative_bound = bound / file_phi
+    assert relative_bound >= plain
+    rel, match = compare_phi(recomputed, file_phi, bound=relative_bound)
+    assert rel == plain and match is True
+
+
+def test_a_phi_one_and_a_half_times_the_true_one_is_still_a_mismatch_on_large_values():
+    from pesto.ingest.phicheck import compare_phi
+
+    recomputed, bound, file_phi = _large_value_case()
+    file_phi *= 1.5
+
+    _rel, match = compare_phi(recomputed, file_phi, bound=bound / file_phi)
+
+    assert match is False
+
+
+def test_compare_phi_without_a_bound_is_the_plain_tolerance_and_a_bound_widens_it():
+    from pesto.ingest.phicheck import compare_phi
+
+    assert compare_phi(1001.0, 1000.0)[1] is True
+    assert compare_phi(1001.5, 1000.0)[1] is False
+    assert compare_phi(1001.5, 1000.0, bound=0.0)[1] is False
+    assert compare_phi(1001.5, 1000.0, bound=0.001)[1] is True
+    assert compare_phi(1002.5, 1000.0, bound=0.001)[1] is False
+
+
+def test_a_rounding_bound_is_zero_for_a_weight_of_zero_and_for_values_that_are_not_finite():
+    from pesto.ingest.phicheck import _block_phi
+
+    index = _small_index([10.0, 10.0, 10.0])
+    values = np.array([[11.0], [np.inf], [12.0]], dtype=np.float32)
+    weight = np.array([[1.0], [1.0], [0.0]])
+
+    _phi, bound = _block_phi(index, values, np.arange(3), np.array([0]), weight)
+
+    assert bound[0] == pytest.approx((2 * 1.0 * 1.0 + 11.0 * 2.0**-24) * 11.0 * 2.0**-24)
+
+
+def test_the_stored_rows_carry_the_rounding_bound_and_the_summary_says_float32(
+    tmp_path, in_process
+):
+    run, layout, _ = _ingest(tmp_path, with_phi=True)
+
+    stored = json.loads(layout.phi_check(0).read_text())
+    assert all(isinstance(r["rounding_bound"], float) for r in stored["rows"])
+    assert all(0.0 <= r["rounding_bound"] < 1e-4 for r in stored["rows"])
+    assert "stored as float32" in stored["summary"] and "rounding bound" in stored["summary"]
+    check = load_phi_check(0, layout)
+    assert [r.rounding_bound for r in check.rows] == [r["rounding_bound"] for r in stored["rows"]]
+
+
+def test_a_stored_row_with_no_rounding_bound_reads_back_as_none(tmp_path, in_process):
+    _run, layout, _ = _ingest(tmp_path, with_phi=True)
+    path = layout.phi_check(0)
+    stored = json.loads(path.read_text())
+    for row in stored["rows"]:
+        del row["rounding_bound"]
+    path.write_text(json.dumps(stored))
+
+    check = load_phi_check(0, layout)
+
+    assert not isinstance(check, ReadFailure), check
+    assert all(r.rounding_bound is None for r in check.rows)
 
 
 # ---------------------------------------------------------------------------
