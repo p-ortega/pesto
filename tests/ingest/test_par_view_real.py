@@ -132,6 +132,13 @@ def _untouched(ing: Ingested) -> None:
     assert not str(ing.cache_root).startswith(str(ing.run_dir)), "the cache sits inside the run folder"
 
 
+@pytest.mark.parametrize("run_fixture", RUN_FIXTURES)
+def test_a_whole_ingest_leaves_the_run_folder_untouched_and_the_cache_outside_it(
+    ingested: Ingested, run_fixture: str
+):
+    _untouched(ingested)
+
+
 def _get(ing: Ingested, path: str) -> dict:
     app, token = create_app()
     app.state.cache_root = str(ing.cache_root)
