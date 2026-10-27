@@ -555,6 +555,103 @@ def test_the_run_folder_is_untouched_when_phi_does_not_match(tmp_path, in_proces
 
 
 # ---------------------------------------------------------------------------
+# blocked weights reads, repeated cache names, the unused import
+# ---------------------------------------------------------------------------
+
+
+def _small_index(obsvals, weights=None, group="g"):
+    from pesto.ingest.obsindex import build_obs_index
+
+    from .obs_fixtures import obs_arrow
+
+    weights = weights if weights is not None else [1.0] * len(obsvals)
+    rows = [
+        {"obsnme": f"o{k:03d}", "obgnme": group, "obsval": v, "weight": w}
+        for k, (v, w) in enumerate(zip(obsvals, weights))
+    ]
+    index = build_obs_index(obs_arrow(rows))
+    assert not isinstance(index, ReadFailure), index
+    return index
+
+
+def _adjusted(weights):
+    from pathlib import Path
+
+    from pesto.ingest.obsweights import AdjustedWeights
+
+    n = weights.shape[1]
+    return AdjustedWeights(
+        weights=weights,
+        real_names=tuple(f"r{k}" for k in range(weights.shape[0])),
+        obs_names=tuple(f"o{k:03d}" for k in range(n)),
+        control_rows=np.arange(n, dtype=np.int64),
+        n_unweighted=0,
+        source=Path("w.jcb"),
+        notes=(),
+    )
+
+
+def test_weights_are_read_one_block_at_a_time(monkeypatch):
+    from pesto.ingest import phicheck
+
+    class Recording(np.ndarray):
+        shapes: list = []
+
+        def __getitem__(self, key):
+            out = super().__getitem__(key)
+            Recording.shapes.append(np.shape(out))
+            return out
+
+    rng = np.random.default_rng(3)
+    n_obs, n_real = 7, 3
+    index = _small_index(list(rng.normal(size=n_obs)))
+    values = rng.normal(size=(n_obs, n_real)).astype(np.float32)
+    plain = rng.uniform(0.5, 2.0, size=(n_real, n_obs))
+    rows = [2, 0, 1]
+    expected, _ = phicheck.recompute_phi(index, values, [0, 1, 2], _adjusted(plain), rows, None)
+
+    monkeypatch.setattr(phicheck, "BLOCK_ROWS", 2)
+    Recording.shapes = []
+    got, _ = phicheck.recompute_phi(
+        index, values, [0, 1, 2], _adjusted(plain.view(Recording)), rows, None
+    )
+
+    assert Recording.shapes, "the weights were never indexed"
+    assert all(shape[1] <= 2 for shape in Recording.shapes)
+    np.testing.assert_allclose(got, expected, rtol=1e-12)
+
+
+def test_a_name_that_appears_twice_in_the_cache_is_paired_with_nothing():
+    from pesto.ingest.phicheck import _join_names
+
+    pairs, cache_only, other_only, notes = _join_names(
+        ("r1", "r1", "r2"), ["r2", "r1"], "case.phi.actual.csv"
+    )
+
+    assert pairs == [(2, 0)]
+    assert sorted(cache_only) == [0, 1]
+    assert other_only == [1]
+    repeated = [n for n in notes if "more than once in the cache" in n]
+    assert len(repeated) == 1 and "'r1'" in repeated[0] and "not matched" in repeated[0]
+
+
+def test_a_cache_name_that_repeats_is_not_rescued_by_trimming_and_lower_casing():
+    from pesto.ingest.phicheck import _join_names
+
+    pairs, cache_only, _other_only, _notes = _join_names(("r1", "r1", "R1"), ["r1"], "p.csv")
+
+    assert pairs == []
+    assert sorted(cache_only) == [0, 1, 2]
+
+
+def test_the_module_does_not_import_the_examples_helper_it_never_uses():
+    import pesto.ingest.phicheck as phicheck
+
+    source = open(phicheck.__file__).read()
+    assert "from pesto.ingest.obsread import" not in source
+
+
+# ---------------------------------------------------------------------------
 # real runs (slow; skipped when the benchmark folder is absent)
 # ---------------------------------------------------------------------------
 
