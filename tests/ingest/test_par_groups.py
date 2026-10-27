@@ -7,6 +7,8 @@ run so the stored entries are the ones a route would serve.
 
 from __future__ import annotations
 
+import pandas as pd
+
 from pesto.cache.layout import CacheLayout
 from pesto.ingest import parview
 from pesto.ingest.failures import ReadFailure
@@ -168,7 +170,13 @@ SPECS = (
 
 
 def test_the_stored_entries_carry_each_groups_type_and_name_based_layer(tmp_path, in_process):  # noqa: F811
-    _run, layout = _ingest(tmp_path, groups=SPECS)
+    run, layout = _ingest(tmp_path, groups=SPECS)
+    # pyemu fills the ptype column from the names, so a disagreement is made in the cache.
+    path = layout.control / "par.parquet"
+    frame = pd.read_parquet(path)
+    frame.loc[frame["pargp"].astype(str) == "disagree", "ptype"] = "gr"
+    frame.to_parquet(path, index=False)
+    assert not isinstance(write_par_groups(run.root, layout), ReadFailure)
     groups, top = _groups(layout)
 
     assert groups["hk_layer3"]["type"]["value"] == "pp"

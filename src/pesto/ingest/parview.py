@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,11 +33,17 @@ from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.aggregate import near_bound_counts
 from pesto.ingest.ensembles import StoredEnsemble, align_realizations, load_stored
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.parcell import load_par_cell
 from pesto.ingest.tables import _write_parquet_atomic, load_control_table
 
 CHUNK_PARAMS = 4096
 # A first mean smaller than this share of the first sd is too close to zero for a percent change.
 NEAR_ZERO_FACTOR = 0.01
+# Above this many parameters a group is not offered a per-parameter drill-down.
+DRILL_DOWN_MAX_PARAMS = 10_000
+# Copied from pesto.model._parcells.DEFAULT_LAYER_PATTERN; nothing under pesto.ingest imports pesto.model.
+LAYER_PATTERN = r"layer[_-]?(\d+)"
+_PTYPE_TAG = re.compile(r"ptype:([^_]*)")
 _EXAMPLES = 3
 
 NEAR_BOUND_NOTE = (
@@ -613,7 +620,7 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
             header = next(reader, None)
             rows = list(reader)
     except OSError as exc:
-        return None, f"{path.name} could not be read: {exc}"
+        return None, f"{path.name} could not be read: {_base_names(str(exc))}"
     if not header:
         return None, f"{path.name} is empty, so pestpp's figures were not read"
     columns = [h.strip() for h in header]
@@ -711,6 +718,121 @@ def _pesto_figure(included: pd.DataFrame, n_common: int) -> dict:
     }
 
 
+_ABSOLUTE_PATH = re.compile(r"(?<![\w.:])/(?:[^/\s'\"]+/)+([^\s/'\"]+)")
+
+
+def _base_names(text: str) -> str:
+    """``text`` with every absolute path cut down to its file name, so a note
+    that travels to the browser never carries a folder layout."""
+    return _ABSOLUTE_PATH.sub(r"\1", text)
+
+
+def _text(value) -> str | None:
+    """A column cell as trimmed text, or None when it is blank or missing."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    return str(value).strip() or None
+
+
+def group_type(names, ptype_column) -> dict:
+    """A group's PstFrom parameter type, from the ``ptype:`` token in each
+    parameter name and from the ``ptype`` column of the control table.
+
+    One value when everything stated agrees, ``"several"`` when it does not, and
+    ``None`` with source ``"not stated"`` when neither names nor column say. An
+    unknown tag is shown as written. ``ptype_column`` is one entry per name, or
+    None when the control table has no such column."""
+    names = list(names)
+    tags = []
+    for name in names:
+        found = _PTYPE_TAG.search(str(name))
+        tags.append(found.group(1) if found and found.group(1) else None)
+    cells = [None] * len(names) if ptype_column is None else [_text(c) for c in ptype_column]
+    from_names = {t for t in tags if t}
+    from_column = {c for c in cells if c}
+    if not from_names and not from_column:
+        return {
+            "value": None,
+            "source": "not stated",
+            "note": "no ptype tag in the parameter names and no ptype column",
+        }
+    if from_names and from_column:
+        source = "parameter name and ptype column"
+    else:
+        source = "parameter name" if from_names else "ptype column"
+    stated = from_names | from_column
+    clash = next(
+        ((n, t, c) for n, t, c in zip(names, tags, cells) if t and c and t != c), None
+    )
+    if clash is not None or len(stated) > 1:
+        seen = ", ".join(sorted(stated))
+        if clash is not None:
+            name, tag, cell = clash
+            note = (
+                f"parameter {name!r}: its name says {tag!r} but the ptype column says {cell!r}; "
+                f"types stated in this group: {seen}"
+            )
+        else:
+            note = f"types stated in this group: {seen}"
+        return {"value": "several", "source": source, "note": note}
+    silent = sum(1 for t, c in zip(tags, cells) if not t and not c)
+    note = f"{silent} of {len(names)} parameters state no type" if silent else None
+    return {"value": next(iter(stated)), "source": source, "note": note}
+
+
+def group_layer(placed_layers, rule: str | None, group_name: str, placement_note: str | None = None) -> dict:
+    """A group's layer, zero-based when it comes from the grid placement.
+
+    The placement wins: ``placed_layers`` are the layers of the group's placed
+    parameters and ``rule`` the rule that placed them. Without one, the number
+    after ``layer`` in the group name is shown exactly as written and never
+    converted from one base to another. With neither, the layer is not stated.
+    More than one layer is ``"several"``. ``placement_note`` says why there was
+    no placement, and is kept on an answer that came from the name."""
+    layers = sorted({int(v) for v in placed_layers if int(v) >= 0})
+    if layers:
+        source = f"placement rule {rule}" if rule else "placement"
+        if len(layers) == 1:
+            return {"value": layers[0], "source": source, "note": None}
+        shown = ", ".join(str(v) for v in layers[:10]) + (" and more" if len(layers) > 10 else "")
+        return {
+            "value": "several",
+            "source": source,
+            "note": f"placed on layers {shown} (zero-based)",
+        }
+    written = sorted({int(v) for v in re.findall(LAYER_PATTERN, group_name or "", re.IGNORECASE)})
+    extra = f"; {placement_note}" if placement_note else ""
+    if len(written) == 1:
+        return {
+            "value": written[0],
+            "source": "group name, as written",
+            "note": "the number in the group name, shown as written and not converted" + extra,
+        }
+    if len(written) > 1:
+        shown = ", ".join(str(v) for v in written)
+        return {
+            "value": "several",
+            "source": "group name, as written",
+            "note": f"the group name names layers {shown}, shown as written and not converted" + extra,
+        }
+    return {
+        "value": None,
+        "source": "not stated",
+        "note": "no grid placement and no layer number in the group name" + extra,
+    }
+
+
+def drill_down_offer(n_par: int, limit: int) -> dict:
+    """Whether a group of ``n_par`` parameters is offered a per-parameter
+    drill-down, and the sentence to show when it is not."""
+    if n_par <= limit:
+        return {"offered": True, "reason": None}
+    return {
+        "offered": False,
+        "reason": f"This group has {n_par:,} parameters. Drill-down is offered up to {limit:,}.",
+    }
+
+
 def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | ReadFailure:
     """Write ``agg/par_groups.json``: one entry per parameter group, in the
     order the control table first names them. ``run_dir`` is read only to find
@@ -733,12 +855,51 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
 
             pcs_path = discover(Path(run_dir)).pcs_file(last)
         except Exception as exc:
-            run_notes.append(f"the run folder could not be searched for a pcs.csv file: {exc}")
+            run_notes.append(
+                f"the run folder could not be searched for a pcs.csv file: {_base_names(str(exc))}"
+            )
         pcs, pcs_note = _read_pcs(pcs_path, last)
         pcs_name = pcs_path.name if pcs_path is not None else None
         if pcs is not None and pcs_note:
             run_notes.append(pcs_note)
             pcs_note = None
+
+        control = load_control_table(layout, "par", columns=["parnme"], optional_columns=["ptype"])
+        if isinstance(control, ReadFailure):
+            return _fail(name, control.path, f"the control table: {control.reason}")
+        control_table, _control_notes = control
+        ptype_of: dict[str, str | None] | None = None
+        if "ptype" in control_table.column_names:
+            ptype_of = dict(
+                zip(
+                    (str(v) for v in control_table.column("parnme").to_pylist()),
+                    control_table.column("ptype").to_pylist(),
+                )
+            )
+
+        # Layers come from the grid placement joined by parameter name, never by row position.
+        layer_of: dict[str, int] = {}
+        rule_of: dict[str, str] = {}
+        placement_note: str | None = None
+        placement = load_par_cell(layout)
+        if isinstance(placement, ReadFailure):
+            why = _base_names(placement.reason)
+            placement_note = f"no grid placement is available ({why})"
+            run_notes.append(
+                "the layer from the grid placement is unavailable: "
+                f"{why}; layers come from group names where they carry one"
+            )
+        else:
+            for pname, layer_number in zip(placement.parnme, placement.layer):
+                if int(layer_number) >= 0:
+                    layer_of[pname] = int(layer_number)
+            rule_of = {g["group"]: g["rule"] for g in placement.groups}
+            absent = len(set(frame["parnme"]) - set(placement.parnme))
+            if absent:
+                run_notes.append(
+                    f"{absent} parameter(s) of the control table are not in the grid placement "
+                    "and count as unplaced"
+                )
 
         groups = []
         for group, block in frame.groupby("pargp", sort=False):
@@ -766,21 +927,32 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
                 hit = block.loc[block["excluded_kind"] == kind, "parnme"].tolist()
                 if hit:
                     group_notes.append(_count_note(len(hit), label, hit))
+            members = block["parnme"].tolist()
+            placed = [layer_of[m] for m in members if m in layer_of]
             groups.append(
                 {
                     "group": group,
                     "n_par": n_par,
                     "n_included": int(len(included)),
                     "excluded": excluded,
-                    "type": {"value": None, "source": None, "note": "not read"},
-                    "layer": {"value": None, "source": None, "note": "not read"},
+                    "type": group_type(
+                        members,
+                        None if ptype_of is None else [ptype_of.get(m) for m in members],
+                    ),
+                    "layer": group_layer(
+                        placed,
+                        rule_of.get(group),
+                        group,
+                        placement_note
+                        or (None if placed else "the grid placement does not place this group"),
+                    ),
                     "change": {
                         "pesto": pesto,
                         "pestpp": _pestpp_entry(group, pcs, pcs_name, pcs_note),
                         "reason": reason,
                     },
                     "at_bounds_last": at_bounds,
-                    "drill_down": {"offered": True, "reason": None},
+                    "drill_down": drill_down_offer(n_par, DRILL_DOWN_MAX_PARAMS),
                     "notes": group_notes,
                 }
             )
