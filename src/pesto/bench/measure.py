@@ -435,6 +435,8 @@ def page_residency(files: Sequence[Path], probe: PageProbe | None = None) -> AsF
             found.append(ResidentFile(name=path.name, bytes=size, resident_bytes=int(ask(path))))
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, PageCheckUnavailable):
+            method = f"not available on this platform ({exc})"
         return _not_measured(method, f"the page check failed ({reason})", len(sizes), source_bytes, skipped)
 
     resident = sum(item.resident_bytes for item in found)

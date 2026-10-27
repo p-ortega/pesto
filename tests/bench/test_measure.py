@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -450,3 +451,89 @@ def test_the_table_has_one_as_found_cache_line_and_its_note(tmp_path: Path) -> N
     assert "cold" in lines[0] and "0.00%" in lines[0] and cache.method in lines[0]
     assert f"  note: {cache.note}" in table.splitlines()
     assert "Cold read:" not in table
+
+
+def test_the_limit_is_one_percent_and_exactly_one_percent_is_cold(tmp_path: Path) -> None:
+    assert COLD_RESIDENT_LIMIT == 0.01
+    source = _sized(tmp_path, "a.bin", 10_000)
+    assert page_residency([source], probe=lambda path: 100).label == "cold"
+    assert page_residency([source], probe=lambda path: 101).label == "not cold"
+    assert page_residency([source], probe=lambda path: 101).resident_fraction == pytest.approx(0.0101)
+
+
+def test_zero_source_bytes_is_not_measured_with_the_reason(tmp_path: Path) -> None:
+    cache = page_residency([], probe=lambda path: pytest.fail("nothing to probe"))
+    assert cache.label == "not measured" and cache.source_bytes == 0
+    assert cache.resident_bytes is None and cache.resident_fraction is None
+    assert "zero bytes" in cache.note
+
+
+def test_a_missing_file_and_an_empty_file_are_skipped_and_named(tmp_path: Path) -> None:
+    real = _sized(tmp_path, "real.bin", 500)
+    empty = _sized(tmp_path, "empty.bin", 0)
+    probed: list[str] = []
+
+    def probe(path: Path) -> int:
+        probed.append(path.name)
+        return 0
+
+    cache = page_residency([tmp_path / "gone.bin", empty, real], probe=probe)
+    assert probed == ["real.bin"]
+    assert cache.files == 1 and cache.source_bytes == 500
+    assert cache.missing == ["gone.bin", "empty.bin"]
+    assert "gone.bin (not found)" in cache.note and "empty.bin (empty)" in cache.note
+    assert cache.label == "cold"
+
+
+def test_a_probe_that_raises_gives_not_measured_with_the_error_text(tmp_path: Path) -> None:
+    def probe(path: Path) -> int:
+        raise OSError(5, "input/output error on the archive")
+
+    cache = page_residency([_sized(tmp_path, "a.bin", 100)], probe=probe)
+    assert cache.label == "not measured"
+    assert cache.resident_bytes is None
+    assert "input/output error on the archive" in cache.note
+    assert cache.label != "cold"
+
+
+def test_without_ctypes_or_mincore_the_label_is_not_measured_and_the_method_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ctypes
+    import ctypes.util
+    from types import SimpleNamespace
+
+    source = _sized(tmp_path, "a.bin", 100)
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+
+    def no_libc(name, *args, **kwargs):
+        raise OSError("no C library here")
+
+    monkeypatch.setattr(ctypes, "CDLL", no_libc)
+    cache = page_residency([source])
+    assert cache.label == "not measured"
+    assert "no C library here" in cache.method and "not available" in cache.method
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda name, *args, **kwargs: SimpleNamespace())
+    cache = page_residency([source])
+    assert cache.label == "not measured" and "no mincore call" in cache.method
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith(("darwin", "linux")), reason="mincore is checked on macOS and Linux"
+)
+def test_the_real_page_check_sees_a_file_just_written_and_leaves_it_untouched(tmp_path: Path) -> None:
+    source = tmp_path / "fresh.bin"
+    source.write_bytes(os.urandom(1_000_000))
+    before = (source.read_bytes(), source.stat().st_mtime_ns)
+    cache = page_residency([source])
+    assert cache.label != "not measured", cache.note
+    assert cache.resident_bytes is not None and 0 < cache.resident_bytes <= 1_000_000
+    assert (source.read_bytes(), source.stat().st_mtime_ns) == before
+
+
+def test_the_json_schema_is_version_2() -> None:
+    from pesto.bench.report import SCHEMA_VERSION
+
+    assert SCHEMA_VERSION == 2
+    assert result_to_dict(_result_with_wall(0.5))["schema_version"] == 2
