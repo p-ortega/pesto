@@ -286,6 +286,14 @@ class CacheLayout:
     def par_groups(self) -> Path:
         return self.agg / "par_groups.json"
 
+    @property
+    def par_hist(self) -> Path:
+        return self.agg / "par_hist.parquet"
+
+    @property
+    def par_hist_meta(self) -> Path:
+        return self.agg / "par_hist.json"
+
 
 def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
     """Resolve this run's cache root, ensure a git-tracked run directory

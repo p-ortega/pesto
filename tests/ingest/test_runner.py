@@ -179,7 +179,7 @@ def _assert_only_par_ens_0_and_grid_are_not_ok(manifest):
     for name, artifact in manifest.artifacts.items():
         if name == "par_ens/0" or name in _GRID_BOUND:
             continue
-        if name in ("par_change", "par_groups"):
+        if name in ("par_change", "par_groups", "par_hist"):
             assert artifact.state == "failed", name
             assert "depends on" in artifact.reason, (name, artifact.reason)
             continue
@@ -443,6 +443,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/1",
         "par_change",
         "par_groups",
+        "par_hist",
         *[
             name
             for k in (0, 1)
@@ -481,6 +482,7 @@ def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_a
         "par_agg/1",
         "par_change",
         "par_groups",
+        "par_hist",
         "obs_ens/0",
         "obs_agg/0",
         "pdc/0",
@@ -882,7 +884,7 @@ def test_touching_one_iterations_ensemble_file_reingests_only_that_iteration(tmp
     ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
 
     touched = {r.artifact for r in rows if r.state != "skipped"}
-    assert touched == {"par_ens/1", "par_agg/1", "par_change", "par_groups"}
+    assert touched == {"par_ens/1", "par_agg/1", "par_change", "par_groups", "par_hist"}
 
 
 
@@ -1415,6 +1417,23 @@ def test_plan_artifacts_plans_par_change_and_par_groups_right_after_the_last_par
     assert by_name["par_groups"].sources[: len(control_sources)] == control_sources
     assert str(run.grid) in by_name["par_groups"].sources
     assert str(run.pcs_file(1)) in by_name["par_groups"].sources
+
+
+def test_plan_artifacts_plans_par_hist_right_after_par_groups(tmp_path):
+    make_run(tmp_path, iterations=(0, 1))
+    run = discover(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+
+    planned = plan_artifacts(run, layout)
+    names = [a.name for a in planned]
+    by_name = {a.name: a for a in planned}
+
+    assert names[names.index("par_groups") + 1] == "par_hist"
+    hist = by_name["par_hist"]
+    assert hist.kind == "par_hist"
+    assert hist.needs == ("par_ens/0", "par_ens/1", "par_change")
+    assert hist.outputs == (str(layout.par_hist), str(layout.par_hist_meta))
+    assert hist.sources == by_name["par_change"].sources
 
 
 def test_plan_artifacts_plans_par_change_once_for_a_single_iteration(tmp_path):

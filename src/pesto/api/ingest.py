@@ -227,6 +227,21 @@ def _pdc_capability(manifest: Manifest, run, pdc_names: list[str]) -> dict[str, 
     return {"available": False, "blocked_by": [{"artifact": "pdc", "reason": reason}]}
 
 
+NO_PAR_ENS_REASON = "no parameter ensemble file was found for this run"
+
+
+def _par_view_capability(manifest: Manifest, view_names: list[str]) -> dict[str, Any]:
+    """Whether the parameter view is ready: the change table, the group summary
+    and the histograms must all be recorded successful. With none planned the
+    run has no parameter ensemble, and the reason says so."""
+    if view_names:
+        return _capability(manifest, required=view_names, any_of=[])
+    return {
+        "available": False,
+        "blocked_by": [{"artifact": "par_ens", "reason": NO_PAR_ENS_REASON}],
+    }
+
+
 NO_PHI_FILE_REASON = "no case.phi.actual.csv was found for this run"
 PHI_NOTE_PREFIXES = ("phi mismatch", "phi not checked")
 
@@ -289,6 +304,9 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     par_cell_names = [pa.name for pa in planned if pa.kind == "par_cell"]
     par_ens_names = [pa.name for pa in planned if pa.kind == "par_ens"]
     par_agg_names = [pa.name for pa in planned if pa.kind == "par_agg"]
+    par_view_names = [
+        pa.name for pa in planned if pa.kind in ("par_change", "par_groups", "par_hist")
+    ]
     config_names = [pa.name for pa in planned if pa.kind == "config"]
     obs_index_names = [pa.name for pa in planned if pa.kind == "obs_index"]
     obs_ens_names = [pa.name for pa in planned if pa.kind == "obs_ens"]
@@ -303,6 +321,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
         "capabilities": {
             "map": _capability(manifest, required=grid_names + par_cell_names, any_of=par_ens_names),
             "stats": _capability(manifest, required=[], any_of=par_agg_names),
+            "par_view": _par_view_capability(manifest, par_view_names),
             "chips": _capability(manifest, required=config_names, any_of=[]),
             "obs": _obs_capability(
                 manifest, run, obs_index_names=obs_index_names, obs_ens_names=obs_ens_names
