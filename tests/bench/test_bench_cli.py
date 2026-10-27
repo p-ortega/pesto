@@ -244,34 +244,78 @@ def test_a_failing_server_stage_still_writes_the_ingest_numbers_and_exits_1(
     assert any("server stage failed" in note for note in body["notes"])
 
 
-def test_the_cold_read_runs_once_before_the_first_ingest_on_the_planned_sources(
+def _log_run(monkeypatch: pytest.MonkeyPatch, events: list[str], *, ratio: float | None = None):
+    """Log the ingests and the read steps in one list; ratio feeds the cold read a fake read pass."""
+    from pesto.bench import cli
+
+    real_cold, real_floor = cli.cold_read, cli.read_floor_for
+    seen: list[list[Path]] = []
+
+    def cold_spy(files, **kwargs):
+        events.append("cold_read")
+        seen.append(list(files))
+        if ratio is None:
+            return real_cold(files, **kwargs)
+        pace = lambda _files, which: (1_000_000, 1.0 / ratio if which == "first" else 1.0, "fake pass")
+        return real_cold(files, read_pass=pace, **kwargs)
+
+    def floor_spy(run, cache):
+        events.append("read_floor")
+        return real_floor(run, cache)
+
+    def fake(run, cache_root=None, on_progress=None):
+        events.append(f"ingest {Path(cache_root).name}")
+
+    monkeypatch.setattr("pesto.bench.cli.cold_read", cold_spy)
+    monkeypatch.setattr("pesto.bench.cli.read_floor_for", floor_spy)
+    monkeypatch.setattr("pesto.bench.cli.ingest_run", fake)
+    return seen
+
+
+def test_the_as_found_ingest_is_the_first_call_and_the_read_pass_comes_after_both_ingests(
     run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from pesto.bench import cli
-    from pesto.bench.measure import _source_paths
+    from pesto.bench.measure import source_paths
 
     events: list[str] = []
-    seen_files: list[list[Path]] = []
-    real = cli.cold_read
-
-    def spy(files):
-        events.append("cold_read")
-        seen_files.append(list(files))
-        return real(files)
-
-    def fake(run, cache_root=None, on_progress=None):
-        events.append("ingest")
-
-    monkeypatch.setattr("pesto.bench.cli.cold_read", spy)
-    monkeypatch.setattr("pesto.bench.cli.ingest_run", fake)
+    seen = _log_run(monkeypatch, events)
     result = cli.run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
 
-    assert events == ["cold_read", "ingest", "ingest"]
-    assert seen_files[0] == _source_paths(run_dir.resolve(), tmp_path.resolve() / "scratch" / "ingest-1")
+    assert events == ["ingest ingest-1", "ingest ingest-2", "cold_read", "read_floor"]
+    assert seen[0] == source_paths(run_dir.resolve(), tmp_path.resolve() / "scratch" / "ingest-2")
     assert result.cold_read is not None and result.cold_read.bytes > 0
-    note = "the cold-read check read every source file just before this ingest, so these files were likely in memory"
-    assert note in result.ingests[0].notes
-    assert note not in result.ingests[1].notes
+
+
+def test_the_as_found_ingest_says_it_is_the_first_read_and_leaves_sudo_purge_to_the_user(
+    run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pesto.bench import cli
+
+    _log_run(monkeypatch, [])
+    result = cli.run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
+
+    first = " ".join(result.ingests[0].notes)
+    assert "the first read of the run's files in this bench" in first
+    assert "cold only if nothing had them in memory before" in first
+    assert "sudo purge in your own terminal" in first and "pesto never runs it" in first
+    assert "just before this ingest" not in first
+    assert "first read" not in " ".join(result.ingests[1].notes)
+
+
+def test_the_cold_read_after_the_ingests_is_never_labelled_cold(
+    run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pesto.bench import cli
+    from pesto.bench.report import result_to_dict
+
+    _log_run(monkeypatch, [], ratio=0.3)
+    result = cli.run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
+
+    body = json.loads(json.dumps(result_to_dict(result)))["cold_read"]
+    assert body["ratio"] == pytest.approx(0.3)
+    assert body["label"] != "cold" and body["proven_cold"] is False
+    assert body["note"].startswith("this read ran after both ingests, so its files were likely in memory")
 
 
 def test_bench_leaves_the_run_folder_as_it_was_with_the_cold_read(
@@ -283,3 +327,33 @@ def test_bench_leaves_the_run_folder_as_it_was_with_the_cold_read(
     result = run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
     assert result.cold_read is not None and result.cold_read.bytes > 0
     assert snapshot(run_dir) == before
+
+
+def test_a_missing_external_table_is_skipped_and_named_and_both_ingests_still_run(
+    run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pesto.bench import cli
+    from pesto.bench.report import result_to_dict
+
+    (run_dir / "case.par_data.csv").unlink()
+    events: list[str] = []
+    _log_run(monkeypatch, events)
+    before = snapshot(run_dir)
+    result = cli.run_bench(run_dir, tmp_path / "scratch", tmp_path / "out.json", measure_server=False)
+
+    assert events[:2] == ["ingest ingest-1", "ingest ingest-2"]
+    body = json.loads(json.dumps(result_to_dict(result)))
+    assert "case.par_data.csv" in body["cold_read"]["note"]
+    assert "case.par_data.csv" in body["read_floor"]["note"]
+    assert any("case.par_data.csv" in note for note in body["notes"])
+    assert "case.par_data.csv" not in [f["name"] for f in body["cache_size"]["sources"]]
+    assert "case.par_data.csv" not in [r["name"] for r in body["source_reads"]]
+    assert snapshot(run_dir) == before
+
+
+def test_the_bench_modules_use_the_public_name_for_the_source_path_helper() -> None:
+    root = Path(__file__).resolve().parents[2]
+    text = [path.read_text() for folder in ("src/pesto/bench", "tests/bench") for path in (root / folder).glob("*.py")]
+    # The old private name, spelled so this file does not match itself.
+    assert not any("_source" + "_paths" in body for body in text)
+    assert "source_paths," in (root / "src/pesto/bench/cli.py").read_text()

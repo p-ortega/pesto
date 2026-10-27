@@ -57,7 +57,7 @@ class IngestTiming:
     wait_seconds: float | None
     artifacts: list[ArtifactTiming]
     notes: list[str]
-    # Source bytes of the artifacts the workers ran, over the workers' seconds.
+    # Each source file read from the run folder once, by started artifacts only, over the workers' seconds.
     read_mb_per_second: float | None = None
 
 
@@ -386,7 +386,7 @@ def format_table(result: BenchResult) -> str:
             f"outside workers {_seconds(ingest.outside_worker_seconds)}, "
             f"CPU {_seconds(ingest.cpu_seconds)}, "
             f"waiting {_seconds(ingest.wait_seconds)}, "
-            f"source read {_rate(ingest.read_mb_per_second)}"
+            f"source read {_rate(ingest.read_mb_per_second)} (each source file counted once)"
         )
         for note in ingest.notes:
             lines.append(f"  note: {note}")
