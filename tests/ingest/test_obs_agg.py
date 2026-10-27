@@ -53,6 +53,9 @@ def _ingest(tmp_path, *, sites=None, values=None, blank_obsval=(), **kwargs):
         frame.to_parquet(obs_path)
         rebuilt = runner._write_obs_index_artifact(str(cache_root))
         assert not isinstance(rebuilt, ReadFailure), rebuilt
+        # The rebuilt index has a new digest, so the ensemble is stored again against it.
+        stored = runner._write_obs_ens_artifact(str(run.obs_ens[0]), str(cache_root), 0)
+        assert not isinstance(stored, ReadFailure), stored
         rewritten = write_obs_agg(0, layout)
         assert not isinstance(rewritten, ReadFailure), rewritten
     return run, layout, manifest

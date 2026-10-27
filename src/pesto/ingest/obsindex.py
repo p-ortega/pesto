@@ -48,7 +48,13 @@ SENTINEL_LIMIT = 1e20
 # The same tags pyemu applies to the lower-cased group name.
 LESS_TAGS = ("l_", "less", ">@")
 GREATER_TAGS = ("g_", "greater", "<@")
-IDENTITY_COLUMNS = ("id", "x", "y", "icpl", "layer", "k", "i", "j")
+IDENTITY_COLUMNS = ("id", "x", "y", "z", "icpl", "layer", "k", "i", "j")
+# The parts the digest is taken over, in the order they are hashed.
+DIGEST_PARTS = ("order", "time", "value", "flags", "sites")
+OLD_DIGEST_NOTE = (
+    "obs_index.json was written before its digest covered times, values, flags and sites, "
+    "so dependents are checked against the order only until obs_index is rebuilt"
+)
 
 FLAG_HAS_TARGET = 1
 FLAG_WEIGHTED = 2
@@ -200,15 +206,18 @@ def _empty_index(notes: tuple[str, ...]) -> ObsIndex:
         }
     )
     order = np.zeros(0, dtype=np.int32)
+    time = np.zeros(0, dtype=np.float64)
+    value = np.zeros(0, dtype=np.float64)
+    flags = np.zeros(0, dtype=np.uint8)
     return ObsIndex(
         order=order,
-        time=np.zeros(0, dtype=np.float64),
-        value=np.zeros(0, dtype=np.float64),
-        flags=np.zeros(0, dtype=np.uint8),
+        time=time,
+        value=value,
+        flags=flags,
         sites=sites,
         groups=groups,
         control_rows=0,
-        order_digest=hashlib.sha256(order.tobytes()).hexdigest(),
+        order_digest=_content_digest(order, time, value, flags, sites),
         notes=notes + (ZERO_ROWS_NOTE,),
     )
 
@@ -576,17 +585,44 @@ def _build(table: "pa.Table", notes: tuple[str, ...]) -> ObsIndex | ReadFailure:
         group_names, group_code, site_group, sites, weighted, sentinel, no_value, group_flag
     )
 
+    out_order = order.astype(np.int32)
+    out_time = s_time.astype(np.float64)
+    out_value = value[order].astype(np.float64)
+    out_flags = flags[order]
     return ObsIndex(
-        order=order.astype(np.int32),
-        time=s_time.astype(np.float64),
-        value=value[order].astype(np.float64),
-        flags=flags[order],
+        order=out_order,
+        time=out_time,
+        value=out_value,
+        flags=out_flags,
         sites=sites,
         groups=groups,
         control_rows=n,
-        order_digest=hashlib.sha256(order.astype("<i4").tobytes()).hexdigest(),
+        order_digest=_content_digest(out_order, out_time, out_value, out_flags, sites),
         notes=notes + tuple(new_notes),
     )
+
+
+def _content_digest(order, time, value, flags, sites, covers=DIGEST_PARTS) -> str:
+    """sha256 over the parts named in ``covers``, hashed in ``DIGEST_PARTS`` order.
+    ``("order",)`` alone gives the digest older sidecars recorded."""
+    h = hashlib.sha256()
+    if "order" in covers:
+        h.update(np.ascontiguousarray(order, dtype="<i4").tobytes())
+    if "time" in covers:
+        h.update(np.ascontiguousarray(time, dtype="<f8").tobytes())
+    if "value" in covers:
+        h.update(np.ascontiguousarray(value, dtype="<f8").tobytes())
+    if "flags" in covers:
+        h.update(np.ascontiguousarray(flags, dtype="u1").tobytes())
+    if "sites" in covers:
+        for column in ("site", "group", "start", "count", *IDENTITY_COLUMNS):
+            if column not in sites.columns:
+                continue
+            # A blank is not the text "NA", so it gets its own marker.
+            values = sites[column]
+            text = _SEP.join(map(str, values.astype(object).where(values.notna(), _NULL).tolist()))
+            h.update(column.encode("utf-8") + b"\x1e" + text.encode("utf-8") + b"\x1d")
+    return h.hexdigest()
 
 
 def _joined(values: pd.Series) -> str:
@@ -697,6 +733,7 @@ def write_obs_index(index: ObsIndex, layout: CacheLayout) -> WrittenArtifact | R
             "n_groups": int(index.groups.shape[0]),
             "control_rows": index.control_rows,
             "order_digest": index.order_digest,
+            "digest_covers": list(DIGEST_PARTS),
             "mapping": MAPPING_NOTE,
             "datetime_origin": DATETIME_ORIGIN,
             "rule_chain": RULE_CHAIN,
@@ -727,7 +764,8 @@ def write_obs_index(index: ObsIndex, layout: CacheLayout) -> WrittenArtifact | R
 
 def load_obs_index(layout: CacheLayout) -> ObsIndex | ReadFailure:
     """Read the index back. The sidecar and its ``cache_version`` are checked
-    first, then every binary file's size, then the order digest."""
+    first, then every binary file's size, the site and group counts, and last
+    the digest over the parts ``digest_covers`` names."""
     meta_path = layout.obs_index_meta
     try:
         raw = json.loads(meta_path.read_text())
@@ -746,8 +784,21 @@ def load_obs_index(layout: CacheLayout) -> ObsIndex | ReadFailure:
         control_rows = int(raw["control_rows"])
         digest = str(raw["order_digest"])
         notes = tuple(str(v) for v in raw["notes"])
+        n_sites = int(raw["n_sites"])
+        n_groups = int(raw["n_groups"])
+        covers_raw = raw.get("digest_covers")
+        covers = ("order",) if covers_raw is None else tuple(str(v) for v in covers_raw)
     except (KeyError, TypeError, ValueError) as exc:
         return _failure(meta_path, f"{meta_path.name} has an unexpected shape: {exc}")
+    unknown = [part for part in covers if part not in DIGEST_PARTS]
+    if unknown:
+        return _failure(
+            meta_path,
+            f"{meta_path.name} says its digest covers {unknown[0]!r}, which this reader does "
+            "not know; ingest again",
+        )
+    if covers_raw is None:
+        notes = notes + (OLD_DIGEST_NOTE,)
 
     arrays: dict[str, np.ndarray] = {}
     for label, path, dtype, width in (
@@ -768,12 +819,6 @@ def load_obs_index(layout: CacheLayout) -> ObsIndex | ReadFailure:
             )
         arrays[label] = np.fromfile(path, dtype=dtype)
 
-    if hashlib.sha256(arrays["order"].astype("<i4").tobytes()).hexdigest() != digest:
-        return _failure(
-            layout.obs_order,
-            f"{layout.obs_order.name} does not match the digest recorded in {meta_path.name}",
-        )
-
     frames: dict[str, pd.DataFrame] = {}
     for label, path, columns in (
         ("sites", layout.obs_sites, _SITE_COLUMNS),
@@ -787,6 +832,25 @@ def load_obs_index(layout: CacheLayout) -> ObsIndex | ReadFailure:
         if missing:
             return _failure(path, f"{path.name} has no column named {missing[0]!r}")
         frames[label] = frame
+
+    for label, path, expected in (
+        ("sites", layout.obs_sites, n_sites),
+        ("groups", layout.obs_groups, n_groups),
+    ):
+        if frames[label].shape[0] != expected:
+            return _failure(
+                path,
+                f"{meta_path.name} says {expected} {label} but {path.name} holds "
+                f"{frames[label].shape[0]} rows",
+            )
+
+    if _content_digest(
+        arrays["order"], arrays["time"], arrays["value"], arrays["flags"], frames["sites"], covers
+    ) != digest:
+        return _failure(
+            meta_path,
+            f"the index files do not match the digest recorded in {meta_path.name}",
+        )
 
     return ObsIndex(
         order=arrays["order"].astype(np.int32, copy=False),
