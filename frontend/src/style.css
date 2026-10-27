@@ -16,6 +16,9 @@
   /* The outside-the-model edge on the canvas; 10% vanished on the light page. */
   --model-edge: rgba(11, 11, 11, 0.22);
   --accent: #2a78d6;
+  /* Categorical slots 1 and 2: the two series a chart draws, prior and posterior. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
 
   --status-good: #0ca30c;
   --status-warning: #fab219;
@@ -40,6 +43,8 @@
   --hairline: rgba(255, 255, 255, 0.1);
   --model-edge: rgba(255, 255, 255, 0.1);
   --accent: #3987e5;
+  --series-1: #3987e5;
+  --series-2: #d95926;
 }
 
 body {

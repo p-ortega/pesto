@@ -26,6 +26,8 @@ const THEMED_TOKENS = [
   '--hairline',
   '--model-edge',
   '--accent',
+  '--series-1',
+  '--series-2',
 ]
 const STATUS_TOKENS = ['--status-good', '--status-warning', '--status-serious', '--status-critical']
 const ALL_TOKENS = [...THEMED_TOKENS, ...STATUS_TOKENS]
@@ -79,7 +81,7 @@ describe('style.css token declarations', () => {
     }
   })
 
-  it('the dark override redeclares the nine themed tokens and leaves the four status colours alone', () => {
+  it('the dark override redeclares every themed token and leaves the four status colours alone', () => {
     const source = readStyleSheet()
     const darkBlock = extractBlock(source, "[data-theme='dark']")
     for (const token of THEMED_TOKENS) {
