@@ -464,6 +464,173 @@ body {
   overflow: hidden;
 }
 
+/* The Obs tab is a column: heading, capability notices, the group table, the
+   plot hosts, the site list, then the spaghetti. The group table keeps the
+   room; the lists and notices below it give way first. */
+.obs-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.obs-notices {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  gap: var(--space-xs);
+  min-height: 0;
+  max-height: 25%;
+  overflow-y: auto;
+}
+
+.obs-notices:empty {
+  display: none;
+}
+
+.obs-groups,
+.obs-sites {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-sm);
+}
+
+/* A zero basis with a floor: thousands of rows must not win the shrink against the lists below. */
+.obs-groups {
+  flex: 1 1 0;
+  min-height: 10rem;
+}
+
+.obs-sites {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40%;
+  overflow: hidden;
+}
+
+.obs-sites-title {
+  flex: 0 0 auto;
+  margin-bottom: var(--space-xs);
+}
+
+/* The grid scrolls sideways as one piece, so the header stays over its columns
+   and the name column keeps its width when the panel is narrower than the table. */
+.obs-grid {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+}
+
+.obs-sites .obs-grid {
+  min-height: 6rem;
+}
+
+.obs-grid-header,
+.obs-grid > .scroll-pane {
+  min-width: 56em;
+}
+
+.obs-sites .obs-grid-header,
+.obs-sites .obs-grid > .scroll-pane {
+  min-width: 32em;
+}
+
+.obs-grid > .scroll-pane {
+  flex: 1 1 auto;
+}
+
+.obs-grid-header,
+.obs-grid-row {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.obs-grid-header {
+  flex: 0 0 auto;
+  align-items: flex-end;
+  padding: var(--space-xs) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.obs-grid-header > [role='columnheader'] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.obs-grid-row {
+  align-items: center;
+  height: 24px;
+  cursor: pointer;
+}
+
+.obs-grid-row[aria-selected='true'] {
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.obs-grid-header > [aria-sort='ascending'] .sort-button,
+.obs-grid-header > [aria-sort='descending'] .sort-button {
+  color: var(--ink-primary);
+  font-weight: 600;
+}
+
+/* The name column takes the stretch and never less than a readable width. */
+.obs-col-name {
+  flex: 3 1 0;
+  min-width: 10em;
+}
+
+.obs-col-figure {
+  flex: 0 0 5.5em;
+  text-align: right;
+}
+
+.obs-col-text {
+  flex: 0 0 5.5em;
+}
+
+.obs-col-figure[data-column^='rmse'] {
+  flex-basis: 8.5em;
+}
+
+.obs-grid-header > .obs-col-figure .sort-button {
+  justify-content: flex-end;
+  width: 100%;
+  text-align: right;
+}
+
+/* The plot hosts are empty until the plot plans mount into them, and take no room until then. */
+.obs-fit,
+.obs-spaghetti {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: var(--space-sm);
+}
+
+.obs-fit:empty,
+.obs-spaghetti:empty {
+  display: none;
+}
+
+.obs-fit canvas,
+.obs-spaghetti canvas {
+  display: block;
+  width: 100%;
+}
+
+.obs-spaghetti {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 50%;
+  overflow-y: auto;
+}
+
+.obs-spaghetti canvas {
+  height: 200px;
+}
+
 /* The Config tab: a heading, then one row per setup fact in a pane that
    scrolls inside the frame. A fact's value and its source sit side by side
    with a real gap, and extra readings hang under it. */
