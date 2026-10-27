@@ -6,7 +6,7 @@
 
 import { ApiError } from '../data/client'
 import { fetchObsGroups, shareRead, TABLE_RMSE_LABEL, type ObsGroupRow, type ObsGroupsResult } from '../data/obs'
-import type { IngestState } from '../data/client'
+import type { Capability, IngestState } from '../data/client'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 
@@ -44,7 +44,11 @@ interface GridColumn<T> {
   kind: 'name' | 'figure' | 'text'
   text(row: T): string
   title?(row: T): string
+  /** What the column sorts on. null means no value and always sorts last. Without it the column is not sortable. */
+  sortValue?(row: T): string | number | null
 }
+
+type SortDirection = 'ascending' | 'descending'
 
 interface GridOptions<T> {
   ariaLabel: string
@@ -96,12 +100,32 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
   const header = document.createElement('div')
   header.classList.add('obs-grid-header')
   header.setAttribute('role', 'row')
+  let sort: { key: string; direction: SortDirection } | null = null
+  const headings = new Map<string, HTMLElement>()
   for (const column of opts.columns) {
     const heading = document.createElement('span')
     heading.setAttribute('role', 'columnheader')
     heading.dataset.column = column.key
-    heading.classList.add('obs-col', `obs-col-${column.kind}`, 'label')
-    heading.textContent = column.label
+    heading.classList.add('obs-col', `obs-col-${column.kind}`)
+    if (column.sortValue === undefined) {
+      heading.classList.add('label')
+      heading.textContent = column.label
+    } else {
+      heading.setAttribute('aria-sort', 'none')
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.classList.add('label', 'sort-button')
+      const text = document.createElement('span')
+      text.textContent = column.label
+      const mark = document.createElement('span')
+      mark.classList.add('sort-mark')
+      mark.setAttribute('aria-hidden', 'true')
+      button.appendChild(text)
+      button.appendChild(mark)
+      button.addEventListener('click', () => sortBy(column))
+      heading.appendChild(button)
+    }
+    headings.set(column.key, heading)
     header.appendChild(heading)
   }
   el.appendChild(header)
@@ -117,6 +141,7 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
   pane.appendChild(spacer)
   el.appendChild(pane)
 
+  let source: readonly T[] = []
   let rows: readonly T[] = []
   const rowOf = new WeakMap<HTMLElement, T>()
 
@@ -150,6 +175,45 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
     }
   }
 
+  // Stable over the server's order: a tie keeps its place both ways, and no value sorts last both ways.
+  function sorted(): readonly T[] {
+    const column = sort === null ? undefined : opts.columns.find((c) => c.key === sort!.key)
+    if (sort === null || column?.sortValue === undefined) return source
+    const sign = sort.direction === 'ascending' ? 1 : -1
+    const valueOf = column.sortValue
+    return source
+      .map((row, index) => ({ row, index, value: valueOf(row) }))
+      .sort((a, b) => {
+        if (a.value === null || b.value === null) {
+          if (a.value === b.value) return a.index - b.index
+          return a.value === null ? 1 : -1
+        }
+        if (a.value === b.value) return a.index - b.index
+        return (a.value < b.value ? -1 : 1) * sign
+      })
+      .map((entry) => entry.row)
+  }
+
+  function markHeadings(): void {
+    for (const [key, heading] of headings) {
+      const mine = sort !== null && sort.key === key
+      if (heading.getAttribute('aria-sort') === null) continue
+      heading.setAttribute('aria-sort', mine ? sort!.direction : 'none')
+      const mark = heading.querySelector('.sort-mark')
+      if (mark) mark.textContent = mine ? (sort!.direction === 'ascending' ? '↑' : '↓') : ''
+    }
+  }
+
+  function sortBy(column: GridColumn<T>): void {
+    sort =
+      sort !== null && sort.key === column.key
+        ? { key: column.key, direction: sort.direction === 'ascending' ? 'descending' : 'ascending' }
+        : { key: column.key, direction: 'ascending' }
+    markHeadings()
+    rows = sorted()
+    if (!opts.isHidden()) renderVisible()
+  }
+
   // A hidden panel draws nothing; showing it again redraws once.
   pane.addEventListener('scroll', () => {
     if (!opts.isHidden()) renderVisible()
@@ -159,7 +223,8 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
     el,
     pane,
     setRows(next) {
-      rows = next
+      source = next
+      rows = sorted()
       spacer.style.height = `${rows.length * ROW_HEIGHT}px`
       if (!opts.isHidden()) renderVisible()
     },
@@ -186,6 +251,40 @@ function iterationSuffix(iteration: number | null): string {
   return iteration === null ? '' : ` (iteration ${iteration})`
 }
 
+function blockedReason(capability: Capability): string {
+  const why = capability.blockedBy.map((entry) => `${entry.artifact}: ${entry.reason}`).join(' ')
+  return why === '' ? 'no reason was recorded' : why
+}
+
+// D-04: each capability that is off says why, naming the artifact; a note on one that is on is shown too.
+const CAPABILITY_NOTICES: { key: 'obs' | 'obsStats' | 'noise'; title: string }[] = [
+  { key: 'obs', title: 'Observations are not available' },
+  { key: 'obsStats', title: 'Observation statistics are not available' },
+  { key: 'noise', title: 'The noise band is not available' },
+]
+
+function renderCapabilityNotices(host: HTMLElement, capabilities: IngestState['capabilities']): void {
+  host.textContent = ''
+  for (const { key, title } of CAPABILITY_NOTICES) {
+    const capability = capabilities[key]
+    if (capability === undefined) continue
+    if (!capability.available) {
+      const item = document.createElement('div')
+      item.dataset.capability = key
+      renderNotice(item, { title, detail: blockedReason(capability), tone: 'warning' })
+      host.appendChild(item)
+    }
+    for (const note of capability.notes ?? []) appendNote(host, note)
+  }
+}
+
+function appendNote(host: HTMLElement, note: string): void {
+  const line = document.createElement('div')
+  line.classList.add('label', 'wrap-note')
+  line.textContent = note
+  host.appendChild(line)
+}
+
 /**
  * Fills `host` with the Obs panel. The panel's sections, top to bottom, are
  * `.obs-notices`, `.obs-groups`, `.obs-fit`, `.obs-sites` and `.obs-spaghetti`;
@@ -198,6 +297,9 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   let hidden = opts.startHidden === true
   const loadGroups = opts.loadGroups ?? shareRead(() => fetchObsGroups())
   const blocked = opts.capabilities.obs !== undefined && !opts.capabilities.obs.available
+  const statsOff = opts.capabilities.obsStats !== undefined && !opts.capabilities.obsStats.available ? opts.capabilities.obsStats : null
+  // A browser drops the scroll offset of a box that is not displayed, so the offsets are kept here while hidden.
+  const savedScroll = new Map<Element, number>()
 
   const title = document.createElement('div')
   title.classList.add('heading')
@@ -207,6 +309,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   const noticesHost = document.createElement('div')
   noticesHost.classList.add('obs-notices')
   host.appendChild(noticesHost)
+  renderCapabilityNotices(noticesHost, opts.capabilities)
 
   const groupsHost = document.createElement('div')
   groupsHost.classList.add('obs-groups')
@@ -237,16 +340,23 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   function groupColumns(rows: readonly ObsGroupRow[]): GridColumn<ObsGroupRow>[] {
     const firstText = `${TABLE_RMSE_LABEL}, first${iterationSuffix(commonIteration(rows, (r) => r.firstIteration))}`
     const lastText = `${TABLE_RMSE_LABEL}, last${iterationSuffix(commonIteration(rows, (r) => r.lastIteration))}`
-    const rmse = (value: number | null): string => (value === null ? NO_FIGURE : formatResidual(value))
+    // With the statistics off, a figure the server did send is not shown: the reason is.
+    const rmse = (value: number | null): string => (value === null || statsOff !== null ? NO_FIGURE : formatResidual(value))
+    const rmseTitle = (value: number | null, n: number): string => {
+      if (statsOff !== null) return blockedReason(statsOff)
+      return value === null ? NO_RESIDUAL : `${n} observations with a residual`
+    }
+    const rmseSort = (value: number | null): number | null => (statsOff !== null ? null : value)
     return [
-      { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group },
-      { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs) },
-      { key: 'n_sites', label: 'Sites', kind: 'figure', text: (r) => String(r.nSites) },
+      { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group, sortValue: (r) => r.group },
+      { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs), sortValue: (r) => r.nObs },
+      { key: 'n_sites', label: 'Sites', kind: 'figure', text: (r) => String(r.nSites), sortValue: (r) => r.nSites },
       {
         key: 'n_placed',
         label: 'Placed sites',
         kind: 'figure',
         text: (r) => (r.nPlaced === null ? NO_FIGURE : String(r.nPlaced)),
+        sortValue: (r) => r.nPlaced,
         title: (r) =>
           r.nPlaced === null ? 'the site positions (obs_cell) are not available' : `${r.nPlaced} of ${r.nSites} sites have a position`,
       },
@@ -255,6 +365,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
         label: 'Weighted',
         kind: 'figure',
         text: (r) => String(r.nWeighted),
+        sortValue: (r) => r.nWeighted,
         title: (r) =>
           `${r.nWeighted} with a weight above zero; ${r.nZeroWeight} zero weight; ${r.nSentinel} sentinel value; ${r.nNoValue} with no value`,
       },
@@ -263,6 +374,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
         label: 'Time kind',
         kind: 'text',
         text: (r) => r.timeKind,
+        sortValue: (r) => r.timeKind,
         title: (r) => `inequality: ${r.inequality}`,
       },
       {
@@ -270,14 +382,16 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
         label: firstText,
         kind: 'figure',
         text: (r) => rmse(r.rmseFirst),
-        title: (r) => (r.rmseFirst === null ? NO_RESIDUAL : `${r.nResidFirst} observations with a residual`),
+        title: (r) => rmseTitle(r.rmseFirst, r.nResidFirst),
+        sortValue: (r) => rmseSort(r.rmseFirst),
       },
       {
         key: 'rmse_last',
         label: lastText,
         kind: 'figure',
         text: (r) => rmse(r.rmseLast),
-        title: (r) => (r.rmseLast === null ? NO_RESIDUAL : `${r.nResidLast} observations with a residual`),
+        title: (r) => rmseTitle(r.rmseLast, r.nResidLast),
+        sortValue: (r) => rmseSort(r.rmseLast),
       },
     ]
   }
@@ -340,10 +454,14 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     onShow() {
       hidden = false
       requestGroups()
+      for (const [pane, top] of savedScroll) pane.scrollTop = top
+      savedScroll.clear()
       groupsGrid?.redraw()
     },
     onHide() {
       hidden = true
+      savedScroll.clear()
+      for (const pane of host.querySelectorAll('.scroll-pane')) savedScroll.set(pane, pane.scrollTop)
     },
     dispose() {},
   }
