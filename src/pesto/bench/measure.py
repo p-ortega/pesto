@@ -5,18 +5,20 @@ from __future__ import annotations
 import os
 import platform
 import time
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Sequence
 
 from pesto.bench.report import (
     ArtifactTiming,
+    AsFoundCache,
     CacheSize,
-    ColdRead,
     IngestTiming,
     LatencySummary,
     ObservationFacts,
     ObservationProbe,
     ReadFloor,
+    ResidentFile,
     RunFacts,
     SourceFile,
     SourceRead,
@@ -32,11 +34,6 @@ try:
 except ImportError:  # Windows has no resource module
     resource = None  # type: ignore[assignment]
 
-try:
-    import fcntl
-except ImportError:  # Windows has no fcntl module
-    fcntl = None  # type: ignore[assignment]
-
 _READ_CHUNK = 8 * 1024 * 1024
 _NO_OBSERVATIONS = "parameters only, observation ensemble not present"
 _NO_CPU = "CPU time is not available on this platform"
@@ -45,8 +42,8 @@ _FLOOR_NOTE = (
     "above about 3,000 MB/s they did not come from the disk (an assumption, "
     "not something this run proved)"
 )
-# D-03: a first read at most half as fast as the re-read counts as cold.
-COLD_RATIO_LIMIT = 0.5
+# The as-found ingest counts as cold when at most this share of the source bytes was in memory.
+COLD_RESIDENT_LIMIT = 0.01
 _NO_OBS_FILES = "no observation ensemble present"
 _NO_OBS_PLANNED = "no observation ensemble was planned for this run"
 _PROBE_NOT_RUN = "not run (pass --obs-probe to time one observation file)"
@@ -300,115 +297,170 @@ def read_floor(files: Sequence[Path]) -> ReadFloor:
     return ReadFloor(bytes=total, seconds=seconds, mb_per_second=rate, note=note)
 
 
-# A read pass takes the files and "first" or "reread" and returns (bytes, seconds, method).
-ReadPass = Callable[[Sequence[Path], str], "tuple[int, float, str]"]
-_PLAIN_METHOD = "plain read, because this platform has no way to skip the file cache"
-
-
-def _skip_cache(fd: int) -> str | None:
-    """Ask the OS not to cache this read. Returns the method used, or None when it could not."""
-    if fcntl is not None and hasattr(fcntl, "F_NOCACHE"):
-        try:
-            fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
-        except OSError:
-            return None
-        return "F_NOCACHE (does not evict pages that are already in memory)"
-    if hasattr(os, "posix_fadvise"):
-        try:
-            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-        except OSError:
-            return None
-        return "posix_fadvise DONTNEED (a hint the kernel may ignore)"
-    return None
-
-
-def _default_pass(files: Sequence[Path], which: str) -> tuple[int, float, str]:
-    total = 0
-    methods: set[str] = set()
-    readable, _missing = split_readable(files)
-    start = time.perf_counter()
-    for path in readable:
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            if which == "first":
-                methods.add(_skip_cache(fd) or _PLAIN_METHOD)
-            while chunk := os.read(fd, _READ_CHUNK):
-                total += len(chunk)
-        finally:
-            os.close(fd)
-    seconds = time.perf_counter() - start
-    if which != "first":
-        return total, seconds, "plain read"
-    if not methods:
-        return total, seconds, _PLAIN_METHOD
-    return total, seconds, "; ".join(sorted(methods))
-
-
 def _rate(total: int, seconds: float) -> float | None:
     return total / 1e6 / seconds if total > 0 and seconds > 0 else None
 
 
-def _mbs(rate: float) -> str:
-    return f"{rate:,.0f} MB/s" if rate >= 10 else f"{rate:.2f} MB/s"
+# A page probe takes one file path and returns how many of its bytes are in memory.
+PageProbe = Callable[[Path], int]
+_PAGE_METHOD = "mincore on a read-only mapping (no file contents are read)"
+_PURGE_STEP = (
+    "sudo purge is your own step, in your own terminal right before pesto bench; "
+    "pesto never runs it"
+)
 
 
-def cold_read(
-    files: Sequence[Path], read_pass: ReadPass | None = None, *, after_ingest: bool = False
-) -> ColdRead:
-    """Read every file once, then again at once, and label the first read only as far as the numbers show.
+class PageCheckUnavailable(OSError):
+    """The OS call that reports memory residency cannot be used here."""
 
-    D-03: "cold" needs the first rate to be at most COLD_RATIO_LIMIT of the re-read rate.
-    Nothing is run to empty the cache; the note tells the user how to do that themselves.
-    With after_ingest the files were just read by the ingests, so the label is never "cold".
+
+def _load_mincore():
+    import ctypes
+    import ctypes.util
+
+    name = ctypes.util.find_library("c")
+    try:
+        if name is not None:
+            libc = ctypes.CDLL(name, use_errno=True)
+        elif os.name == "posix":
+            libc = ctypes.CDLL(None, use_errno=True)
+        else:
+            raise PageCheckUnavailable("the C library was not found")
+    except OSError as exc:
+        raise PageCheckUnavailable(f"the C library could not be loaded ({exc})") from exc
+    function = getattr(libc, "mincore", None)
+    if function is None:
+        raise PageCheckUnavailable("the C library has no mincore call")
+    function.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p)
+    function.restype = ctypes.c_int
+    return function
+
+
+def _mincore_resident_bytes(path: Path) -> int:
+    """Bytes of the file already in memory, asked of the OS through a read-only mapping."""
+    import ctypes
+    import mmap
+
+    import numpy as np
+
+    mincore = _load_mincore()
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        size = os.fstat(fd).st_size
+        if size == 0:
+            return 0
+        mapping = mmap.mmap(fd, size, access=mmap.ACCESS_READ)
+        try:
+            view = np.frombuffer(mapping, dtype=np.uint8)
+            address = view.ctypes.data
+            # Dropped before the map closes; the address stays valid while the map is open.
+            del view
+            pages = (size + mmap.PAGESIZE - 1) // mmap.PAGESIZE
+            vec = ctypes.create_string_buffer(pages)
+            if mincore(address, size, vec) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, f"mincore failed: {os.strerror(code)}")
+            flags = np.frombuffer(vec.raw, dtype=np.uint8)
+            in_memory = int((flags & 1).sum())
+        finally:
+            mapping.close()
+    finally:
+        os.close(fd)
+    # The last page may be only partly the file.
+    return min(size, in_memory * mmap.PAGESIZE)
+
+
+def _megabytes_text(value: int) -> str:
+    return f"{value / 1e6:,.1f} MB"
+
+
+def _percent_text(fraction: float) -> str:
+    return f"{fraction * 100:.2f}%"
+
+
+def _skipped_note(skipped: Sequence[tuple[str, str]]) -> str | None:
+    if not skipped:
+        return None
+    named = ", ".join(f"{name} ({why})" for name, why in skipped)
+    return f"{len(skipped)} planned source file(s) were skipped: {named}"
+
+
+def _not_measured(
+    method: str, note: str, files: int, source_bytes: int, skipped: Sequence[tuple[str, str]]
+) -> AsFoundCache:
+    note = "; ".join(filter(None, [f"not measured: {note}", _PURGE_STEP, _skipped_note(skipped)]))
+    return AsFoundCache(
+        source_bytes=source_bytes,
+        resident_bytes=None,
+        resident_fraction=None,
+        files=files,
+        missing=[name for name, _why in skipped],
+        largest_resident=[],
+        label="not measured",
+        method=method,
+        note=note,
+    )
+
+
+def page_residency(files: Sequence[Path], probe: PageProbe | None = None) -> AsFoundCache:
+    """How much of the source bytes is already in memory, asked without reading any of it.
+
+    The label is "cold" only when at most COLD_RESIDENT_LIMIT of the bytes were in memory.
+    Missing and empty files are skipped and named. Nothing is run to empty the cache.
     """
-    run_pass = read_pass or _default_pass
+    ask = probe or _mincore_resident_bytes
+    method = _PAGE_METHOD if probe is None else "page probe given by the caller"
     readable, missing = split_readable(files)
-    first_bytes, first_seconds, method = run_pass(readable, "first")
-    reread_bytes, reread_seconds, _ = run_pass(readable, "reread")
-    first_rate = _rate(first_bytes, first_seconds)
-    reread_rate = _rate(reread_bytes, reread_seconds)
-    ratio = first_rate / reread_rate if first_rate is not None and reread_rate else None
+    skipped: list[tuple[str, str]] = [(name, "not found") for name in missing]
+    sizes: list[tuple[Path, int]] = []
+    for path in readable:
+        size = _size(path)
+        if size == 0:
+            skipped.append((path.name, "empty"))
+        else:
+            sizes.append((path, size))
+    source_bytes = sum(size for _path, size in sizes)
+    if source_bytes == 0:
+        return _not_measured(
+            method,
+            "the source files add up to zero bytes, so there is nothing to check",
+            0,
+            0,
+            skipped,
+        )
 
-    if first_bytes == 0:
-        label, proven = "not measured", False
-        note = "the source files add up to zero bytes, so there is nothing to compare"
-    elif ratio is None:
-        label, proven = "not measured", False
-        note = "a read took no measurable time, so the two rates cannot be compared"
-    elif after_ingest:
-        label, proven = "not proven cold", False
-        note = (
-            "this read ran after both ingests, so its files were likely in memory: the first "
-            f"read ran at {_mbs(first_rate)} and the re-read at {_mbs(reread_rate)} "
-            f"(ratio {ratio:.2f}), which cannot show the disk was cold. The as-found ingest "
-            "is the first read of the run in this bench."
-        )
-    elif ratio <= COLD_RATIO_LIMIT:
-        label, proven = "cold", True
-        note = (
-            f"cold: the first read ran at {_mbs(first_rate)} and the re-read at "
-            f"{_mbs(reread_rate)} (ratio {ratio:.2f}), so the first read was at most "
-            f"{COLD_RATIO_LIMIT:g} times as fast as the re-read"
-        )
+    found: list[ResidentFile] = []
+    try:
+        for path, size in sizes:
+            found.append(ResidentFile(name=path.name, bytes=size, resident_bytes=int(ask(path))))
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        return _not_measured(method, f"the page check failed ({reason})", len(sizes), source_bytes, skipped)
+
+    resident = sum(item.resident_bytes for item in found)
+    fraction = resident / source_bytes
+    largest = sorted((f for f in found if f.resident_bytes > 0), key=lambda f: -f.resident_bytes)[:3]
+    # Exact comparison, so a share of exactly 1% is cold and 1.01% is not.
+    cold = Fraction(resident, source_bytes) <= Fraction(str(COLD_RESIDENT_LIMIT))
+    measured = (
+        f"{_megabytes_text(resident)} of {_megabytes_text(source_bytes)} "
+        f"({_percent_text(fraction)}) of the source files was in memory before the as-found ingest"
+    )
+    if cold:
+        label = "cold"
+        head = f"cold: {measured}, at most {COLD_RESIDENT_LIMIT:.0%} (checked without reading any file)"
     else:
-        label, proven = "not proven cold", False
-        note = (
-            f"not proven cold: the first read ran at {_mbs(first_rate)} and the re-read at "
-            f"{_mbs(reread_rate)} (ratio {ratio:.2f}, above {COLD_RATIO_LIMIT:g}), so the data "
-            "may have come from memory. Run sudo purge in your own terminal right before "
-            "pesto bench for a proven cold figure; pesto never runs it."
-        )
-    if (skipped := missing_note(missing)) is not None:
-        note = f"{note}; {skipped}"
-    return ColdRead(
-        bytes=first_bytes,
-        files=len(readable),
-        first_seconds=first_seconds,
-        first_mb_per_second=first_rate,
-        reread_seconds=reread_seconds,
-        reread_mb_per_second=reread_rate,
-        ratio=ratio,
-        proven_cold=proven,
+        label = "not cold"
+        names = ", ".join(f"{f.name} ({_megabytes_text(f.resident_bytes)})" for f in largest)
+        head = f"not cold: {measured}, above {COLD_RESIDENT_LIMIT:.0%}; largest in memory: {names}"
+    note = "; ".join(filter(None, [head, _PURGE_STEP, _skipped_note(skipped)]))
+    return AsFoundCache(
+        source_bytes=source_bytes,
+        resident_bytes=resident,
+        resident_fraction=fraction,
+        files=len(found),
+        missing=[name for name, _why in skipped],
+        largest_resident=largest,
         label=label,
         method=method,
         note=note,

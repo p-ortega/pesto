@@ -115,7 +115,8 @@ def test_the_server_and_observation_blocks_are_present(bench) -> None:
     assert body["server"]["values"]["statistic"]["count"] == 20
     assert "not implemented" not in body["observations"]["ingest"]
     assert body["observations"]["ingest"]
-    assert body["cold_read"]["label"] in ("cold", "not proven cold", "not measured")
+    assert "cold_read" not in body and body["schema_version"] == 2
+    assert body["as_found_cache"]["label"] in ("cold", "not cold", "not measured")
     for ingest in body["ingests"]:
         assert "read_mb_per_second" in ingest
     rows = {row["speed_limit"]: row for row in body["verdicts"]}
