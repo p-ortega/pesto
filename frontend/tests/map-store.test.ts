@@ -172,6 +172,7 @@ function manualStore(): SelectionStore {
 async function mountedWith(
   store: SelectionStore,
   parTable: Uint8Array = PAR_TABLE,
+  config: RunConfig = CONFIG,
 ): Promise<{ root: HTMLElement; stub: Stub }> {
   const stub = stubEnvironment(parTable)
   vi.stubGlobal(
@@ -184,7 +185,7 @@ async function mountedWith(
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
-  mountMap(root, { config: CONFIG, state: baseState(), store })
+  mountMap(root, { config, state: baseState(), store })
   await vi.waitFor(() => {
     expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
   })
@@ -430,5 +431,48 @@ describe('the map follows a group chosen in another view', () => {
     store.flush()
 
     expect(store.get().parGroups.size).toBe(0)
+  })
+})
+
+describe('the header chips read the config facts (D-17)', () => {
+  const read = (source: string, value: number | boolean | null, shown: string, extra: Record<string, number> | null = null) => ({
+    source,
+    value,
+    shown,
+    evidence: '',
+    extra,
+  })
+
+  it('marks the realization chip when ensemble sizes disagree and words base from the base fact', async () => {
+    const config: RunConfig = {
+      ...CONFIG,
+      n_real: 200,
+      base_realization: false,
+      facts_version: 1,
+      facts: [
+        {
+          key: 'ensemble_size',
+          label: 'Ensemble size',
+          readings: [read('control file', 200, '200'), read('cache', 100, '100')],
+          agree: false,
+          looked_for: [],
+          note: null,
+        },
+        {
+          key: 'base',
+          label: 'Base realization',
+          readings: [read('cache', true, 'iteration 0: base present', { iteration: 0 }), read('cache', false, 'iteration 3: base missing', { iteration: 3 })],
+          agree: false,
+          looked_for: [],
+          note: null,
+        },
+      ],
+    }
+    const { root } = await mountedWith(manualStore(), PAR_TABLE, config)
+
+    const chips = Array.from(root.querySelectorAll('.chip')).map((c) => c.textContent ?? '')
+    const reals = chips.find((c) => c.includes('reals'))!
+    expect(reals).toContain('sources disagree')
+    expect(reals).toContain('base missing at iteration 3')
   })
 })
