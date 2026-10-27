@@ -9,7 +9,8 @@ series can be laid over each other. Density is count / (n x bin width), so each
 series integrates to 1.
 
 Which parameters count comes only from ``par_change``'s ``included`` column;
-nothing is recomputed here.
+nothing is recomputed here. A group that cannot be drawn says why in its own
+entry and costs no other group its histogram.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from pesto.ingest.parview import (
     _count_note,
     _excluded_counts,
     _fail,
+    _nothing_to_adjust,
     _read_json,
     load_par_change,
 )
@@ -52,7 +54,8 @@ class Series:
 
 @dataclass(frozen=True, eq=False)
 class SharedHistogram:
-    """Edges and the two series, or a ``refused`` sentence and nothing else."""
+    """Edges and the two series, or a ``refused`` sentence and nothing else.
+    ``last`` is None when only one set of values was given."""
 
     edges: np.ndarray | None
     first: Series | None
@@ -94,23 +97,41 @@ def _series(counts: np.ndarray, edges: np.ndarray) -> Series:
     return Series(n=int(counts.sum()), counts=counts, density=densities(counts, edges))
 
 
+def identical_values_reason(subject: str = "group") -> str:
+    return f"every value in this {subject} is the same, so there is no spread to draw"
+
+
+def _refusal(reason: str) -> SharedHistogram:
+    return SharedHistogram(edges=None, first=None, last=None, refused=reason)
+
+
 def shared_edge_histogram(
     first_values: np.ndarray,
-    last_values: np.ndarray,
+    last_values: np.ndarray | None,
     n_bins: int = N_BINS,
+    subject: str = "group",
 ) -> SharedHistogram:
-    """Bin two sets of values on edges spanning both. The one rule for edges,
-    counts and density that ``par_hist`` and the single-parameter drill-down share."""
+    """Bin one or two sets of values on edges spanning all of them. The one
+    rule for edges, counts and density that ``par_hist`` and the
+    single-parameter drill-down share. Non-finite values are not counted.
+    ``subject`` is the word the empty-spread sentence uses for what was binned."""
     first = np.asarray(first_values, dtype=np.float64).ravel()
-    last = np.asarray(last_values, dtype=np.float64).ravel()
     first = first[np.isfinite(first)]
-    last = last[np.isfinite(last)]
-    pooled = np.concatenate([first, last])
-    edges = shared_edges(float(pooled.min()), float(pooled.max()), n_bins)
+    last = None
+    if last_values is not None:
+        last = np.asarray(last_values, dtype=np.float64).ravel()
+        last = last[np.isfinite(last)]
+    pooled = first if last is None else np.concatenate([first, last])
+    if pooled.size == 0:
+        return _refusal(f"this {subject} holds no value to draw")
+    low, high = float(pooled.min()), float(pooled.max())
+    if not high > low:
+        return _refusal(identical_values_reason(subject))
+    edges = shared_edges(low, high, n_bins)
     return SharedHistogram(
         edges=edges,
         first=_series(bin_counts(first, edges), edges),
-        last=_series(bin_counts(last, edges), edges),
+        last=None if last is None else _series(bin_counts(last, edges), edges),
         refused=None,
     )
 
@@ -136,21 +157,50 @@ def _active_values(
         yield columns, sel
 
 
+def _group_notes(excluded: dict[str, int], block: pd.DataFrame) -> list[str]:
+    """What this group's histogram leaves out, with counts and a few names."""
+    notes = []
+    if excluded["fixed"] or excluded["tied"]:
+        notes.append(
+            f"{excluded['fixed']} fixed and {excluded['tied']} tied parameter(s) are left out "
+            "of this histogram, because pestpp never adjusts them"
+        )
+    for kind, what in (
+        (
+            "nonpositive_log",
+            "are log-transformed and hold a value that is not positive, so they are left out "
+            "of this histogram",
+        ),
+        ("no_values", "hold no value in one of the two iterations and are left out of this histogram"),
+        ("unknown_transform", "have a transform pesto does not know and are left out of this histogram"),
+    ):
+        hit = block.loc[block["excluded_kind"] == kind, "parnme"].tolist()
+        if hit:
+            notes.append(_count_note(len(hit), what, hit))
+    return notes
+
+
 def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifact | ReadFailure:
     """Write ``agg/par_hist.parquet`` and then its sidecar ``agg/par_hist.json``,
     or leave nothing behind. Reads ``par_change`` for the included flags and
-    spaces, and the cached ``par_ens/first`` and ``par_ens/last`` for the values."""
+    spaces, and the cached ``par_ens/first`` and ``par_ens/last`` for the values.
+
+    With ``first == last`` only one iteration was ingested: one series per
+    group, and the sidecar says so."""
     name = "par_hist"
     payload_path = layout.par_hist
     sidecar_path = layout.par_hist_meta
     written: list[Path] = []
     try:
+        single = first == last
         loaded = load_par_change(layout)
         if isinstance(loaded, ReadFailure):
             return _fail(name, loaded.path, f"par_change could not be read: {loaded.reason}")
         frame, change_meta = loaded
-        stored = []
-        for iteration in (first, last):
+        names = [str(v) for v in frame["parnme"]]
+
+        stored: list[StoredEnsemble] = []
+        for iteration in (first,) if single else (first, last):
             one = load_stored(iteration, layout)
             if isinstance(one, ReadFailure):
                 return _fail(
@@ -158,26 +208,38 @@ def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
                     one.path,
                     f"the parameter ensemble of iteration {iteration} could not be read: {one.reason}",
                 )
-            stored.append(one)
-        stored_first, stored_last = stored
-        names = [str(v) for v in frame["parnme"]]
-        for one in stored:
             if tuple(names) != tuple(one.par_names):
                 return _fail(
                     name,
                     payload_path,
-                    f"the change table and the ensemble of iteration {one.iteration} do not hold "
+                    f"the change table and the ensemble of iteration {iteration} do not hold "
                     "the same parameters in the same order; ingest the run again",
                 )
-        aligned = align_realizations(stored_first.real_names, stored_last.real_names)
-        if not aligned.names:
-            return _fail(
-                name,
-                payload_path,
-                f"no realization name is shared between iteration {first} and iteration {last}",
+            stored.append(one)
+
+        notes: list[str] = []
+        if single:
+            rows = [np.arange(len(stored[0].real_names), dtype=np.int64)]
+            n_common = len(stored[0].real_names)
+            notes.append(
+                f"only iteration {first} was ingested, so one series is drawn and there is no "
+                "before and after"
             )
-        rows_first = np.asarray(aligned.index_a, dtype=np.int64)
-        rows_last = np.asarray(aligned.index_b, dtype=np.int64)
+        else:
+            aligned = align_realizations(stored[0].real_names, stored[1].real_names)
+            if not aligned.names:
+                return _fail(
+                    name,
+                    payload_path,
+                    f"no realization name is shared between iteration {first} and iteration {last}",
+                )
+            rows = [
+                np.asarray(aligned.index_a, dtype=np.int64),
+                np.asarray(aligned.index_b, dtype=np.int64),
+            ]
+            n_common = len(aligned.names)
+            notes.extend(aligned.notes)
+        iterations = [first] if single else [first, last]
 
         group_names = [str(g) for g in dict.fromkeys(frame["pargp"])]
         group_of = {g: i for i, g in enumerate(group_names)}
@@ -185,15 +247,26 @@ def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
         included = frame["included"].to_numpy(dtype=bool)
         is_log = (frame["space"] == "log10").to_numpy(dtype=bool)
         n_groups = len(group_names)
-        has_included = np.zeros(n_groups, dtype=bool)
-        has_included[gidx[included]] = True
-        active = included & has_included[gidx]
+
+        n_log = np.bincount(gidx[included & is_log], minlength=n_groups)
+        n_native = np.bincount(gidx[included & ~is_log], minlength=n_groups)
+        refusals: dict[int, str] = {}
+        for g in range(n_groups):
+            if n_log[g] == 0 and n_native[g] == 0:
+                continue
+            if n_log[g] and n_native[g]:
+                refusals[g] = (
+                    f"{int(n_log[g])} log-transformed and {int(n_native[g])} untransformed "
+                    "parameters cannot share one axis, so this group has no histogram"
+                )
+        drawable = (n_log + n_native > 0) & ~np.isin(np.arange(n_groups), list(refusals))
+        active = included & drawable[gidx]
 
         # Pass 1: the pooled range of each group.
         low = np.full(n_groups, np.inf)
         high = np.full(n_groups, -np.inf)
-        for one, rows in ((stored_first, rows_first), (stored_last, rows_last)):
-            for columns, values in _active_values(one, rows, active, is_log):
+        for one, one_rows in zip(stored, rows):
+            for columns, values in _active_values(one, one_rows, active, is_log):
                 with np.errstate(all="ignore"):
                     finite = np.isfinite(values)
                     lo = np.where(finite, values, np.inf).min(axis=0)
@@ -202,14 +275,20 @@ def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
                 np.maximum.at(high, gidx[columns], hi)
 
         edges: dict[int, np.ndarray] = {}
-        for g in range(n_groups):
-            if active[gidx == g].any():
+        for g in np.flatnonzero(drawable):
+            g = int(g)
+            if not np.isfinite(low[g]):
+                refusals[g] = "this group holds no value to draw"
+            elif not high[g] > low[g]:
+                refusals[g] = identical_values_reason("group")
+            else:
                 edges[g] = shared_edges(low[g], high[g])
+        active &= np.isin(gidx, list(edges))
 
         # Pass 2: counts on those edges.
-        counts = {g: [np.zeros(N_BINS, dtype=np.int64), np.zeros(N_BINS, dtype=np.int64)] for g in edges}
-        for slot, (one, rows) in enumerate(((stored_first, rows_first), (stored_last, rows_last))):
-            for columns, values in _active_values(one, rows, active, is_log):
+        counts = {g: [np.zeros(N_BINS, dtype=np.int64) for _ in iterations] for g in edges}
+        for slot, (one, one_rows) in enumerate(zip(stored, rows)):
+            for columns, values in _active_values(one, one_rows, active, is_log):
                 of_column = gidx[columns]
                 order = np.argsort(of_column, kind="stable")
                 sorted_groups = of_column[order]
@@ -221,30 +300,39 @@ def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
 
         sidecar_path.unlink(missing_ok=True)
 
-        records = []
+        records: list[tuple] = []
         entries = []
-        for g, group in enumerate(group_names):
-            block = frame[gidx == g]
+        for group, block in frame.groupby("pargp", sort=False):
+            group = str(group)
+            g = group_of[group]
+            excluded = _excluded_counts(block)
+            in_block = block[block["included"]]
+            if in_block.empty:
+                refused = _nothing_to_adjust(int(len(block)), excluded)
+            else:
+                refused = refusals.get(g)
             entry = {
                 "group": group,
                 "n_par": int(len(block)),
-                "n_included": int(block["included"].sum()),
-                "excluded": _excluded_counts(block),
+                "n_included": int(len(in_block)),
+                "excluded": excluded,
                 "space": None,
                 "edges": None,
                 "first": None,
                 "last": None,
-                "refused": None,
-                "notes": [],
+                "refused": refused,
+                "notes": [] if in_block.empty else _group_notes(excluded, block),
             }
             if g in edges:
-                entry["space"] = "log10" if is_log[gidx == g][block["included"].to_numpy()].all() else "native"
+                entry["space"] = "log10" if n_log[g] else "native"
                 entry["edges"] = [float(v) for v in edges[g]]
-                for slot, (key, iteration) in enumerate((("first", first), ("last", last))):
+                for slot, (key, iteration) in enumerate(zip(("first", "last"), iterations)):
                     series = _series(counts[g][slot], edges[g])
                     entry[key] = {"iteration": int(iteration), "n": series.n}
-                    for b in range(N_BINS):
-                        records.append((group, int(iteration), b, int(series.counts[b]), float(series.density[b])))
+                    records.extend(
+                        (group, int(iteration), b, int(series.counts[b]), float(series.density[b]))
+                        for b in range(N_BINS)
+                    )
             entries.append(entry)
 
         table = pd.DataFrame(
@@ -259,14 +347,13 @@ def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
         payload_bytes = _write_parquet_atomic(table, payload_path)
         written.append(payload_path)
 
-        notes = [str(n) for n in change_meta["notes"]]
         sidecar = {
             "cache_version": CACHE_VERSION,
             "first_iteration": int(first),
             "last_iteration": int(last),
-            "single_iteration": False,
+            "single_iteration": single,
             "n_bins": N_BINS,
-            "n_common": len(aligned.names),
+            "n_common": int(n_common),
             "only_first": change_meta["only_first"],
             "only_last": change_meta["only_last"],
             "groups": entries,
