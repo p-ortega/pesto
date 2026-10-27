@@ -4,6 +4,7 @@ and reads the answer back through a real app, never the cache files."""
 
 from __future__ import annotations
 
+import numpy as np
 import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
@@ -179,6 +180,153 @@ def test_groups_without_the_cached_file_is_a_404_naming_par_groups(tmp_path, in_
 
     assert response.status_code == 404
     assert response.json()["artifact"] == "par_groups"
+
+
+# ---------------------------------------------------------------------------
+# /par/values and the drill-down limit
+# ---------------------------------------------------------------------------
+
+
+def _values(client, parameter):
+    return client.get("/api/run/par/values", params={"parameter": parameter})
+
+
+def test_values_serves_one_parameters_shared_edge_histograms_with_the_change_tables_moments(
+    tmp_path, in_process  # noqa: F811
+):
+    run, _manifest, client = _open(tmp_path)
+    common = [n for n in run.real_names[0] if n in run.real_names[1]]
+    name = run.groups["hk_pp"][1]
+
+    response = _values(client, name)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert (body["parameter"], body["group"], body["space"]) == (name, "hk_pp", "log10")
+    assert body["n_common"] == 5
+    assert body["left_out"]["count"] == 1
+    assert len(body["edges"]) == 51
+    assert body["refused"] is None
+    values_first = numeric_space(run, 0, name, common)
+    values_last = numeric_space(run, 1, name, common)
+    assert body["edges"][0] == pytest.approx(min(values_first.min(), values_last.min()), rel=1e-6)
+    assert body["edges"][-1] == pytest.approx(max(values_first.max(), values_last.max()), rel=1e-6)
+    assert (body["first"]["iteration"], body["last"]["iteration"]) == (0, 1)
+    for key, values in (("first", values_first), ("last", values_last)):
+        series = body[key]
+        assert series["n"] == 5
+        assert series["counts"] == np.histogram(values, bins=np.asarray(body["edges"]))[0].tolist()
+        assert series["mean"] == pytest.approx(values.mean(), rel=1e-6)
+        assert series["sd"] == pytest.approx(values.std(), rel=1e-6)
+        widths = np.diff(body["edges"])
+        assert float((np.asarray(series["density"]) * widths).sum()) == pytest.approx(1.0, abs=1e-9)
+
+    table = _table(client.get("/api/run/par/change", params={"group": "hk_pp"}))
+    row = table.column("parnme").to_pylist().index(name)
+    assert body["first"]["mean"] == pytest.approx(table.column("mean_first").to_pylist()[row], rel=1e-9)
+    assert body["last"]["sd"] == pytest.approx(table.column("sd_last").to_pylist()[row], rel=1e-9)
+
+
+def test_values_do_not_depend_on_the_row_order_of_the_last_file(tmp_path, in_process):  # noqa: F811
+    run, _m, client = _open(tmp_path / "reversed", reverse_last=True)
+    name = run.groups["hk_pp"][0]
+    reversed_body = _values(client, name).json()
+
+    _run, _m, other = _open(tmp_path / "plain", reverse_last=False)
+    plain_body = _values(other, name).json()
+
+    assert reversed_body == plain_body
+
+
+def test_values_hold_no_per_realization_values(tmp_path, in_process):  # noqa: F811
+    run, _manifest, client = _open(tmp_path)
+
+    body = _values(client, run.groups["hk_pp"][0]).json()
+
+    assert set(body) == {
+        "parameter", "group", "space", "n_common", "left_out", "edges", "first", "last", "refused", "notes",
+    }
+    assert set(body["first"]) == {"iteration", "n", "counts", "density", "mean", "sd"}
+
+
+def test_values_for_a_fixed_parameter_is_200_with_the_reason_and_no_series(tmp_path, in_process):  # noqa: F811
+    run, _manifest, client = _open(tmp_path)
+
+    response = _values(client, run.groups["fixed_gr"][0])
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "fixed" in body["refused"]
+    assert body["first"] is None and body["last"] is None
+    assert body["edges"] is None
+
+
+def test_values_for_an_unknown_parameter_is_a_404_naming_par_change(tmp_path, in_process):  # noqa: F811
+    _run, _manifest, client = _open(tmp_path)
+
+    response = _values(client, "nosuch")
+
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "par_change"
+
+
+def test_values_refuses_a_query_field_it_does_not_know(tmp_path, in_process):  # noqa: F811
+    run, _manifest, client = _open(tmp_path)
+
+    response = client.get(
+        "/api/run/par/values", params={"parameter": run.groups["hk_pp"][0], "group": "hk_pp"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_values_with_no_run_open_is_409():
+    app, token = create_app()
+    client = TestClient(app, base_url=BASE_URL)
+    client.headers["x-pesto-token"] = token
+
+    assert _values(client, "p").status_code == 409
+
+
+def test_a_group_over_the_drill_down_limit_is_refused_on_both_routes_and_the_limit_itself_is_served(
+    tmp_path, in_process, monkeypatch  # noqa: F811
+):
+    from pesto.ingest import parview
+
+    monkeypatch.setattr(parview, "DRILL_DOWN_MAX_PARAMS", 3)
+    run, _manifest, client = _open(tmp_path)
+    over = run.groups["hk_pp"]
+    assert len(over) == 4
+
+    by_values = _values(client, over[0])
+    by_change = client.get("/api/run/par/change", params={"group": "hk_pp"})
+
+    for response in (by_values, by_change):
+        assert response.status_code == 409
+        body = response.json()
+        assert body["title"] == "drill-down is not offered for this group"
+        assert body["artifact"] == "par_groups"
+        assert body["detail"] == "This group has 4 parameters. Drill-down is offered up to 3."
+
+    at_limit = run.groups["rch_gr"]
+    assert len(at_limit) == 3
+    assert _values(client, at_limit[0]).status_code == 200
+    assert client.get("/api/run/par/change", params={"group": "rch_gr"}).status_code == 200
+
+
+def test_the_limit_is_checked_before_any_ensemble_is_read(tmp_path, in_process, monkeypatch):  # noqa: F811
+    from pesto.ingest import parview
+
+    monkeypatch.setattr(parview, "DRILL_DOWN_MAX_PARAMS", 3)
+    run, _manifest, client = _open(tmp_path)
+
+    def _no_reads(*args, **kwargs):
+        raise AssertionError("the ensemble was read for a group over the limit")
+
+    monkeypatch.setattr("pesto.api.par.get_stored", _no_reads)
+
+    assert _values(client, run.groups["hk_pp"][0]).status_code == 409
 
 
 # ---------------------------------------------------------------------------
