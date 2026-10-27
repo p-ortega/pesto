@@ -3,7 +3,7 @@
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchParChange, fetchParGroups, fetchParHist, fetchParValues, fetchPlacement } from '../src/data/par'
+import { fetchParChange, fetchParGroups, fetchParHist, fetchParValues, fetchPlacement, shareGroupsRead, type ParGroupsResult } from '../src/data/par'
 
 function stubFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async () => ({
@@ -180,5 +180,39 @@ describe('fetchParChange', () => {
     stubArrowFetch(409, { type: 'about:blank', title: 'drill-down is not offered for this group', status: 409, artifact: 'par_groups', detail })
 
     expect(await fetchParChange('hk')).toEqual({ ok: false, artifact: 'par_groups', reason: detail })
+  })
+})
+
+describe('shareGroupsRead', () => {
+  const good: ParGroupsResult = { ok: true, payload: { groups: [], notes: [] } as never }
+  const refused: ParGroupsResult = { ok: false, artifact: 'par_groups', reason: 'not in the cache' }
+
+  it('serves one successful read to every caller', async () => {
+    const read = vi.fn(async () => good)
+    const shared = shareGroupsRead(read)
+
+    await shared()
+    await shared()
+
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks again after a refused answer, so a re-ingest is seen without a reload', async () => {
+    const read = vi.fn<() => Promise<ParGroupsResult>>().mockResolvedValueOnce(refused).mockResolvedValueOnce(good)
+    const shared = shareGroupsRead(read)
+
+    expect(await shared()).toEqual(refused)
+    await Promise.resolve()
+    expect(await shared()).toEqual(good)
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks again after a thrown read', async () => {
+    const read = vi.fn<() => Promise<ParGroupsResult>>().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(good)
+    const shared = shareGroupsRead(read)
+
+    await expect(shared()).rejects.toThrow('offline')
+    await Promise.resolve()
+    expect(await shared()).toEqual(good)
   })
 })
