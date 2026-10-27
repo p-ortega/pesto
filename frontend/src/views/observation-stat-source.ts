@@ -3,12 +3,14 @@
 // and imports no view or ui module, so a view may use it.
 
 import {
+  fetchObsFrame,
   fetchObsSites,
   fetchObsTimes,
   type ObsSiteRow,
+  type ObsStat,
   type ObsTimesPayload,
 } from '../data/obs'
-import { LatestWins } from '../data/latest-wins'
+import { LatestWins, isAbortError } from '../data/latest-wins'
 import { fetchKey } from '../data/run'
 
 export interface ObsFailure {
@@ -48,8 +50,160 @@ export interface ObsDots {
   lowestLayer: number | null
 }
 
+export type FrameAnswer = { stale: true } | { stale: false; values: Float32Array } | { stale: false; failed: ObsFailure }
+
 export interface ObservationStatSource {
   loadGroup(group: string): Promise<GroupAnswer>
+  frames: FrameCache
+}
+
+// Two frames each side of the wanted one are fetched ahead; 12 held is room for a short scrub back.
+const WINDOW_RADIUS = 2
+const MAX_FRAMES = 12
+
+interface FrameSpec {
+  group: string
+  iteration: number
+  time: number
+  stat: ObsStat
+}
+
+type Outcome =
+  | { kind: 'values'; values: Float32Array }
+  | { kind: 'failed'; failed: ObsFailure }
+  | { kind: 'aborted' }
+  | { kind: 'error'; error: unknown }
+
+interface InFlight {
+  controller: AbortController
+  promise: Promise<Outcome>
+}
+
+interface Held extends FrameSpec {
+  values: Float32Array
+}
+
+/**
+ * Frames by run, group, iteration, time and statistic. Not a LatestWins slot: that would cancel
+ * the prefetch. Only a request that leaves the window is aborted, and a failure is never kept.
+ */
+export class FrameCache {
+  private readonly held = new Map<string, Held>()
+  private readonly inFlight = new Map<string, InFlight>()
+  private wantedKey: string | null = null
+  private current: { group: string; iteration: number; stat: ObsStat; times: readonly number[]; index: number } | null = null
+  private generation = 0
+
+  constructor(private readonly runId: string | null) {}
+
+  key(group: string, iteration: number, time: number, stat: string): string {
+    // A group name may hold the separator, so it travels encoded.
+    return fetchKey(this.runId, encodeURIComponent(group), iteration, time, stat)
+  }
+
+  get(key: string): Float32Array | undefined {
+    return this.held.get(key)?.values
+  }
+
+  clear(): void {
+    this.generation += 1
+    this.wantedKey = null
+    this.current = null
+    for (const entry of this.inFlight.values()) entry.controller.abort()
+    this.inFlight.clear()
+    this.held.clear()
+  }
+
+  /**
+   * Fetches the frame at `times[index]` if it is not held, then the ones around it. Answers stale
+   * when a newer frame was wanted meanwhile; the landed frame stays held either way.
+   */
+  async want(group: string, iteration: number, times: readonly number[], index: number, stat: ObsStat): Promise<FrameAnswer> {
+    if (!Number.isInteger(index) || index < 0 || index >= times.length) {
+      return { stale: false, failed: { artifact: 'obs_agg', reason: `this group has no time at position ${index} of ${times.length}` } }
+    }
+    const wantedKey = this.key(group, iteration, times[index], stat)
+    this.wantedKey = wantedKey
+    this.current = { group, iteration, stat, times, index }
+
+    const order = [index, index - 2, index - 1, index + 1, index + 2].filter((i) => i >= 0 && i < times.length)
+    const inWindow = new Set(order.map((i) => this.key(group, iteration, times[i], stat)))
+    for (const [key, entry] of this.inFlight) {
+      if (inWindow.has(key)) continue
+      entry.controller.abort()
+      this.inFlight.delete(key)
+    }
+    for (const i of order) {
+      const key = this.key(group, iteration, times[i], stat)
+      if (!this.held.has(key) && !this.inFlight.has(key)) this.launch(key, { group, iteration, time: times[i], stat })
+    }
+    this.evict()
+
+    const held = this.held.get(wantedKey)
+    const outcome: Outcome = held ? { kind: 'values', values: held.values } : await this.inFlight.get(wantedKey)!.promise
+    if (this.wantedKey !== wantedKey) return { stale: true }
+    if (outcome.kind === 'values') return { stale: false, values: outcome.values }
+    if (outcome.kind === 'failed') return { stale: false, failed: outcome.failed }
+    if (outcome.kind === 'error') throw outcome.error
+    return { stale: true }
+  }
+
+  private launch(key: string, spec: FrameSpec): void {
+    const controller = new AbortController()
+    const generation = this.generation
+    const entry: InFlight = { controller, promise: undefined as unknown as Promise<Outcome> }
+    this.inFlight.set(key, entry)
+    entry.promise = (async (): Promise<Outcome> => {
+      try {
+        const result = await fetchObsFrame(spec.group, spec.iteration, spec.time, spec.stat, { signal: controller.signal })
+        if (!result.ok) return { kind: 'failed', failed: { artifact: result.artifact, reason: result.reason } }
+        const meta = result.meta
+        if (meta.group !== spec.group || meta.iteration !== spec.iteration || meta.time !== spec.time || meta.stat !== spec.stat) {
+          return {
+            kind: 'failed',
+            failed: {
+              artifact: 'obs_agg',
+              reason: `asked for ${spec.stat} at time ${spec.time} of iteration ${spec.iteration} but the answer was for ${meta.stat} at time ${meta.time} of iteration ${meta.iteration}`,
+            },
+          }
+        }
+        // A frame that lands after clear() belongs to a cache that was emptied on purpose.
+        if (generation === this.generation) {
+          this.held.set(key, { ...spec, values: result.values })
+          this.evict()
+        }
+        return { kind: 'values', values: result.values }
+      } catch (error) {
+        return isAbortError(error) ? { kind: 'aborted' } : { kind: 'error', error }
+      } finally {
+        if (this.inFlight.get(key) === entry) this.inFlight.delete(key)
+      }
+    })()
+  }
+
+  // Distance in slider steps from the wanted time; a frame of another group, iteration or statistic is farthest.
+  private distance(frame: Held): number {
+    const now = this.current
+    if (now === null || frame.group !== now.group || frame.iteration !== now.iteration || frame.stat !== now.stat) return Infinity
+    const position = now.times.indexOf(frame.time)
+    return position < 0 ? Infinity : Math.abs(position - now.index)
+  }
+
+  private evict(): void {
+    while (this.held.size > MAX_FRAMES) {
+      let farthest: string | null = null
+      let most = -1
+      for (const [key, frame] of this.held) {
+        const d = this.distance(frame)
+        if (d > most) {
+          most = d
+          farthest = key
+        }
+      }
+      if (farthest === null) return
+      this.held.delete(farthest)
+    }
+  }
 }
 
 function hasPosition(xy: Float32Array, row: number): boolean {
@@ -153,5 +307,5 @@ export function createObservationStatSource(opts: { runId: string | null }): Obs
     return { stale: false, data: answer.value.data }
   }
 
-  return { loadGroup }
+  return { loadGroup, frames: new FrameCache(opts.runId) }
 }
