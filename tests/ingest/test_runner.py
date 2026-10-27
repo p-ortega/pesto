@@ -435,6 +435,8 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
+        "par_change",
+        "par_groups",
         *[
             name
             for k in (0, 1)
@@ -471,6 +473,8 @@ def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_a
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
+        "par_change",
+        "par_groups",
         "obs_ens/0",
         "obs_agg/0",
         "pdc/0",
@@ -872,7 +876,7 @@ def test_touching_one_iterations_ensemble_file_reingests_only_that_iteration(tmp
     ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
 
     touched = {r.artifact for r in rows if r.state != "skipped"}
-    assert touched == {"par_ens/1", "par_agg/1"}
+    assert touched == {"par_ens/1", "par_agg/1", "par_change", "par_groups"}
 
 
 
@@ -1379,3 +1383,66 @@ def test_estimate_bytes_names_obs_agg_as_following_the_observation_count(tmp_pat
 
     assert any(note.startswith("obs_agg/K:") and "excluded rather than guessed" in note for note in estimate.notes)
     assert all(not name.startswith("obs_agg") for name, _ in estimate.per_artifact)
+
+
+def test_plan_artifacts_plans_par_change_and_par_groups_right_after_the_last_par_agg(tmp_path):
+    make_run(tmp_path, iterations=(0, 1))
+    run = discover(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+
+    planned = plan_artifacts(run, layout)
+    names = [a.name for a in planned]
+    by_name = {a.name: a for a in planned}
+
+    after = names.index("par_agg/1") + 1
+    assert names[after : after + 2] == ["par_change", "par_groups"]
+    assert by_name["par_change"].needs == ("par_ens/0", "par_ens/1")
+    assert by_name["par_groups"].needs == ("par_change",)
+    assert by_name["par_change"].outputs == (str(layout.par_change), str(layout.par_change_meta))
+    assert by_name["par_groups"].outputs == (str(layout.par_groups),)
+    control_sources = by_name["control"].sources
+    assert by_name["par_change"].sources == (
+        str(run.par_ens[0]),
+        str(run.par_ens[1]),
+        *control_sources,
+    )
+    assert by_name["par_groups"].sources[: len(control_sources)] == control_sources
+    assert str(run.grid) in by_name["par_groups"].sources
+    assert str(run.pcs_file(1)) in by_name["par_groups"].sources
+
+
+def test_plan_artifacts_plans_par_change_once_for_a_single_iteration(tmp_path):
+    make_run(tmp_path, noptmax=0, iterations=(0,))
+    planned = {
+        a.name: a
+        for a in plan_artifacts(discover(tmp_path), CacheLayout(root=tmp_path / ".pesto"))
+    }
+
+    assert planned["par_change"].needs == ("par_ens/0",)
+    assert planned["par_groups"].needs == ("par_change",)
+
+
+def test_plan_artifacts_plans_no_par_view_without_a_parameter_ensemble(tmp_path):
+    run_result = make_run(tmp_path, iterations=(0, 1))
+    for path in run_result.par_ens.values():
+        path.unlink()
+    names = [
+        a.name for a in plan_artifacts(discover(tmp_path), CacheLayout(root=tmp_path / ".pesto"))
+    ]
+
+    assert "par_change" not in names
+    assert "par_groups" not in names
+
+
+def test_estimate_bytes_names_par_change_and_par_groups_as_following_the_parameter_count(
+    tmp_path,
+):
+    make_run(tmp_path, iterations=(0, 1), extras=False)
+
+    estimate = estimate_bytes(discover(tmp_path))
+
+    assert any(
+        note.startswith("par_change/par_groups:") and "excluded rather than guessed" in note
+        for note in estimate.notes
+    )
+    assert all(not name.startswith("par_change") for name, _ in estimate.per_artifact)
