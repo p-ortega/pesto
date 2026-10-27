@@ -65,6 +65,8 @@ class PhiRow:
     file: float | None
     rel_diff: float | None
     match: bool
+    # Largest relative change float32 storage of the simulated values can make; None when undefined.
+    rounding_bound: float | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -94,17 +96,21 @@ def _fail(name: str, path: Path | str, reason: str) -> ReadFailure:
     return ReadFailure(name=name, path=str(path), reason=f"{name}: {reason}")
 
 
-def compare_phi(recomputed: float, file_value: float) -> tuple[float | None, bool]:
+def compare_phi(
+    recomputed: float, file_value: float, *, bound: float = 0.0
+) -> tuple[float | None, bool]:
     """The relative difference ``|recomputed - file| / |file|`` and whether it
-    is within ``PHI_TOLERANCE``. Both zero agree. A file value of 0 against a
-    non-zero recomputation, or a value that is not a finite number, does not
-    agree; the difference is then ``None``."""
+    is within ``PHI_TOLERANCE`` plus ``bound``, the relative rounding bound of
+    the stored values. Both zero agree. A file value of 0 against a non-zero
+    recomputation, or a value that is not a finite number, does not agree; the
+    difference is then ``None``."""
     if not (np.isfinite(recomputed) and np.isfinite(file_value)):
         return None, False
     if file_value == 0.0:
         return (0.0, True) if recomputed == 0.0 else (None, False)
     rel = abs(recomputed - file_value) / abs(file_value)
-    return float(rel), bool(rel <= PHI_TOLERANCE)
+    allowed = PHI_TOLERANCE + (bound if np.isfinite(bound) and bound > 0.0 else 0.0)
+    return float(rel), bool(rel <= allowed)
 
 
 def _join_names(
@@ -236,17 +242,19 @@ def recompute_phi(
     weights: AdjustedWeights | None,
     weight_rows: list[int] | None,
     control_weight: np.ndarray | None,
-) -> tuple[np.ndarray, list[str]]:
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """phi per chosen realization, float64: the sum over weighted
     observations of (weight times residual) squared, where residual is
     simulated minus obsval, one-sided for inequality groups. ``cache_columns``
     are columns of ``values`` (observations in ``obs_index`` order);
     ``weight_rows`` the matching rows of ``weights.weights`` when adjusted
     weights are used; otherwise ``control_weight`` holds one weight per
-    sorted position. Also returns notes."""
+    sorted position. Also returns, per realization, the absolute bound on how
+    much float32 storage of the simulated values can move phi, and notes."""
     notes: list[str] = []
     n_pick = len(cache_columns)
     phi = np.zeros(n_pick, dtype=np.float64)
+    bound = np.zeros(n_pick, dtype=np.float64)
     has_target = (index.flags & FLAG_HAS_TARGET) != 0
 
     if weights is not None:
@@ -271,7 +279,9 @@ def recompute_phi(
             weight = np.asarray(
                 weights.weights[np.ix_(rows_array, columns[block])], dtype=np.float64
             ).T
-            phi += _block_phi(index, values, sorted_pos[block], select_rows, weight)
+            block_phi, block_bound = _block_phi(index, values, sorted_pos[block], select_rows, weight)
+            phi += block_phi
+            bound += block_bound
     else:
         weighted = np.flatnonzero((control_weight > 0) & has_target)
         left_out = int(((control_weight > 0) & ~has_target).sum())
@@ -284,8 +294,10 @@ def recompute_phi(
         for start in range(0, weighted.size, BLOCK_ROWS):
             sorted_pos = weighted[start : start + BLOCK_ROWS]
             w = np.repeat(control_weight[sorted_pos][:, None], n_pick, axis=1)
-            phi += _block_phi(index, values, sorted_pos, select_rows, w)
-    return phi, notes
+            block_phi, block_bound = _block_phi(index, values, sorted_pos, select_rows, w)
+            phi += block_phi
+            bound += block_bound
+    return phi, bound, notes
 
 
 def _block_phi(
@@ -294,9 +306,11 @@ def _block_phi(
     sorted_pos: np.ndarray,
     select_rows: np.ndarray,
     weight: np.ndarray,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """phi contribution of one block of observations (rows ``sorted_pos``) for
-    the chosen realizations. ``weight`` is (observations, realizations)."""
+    the chosen realizations, and the first-order bound on how much float32
+    storage of the simulated values moves it. ``weight`` is (observations,
+    realizations)."""
     sim = np.asarray(values[sorted_pos][:, select_rows], dtype=np.float64)
     obsval = index.value[sorted_pos][:, None]
     flags = index.flags[sorted_pos]
@@ -306,9 +320,14 @@ def _block_phi(
     # A greater-than observation counts only when simulated is below its value.
     resid = np.where(greater, np.minimum(resid, 0.0), resid)
     resid = np.where(less, np.maximum(resid, 0.0), resid)
-    with np.errstate(invalid="ignore"):
+    # float32 keeps 24 bits, so a stored value is off by at most 2**-24 of itself.
+    delta = np.abs(sim) * 2.0**-24
+    with np.errstate(invalid="ignore", over="ignore"):
         term = np.where(weight > 0, (weight * resid) ** 2, 0.0)
-    return term.sum(axis=0)
+        w2 = weight**2
+        live = (weight > 0) & np.isfinite(resid)
+        slack = np.where(live, (2.0 * w2 * np.abs(resid) + w2 * delta) * delta, 0.0)
+    return term.sum(axis=0), slack.sum(axis=0)
 
 
 def _not_checked(
@@ -460,7 +479,7 @@ def check_phi(
             control_weight = by_row[index.order.astype(np.int64)]
 
         cache_columns = [i for i, _j in pairs]
-        recomputed, calc_notes = recompute_phi(
+        recomputed, phi_bound, calc_notes = recompute_phi(
             index,
             stored.values,
             cache_columns,
@@ -472,7 +491,13 @@ def check_phi(
 
         rows: list[PhiRow] = []
         for k, (i, j) in enumerate(pairs):
-            rel, match = compare_phi(float(recomputed[k]), float(file_values[j]))
+            file_value = float(file_values[j])
+            rel_bound = None
+            if np.isfinite(file_value) and file_value != 0.0 and np.isfinite(phi_bound[k]):
+                rel_bound = float(phi_bound[k]) / abs(file_value)
+            rel, match = compare_phi(
+                float(recomputed[k]), file_value, bound=rel_bound if rel_bound is not None else 0.0
+            )
             rows.append(
                 PhiRow(
                     realization=stored.real_names[i],
@@ -480,6 +505,7 @@ def check_phi(
                     file=float(file_values[j]) if np.isfinite(file_values[j]) else None,
                     rel_diff=rel,
                     match=match,
+                    rounding_bound=rel_bound,
                 )
             )
         rows.sort(key=lambda r: r.realization)
@@ -499,6 +525,12 @@ def check_phi(
                 "finite number, or a file value of 0 against a non-zero recomputation); they "
                 "count as mismatches"
             )
+        bounds = [r.rounding_bound for r in rows if r.rounding_bound is not None]
+        largest_bound = max(bounds) if bounds else 0.0
+        float32_clause = (
+            f"; simulated values are stored as float32, so each realization has a tolerance of "
+            f"{PHI_TOLERANCE:g} plus its own rounding bound (largest {largest_bound:.2g})"
+        )
         max_rel = float(defined.max()) if defined.size else None
         median_rel = float(np.median(defined)) if defined.size else None
 
@@ -506,13 +538,13 @@ def check_phi(
             summary = (
                 f"phi mismatch at iteration {iteration}: {len(mismatched)} of {len(rows)} "
                 f"realization(s) differ from {phi_path.name} by more than {PHI_TOLERANCE:g}"
-                f"{_examples_text(mismatched)}"
+                f"{_examples_text(mismatched)}{float32_clause}"
             )
             notes.append(summary)
         else:
             summary = (
                 f"phi matches {phi_path.name} for all {len(rows)} realization(s) at iteration "
-                f"{iteration} within {PHI_TOLERANCE:g}"
+                f"{iteration} within {PHI_TOLERANCE:g}{float32_clause}"
             )
         return PhiCheck(
             iteration=iteration,
@@ -560,6 +592,7 @@ def write_phi_check(
                 "file": finite(r.file),
                 "rel_diff": finite(r.rel_diff),
                 "match": r.match,
+                "rounding_bound": finite(r.rounding_bound),
             }
             for r in check.rows
         ]
@@ -624,6 +657,7 @@ def load_phi_check(iteration: int, layout: CacheLayout) -> PhiCheck | ReadFailur
                 file=optional(r["file"]),
                 rel_diff=optional(r["rel_diff"]),
                 match=bool(r["match"]),
+                rounding_bound=optional(r.get("rounding_bound")),
             )
             for r in raw["rows"]
         )
