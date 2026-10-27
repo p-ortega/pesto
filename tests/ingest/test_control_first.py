@@ -353,6 +353,45 @@ def test_each_observation_file_is_hashed_exactly_once_per_ingest_and_so_are_the_
         assert hashed.count(name) == 1, name
 
 
+def test_the_obs_noise_file_is_hashed_once_per_ingest_though_config_lists_it(
+    tmp_path, in_process, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    run = discover(run_dir)
+    hashed: list[str] = []
+    real = SourceFingerprint.of
+
+    def _counting(path):
+        hashed.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(SourceFingerprint, "of", staticmethod(_counting))
+
+    manifest = ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    assert manifest.artifacts["config"].state == "ok"
+    assert hashed.count(run.noise.name) == 1
+
+
+def test_config_records_the_fingerprints_its_upstream_artifacts_recorded_for_the_end_files(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    run = discover(run_dir)
+
+    manifest = ingest_run(run_dir, cache_root=tmp_path / "cache")
+
+    config = {s.path: s for s in manifest.artifacts["config"].sources}
+    noise = {s.path: s for s in manifest.artifacts["noise_agg"].sources}
+    assert config[run.noise.name] == noise[run.noise.name]
+    for iteration in (0, 1):
+        ens = {s.path: s for s in manifest.artifacts[f"par_ens/{iteration}"].sources}
+        name = run.par_ens[iteration].name
+        assert config[name] == ens[name]
+
+
 def test_obs_agg_records_the_fingerprint_obs_ens_recorded_for_the_observation_file(
     tmp_path, in_process
 ):
