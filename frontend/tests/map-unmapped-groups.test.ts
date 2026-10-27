@@ -80,12 +80,30 @@ function metaHeader(dtype: string): Record<string, string> {
   return { 'X-Pesto-Meta': JSON.stringify({ dtype }) }
 }
 
-function stubFetch(): void {
+// What GET /api/run/grid/placement answers: a body, or a failure status.
+type PlacementAnswer = { status: number; body: unknown }
+
+const NOTE_OF_G2 = "group 'G2' carries 'layer', which look like placement data but the rules do not read them"
+const PLACEMENT_BODY = {
+  summary: '1 of 3 groups placed',
+  groups: [
+    { group: 'G1', rule: 'grid', mapped: 1, total: 1, notes: [] },
+    { group: 'G2', rule: 'unmapped', mapped: 0, total: 1, notes: [NOTE_OF_G2] },
+    { group: 'G3', rule: 'unmapped', mapped: 0, total: 4, notes: [] },
+  ],
+  notes: [],
+}
+
+const calls: string[] = []
+
+function stubFetch(placement: PlacementAnswer = { status: 200, body: PLACEMENT_BODY }): void {
+  calls.length = 0
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
       const url = typeof input === 'string' ? input : input.toString()
       const [path] = url.split('?')
+      calls.push(path)
       const respond = (result: { status: number; bytes?: Uint8Array; body?: unknown; headers?: Record<string, string> }) => {
         const bytes = result.bytes ?? new Uint8Array(0)
         return {
@@ -119,6 +137,8 @@ function stubFetch(): void {
           return respond({ status: 200, bytes: REALS_TABLE })
         case '/api/run/grid/values':
           return respond({ status: 200, bytes: bytesOf(FIELD) })
+        case '/api/run/grid/placement':
+          return respond(placement)
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
       }
@@ -158,5 +178,56 @@ describe('groups that never placed on a cell are still named', () => {
     expect(panelText).toContain('2 groups unmapped')
     expect(panelText).toContain('G2')
     expect(panelText).toContain('G3')
+  })
+
+  async function openMap(placement?: PlacementAnswer): Promise<HTMLElement> {
+    stubFetch(placement)
+    const { mountMap } = await import('../src/views/map')
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountMap(root, { config: CONFIG, state: baseState() })
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+    return root
+  }
+
+  function pickerList(root: HTMLElement): string {
+    return root.querySelector('.floating .unmapped-list')?.textContent ?? ''
+  }
+
+  it('names the recorded note for each unmapped group in the picker and in the Params panel', async () => {
+    const root = await openMap()
+
+    expect(pickerList(root)).toContain(NOTE_OF_G2)
+    expect(pickerList(root)).toContain('G3 — no placement rule matched, placed 0 of 4')
+    const panelText = root.querySelector('.params-unmapped')?.textContent ?? ''
+    expect(panelText).toContain(NOTE_OF_G2)
+    expect(panelText).toContain('G3 — no placement rule matched, placed 0 of 4')
+  })
+
+  it('asks for the placement once, before the cell mapping it is read alongside', async () => {
+    await openMap()
+
+    const asked = calls.filter((c) => c === '/api/run/grid/placement')
+    expect(asked).toHaveLength(1)
+    expect(calls.indexOf('/api/run/grid/placement')).toBeLessThan(calls.indexOf('/api/run/grid/cells/cell'))
+  })
+
+  it('keeps the old copy and adds one notice naming the failure when the placement cannot be read', async () => {
+    const root = await openMap({
+      status: 404,
+      body: { type: 'about:blank', title: 'not found', status: 404, artifact: 'par_cell', detail: 'par_cell.json was not found' },
+    })
+
+    expect(pickerList(root)).toContain('G2 — no placement rule matched')
+    expect(pickerList(root)).not.toContain(NOTE_OF_G2)
+    const notices = root.querySelector('[data-testid="map-notices"]')?.textContent ?? ''
+    expect(notices).toContain('The placement notes could not be read')
+    expect(notices).toContain('par_cell.json was not found')
+    expect(notices.split('The placement notes could not be read')).toHaveLength(2)
+    // Nothing else broke: the map still drew its group.
+    const picker = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+    expect(Array.from(picker.options).map((o) => o.value)).toEqual(['G1'])
   })
 })
