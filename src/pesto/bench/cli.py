@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import replace
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -13,10 +12,10 @@ from typing import Callable
 
 from pesto.bench.measure import (
     cache_size,
-    cold_read,
     machine_facts,
     missing_note,
     observation_facts,
+    page_residency,
     read_floor_for,
     run_facts,
     source_paths,
@@ -43,11 +42,6 @@ from pesto.ingest.runner import ingest_run
 _AS_FOUND = "ingest-1"
 _WARM = "ingest-2"
 _VALUES_SAMPLES = 300
-_FIRST_READ_NOTE = (
-    "the first read of the run's files in this bench; it is cold only if nothing had them "
-    "in memory before (run sudo purge in your own terminal right before pesto bench; "
-    "pesto never runs it)"
-)
 _STAGE_OFF = "the server stage was turned off"
 
 
@@ -148,6 +142,7 @@ def run_bench(
     json_path: Path,
     *,
     ingest: Callable[..., object] | None = None,
+    page_probe: Callable[[Path], int] | None = None,
     measure_server: bool = True,
     obs_probe: bool = False,
     values_samples: int = _VALUES_SAMPLES,
@@ -164,16 +159,16 @@ def run_bench(
     warm_dir.mkdir(parents=True, exist_ok=False)
 
     facts = run_facts(run)
-    # The as-found ingest goes first so nothing else has read the files before it.
+    # The memory check reads no file and runs before the as-found ingest, the first read of the run.
+    print(f"pesto bench: checking which source pages are in memory on {run.name}", file=sys.stderr)
+    as_found_cache = page_residency(source_paths(run, as_found_dir), probe=page_probe)
     print(f"pesto bench: ingesting {run.name} (as found)", file=sys.stderr)
     first = time_ingest(run, as_found_dir, "as found", ingest)
-    first = replace(first, notes=[*first.notes, _FIRST_READ_NOTE])
     print(f"pesto bench: ingesting {run.name} (warm, straight after)", file=sys.stderr)
     second = time_ingest(run, warm_dir, "warm (straight after)", ingest)
 
-    print("pesto bench: reading the source files after both ingests (read check)", file=sys.stderr)
+    print("pesto bench: reading the source files after both ingests (read floor)", file=sys.stderr)
     planned_sources = source_paths(run, warm_dir)
-    cold = cold_read(planned_sources, after_ingest=True)
     floor = read_floor_for(run, warm_dir)
     size = cache_size(run, warm_dir)
     failed = [a.name for a in second.artifacts if a.state == "failed"]
@@ -240,7 +235,7 @@ def run_bench(
         server=server_result,
         browser_targets=targets,
         observations=observations,
-        cold_read=cold,
+        as_found_cache=as_found_cache,
     )
 
 

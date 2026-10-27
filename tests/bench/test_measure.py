@@ -15,8 +15,9 @@ from ingest.obs_fixtures import make_obs_run
 
 from pesto.bench import measure
 from pesto.bench.measure import (
+    COLD_RESIDENT_LIMIT,
     cache_size,
-    cold_read,
+    page_residency,
     machine_facts,
     nearest_rank,
     percentile_summary,
@@ -256,23 +257,17 @@ def test_read_floor_adds_up_the_bytes_and_reports_a_rate(tmp_path: Path) -> None
     assert "3,000 MB/s" in floor.note
 
 
-def test_read_floor_and_cold_read_skip_a_missing_path_and_name_it(tmp_path: Path) -> None:
+def test_read_floor_and_the_page_check_skip_a_missing_path_and_name_it(tmp_path: Path) -> None:
     real = tmp_path / "real.bin"
     real.write_bytes(b"x" * 1000)
     gone = tmp_path / "gone.bin"
     floor = read_floor([gone, real])
     assert floor.bytes == 1000
     assert "1 planned source file(s) were not found and were skipped: gone.bin" in floor.note
-    cold = cold_read([gone, real])
-    assert cold.bytes == 1000 and cold.files == 1
-    assert "gone.bin" in cold.note
-
-
-def test_cold_read_after_the_ingests_is_never_cold_even_at_a_low_ratio(tmp_path: Path) -> None:
-    result = cold_read([_file(tmp_path)], read_pass=_timed(10.0, 1.0), after_ingest=True)
-    assert result.ratio == pytest.approx(0.1)
-    assert result.label == "not proven cold" and result.proven_cold is False
-    assert result.note.startswith("this read ran after both ingests, so its files were likely in memory")
+    cache = page_residency([gone, real], probe=lambda path: 0)
+    assert cache.source_bytes == 1000 and cache.files == 1
+    assert cache.missing == ["gone.bin"]
+    assert "gone.bin" in cache.note
 
 
 def test_machine_facts_name_the_machine_or_say_unknown() -> None:
@@ -303,38 +298,6 @@ def test_cache_size_divides_bytes_on_disk_by_the_unique_source_bytes(tmp_path: P
     assert size.ratio == pytest.approx(100 / size.source_bytes)
 
 
-def test_cold_read_reports_both_rates_and_their_ratio(tmp_path: Path) -> None:
-    first = tmp_path / "a.bin"
-    first.write_bytes(b"x" * 3000)
-    seen: list[str] = []
-
-    def passes(files, which):
-        seen.append(which)
-        return (3000, 2.0 if which == "first" else 1.0, "test pass")
-
-    result = cold_read([first], read_pass=passes)
-    assert seen == ["first", "reread"]
-    assert result.bytes == 3000
-    assert result.files == 1
-    assert result.first_seconds == 2.0 and result.reread_seconds == 1.0
-    assert result.first_mb_per_second == pytest.approx(3000 / 1e6 / 2.0)
-    assert result.reread_mb_per_second == pytest.approx(3000 / 1e6 / 1.0)
-    assert result.ratio == pytest.approx(0.5)
-    assert result.method
-
-
-def test_the_table_has_one_cold_read_line_with_the_rates_ratio_and_label(tmp_path: Path) -> None:
-    source = tmp_path / "a.bin"
-    source.write_bytes(b"x" * 3000)
-    result = _result_with_wall(0.5)
-    cold = cold_read([source], read_pass=lambda files, which: (3000, 2.0 if which == "first" else 1.0, "m"))
-    table = format_table(replace(result, cold_read=cold))
-    lines = [line for line in table.splitlines() if line.startswith("Cold read:")]
-    assert len(lines) == 1
-    assert "ratio 0.50" in lines[0] and "cold" in lines[0] and "MB/s" in lines[0]
-    assert f"  note: {cold.note}" in table.splitlines()
-
-
 def snapshot(folder: Path) -> dict[str, tuple[bool, int, int]]:
     state = {}
     for path in sorted(folder.rglob("*")):
@@ -343,67 +306,10 @@ def snapshot(folder: Path) -> dict[str, tuple[bool, int, int]]:
     return state
 
 
-def _timed(first: float, reread: float, size: int = 1_000_000):
-    return lambda files, which: (size, first if which == "first" else reread, "test pass")
-
-
 def _file(tmp_path: Path, name: str = "a") -> Path:
     path = tmp_path / name
     path.write_bytes(b"x" * 10)
     return path
-
-
-def test_a_ratio_of_exactly_one_half_counts_as_cold(tmp_path: Path) -> None:
-    result = cold_read([_file(tmp_path)], read_pass=_timed(2.0, 1.0))
-    assert result.ratio == 0.5
-    assert result.proven_cold is True
-    assert result.label == "cold"
-    assert "0.50" in result.note
-
-
-def test_a_ratio_above_one_half_is_not_proven_cold_and_the_note_says_why(tmp_path: Path) -> None:
-    result = cold_read([_file(tmp_path)], read_pass=_timed(1.0, 0.6))
-    assert result.ratio == pytest.approx(0.6)
-    assert result.proven_cold is False
-    assert result.label == "not proven cold"
-    for part in ("0.60", "may have come from memory", "sudo purge", "pesto never runs it", "MB/s"):
-        assert part in result.note
-
-
-def test_zero_source_bytes_is_not_measured_with_the_reason(tmp_path: Path) -> None:
-    result = cold_read([], read_pass=lambda files, which: (0, 0.0, "test pass"))
-    assert result.label == "not measured"
-    assert result.ratio is None
-    assert result.first_mb_per_second is None
-    assert result.proven_cold is False
-    assert "zero bytes" in result.note
-
-
-def test_without_a_cache_skipping_call_the_method_says_a_plain_read_was_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "a.bin"
-    source.write_bytes(b"x" * 100)
-    monkeypatch.setattr(measure, "fcntl", None)
-    monkeypatch.delattr(measure.os, "posix_fadvise", raising=False)
-    result = cold_read([source])
-    assert "plain read" in result.method
-    assert "no way to skip the file cache" in result.method
-    assert result.bytes == 100
-
-
-def test_a_default_cold_read_counts_the_bytes_names_its_method_and_leaves_the_run_alone(
-    tmp_path: Path,
-) -> None:
-    run_dir = _small_run(tmp_path)
-    files = measure.source_paths(run_dir, tmp_path / "cache")
-    before = snapshot(run_dir)
-    result = cold_read(files)
-    assert result.bytes == sum(f.stat().st_size for f in files) > 0
-    assert result.files == len(files)
-    assert isinstance(result.method, str) and result.method
-    assert result.label in ("cold", "not proven cold", "not measured")
-    assert snapshot(run_dir) == before
 
 
 def test_the_bench_code_never_calls_another_program() -> None:
@@ -501,3 +407,46 @@ def test_the_table_prints_the_read_rate_on_each_ingest_line() -> None:
     result = replace(result, ingests=[replace(result.ingests[0], read_mb_per_second=1234.0)])
     line = next(x for x in format_table(result).splitlines() if x.startswith("Ingest, as found"))
     assert "source read 1,234 MB/s" in line
+
+
+def _sized(tmp_path: Path, name: str, size: int) -> Path:
+    path = tmp_path / name
+    path.write_bytes(b"x" * size)
+    return path
+
+
+def test_a_probe_that_finds_nothing_in_memory_labels_the_files_cold_with_the_amount(tmp_path: Path) -> None:
+    files = [_sized(tmp_path, "a.bin", 4000), _sized(tmp_path, "b.bin", 6000)]
+    cache = page_residency(files, probe=lambda path: 0)
+    assert cache.label == "cold"
+    assert (cache.source_bytes, cache.resident_bytes, cache.resident_fraction) == (10000, 0, 0.0)
+    assert cache.files == 2 and cache.missing == []
+    assert "0.00%" in cache.note and "before the as-found ingest" in cache.note
+
+
+def test_a_probe_that_finds_pages_in_memory_labels_not_cold_with_the_three_largest(tmp_path: Path) -> None:
+    sizes = {"a.bin": 1000, "b.bin": 2000, "c.bin": 3000, "d.bin": 4000, "e.bin": 5000}
+    files = [_sized(tmp_path, name, size) for name, size in sizes.items()]
+    cache = page_residency(files, probe=lambda path: sizes[path.name] // 2)
+    assert cache.label == "not cold"
+    assert cache.resident_bytes == 7500 and cache.resident_fraction == pytest.approx(0.5)
+    assert [f.name for f in cache.largest_resident] == ["e.bin", "d.bin", "c.bin"]
+    assert "50.00%" in cache.note and "e.bin" in cache.note and "b.bin" not in cache.note
+
+
+def test_every_label_names_sudo_purge_as_the_users_own_step(tmp_path: Path) -> None:
+    source = _sized(tmp_path, "a.bin", 100)
+    for probe in (lambda path: 0, lambda path: 100):
+        note = page_residency([source], probe=probe).note
+        assert "sudo purge" in note and "pesto never runs it" in note
+    assert "sudo purge" in page_residency([], probe=lambda path: 0).note
+
+
+def test_the_table_has_one_as_found_cache_line_and_its_note(tmp_path: Path) -> None:
+    cache = page_residency([_sized(tmp_path, "a.bin", 3000)], probe=lambda path: 0)
+    table = format_table(replace(_result_with_wall(0.5), as_found_cache=cache))
+    lines = [line for line in table.splitlines() if "As-found cache:" in line]
+    assert len(lines) == 1
+    assert "cold" in lines[0] and "0.00%" in lines[0] and cache.method in lines[0]
+    assert f"  note: {cache.note}" in table.splitlines()
+    assert "Cold read:" not in table
