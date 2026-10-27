@@ -388,7 +388,9 @@ body {
 .group-row > :nth-child(5),
 .group-header > :nth-child(5),
 .group-row > :nth-child(6),
-.group-header > :nth-child(6) {
+.group-header > :nth-child(6),
+.group-row > :nth-child(7),
+.group-header > :nth-child(7) {
   flex: 0 0 6.5em;
   text-align: right;
 }
@@ -506,6 +508,55 @@ body {
 .param-row > :nth-child(5),
 .param-header > :nth-child(5) {
   flex: 0 0 4em;
+}
+
+/* The change columns beside the bounds. */
+.param-row > :nth-child(n + 6),
+.param-header > :nth-child(n + 6) {
+  flex: 0 0 5.5em;
+  text-align: right;
+}
+
+.param-row {
+  cursor: pointer;
+}
+
+.param-row[aria-selected='true'] {
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* The detail under the group table and under the parameter list: text and one chart. */
+.params-detail-host {
+  flex: 0 0 auto;
+  max-height: 40%;
+  margin-bottom: var(--space-sm);
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-color: var(--axis) var(--gridline);
+}
+
+.params-detail-host:focus-visible {
+  outline-offset: -2px;
+}
+
+.params-detail-host:empty {
+  display: none;
+}
+
+.params-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.params-detail-title {
+  font-weight: 600;
+}
+
+.params-chart {
+  height: 200px;
+  flex: 0 0 auto;
 }
 
 .param-header {

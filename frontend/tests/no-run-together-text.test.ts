@@ -326,6 +326,7 @@ describe('params-panel.ts (WINDOWS.md #13)', () => {
             },
             reason: null,
           },
+          sigma_ratio: { state: 'shown' as const, median: 0.42, p10: 0.3, p90: 0.61, n_used: 2, n_no_spread: 0, reason: null },
           at_bounds_last: { near_lower: 0, near_upper: 0, n_counted: 2 },
           drill_down: { offered: true, reason: null },
           notes: [],

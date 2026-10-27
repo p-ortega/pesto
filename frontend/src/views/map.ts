@@ -193,6 +193,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
         store,
         loadGroups,
         startHidden: tabs.current() !== 'params',
+        parView: opts.state.capabilities.parView,
       })
     },
     onViewStateChange: scheduleViewWrite,
