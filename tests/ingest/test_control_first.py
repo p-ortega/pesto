@@ -144,7 +144,8 @@ def _obs_ens_names(run, iterations) -> list[str]:
     """The obs_ens and obs_agg names a plan holds for ``iterations``, read from
     the run's own record of which observation files exist; each obs_agg
     follows its obs_ens, a pdc/K follows when pestpp wrote that
-    iteration's pdc file, and a phi_check/K follows when the run has a phi.actual file."""
+    iteration's pdc file, and a phi_check/K follows when the run has a phi.actual file;
+    obs_1to1 comes after them all when any observation ensemble is planned."""
     names: list[str] = []
     for k in iterations:
         if k in run.obs_ens:
@@ -153,6 +154,8 @@ def _obs_ens_names(run, iterations) -> list[str]:
             names.append(f"pdc/{k}")
         if k in run.obs_ens and run.phi.get("actual") is not None:
             names.append(f"phi_check/{k}")
+    if any(k in run.obs_ens for k in iterations):
+        names.append("obs_1to1")
     return names
 
 
