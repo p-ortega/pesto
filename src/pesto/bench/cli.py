@@ -12,15 +12,17 @@ from pathlib import Path
 from typing import Callable
 
 from pesto.bench.measure import (
-    _source_paths,
     cache_size,
     cold_read,
     machine_facts,
+    missing_note,
     observation_facts,
     read_floor_for,
     run_facts,
+    source_paths,
     source_reads,
     source_reads_note,
+    split_readable,
     time_ingest,
 )
 from pesto.bench.report import (
@@ -41,9 +43,10 @@ from pesto.ingest.runner import ingest_run
 _AS_FOUND = "ingest-1"
 _WARM = "ingest-2"
 _VALUES_SAMPLES = 300
-_COLD_READ_NOTE = (
-    "the cold-read check read every source file just before this ingest, "
-    "so these files were likely in memory"
+_FIRST_READ_NOTE = (
+    "the first read of the run's files in this bench; it is cold only if nothing had them "
+    "in memory before (run sudo purge in your own terminal right before pesto bench; "
+    "pesto never runs it)"
 )
 _STAGE_OFF = "the server stage was turned off"
 
@@ -161,14 +164,16 @@ def run_bench(
     warm_dir.mkdir(parents=True, exist_ok=False)
 
     facts = run_facts(run)
-    print("pesto bench: reading the source files before any ingest (cold read check)", file=sys.stderr)
-    cold = cold_read(_source_paths(run, as_found_dir))
+    # The as-found ingest goes first so nothing else has read the files before it.
     print(f"pesto bench: ingesting {run.name} (as found)", file=sys.stderr)
     first = time_ingest(run, as_found_dir, "as found", ingest)
-    first = replace(first, notes=[*first.notes, _COLD_READ_NOTE])
+    first = replace(first, notes=[*first.notes, _FIRST_READ_NOTE])
     print(f"pesto bench: ingesting {run.name} (warm, straight after)", file=sys.stderr)
     second = time_ingest(run, warm_dir, "warm (straight after)", ingest)
 
+    print("pesto bench: reading the source files after both ingests (read check)", file=sys.stderr)
+    planned_sources = source_paths(run, warm_dir)
+    cold = cold_read(planned_sources, after_ingest=True)
     floor = read_floor_for(run, warm_dir)
     size = cache_size(run, warm_dir)
     failed = [a.name for a in second.artifacts if a.state == "failed"]
@@ -188,6 +193,9 @@ def run_bench(
     targets = None
     server_failure = None
     notes: list[str] = []
+    skipped_note = missing_note(split_readable(planned_sources)[1])
+    if skipped_note is not None:
+        notes.append(f"cache size and source reads: {skipped_note}")
     if measure_server:
         print(f"pesto bench: timing the server on {run.name}", file=sys.stderr)
         try:
