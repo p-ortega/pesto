@@ -8,6 +8,7 @@ import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../da
 import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
 import { pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
+import { fetchPlacement } from '../data/par'
 import { frameLogInstalled, markFrame } from '../perf'
 import type { CellClass, ParIdentity } from '../data/parmap'
 import {
@@ -50,6 +51,7 @@ import {
   partransForGroup,
   type MaskCache,
   type ParameterFieldSource,
+  type RecordedPlacement,
   type UnmappedEntry,
 } from './parameter-field-source'
 import type { SharedSelection } from '../state/rules'
@@ -426,6 +428,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let drawnGroup: string | null = null
   // Interpolated pilot-point groups. `fieldKind` says what rawFullField
   // holds: block rows from /values, or one value per cell from /field.
+  // What pesto recorded about each group's placement, read once per run; undefined until read or when it could not be.
+  let recordedPlacement: ReadonlyMap<string, RecordedPlacement> | undefined
+  let placementNotes: string[] = []
   let ppIndex: PpIndex = EMPTY_PP_INDEX
   let allIdentities: ParIdentity[] = []
   let fieldKind: 'block' | 'cell' = 'block'
@@ -1536,6 +1541,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       .filter((artifact): artifact is typeof artifact & { reason: string } => artifact.reason !== null)
       .map((artifact) => ({ artifact: artifact.name, reason: artifact.reason }))
     for (const note of mesh?.notes ?? []) artifactNotes.push({ artifact: 'mesh', reason: note })
+    for (const note of placementNotes) artifactNotes.push({ artifact: 'par_cell', reason: note })
     if (idomain !== null && mesh !== null) {
       for (const note of inactiveLandingNotes(joined, cellArray, layerArray, idomain, mesh.nCells)) {
         artifactNotes.push({ artifact: 'idomain', reason: note })
@@ -1614,7 +1620,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setSelectedPoint(null)
     contributorsMemo.clear()
 
-    const placement = computeGroupPlacement(data.tables.identities, joined, cellArray, ppIndex)
+    const placement = computeGroupPlacement(data.tables.identities, joined, cellArray, ppIndex, recordedPlacement)
     if (pendingGroup !== null && !placement.drawable.includes(pendingGroup)) pendingGroup = null
     const target = pendingGroup ?? drawnGroup
     const groupMissing = target === null || !placement.drawable.includes(target)
@@ -1687,6 +1693,27 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   void loadAndDraw(ctx)
 
+  async function readPlacement(): Promise<void> {
+    let failure: string
+    try {
+      const answer = await fetchPlacement()
+      if (answer.ok) {
+        recordedPlacement = new Map(answer.payload.groups.map((entry) => [entry.group, entry]))
+        placementNotes = answer.payload.notes ?? []
+        return
+      }
+      failure = `${answer.artifact}: ${answer.reason}`
+    } catch (error) {
+      const { artifact, reason } = problemArtifactAndReason(error)
+      failure = artifact === null ? reason : `${artifact}: ${reason}`
+    }
+    addNotice(mapNotice, {
+      title: 'The placement notes could not be read',
+      detail: `${failure}. Unmapped groups keep their general wording.`,
+      tone: 'warning',
+    })
+  }
+
   // A failed or misshapen read draws every group as cells, with a notice saying why.
   async function readPointXy(iteration: number): Promise<Float32Array | null> {
     const { xy, problem } = await source.loadPointXy(iteration, cellArray.length)
@@ -1710,6 +1737,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // The shell started this read ahead of the mesh/parmap fetches and owns
     // the divider; the restored choices are read once the groups are known.
     const viewStatePromise = opts.viewState
+
+    // Asked with the first requests and read when the groups are sorted; a failed
+    // read keeps the old wording in the unmapped list and says so once.
+    const placementRead = readPlacement()
 
     let positions: Float32Array
     let cellIndexBuf: Float32Array
@@ -1814,7 +1845,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     // D-07: only groups that place on at least one cell are offered; the
     // rest are counted and named behind the picker's own disclosure.
-    const { drawable, unmapped, interpolated } = computeGroupPlacement(identities, joined, cellArray, ppIndex)
+    await placementRead
+    const { drawable, unmapped, interpolated } = computeGroupPlacement(
+      identities,
+      joined,
+      cellArray,
+      ppIndex,
+      recordedPlacement,
+    )
     if (drawable.length === 0) {
       addNotice(mapNotice, {
         title: 'No parameter group can be drawn on this map',
