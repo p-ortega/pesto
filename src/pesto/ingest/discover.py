@@ -113,7 +113,8 @@ class RunLayout:
     run.
 
     ``external_tables`` comes from the same line scan of the control file as
-    ``noptmax`` -- never a pyemu parse.
+    ``noptmax`` -- never a pyemu parse. ``rec`` is the run record,
+    ``<case>.rec``, when one is present.
     """
 
     run_dir: Path
@@ -536,6 +537,8 @@ def discover(run_dir: Path) -> RunLayout:
     grid_candidates: list[tuple[str, Path]] = []
     noise_candidates: list[tuple[str, Path]] = []
     adjusted_weights_candidates: list[tuple[str, Path]] = []
+    rec_candidates: list[tuple[str, Path]] = []
+    rec_name = f"{case}.rec".lower()
     mult2model: Path | None = None
     factor_files: list[Path] = []
 
@@ -583,6 +586,10 @@ def discover(run_dir: Path) -> RunLayout:
         if match:
             iter_key = _parse_iteration(match.group("iter"))
             pdc_candidates.setdefault(iter_key, []).append((name, candidate))
+            continue
+
+        if name.lower() == rec_name:
+            rec_candidates.append((name, candidate))
             continue
 
         if candidate.suffix.lower() == _GRID_EXT:
@@ -692,6 +699,13 @@ def discover(run_dir: Path) -> RunLayout:
             ambiguities.append(ambiguity)
             notes.append(ambiguity.note())
 
+    rec: Path | None = None
+    if rec_candidates:
+        rec, ambiguity = choose_one("run record", rec_candidates)
+        if ambiguity is not None:
+            ambiguities.append(ambiguity)
+            notes.append(ambiguity.note())
+
     iterations = tuple(
         sorted(
             k
@@ -732,4 +746,5 @@ def discover(run_dir: Path) -> RunLayout:
         ambiguities=tuple(ambiguities),
         external_tables=external_tables,
         adjusted_weights=adjusted_weights,
+        rec=rec,
     )
