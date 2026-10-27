@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 
 from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
-from pesto.cache.manifest import CacheFile, WrittenArtifact
+from pesto.cache.manifest import CacheFile, Manifest, WrittenArtifact
 from pesto.ingest.discover import resolve_named_file
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.recfile import RecFacts, read_rec
@@ -747,6 +747,320 @@ def _regularization_fact(rec: RecFacts | None, options: ControlOptions | None, r
     )
 
 
+def _whole_number(text: str) -> int | None:
+    number = _parse_number(text)
+    if number is None or number != int(number):
+        return None
+    return int(number)
+
+
+def _count_fact(
+    key: str,
+    label: str,
+    option_name: str,
+    rec: RecFacts | None,
+    options: ControlOptions | None,
+    rec_name: str,
+    pst_name: str,
+    extra_readings: Sequence[Reading] = (),
+) -> Fact:
+    """A whole-number setting read from the record's options dump and the
+    control file, plus whatever the caller measured."""
+    readings: list[Reading] = []
+    dump = _rec_option(rec, option_name)
+    if dump is not None:
+        spelled, option = dump
+        readings.append(
+            Reading(
+                "run record",
+                _whole_number(option.value),
+                option.value,
+                f"{rec.name} options dump, line {option.line}: {spelled}: {option.value}",
+            )
+        )
+    reading = options.get(option_name) if options is not None else None
+    if reading is not None:
+        readings.append(
+            Reading("control file", _whole_number(reading.value), reading.value, _control_where(options, reading))
+        )
+    readings.extend(extra_readings)
+    return make_fact(
+        key,
+        label,
+        readings,
+        (f"{option_name} in the options dump of {rec_name}", f"{option_name} in {pst_name}"),
+    )
+
+
+def _noptmax_fact(run: "RunLayout", rec: RecFacts | None, rec_name: str, pst_name: str) -> Fact:
+    readings: list[Reading] = []
+    dump = _rec_option(rec, "noptmax")
+    if dump is not None:
+        spelled, option = dump
+        readings.append(
+            Reading(
+                "run record",
+                _whole_number(option.value),
+                option.value,
+                f"{rec.name} options dump, line {option.line}: {spelled}: {option.value}",
+            )
+        )
+    if run.noptmax is not None:
+        readings.append(
+            Reading("control file", run.noptmax, str(run.noptmax), f"{pst_name} control data: noptmax {run.noptmax}")
+        )
+    return make_fact(
+        "noptmax",
+        "Iterations (noptmax)",
+        readings,
+        (f"a noptmax line in the options dump of {rec_name}", f"noptmax in {pst_name}"),
+    )
+
+
+def _plural(word: str, items: Sequence[object]) -> str:
+    return f"{word}s" if len(items) != 1 else word
+
+
+def _reinflation_fact(
+    run: "RunLayout",
+    rec: RecFacts | ReadFailure | None,
+    options: ControlOptions | ReadFailure | None,
+    par_iterations: Sequence[int],
+    rec_name: str,
+    pst_name: str,
+) -> Fact:
+    """Whether the ensemble was reinflated between the first and last
+    ingested parameter iterations, one reading per source that says so."""
+    from pesto.ingest.reinflate import assess_reinflation
+
+    if len(set(par_iterations)) < 2:
+        why = (
+            "no parameter iteration was ingested"
+            if not par_iterations
+            else "only one parameter iteration was ingested"
+        )
+        return make_fact(
+            "reinflation",
+            "Reinflation",
+            [],
+            (
+                f"reinflation lines in {rec_name}",
+                f"files named like {run.case}.N.reinflate.pcs.csv",
+                f"ies_n_iter_reinflate in {pst_name}",
+            ),
+            note=f"unchecked: {why}, so there is no range to check",
+        )
+    first, last = min(par_iterations), max(par_iterations)
+    verdict = assess_reinflation(run, first, last, rec, options)
+
+    by_source: dict[str, list] = {}
+    for _iteration, evidence in verdict.findings:
+        for item in evidence:
+            by_source.setdefault(item.source, []).append(item)
+    readings = []
+    for source, items in by_source.items():
+        inside = sorted({e.iteration for e in items if e.in_range})
+        known = sorted({e.iteration for e in items if e.iteration is not None})
+        if inside:
+            shown = f"{_plural('reinflation', inside)} at {_plural('iteration', inside)} " + ", ".join(
+                str(i) for i in inside
+            )
+        elif known:
+            shown = "reinflation outside the ingested range (" + ", ".join(str(i) for i in known) + ")"
+        else:
+            shown = "a reinflation whose iteration is not known"
+        readings.append(
+            Reading(
+                source,
+                ",".join(str(i) for i in inside),
+                shown,
+                " | ".join(e.text for e in items),
+                {"iterations": ",".join(str(i) for i in known), "in_range": ",".join(str(i) for i in inside)},
+            )
+        )
+    span = f"between iteration {first} and {last}"
+    if verdict.verdict == "found":
+        summary = f"reinflated {span}"
+    elif verdict.verdict == "none_found":
+        summary = f"no reinflation found {span}"
+    else:
+        summary = f"unchecked: no source could place a reinflation {span}"
+    note = " ".join((summary, *verdict.notes))
+    return make_fact("reinflation", "Reinflation", readings, verdict.checked, note=note)
+
+
+_BASE_PAR_RE = r"^{case}\.(\d+)\.base\.par$"
+
+
+def _included_text(flag: bool | None) -> str:
+    if flag is None:
+        return ""
+    return ": base included" if flag else ": base not included"
+
+
+def _base_fact(
+    run: "RunLayout", rec: RecFacts | None, options: ControlOptions | None, rec_name: str, pst_name: str
+) -> Fact:
+    """What the run record, the control file and the files in the run
+    directory say about base. The cache's own reading is added when the
+    route is served, from the realization names cached for each iteration."""
+    readings: list[Reading] = []
+    dump = _rec_option(rec, "ies_include_base")
+    if dump is not None:
+        spelled, option = dump
+        flag = _parse_bool_token(option.value)
+        readings.append(
+            Reading(
+                "run record",
+                flag,
+                f"{spelled} {option.value}{_included_text(flag)}",
+                f"{rec.name} options dump, line {option.line}: {spelled}: {option.value}",
+            )
+        )
+    if rec is not None and rec.base_kept is not None:
+        readings.append(
+            Reading(
+                "run record",
+                True,
+                "base was already in the parameter ensemble",
+                f"{rec.name} line {rec.base_kept.line}: {rec.base_kept.text}",
+            )
+        )
+    named = options.get("ies_include_base") if options is not None else None
+    if named is not None:
+        flag = _parse_bool_token(named.value)
+        readings.append(
+            Reading(
+                "control file",
+                flag,
+                f"{named.raw_key} {named.value}{_included_text(flag)}",
+                _control_where(options, named),
+            )
+        )
+    pattern = re.compile(_BASE_PAR_RE.format(case=re.escape(run.case)), re.IGNORECASE)
+    try:
+        listing = sorted(
+            (int(match.group(1)), entry.name)
+            for entry in run.run_dir.iterdir()
+            if (match := pattern.match(entry.name))
+        )
+    except OSError:
+        listing = []
+    for _iteration, name in listing:
+        readings.append(
+            Reading("files present", None, f"{name} is present", "found by name in the run directory; not opened")
+        )
+    return make_fact(
+        "base",
+        "Base realization",
+        readings,
+        (
+            f"ies_include_base in the options dump of {rec_name}",
+            f"the 'base' realization line in {rec_name}",
+            f"ies_include_base or ies_add_base in {pst_name}",
+            f"files named like {run.case}.N.base.par in the run directory",
+            "the realization names cached for each ingested iteration",
+        ),
+    )
+
+
+def base_by_iteration(layout: CacheLayout) -> tuple[Reading, ...]:
+    """One cache reading per ingested parameter iteration, in ascending
+    order, from the realization names the cache holds for it.
+
+    If the first ingested iteration has no base, every iteration without one
+    says base was not included in this run, never lost. An iteration whose
+    parameter ensemble was not ingested says so with the manifest's reason.
+    """
+    from pesto.ingest.basereal import find_base
+
+    manifest = Manifest.load(layout)
+    iterations = sorted(
+        int(name.split("/", 1)[1])
+        for name in manifest.artifacts
+        if name.startswith("par_ens/") and name.split("/", 1)[1].isdigit()
+    )
+    # (iteration, state, evidence); state is None when the names could not be had.
+    seen: list[tuple[int, str | None, str]] = []
+    for iteration in iterations:
+        artifact = manifest.artifacts[f"par_ens/{iteration}"]
+        if artifact.state != "ok":
+            reason = artifact.reason or "no reason was recorded"
+            seen.append((iteration, None, f"par_ens/{iteration} is {artifact.state}: {reason}"))
+            continue
+        try:
+            names = tuple(str(n) for n in json.loads(layout.par_reals(iteration).read_text())["names"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+            seen.append(
+                (iteration, None, f"the realization names for iteration {iteration} could not be read: {error}")
+            )
+            continue
+        positions, note = find_base(names)
+        if positions:
+            seen.append(
+                (
+                    iteration,
+                    "present",
+                    note or f"'base' is among the {len(names)} realization names cached for iteration {iteration}",
+                )
+            )
+        else:
+            seen.append(
+                (
+                    iteration,
+                    "missing",
+                    f"'base' is not among the {len(names)} realization names cached for iteration {iteration}",
+                )
+            )
+    first_state = next((state for _i, state, _e in seen if state is not None), None)
+    readings = []
+    for iteration, state, evidence in seen:
+        extra = {"iteration": iteration}
+        if state is None:
+            readings.append(Reading("cache", None, f"iteration {iteration}: not ingested", evidence, extra))
+        elif state == "present":
+            readings.append(Reading("cache", True, f"iteration {iteration}: base present", evidence, extra))
+        else:
+            shown = "base missing" if first_state == "present" else "base was not included in this run"
+            readings.append(Reading("cache", False, f"iteration {iteration}: {shown}", evidence, extra))
+    return tuple(readings)
+
+
+def with_base_readings(fact: Fact | None, readings: Sequence[Reading]) -> Fact:
+    """``fact`` with the cache's per-iteration readings added and ``agree``
+    worked out again by ``make_fact``. A cache reading it already carried is
+    replaced."""
+    stored = [r for r in fact.readings if r.source != "cache"] if fact is not None else []
+    return make_fact(
+        "base",
+        fact.label if fact is not None else "Base realization",
+        [*stored, *readings],
+        fact.looked_for if fact is not None else ("the realization names cached for each ingested iteration",),
+        note=fact.note if fact is not None else None,
+    )
+
+
+def served_facts(config: RunConfig, layout: CacheLayout) -> tuple[Fact, ...]:
+    """The facts as ``GET /api/run/config`` serves them: the stored ones, the
+    base fact with the cache's reading for each iteration as it is now, and
+    the localization file stated again. A config written before facts existed
+    has none."""
+    if config.facts_version is None:
+        return ()
+    served: list[Fact] = []
+    has_base = False
+    for fact in config.facts:
+        if fact.key == "localization":
+            fact = restat_localization(fact, config.run_dir)
+        elif fact.key == "base":
+            fact = with_base_readings(fact, base_by_iteration(layout))
+            has_base = True
+        served.append(fact)
+    if not has_base:
+        served.append(with_base_readings(None, base_by_iteration(layout)))
+    return _in_fact_order(served)
+
+
 def _in_fact_order(facts: Sequence[Fact]) -> tuple[Fact, ...]:
     return tuple(sorted(facts, key=lambda f: FACT_ORDER.index(f.key)))
 
@@ -838,13 +1152,33 @@ def build_config(
     noise, noise_readings = _noise_decision(run, tables, rec, options)
     pst_name = run.pst_path.name
 
+    first_count = (
+        [
+            Reading(
+                "cache",
+                n_real,
+                f"{n_real} realizations in iteration {min(par_iterations)}"
+                if par_iterations
+                else f"{n_real} realizations in the first ingested iteration",
+                "the realization names cached for the first ingested iteration",
+            )
+        ]
+        if n_real is not None
+        else []
+    )
     facts = _in_fact_order(
         (
             _version_fact(rec_ok, rec_name),
+            _noptmax_fact(run, rec_ok, rec_name, pst_name),
+            _count_fact(
+                "ensemble_size", "Ensemble size", "ies_num_reals", rec_ok, options_ok, rec_name, pst_name, first_count
+            ),
             _noise_fact(noise, noise_readings, rec_name, pst_name),
             _noise_band_fact(run, noise, layout),
             _regularization_fact(rec_ok, options_ok, rec_name, pst_name),
             _localization_fact(run, rec_ok, options_ok, rec_name, pst_name),
+            _reinflation_fact(run, rec, options, par_iterations, rec_name, pst_name),
+            _base_fact(run, rec_ok, options_ok, rec_name, pst_name),
         )
     )
 
