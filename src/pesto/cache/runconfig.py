@@ -657,6 +657,8 @@ class RunConfig:
     facts: tuple[Fact, ...] = ()
     facts_version: int | None = None
     par_iterations: tuple[int, ...] = ()
+    # Why stored facts were refused when the file is damaged, as opposed to old.
+    facts_problem: str | None = None
 
 
 def _parse_number(text: str) -> float | None:
@@ -1063,7 +1065,8 @@ def served_facts(config: RunConfig, layout: CacheLayout) -> tuple[Fact, ...]:
 
 
 def _in_fact_order(facts: Sequence[Fact]) -> tuple[Fact, ...]:
-    return tuple(sorted(facts, key=lambda f: FACT_ORDER.index(f.key)))
+    # A key this build does not know sorts last instead of failing the route.
+    return tuple(sorted(facts, key=lambda f: FACT_ORDER.index(f.key) if f.key in FACT_ORDER else len(FACT_ORDER)))
 
 
 def _resolve_rec(run: "RunLayout", rec: RecFacts | ReadFailure | None) -> RecFacts | ReadFailure | None:
@@ -1302,25 +1305,27 @@ def _empty_config() -> RunConfig:
     )
 
 
-def _load_facts(data: dict) -> tuple[tuple[Fact, ...], int | None]:
-    """The stored facts and their version. A config with no version, or with
-    facts that are not shaped right, gives no facts and no version, so it
-    reads as an old one rather than as a half-trusted one."""
+def _load_facts(data: dict) -> tuple[tuple[Fact, ...], int | None, str | None]:
+    """The stored facts, their version and, for a damaged list, the reason.
+
+    A config with no version gives no facts and no reason: it is simply old.
+    Facts that are not shaped right give no facts, no version and the reason,
+    so the file reads as old rather than as half-trusted, and says why."""
     version = data.get("facts_version")
     if type(version) is not int:
-        return (), None
+        return (), None, None
     stored = data.get("facts")
     if not isinstance(stored, list):
-        return (), None
+        return (), None, "the stored facts could not be read: the facts are not a list"
     try:
-        return tuple(fact_from_json(item) for item in stored), version
-    except ValueError:
-        return (), None
+        return tuple(fact_from_json(item) for item in stored), version, None
+    except ValueError as exc:
+        return (), None, f"the stored facts could not be read: {exc}"
 
 
 def config_outdated(layout: CacheLayout) -> bool:
     """Whether ``config.json`` needs writing again: it is missing, unreadable,
-    or carries no facts of the current version. Reads only the one file."""
+    or carries no readable facts of the current version. Reads only the one file."""
     try:
         data = json.loads(layout.config.read_text())
     except (OSError, json.JSONDecodeError):
@@ -1328,7 +1333,9 @@ def config_outdated(layout: CacheLayout) -> bool:
     if not isinstance(data, dict):
         return True
     version = data.get("facts_version")
-    return type(version) is not int or version != FACTS_VERSION
+    if type(version) is not int or version != FACTS_VERSION:
+        return True
+    return _load_facts(data)[2] is not None
 
 
 def load_config(layout: CacheLayout) -> RunConfig:
@@ -1374,7 +1381,7 @@ def load_config(layout: CacheLayout) -> RunConfig:
             notes=_tuple_of_str(noise_data.get("notes")),
         )
 
-        facts, facts_version = _load_facts(data)
+        facts, facts_version, facts_problem = _load_facts(data)
         par_iterations = data.get("par_iterations")
         return RunConfig(
             cache_version=CACHE_VERSION,
@@ -1393,6 +1400,7 @@ def load_config(layout: CacheLayout) -> RunConfig:
             notes=_tuple_of_str(data.get("notes")),
             facts=facts,
             facts_version=facts_version,
+            facts_problem=facts_problem,
             par_iterations=tuple(
                 v for v in par_iterations if isinstance(v, int) and not isinstance(v, bool)
             )

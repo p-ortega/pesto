@@ -406,6 +406,41 @@ def test_an_old_config_is_served_with_its_old_fields_and_a_note_never_as_not_fou
     assert body["n_real"] == 4
 
 
+def _damage_config(cache_root, change):
+    path = Path(cache_root) / "config.json"
+    payload = json.loads(path.read_text())
+    change(payload)
+    path.write_text(json.dumps(payload))
+
+
+def test_a_damaged_facts_list_is_served_with_the_real_reason_not_as_old(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+    _damage_config(cache_root, lambda p: p["facts"][0].pop("readings"))
+
+    body = _client(cache_root).get("/api/run/config").json()
+
+    assert body["facts"] == []
+    assert "could not be read" in body["facts_note"]
+    assert "lacks its key, label or readings" in body["facts_note"]
+    assert "written before" not in body["facts_note"]
+    assert config_outdated(CacheLayout(root=cache_root)) is True
+
+
+def test_an_unknown_fact_key_is_served_last_and_does_not_fail_the_route(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+    extra = {"key": "from_a_newer_build", "label": "New", "readings": [], "agree": None, "looked_for": [], "note": None}
+    _damage_config(cache_root, lambda p: p["facts"].insert(0, extra))
+
+    response = _client(cache_root).get("/api/run/config")
+
+    assert response.status_code == 200
+    assert [f["key"] for f in response.json()["facts"]][-1] == "from_a_newer_build"
+
+
 # ---------------------------------------------------------------------------
 # An interrupted rewrite costs no fact its sources or its disagreement
 # ---------------------------------------------------------------------------
