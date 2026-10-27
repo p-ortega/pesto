@@ -23,7 +23,7 @@ import pandas as pd
 
 from pesto.cache.layout import CacheLayout, for_run
 from pesto.cache.manifest import Manifest, SourceFingerprint, WrittenArtifact
-from pesto.cache.runconfig import build_config, write_config
+from pesto.cache.runconfig import build_config, config_outdated, write_config
 from pesto.ingest.aggregate import write_par_agg
 from pesto.ingest.control import read_control
 from pesto.ingest.discover import RunLayout, discover
@@ -42,6 +42,8 @@ from pesto.ingest.parcell import load_par_cell, write_par_cell
 from pesto.ingest.parhist import write_par_hist
 from pesto.ingest.parview import write_par_change, write_par_groups
 from pesto.ingest.phicheck import check_phi, write_phi_check
+from pesto.ingest.recfile import read_rec
+from pesto.ingest.runopts import scan_options
 from pesto.ingest.tables import load_control_table, load_control_tables, write_control
 
 @dataclass(frozen=True)
@@ -575,6 +577,7 @@ def _write_config_artifact(
     run_dir: str,
     cache_root: str,
     first_iteration: int | None,
+    par_iterations: tuple[int, ...] = (),
 ) -> "WrittenArtifact | ReadFailure":
     """The worker for the ``config`` artifact: rediscovers the run from
     ``run_dir`` (a line scan, never a saved ``RunLayout`` crossing the
@@ -609,7 +612,13 @@ def _write_config_artifact(
 
         adapter = Mf6Adapter(run.grid)
 
-    config = build_config(run, tables, first, adapter)
+    # The run record and the control-file options are read once here and shared by every fact.
+    rec = read_rec(run.rec) if run.rec is not None else None
+    options = scan_options(run.pst_path)
+    config = build_config(
+        run, tables, first, adapter,
+        rec=rec, options=options, par_iterations=par_iterations, layout=layout,
+    )
     return write_config(config, layout)
 
 
@@ -650,6 +659,15 @@ def observation_iterations(
         if run.obs_ens.get(k) is None
     )
     return selected, notes
+
+
+def is_planned_stale(manifest: Manifest, layout: CacheLayout, artifact: PlannedArtifact) -> bool:
+    """Whether ``artifact`` must be read again: stale by its sources and files,
+    or, for ``config``, written before the current facts version. The state
+    route and ``ingest_run`` both use this, so they never disagree."""
+    if manifest.is_stale(artifact.name, layout, artifact.sources):
+        return True
+    return artifact.kind == "config" and config_outdated(layout)
 
 
 def _should_retry(manifest: Manifest, name: str, base: Path, sources: Sequence[str]) -> bool:
@@ -961,6 +979,15 @@ def plan_artifacts(
         config_sources = par_cell_sources
     else:
         config_sources = control_sources
+    # The record and the reinflate file names are read for the setup facts. The
+    # localization file is never a source: it can be hundreds of megabytes.
+    config_sources = _unique(
+        (
+            *config_sources,
+            *sorted(str(path) for key, path in run.pcs.items() if key[1] == "reinflate"),
+            *((str(run.rec),) if run.rec is not None else ()),
+        )
+    )
 
     # Needs the control table only, so a grid edit never touches it.
     artifacts.append(
@@ -1377,6 +1404,7 @@ def _dispatch(
     pdc_file: str | None = None,
     weights_file: str | None = None,
     phi_file: str | None = None,
+    par_iterations: tuple[int, ...] = (),
 ) -> tuple[Callable, tuple]:
     """Which worker function runs this artifact, and with what arguments --
     every argument a string, an int, or ``None``, so nothing but picklable
@@ -1424,7 +1452,7 @@ def _dispatch(
     if artifact.kind == "pp_factors":
         return _write_pp_factors_artifact, (run_dir, grid_path, cache_root)
     if artifact.kind == "config":
-        return _write_config_artifact, (run_dir, cache_root, first_iteration)
+        return _write_config_artifact, (run_dir, cache_root, first_iteration, par_iterations)
     raise ValueError(f"plan_artifacts produced an artifact of unknown kind: {artifact.kind!r}")
 
 
@@ -1626,7 +1654,7 @@ def ingest_run(
 
         existing = manifest.artifacts.get(artifact.name)
         declined_retry = not _should_retry(manifest, artifact.name, run_dir, artifact.sources)
-        fresh = (not declined_retry) and (not manifest.is_stale(artifact.name, layout, artifact.sources))
+        fresh = (not declined_retry) and (not is_planned_stale(manifest, layout, artifact))
         if declined_retry or fresh:
             written_bytes = sum(f.bytes for f in existing.files) if existing is not None else 0
             if on_progress is not None:
@@ -1704,6 +1732,7 @@ def ingest_run(
             pdc_file,
             weights_file,
             phi_file,
+            tuple(selected),
         )
 
         start = time.perf_counter()

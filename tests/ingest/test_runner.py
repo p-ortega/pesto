@@ -702,7 +702,11 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
         str(run.grid),
     )
     assert planned["par_agg/0"].sources == (str(run.par_ens[0]), *control_sources)
-    assert planned["config"].sources == (*control_sources, str(run.grid))
+    # The reinflate pcs file names are read for the setup facts; a run record would come last.
+    reinflate = tuple(sorted(str(p) for k, p in run.pcs.items() if k[1] == "reinflate"))
+    assert reinflate
+    assert run.rec is None
+    assert planned["config"].sources == (*control_sources, str(run.grid), *reinflate)
     for artifact in planned.values():
         assert len(set(artifact.sources)) == len(artifact.sources), artifact.name
         assert artifact.source_bytes == sum(Path(s).stat().st_size for s in artifact.sources)
@@ -723,7 +727,8 @@ def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
     assert "par_cell" not in names
     config = next(a for a in planned if a.name == "config")
     control_sources = (str(run.pst_path), *(str(p) for p in run.external_tables))
-    assert config.sources == control_sources
+    reinflate = tuple(sorted(str(p) for k, p in run.pcs.items() if k[1] == "reinflate"))
+    assert config.sources == (*control_sources, *reinflate)
     par_ens = next(a for a in planned if a.name == "par_ens/0")
     assert par_ens.sources == (str(run.par_ens[0]), *control_sources)
     assert not any(note.startswith("par_cell:") for note in estimate_bytes(run).notes)

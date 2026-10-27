@@ -60,14 +60,15 @@ def _build_control(
 # ---------------------------------------------------------------------------
 
 
-def test_noise_ensemble_on_disk_yields_found_by_ensemble(tmp_path):
-    run, tables = _build_control(tmp_path, noise_ensemble=True)
+def test_a_present_noise_file_alone_never_decides_that_noise_was_on(tmp_path):
+    # pestpp writes case.obs+noise.* whether or not it drew noise.
+    run, tables = _build_control(tmp_path, noise_ensemble=True, obs_meta=())
 
     fact = describe_noise(run, tables)
 
-    assert fact.has_noise is True
-    assert fact.decided_by == "noise_ensemble"
-    assert any("obs+noise" in item for item in fact.evidence)
+    assert run.noise is not None
+    assert fact.has_noise is None
+    assert fact.decided_by == "undetermined"
 
 
 def test_ies_no_noise_yields_no_noise(tmp_path):
@@ -115,16 +116,16 @@ def test_no_evidence_at_all_yields_undetermined_not_false(tmp_path):
     assert len(fact.evidence) >= 1
 
 
-def test_ies_no_noise_and_noise_ensemble_together_control_file_wins(tmp_path):
+def test_ies_no_noise_with_a_noise_file_present_is_still_no_noise(tmp_path):
     run, tables = _build_control(
-        tmp_path, pestpp_options={"ies_no_noise": "true"}, noise_ensemble=True
+        tmp_path, pestpp_options={"ies_no_noise": "true"}, noise_ensemble=True, obs_meta=()
     )
 
     fact = describe_noise(run, tables)
 
     assert fact.has_noise is False
     assert fact.decided_by == "ies_no_noise"
-    assert any("obs+noise" in note for note in fact.notes)
+    assert fact.notes == ()
 
 
 @pytest.mark.parametrize(
