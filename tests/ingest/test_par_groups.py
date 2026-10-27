@@ -241,3 +241,116 @@ def test_the_refusal_writes_the_numbers_with_thousands_separators():
         "reason": "This group has 10,001 parameters. Drill-down is offered up to 10,000.",
     }
     assert drill_down_offer(10_000, 10_000) == {"offered": True, "reason": None}
+
+
+# ---------------------------------------------------------------------------
+# pestpp's own group figures: the CSV, or the run record when the CSV is absent
+# ---------------------------------------------------------------------------
+
+_RECORD_ROW = ("hk_pp", 4, 12.35, 1.5, 3, 2.5, 7, 6.0, 0)
+
+
+def _csv_row(mean_change, *, lower=7, upper=3):
+    return {
+        "group": "hk_pp",
+        "mean_change": mean_change,
+        "std_change": 1.5,
+        "num_at_near_lbound": lower,
+        "num_at_near_ubound": upper,
+    }
+
+
+def test_without_the_csv_pestpps_figures_come_from_the_run_record_and_say_so(tmp_path, in_process):  # noqa: F811
+    _run, layout = _ingest(tmp_path, rec={"group_tables": {"case.1.pcs.csv": [_RECORD_ROW]}})
+    groups, _top = _groups(layout)
+
+    pestpp = groups["hk_pp"]["change"]["pestpp"]
+    assert pestpp["source"] == "case.rec, from the run record, 4 significant digits"
+    assert pestpp["mean_change"] == 12.35
+    assert pestpp["std_change"] == 1.5
+    # the record's ubnd and lbnd columns map by name onto the CSV's names
+    assert pestpp["num_at_near_lbound"] == 7
+    assert pestpp["num_at_near_ubound"] == 3
+    assert "pcs.csv file for iteration 1 was not found" in pestpp["note"]
+
+
+def test_without_the_csv_and_without_a_record_table_the_figures_stay_empty_with_the_reason(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, layout = _ingest(tmp_path, rec=True)
+    groups, _top = _groups(layout)
+
+    pestpp = groups["hk_pp"]["change"]["pestpp"]
+    assert pestpp["source"] is None
+    assert pestpp["mean_change"] is None
+    assert "not found" in pestpp["note"]
+
+
+def test_a_csv_and_a_record_that_agree_to_the_records_rounding_show_no_disagreement(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, layout = _ingest(
+        tmp_path,
+        pcs_rows=[_csv_row(12.3456)],
+        rec={"group_tables": {"case.1.pcs.csv": [_RECORD_ROW]}},
+    )
+    groups, _top = _groups(layout)
+
+    pestpp = groups["hk_pp"]["change"]["pestpp"]
+    assert pestpp["source"] == "pestpp, case.1.pcs.csv"
+    assert pestpp["mean_change"] == 12.3456
+    assert pestpp["note"] is None
+    assert pestpp.get("record") is None
+
+
+def test_a_csv_and_a_record_that_differ_show_both_numbers_and_say_they_disagree(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, layout = _ingest(
+        tmp_path,
+        pcs_rows=[_csv_row(12.3456)],
+        rec={"group_tables": {"case.1.pcs.csv": [("hk_pp", 4, 12.40, 1.5, 3, 2.5, 7, 6.0, 0)]}},
+    )
+    groups, _top = _groups(layout)
+
+    pestpp = groups["hk_pp"]["change"]["pestpp"]
+    assert pestpp["mean_change"] == 12.3456
+    assert "disagree" in pestpp["note"]
+    assert "12.3456" in pestpp["note"] and "12.4" in pestpp["note"]
+    assert pestpp["record"]["mean_change"] == 12.4
+    assert pestpp["record"]["source"] == "case.rec, from the run record, 4 significant digits"
+
+
+def test_a_bound_count_that_differs_between_the_csv_and_the_record_is_a_disagreement(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, layout = _ingest(
+        tmp_path,
+        pcs_rows=[_csv_row(12.3456, lower=8)],
+        rec={"group_tables": {"case.1.pcs.csv": [_RECORD_ROW]}},
+    )
+    groups, _top = _groups(layout)
+
+    note = groups["hk_pp"]["change"]["pestpp"]["note"]
+    assert "disagree" in note and "num_at_near_lbound" in note
+    assert "8" in note and "7" in note
+
+
+def test_a_record_table_that_the_csv_has_no_group_for_adds_nothing_to_that_group(
+    tmp_path, in_process  # noqa: F811
+):
+    rows = [("other", 4, 12.40, 1.5, 3, 2.5, 7, 6.0, 0)]
+    _run, layout = _ingest(
+        tmp_path, pcs_rows=[_csv_row(12.3456)], rec={"group_tables": {"case.1.pcs.csv": rows}}
+    )
+    groups, _top = _groups(layout)
+
+    assert groups["hk_pp"]["change"]["pestpp"]["note"] is None
+
+
+def test_a_malformed_record_row_is_named_in_the_top_level_notes(tmp_path, in_process):  # noqa: F811
+    rows = [_RECORD_ROW, ("bad", 4, 1.5, 2.5, 3, 1.0, 7, 2.0)]
+    _run, layout = _ingest(tmp_path, rec={"group_tables": {"case.1.pcs.csv": rows}})
+    _groups_by_name, top = _groups(layout)
+
+    assert any("'bad'" in note and "line" in note for note in top["notes"])
