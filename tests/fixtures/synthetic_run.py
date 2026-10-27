@@ -44,6 +44,7 @@ from pesto.ingest.mesh import write_mesh
 from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obsindex import build_obs_index, write_obs_index
 from pesto.ingest.parcell import write_par_cell
+from pesto.ingest.parhist import write_par_hist
 from pesto.ingest.parview import write_par_change, write_par_groups
 from pesto.ingest.ppfactors import build_pp_index, write_pp_index
 from pesto.ingest.runner import plan_artifacts
@@ -289,6 +290,9 @@ def write_synthetic_run(dest: Path) -> Path:
             written = write_par_change(ends[0], ends[-1], layout)
         elif artifact.kind == "par_groups":
             written = write_par_groups(run_dir, layout)
+        elif artifact.kind == "par_hist":
+            ends = [int(need.split("/")[1]) for need in artifact.needs if need.startswith("par_ens/")]
+            written = write_par_hist(ends[0], ends[-1], layout)
         elif artifact.kind == "control":
             written = write_control(tables, layout)
         elif artifact.kind == "grid":

@@ -20,6 +20,7 @@ from pesto.api.tables import arrow_response
 from pesto.cache.layout import CacheLayout
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.parcell import load_par_cell
+from pesto.ingest.parhist import load_par_hist
 from pesto.ingest.parview import load_par_change, load_par_groups
 
 router = APIRouter(prefix="/api/run")
@@ -64,6 +65,65 @@ async def get_placement(request: Request, params: Annotated[RunQuery, Query()]) 
         groups.append({**entry, "notes": [placed.notes[i] for i in mine]})
     rest = [note for i, note in enumerate(placed.notes) if i not in claimed]
     body = {"groups": groups, "summary": placed.summary, "notes": rest}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+def _left_out(meta: dict) -> dict:
+    """The realizations left out of every figure: present in only one of the two iterations."""
+    count = int(meta["only_first"]["count"]) + int(meta["only_last"]["count"])
+    reason = None
+    if count:
+        reason = (
+            f"a realization present in only one of iteration {meta['first_iteration']} and "
+            f"iteration {meta['last_iteration']} is left out of every figure"
+        )
+    return {"count": count, "reason": reason}
+
+
+def _hist_series(rows, entry: dict | None) -> dict | None:
+    if entry is None:
+        return None
+    mine = rows[rows["iteration"] == entry["iteration"]].sort_values("bin")
+    return {
+        "iteration": int(entry["iteration"]),
+        "n": int(entry["n"]),
+        "counts": [int(v) for v in mine["count"]],
+        "density": [float(v) for v in mine["density"]],
+    }
+
+
+@router.get("/par/hist")
+async def get_par_hist(request: Request, params: Annotated[ParGroupQuery, Query()]) -> Response:
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+
+    loaded = load_par_hist(CacheLayout(root=Path(cache_root)))
+    if isinstance(loaded, ReadFailure):
+        return problem_from_failure(404, loaded)
+    frame, meta = loaded
+
+    entry = next((g for g in meta["groups"] if g["group"] == params.group), None)
+    if entry is None:
+        return problem(
+            404,
+            "no parameter group has that name",
+            artifact="par_hist",
+            detail=f"the cached histograms hold no parameter group named {params.group!r}",
+        )
+    rows = frame[frame["group"] == params.group]
+    body = {
+        "group": entry["group"],
+        "space": entry["space"],
+        "edges": entry["edges"],
+        "first": _hist_series(rows, entry["first"]),
+        "last": _hist_series(rows, entry["last"]),
+        "n_common": int(meta["n_common"]),
+        "left_out": _left_out(meta),
+        "excluded": entry["excluded"],
+        "refused": entry["refused"],
+        "notes": [*entry["notes"], *meta["notes"]],
+    }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
