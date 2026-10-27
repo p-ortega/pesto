@@ -22,6 +22,7 @@ from pesto.bench.report import (
     BrowserTargets,
     HeaviestTarget,
     LatencySummary,
+    ObsFramesLatency,
     PilotPointTarget,
     ReopenShare,
     RouteTiming,
@@ -240,6 +241,71 @@ def measure_values(
         notes.append(note)
 
     return ValuesLatency(iteration=iteration, realization=realization, statistic=statistic, notes=notes)
+
+
+_FRAME_CANDIDATES = 5
+
+
+def _frames_not_measured(note: str, **found: object) -> ObsFramesLatency:
+    return ObsFramesLatency(
+        group=found.get("group"),  # type: ignore[arg-type]
+        iteration=found.get("iteration"),  # type: ignore[arg-type]
+        n_sites=found.get("n_sites"),  # type: ignore[arg-type]
+        n_times=found.get("n_times"),  # type: ignore[arg-type]
+        summary=None,
+        notes=[note],
+    )
+
+
+def measure_obs_frames(server: BenchServer, samples: int) -> ObsFramesLatency:
+    """Time obs/frame on the placed group with the most sites times times, at its last iteration.
+
+    The time covers the whole request, manifest reads included. The times are spread over the
+    group's exact time axis and the four statistics take turns.
+    """
+    import pyarrow as pa
+
+    from pesto.api.obsmap import STATS
+
+    timed, body = server.get("/api/run/obs/groups")
+    if timed.status != 200:
+        return _frames_not_measured(
+            f"obs/frame: could not read the observation groups ({_problem_reason(timed, body)}), "
+            "so the frame route is not measured"
+        )
+    table = pa.ipc.open_stream(body).read_all()
+    rows = table.to_pylist()
+
+    # The first group of a tie wins, so the strict comparison below keeps the earlier one.
+    placed = [row for row in rows if (row["n_placed"] or 0) > 0]
+    largest = sorted(placed, key=lambda row: -row["n_sites"])[:_FRAME_CANDIDATES]
+    best: tuple[int, dict, dict] | None = None
+    for row in largest:
+        timed, body = server.get(f"/api/run/obs/times?group={quote(row['group'], safe='')}")
+        axis = json.loads(body)
+        size = int(axis["n_sites"]) * len(axis["times"])
+        if best is None or size > best[0]:
+            best = (size, row, axis)
+    assert best is not None
+    _size, row, axis = best
+    group, times = row["group"], axis["times"]
+    iteration = row["last_iteration"] if row["last_iteration"] is not None else row["first_iteration"]
+
+    spots = np.rint(np.linspace(0, len(times) - 1, samples)).astype(int)
+    paths = [
+        f"/api/run/obs/frame?group={quote(group, safe='')}&iteration={iteration}"
+        f"&time={quote(repr(float(times[spot])), safe='')}&stat={STATS[i % len(STATS)]}"
+        for i, spot in enumerate(spots.tolist())
+    ]
+    summary, note = _time_kind(server, paths, "obs/frame")
+    return ObsFramesLatency(
+        group=group,
+        iteration=int(iteration),
+        n_sites=int(axis["n_sites"]),
+        n_times=len(times),
+        summary=summary,
+        notes=[note] if note else [],
+    )
 
 
 def _names(names: tuple[str, ...]) -> str:
