@@ -353,11 +353,12 @@ def _resolve_external_tables(
     return tuple(tables)
 
 
-def _resolve_starting_ensemble(
+def resolve_named_file(
     run_path: Path, key: str | None, name: str | None, notes: list[str]
 ) -> Path | None:
-    """Resolve a starting ensemble named by the control file, relative to
-    ``run_path``. A name the control file gives but that is not on disk is
+    """Resolve a file the control file names (a starting ensemble, a
+    localizer), relative to ``run_path``. Public so a fact reader can use
+    the same traversal-safe rule. A name the control file gives but that is not on disk is
     reported as named-and-missing: the field itself comes back ``None`` --
     exactly as if no option had been given -- and a note names the option
     key and the filename, so the two cases are distinguishable only through
@@ -486,16 +487,16 @@ def discover(run_dir: Path) -> RunLayout:
     noptmax = scan.noptmax
     notes.extend(scan.notes)
     ambiguities.extend(scan.ambiguities)
-    starting_par_ens = _resolve_starting_ensemble(
+    starting_par_ens = resolve_named_file(
         run_path, scan.par_en_key, scan.par_en_name, notes
     )
-    starting_obs_ens = _resolve_starting_ensemble(
+    starting_obs_ens = resolve_named_file(
         run_path, scan.obs_en_key, scan.obs_en_name, notes
     )
-    restart_par_ens = _resolve_starting_ensemble(
+    restart_par_ens = resolve_named_file(
         run_path, scan.restart_par_en_key, scan.restart_par_en_name, notes
     )
-    restart_obs_ens = _resolve_starting_ensemble(
+    restart_obs_ens = resolve_named_file(
         run_path, scan.restart_obs_en_key, scan.restart_obs_en_name, notes
     )
 

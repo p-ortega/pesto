@@ -616,7 +616,8 @@ def _write_config_artifact(
     rec = read_rec(run.rec) if run.rec is not None else None
     options = scan_options(run.pst_path)
     config = build_config(
-        run, tables, first, adapter, rec=rec, options=options, par_iterations=par_iterations
+        run, tables, first, adapter,
+        rec=rec, options=options, par_iterations=par_iterations, layout=layout,
     )
     return write_config(config, layout)
 

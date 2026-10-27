@@ -16,7 +16,7 @@ line-scans the control file. A large parent directory stays cheap to list.
 
 No path in this module is ever put into ``app.state.fs_ids`` before being
 resolved and checked for containment against its parent, the same shape
-:func:`pesto.ingest.discover._resolve_starting_ensemble` uses -- a symlink
+:func:`pesto.ingest.discover.resolve_named_file` uses -- a symlink
 pointing outside the directory being listed is reported with a reason and
 is never descended into.
 """
@@ -105,7 +105,7 @@ def is_run_directory(path: Path) -> tuple[bool, str | None]:
 def _resolves_inside(parent: Path, child: Path) -> bool:
     """Whether ``child``, once resolved, is genuinely inside resolved
     ``parent`` -- the same containment shape
-    ``discover.py::_resolve_starting_ensemble`` uses, so a symlink pointing
+    ``discover.py::resolve_named_file`` uses, so a symlink pointing
     elsewhere is caught rather than followed.
     """
     resolved_parent = parent.resolve()
