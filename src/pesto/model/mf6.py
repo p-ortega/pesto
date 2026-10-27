@@ -45,7 +45,8 @@ _NOT_FOUND_TEXT = "the model's observation input (mfsim.nam) was not found in th
 
 def observation_input_files(run_dir: Path) -> tuple[Path, ...]:
     """The MF6 text files a site's placement can come from: ``mfsim.nam``, the
-    model name files, the OBS6 files. Empty when the run has no ``mfsim.nam``."""
+    model name files, the OBS6 files, and each package file that names an OBS6
+    file with its OPEN/CLOSE period files. Empty when the run has no ``mfsim.nam``."""
     return _observation_input_files(Path(run_dir))
 
 
