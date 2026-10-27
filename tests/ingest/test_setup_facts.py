@@ -17,6 +17,8 @@ from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.cache.runconfig import (
     FACTS_VERSION,
+    build_config,
+    describe_noise,
     FACT_ORDER,
     SOURCE_ORDER,
     Reading,
@@ -25,11 +27,15 @@ from pesto.cache.runconfig import (
     make_fact,
     write_config,
 )
+from pesto.ingest.control import read_control
 from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.recfile import read_rec
+from pesto.ingest.runopts import scan_options
 from pesto.ingest.runner import ingest_run, is_planned_stale, plan_artifacts
 
-from .fixtures import make_run
+from .fixtures import make_run, write_control_file
+from .obs_fixtures import make_obs_run
 from .rec_fixtures import write_rec
 
 BASE_URL = "http://127.0.0.1"
@@ -359,3 +365,222 @@ def test_an_interrupted_rewrite_leaves_the_old_config_and_it_is_still_served(tmp
     regularization = next(f for f in body["facts"] if f["key"] == "regularization")
     assert regularization["agree"] is False
     assert [r["source"] for r in regularization["readings"]] == ["run record", "run record", "control file"]
+
+
+# ---------------------------------------------------------------------------
+# Noise: the run record decides first; the dump and a noise file only support
+# ---------------------------------------------------------------------------
+
+
+def _noise_run(tmp_path, *, rec_kwargs=None, options=(), noise_file=False, obs_meta=()):
+    """A run read back through the real readers, with a record only when
+    ``rec_kwargs`` is given."""
+    run_dir = tmp_path / "noise-run"
+    run_dir.mkdir()
+    pst_path, _ = write_control_file(
+        run_dir / "case.pst", ["par0", "par1"], ["obs0", "obs1"], obs_meta=obs_meta
+    )
+    if options:
+        _add_control_options(pst_path, *options)
+    if noise_file:
+        (run_dir / "case.obs+noise.jcb").write_bytes(b"placeholder")
+    if rec_kwargs is not None:
+        write_rec(run_dir / "case.rec", **rec_kwargs)
+    run = discover(run_dir)
+    tables = read_control(pst_path)
+    assert not isinstance(tables, ReadFailure)
+    rec = read_rec(run.rec) if run.rec is not None else None
+    return run, tables, rec, scan_options(pst_path)
+
+
+FORECAST = {
+    "noise": "reset_to_no_noise",
+    "options": {"ies_no_noise": "0", "ies_num_reals": "300"},
+}
+
+
+def _noise_fact(run, tables, rec, options):
+    config = build_config(run, tables, None, None, rec=rec, options=options)
+    return config, {f.key: f for f in config.facts}["noise"]
+
+
+def test_the_forecast_shape_is_no_noise_from_the_record_and_the_dump_and_file_only_support(tmp_path):
+    run, tables, rec, options = _noise_run(tmp_path, rec_kwargs=FORECAST, noise_file=True)
+
+    config, fact = _noise_fact(run, tables, rec, options)
+
+    assert config.noise.has_noise is False
+    assert config.noise.decided_by == "run_record"
+    supporting = [r for r in fact.readings if r.value is None]
+    assert {r.source for r in supporting} == {"run record", "files present"}
+    dump = next(r for r in supporting if r.source == "run record")
+    assert "ies_no_noise 0" in dump.shown
+    file_reading = next(r for r in supporting if r.source == "files present")
+    assert "case.obs+noise.jcb" in file_reading.shown
+    assert "pestpp writes this file whether or not noise was drawn" in file_reading.evidence
+    assert any(r.value is False and r.source == "run record" for r in fact.readings)
+
+
+def test_the_same_run_without_a_record_is_undetermined_and_a_noise_file_never_makes_it_noisy(tmp_path):
+    run, tables, rec, options = _noise_run(tmp_path, noise_file=True)
+
+    fact = describe_noise(run, tables, rec, options)
+
+    assert fact.has_noise is None
+    assert fact.decided_by == "undetermined"
+    evidence = " ".join(fact.evidence)
+    for looked_for in ("run record", "ies_no_noise", "observation ensemble", "standard_deviation"):
+        assert looked_for in evidence
+
+
+def test_a_record_that_loaded_an_observation_ensemble_says_noise_even_when_the_control_file_disagrees(tmp_path):
+    run, tables, rec, options = _noise_run(
+        tmp_path,
+        rec_kwargs={"noise": "loaded_obs_ensemble"},
+        options=("ies_no_noise true",),
+    )
+
+    config, fact = _noise_fact(run, tables, rec, options)
+
+    assert config.noise.has_noise is True
+    assert config.noise.decided_by == "run_record"
+    assert fact.agree is False
+    assert [(r.source, r.value) for r in fact.readings] == [("run record", True), ("control file", False)]
+    assert config.noise.notes
+
+
+def test_without_a_record_the_control_file_decides_before_a_supplied_ensemble_and_the_column(tmp_path):
+    cases = [
+        ({"options": ("ies_no_noise true",)}, False, "ies_no_noise"),
+        ({"options": ("ies_obs_en noise_oe.jcb",)}, True, "observation_ensemble_option"),
+        ({"obs_meta": ("standard_deviation",)}, True, "standard_deviation_column"),
+    ]
+    for number, (kwargs, expected, decided_by) in enumerate(cases):
+        folder = tmp_path / f"case{number}"
+        folder.mkdir()
+        run, tables, rec, options = _noise_run(folder, **kwargs)
+
+        fact = describe_noise(run, tables, rec, options)
+
+        assert (fact.has_noise, fact.decided_by) == (expected, decided_by)
+
+
+# ---------------------------------------------------------------------------
+# The noise band
+# ---------------------------------------------------------------------------
+
+
+def _noise_band_run(tmp_path, *, with_noise=True, rec_kwargs=None):
+    run_dir = tmp_path / "band-run"
+    make_obs_run(run_dir, with_noise=with_noise)
+    if rec_kwargs is not None:
+        write_rec(run_dir / "case.rec", **rec_kwargs)
+    cache_root = tmp_path / "band-cache"
+    ingest_run(run_dir, cache_root=cache_root)
+    return cache_root
+
+
+def test_the_noise_band_fact_names_the_file_it_was_built_from_and_that_base_was_left_out(tmp_path):
+    cache_root = _noise_band_run(tmp_path)
+
+    band = _facts(cache_root)["noise_band"]
+
+    cached = next(r for r in band["readings"] if r["source"] == "cache")
+    assert "case.obs+noise.jcb" in cached["shown"]
+    assert "base was left out" in cached["shown"]
+    assert cached["extra"]["source"] == "case.obs+noise.jcb"
+    assert "without noise" not in (band["note"] or "")
+
+
+def test_when_no_noise_was_drawn_the_band_fact_says_the_file_holds_the_observed_values(tmp_path):
+    cache_root = _noise_band_run(tmp_path, rec_kwargs=FORECAST)
+
+    band = _facts(cache_root)["noise_band"]
+
+    assert "holds the observed values without noise" in band["note"]
+
+
+def test_a_run_with_no_noise_file_gives_the_reason_there_is_no_band(tmp_path):
+    cache_root = _noise_band_run(tmp_path, with_noise=False)
+
+    band = _facts(cache_root)["noise_band"]
+
+    assert band["readings"] == []
+    assert "no obs+noise file" in band["note"]
+    assert band["looked_for"]
+
+
+# ---------------------------------------------------------------------------
+# Localization: a stat call only
+# ---------------------------------------------------------------------------
+
+
+def _localization_run(tmp_path, name="localization.jcb", *, write_file=True):
+    run_dir, _ = _setup(tmp_path, rec=False, options=(f"ies_localizer {name}",))
+    if write_file:
+        (run_dir / name).write_bytes(b"x" * 1234)
+    return run_dir
+
+
+def test_the_localization_file_is_only_stated_never_opened_and_never_a_source(tmp_path):
+    run_dir = _localization_run(tmp_path)
+    target = run_dir / "localization.jcb"
+    target.chmod(0)
+    cache_root = tmp_path / "cache"
+    try:
+        manifest = _ingest(run_dir, cache_root)
+    finally:
+        target.chmod(0o644)
+
+    fact = _facts(cache_root)["localization"]
+    stat_reading = next(r for r in fact["readings"] if r["source"] == "files present")
+    assert stat_reading["extra"]["name"] == "localization.jcb"
+    assert stat_reading["extra"]["size_bytes"] == 1234
+    assert stat_reading["extra"]["mtime_ns"] > 0
+    assert stat_reading["value"] is None
+    control = next(r for r in fact["readings"] if r["source"] == "control file")
+    assert "localization.jcb" in control["shown"]
+    for artifact in manifest.artifacts.values():
+        assert not any(Path(source.path).name == "localization.jcb" for source in artifact.sources)
+
+
+def test_a_name_that_leaves_the_run_directory_gets_a_note_and_no_stat(tmp_path):
+    (tmp_path / "outside.jcb").write_bytes(b"y" * 99)
+    run_dir = _localization_run(tmp_path, "../outside.jcb", write_file=False)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+
+    fact = _facts(cache_root)["localization"]
+
+    assert not any(r["source"] == "files present" for r in fact["readings"])
+    assert "resolves outside" in fact["note"]
+    assert "size_bytes" not in json.dumps(fact)
+
+
+def test_a_record_that_says_localized_with_no_option_in_the_control_file_has_nothing_to_compare(tmp_path):
+    run_dir, _ = _setup(tmp_path, localization=48785)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+
+    fact = _facts(cache_root)["localization"]
+
+    assert [(r["source"], r["value"]) for r in fact["readings"]] == [("run record", True)]
+    assert "48785 sequential upgrade steps" in fact["readings"][0]["shown"]
+    assert fact["agree"] is None
+
+
+def test_the_route_stats_the_file_again_and_shows_both_when_it_changed(tmp_path):
+    run_dir = _localization_run(tmp_path)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+    client = _client(cache_root)
+    before = next(f for f in client.get("/api/run/config").json()["facts"] if f["key"] == "localization")
+    assert not any(r["extra"] and r["extra"].get("now") for r in before["readings"])
+
+    (run_dir / "localization.jcb").write_bytes(b"z" * 4321)
+    after = next(f for f in client.get("/api/run/config").json()["facts"] if f["key"] == "localization")
+
+    stats = [r for r in after["readings"] if r["source"] == "files present"]
+    assert [r["extra"]["size_bytes"] for r in stats] == [1234, 4321]
+    assert stats[1]["extra"]["now"] is True
+    assert "changed since the ingest" in after["note"]
