@@ -244,6 +244,7 @@ def measure_values(
 
 
 _FRAME_CANDIDATES = 5
+_GROUP_COLUMNS = ("group", "n_sites", "n_placed", "first_iteration", "last_iteration")
 
 
 def _frames_not_measured(note: str, **found: object) -> ObsFramesLatency:
@@ -257,51 +258,107 @@ def _frames_not_measured(note: str, **found: object) -> ObsFramesLatency:
     )
 
 
+def _problem_artifact(body: bytes) -> str | None:
+    try:
+        artifact = json.loads(body).get("artifact")
+    except (ValueError, AttributeError):
+        return None
+    return artifact if isinstance(artifact, str) else None
+
+
+def _time_axis(server: BenchServer, group: str) -> tuple[dict | None, str]:
+    """The group's /obs/times answer, or None with why it could not be read."""
+    timed, body = server.get(f"/api/run/obs/times?group={quote(group, safe='')}")
+    if timed.status != 200:
+        return None, _problem_reason(timed, body)
+    try:
+        axis = json.loads(body)
+        return {"n_sites": int(axis["n_sites"]), "times": [float(t) for t in axis["times"]]}, ""
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        return None, f"the answer could not be read ({type(exc).__name__})"
+
+
 def measure_obs_frames(server: BenchServer, samples: int) -> ObsFramesLatency:
     """Time obs/frame on the placed group with the most sites times times, at its last iteration.
 
     The time covers the whole request, manifest reads included. The times are spread over the
-    group's exact time axis and the four statistics take turns.
+    group's exact time axis and the four statistics take turns. Every way this cannot run gives
+    no summary and one note that starts "obs/frame:".
     """
     import pyarrow as pa
 
     from pesto.api.obsmap import STATS
 
+    if samples < 1:
+        return _frames_not_measured("obs/frame: no frame requests were asked for, so none was timed")
     timed, body = server.get("/api/run/obs/groups")
+    if timed.status == 404 and _problem_artifact(body) == "obs_ens":
+        return _frames_not_measured(
+            "obs/frame: this run has no observation statistics, so the frame route is not measured"
+        )
     if timed.status != 200:
         return _frames_not_measured(
             f"obs/frame: could not read the observation groups ({_problem_reason(timed, body)}), "
             "so the frame route is not measured"
         )
-    table = pa.ipc.open_stream(body).read_all()
-    rows = table.to_pylist()
+    try:
+        table = pa.ipc.open_stream(body).read_all()
+        missing = [name for name in _GROUP_COLUMNS if name not in table.column_names]
+        rows = table.to_pylist() if not missing else []
+    except pa.ArrowException:
+        missing, rows = ["a readable table"], []
+    if missing:
+        return _frames_not_measured(
+            f"obs/frame: the observation groups answer could not be read (missing {', '.join(missing)}), "
+            "so the frame route is not measured"
+        )
 
-    # The first group of a tie wins, so the strict comparison below keeps the earlier one.
     placed = [row for row in rows if (row["n_placed"] or 0) > 0]
-    largest = sorted(placed, key=lambda row: -row["n_sites"])[:_FRAME_CANDIDATES]
+    if not placed and rows and all(row["n_placed"] is None for row in rows):
+        return _frames_not_measured(
+            "obs/frame: the placement of the sites could not be read, so no group is known to have a placed site"
+        )
+    if not placed:
+        return _frames_not_measured("obs/frame: no group has a placed site")
+    # Candidates stay in the groups' own order so a tie goes to the first of them.
+    keep = sorted(range(len(placed)), key=lambda i: -placed[i]["n_sites"])[:_FRAME_CANDIDATES]
     best: tuple[int, dict, dict] | None = None
-    for row in largest:
-        timed, body = server.get(f"/api/run/obs/times?group={quote(row['group'], safe='')}")
-        axis = json.loads(body)
-        size = int(axis["n_sites"]) * len(axis["times"])
+    unreadable: list[str] = []
+    for i in sorted(keep):
+        axis, why = _time_axis(server, placed[i]["group"])
+        if axis is None:
+            unreadable.append(why)
+            continue
+        size = axis["n_sites"] * len(axis["times"])
         if best is None or size > best[0]:
-            best = (size, row, axis)
-    assert best is not None
-    _size, row, axis = best
+            best = (size, placed[i], axis)
+    if best is None:
+        return _frames_not_measured(
+            f"obs/frame: the time axis of {len(unreadable)} group(s) could not be read "
+            f"(first: {unreadable[0]}), so there is no time axis to step through"
+        )
+    size, row, axis = best
     group, times = row["group"], axis["times"]
-    iteration = row["last_iteration"] if row["last_iteration"] is not None else row["first_iteration"]
+    if size == 0:
+        return _frames_not_measured(
+            "obs/frame: no group with a placed site has an exact time axis, so the frame route is not measured",
+            group=group,
+            n_sites=axis["n_sites"],
+            n_times=len(times),
+        )
+    iteration = int(row["last_iteration"] if row["last_iteration"] is not None else row["first_iteration"])
 
     spots = np.rint(np.linspace(0, len(times) - 1, samples)).astype(int)
     paths = [
         f"/api/run/obs/frame?group={quote(group, safe='')}&iteration={iteration}"
-        f"&time={quote(repr(float(times[spot])), safe='')}&stat={STATS[i % len(STATS)]}"
+        f"&time={quote(repr(times[spot]), safe='')}&stat={STATS[i % len(STATS)]}"
         for i, spot in enumerate(spots.tolist())
     ]
     summary, note = _time_kind(server, paths, "obs/frame")
     return ObsFramesLatency(
         group=group,
-        iteration=int(iteration),
-        n_sites=int(axis["n_sites"]),
+        iteration=iteration,
+        n_sites=axis["n_sites"],
         n_times=len(times),
         summary=summary,
         notes=[note] if note else [],
