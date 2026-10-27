@@ -305,6 +305,27 @@ def test_a_table_with_no_saved_to_line_is_filed_under_the_last_iteration_report_
     assert any("no saved-to line" in note and "iteration 2" in note for note in facts.notes)
 
 
+def test_the_notes_pestpp_prints_right_under_the_last_row_end_the_table_without_a_note_of_ours(
+    tmp_path,
+):
+    path = tmp_path / "case.rec"
+    path.write_text(
+        "   ---  parameter group change summary  ---    \n"
+        "group   count  mean chg  std chg  n at ubnd  % at ubnd  n at lbnd  % at lbnd  n std decr\n"
+        "hk_pp   4      1.5       2.5      3          1.0        7          2.0        0\n"
+        "    Note: parameter change summary sorted according to percent at bounds.\n"
+        "    Note: the parameter change statistics implicitly include the effect of \n"
+        "          realizations that have failed or have been dropped.\n"
+        "\n"
+        "...saved parameter change summary to case.1.pcs.csv\n"
+    )
+
+    facts = read_rec(path)
+
+    assert [r.group for r in facts.group_tables["case.1.pcs.csv"]] == ["hk_pp"]
+    assert not any("parameter group table" in note for note in facts.notes)
+
+
 def test_a_header_this_reader_does_not_know_leaves_the_table_out_and_says_so(tmp_path):
     path = tmp_path / "case.rec"
     path.write_text(
