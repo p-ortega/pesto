@@ -229,6 +229,65 @@ def test_the_config_sources_end_with_the_run_record_when_there_is_one(tmp_path):
     assert Path(planned["config"].sources[-1]).name == "case.rec"
 
 
+def test_the_config_sources_list_the_first_and_last_parameter_ensemble(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    run = discover(run_dir)
+
+    planned = {a.name: a for a in plan_artifacts(run, CacheLayout(root=tmp_path / "cache"))}
+
+    assert str(run.par_ens[0]) in planned["config"].sources
+    assert str(run.par_ens[1]) in planned["config"].sources
+
+
+def test_a_rewritten_last_ensemble_makes_the_setup_facts_stale(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    manifest.run_dir = str(run_dir)
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+    assert is_planned_stale(manifest, layout, planned["config"]) is False
+
+    with (run_dir / "case.1.par.jcb").open("ab") as handle:
+        handle.write(b"\0")
+
+    assert is_planned_stale(manifest, layout, planned["config"]) is True
+
+
+def test_a_new_last_iteration_makes_the_setup_facts_stale(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    manifest.run_dir = str(run_dir)
+    (run_dir / "case.2.par.jcb").write_bytes((run_dir / "case.1.par.jcb").read_bytes())
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+
+    assert is_planned_stale(manifest, layout, planned["config"]) is True
+
+
+def test_a_replaced_obs_noise_file_makes_the_setup_facts_stale(tmp_path):
+    run_dir = tmp_path / "band-run"
+    make_obs_run(run_dir, with_noise=True)
+    cache_root = tmp_path / "band-cache"
+    ingest_run(run_dir, cache_root=cache_root)
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    manifest.run_dir = str(run_dir)
+    noise = discover(run_dir).noise
+    assert noise is not None
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+    assert str(noise) in planned["config"].sources
+    assert is_planned_stale(manifest, layout, planned["config"]) is False
+
+    with noise.open("ab") as handle:
+        handle.write(b"\0")
+
+    assert is_planned_stale(manifest, layout, planned["config"]) is True
+
+
 def test_the_config_sources_have_no_run_record_when_there_is_none(tmp_path):
     run_dir, _ = _setup(tmp_path, rec=False)
     run = discover(run_dir)
