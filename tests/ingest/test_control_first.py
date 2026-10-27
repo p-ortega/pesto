@@ -179,6 +179,8 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
         "par_agg/0",
         "par_ens/1",
         "par_agg/1",
+        "par_change",
+        "par_groups",
         *_obs_ens_names(run, (0, 1)),
         "config",
     ]
@@ -196,6 +198,8 @@ def test_a_run_with_no_grid_file_plans_no_grid_no_par_cell_and_no_obs_cell(tmp_p
         "obs_index",
         "par_ens/0",
         "par_agg/0",
+        "par_change",
+        "par_groups",
         *_obs_ens_names(run, (0,)),
         "config",
     ]
@@ -217,6 +221,8 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
         "obs_cell",
         "par_ens/0",
         "par_agg/0",
+        "par_change",
+        "par_groups",
         *_obs_ens_names(run, (0,)),
         "pp_factors",
         "config",

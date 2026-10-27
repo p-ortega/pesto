@@ -180,6 +180,11 @@ def make_par_view_run(
     csv_path = root / f"{case}.par_data.csv"
     frame = pd.read_csv(csv_path, keep_default_na=False)
     by_name = {row["parnme"]: row for row in csv_rows}
+    # pyemu writes the table in its own order, so the run's order is read back.
+    par_names = [str(n) for n in frame["parnme"]]
+    group_names = {}
+    for pname in par_names:
+        group_names.setdefault(by_name[pname]["pargp"], []).append(pname)
     for column in ("pargp", "partrans", "parlbnd", "parubnd", "partied"):
         frame[column] = [by_name[n][column] for n in frame["parnme"]]
     if ptype_column:
