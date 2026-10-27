@@ -804,6 +804,12 @@ def _pdc_inputs(run: RunLayout, iteration: int) -> tuple[str | None, str | None]
     return None, str(weights)
 
 
+def par_view_iterations(run: RunLayout, selected: Sequence[int]) -> list[int]:
+    """The selected iterations that have a parameter ensemble, in order. The
+    Params tab and the setup facts both use exactly these."""
+    return sorted({k for k in selected if run.par_ens.get(k) is not None})
+
+
 def _plan_par_view(
     artifacts: list[PlannedArtifact],
     run: RunLayout,
@@ -817,7 +823,7 @@ def _plan_par_view(
 
     ``par_groups`` lists both ensemble files as well, so a rewritten ensemble
     makes it stale along with the change table it is built from."""
-    planned = sorted({k for k in selected if run.par_ens.get(k) is not None})
+    planned = par_view_iterations(run, selected)
     if not planned:
         return
     first, last = planned[0], planned[-1]
@@ -979,12 +985,17 @@ def plan_artifacts(
         config_sources = par_cell_sources
     else:
         config_sources = control_sources
-    # The record and the reinflate file names are read for the setup facts. The
-    # localization file is never a source: it can be hundreds of megabytes.
+    # The record, the reinflate names, the two end ensembles and the noise file
+    # are read for the setup facts. The localization file is never a source: it
+    # can be hundreds of megabytes.
+    par_view = par_view_iterations(run, selected)
+    end_ensembles = tuple(str(run.par_ens[k]) for k in (par_view[:1] + par_view[-1:]))
     config_sources = _unique(
         (
             *config_sources,
             *sorted(str(path) for key, path in run.pcs.items() if key[1] == "reinflate"),
+            *end_ensembles,
+            *((str(run.noise),) if run.noise is not None else ()),
             *((str(run.rec),) if run.rec is not None else ()),
         )
     )
@@ -1740,8 +1751,15 @@ def ingest_run(
         seconds = time.perf_counter() - start
 
         if artifact.kind in _CONTROL_DEPENDENTS:
+            # config lists the end ensembles without needing them, so a failed
+            # ensemble does not cost the setup facts; it still reuses their hashes.
+            upstream = (
+                tuple(a.name for a in planned if a.kind == "par_ens")
+                if artifact.kind == "config"
+                else artifact.needs
+            )
             sources, unfingerprinted = _fingerprint_as_upstream_read_them(
-                manifest, artifact.sources, artifact.needs
+                manifest, artifact.sources, upstream
             )
         else:
             sources, unfingerprinted = _fingerprint_sources(artifact.sources)
