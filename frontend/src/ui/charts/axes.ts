@@ -29,9 +29,12 @@ export function logAxis(nativeDomain: [number, number], range: [number, number])
   const [lo, hi] = nativeDomain
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo <= 0 || hi <= lo) return null
   const scale = scaleLog().domain(nativeDomain).range(range)
-  const format = scale.tickFormat()
+  // About one label per 50 px; d3 blanks the rest so a narrow chart over
+  // many decades does not print labels on top of each other.
+  const count = Math.max(2, Math.floor(Math.abs(range[1] - range[0]) / 50))
+  const format = scale.tickFormat(count)
   return {
     toPx: (value) => scale(value),
-    ticks: scale.ticks().map((value) => ({ value, label: format(value), px: scale(value) })),
+    ticks: scale.ticks(count).map((value) => ({ value, label: format(value), px: scale(value) })),
   }
 }
