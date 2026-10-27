@@ -118,7 +118,7 @@ def _build_rows(index, group: str) -> GroupRows | ReadFailure:
     stop = start + int(counts.sum())
     n_sites = int(member.size)
 
-    kinds = list(dict.fromkeys(str(k) for k in sites["time_kind"].to_numpy()[member]))
+    kinds = sorted({str(k) for k in sites["time_kind"].to_numpy()[member]})
     group_row = index.groups.loc[index.groups["group"] == group, "time_kind"]
     time_kind = str(group_row.iloc[0]) if len(group_row) else (kinds[0] if len(kinds) == 1 else "mixed")
     refused = None
