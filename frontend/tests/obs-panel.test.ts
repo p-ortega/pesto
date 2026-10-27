@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
-import type { ObsGroupRow } from '../src/data/obs'
+import type { ObsGroupRow, ObsSiteRow } from '../src/data/obs'
 import { renderObsPanel, type ObsPanelOptions } from '../src/ui/obs-panel'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
@@ -84,6 +84,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   obsApi.fetchObsGroups.mockReset()
   obsApi.fetchObsSites.mockReset()
+  obsApi.fetchObsSites.mockResolvedValue({ ok: true, rows: [], notes: [] })
   obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('gw_head'), group('gw_date')]))
 })
 
@@ -413,5 +414,236 @@ describe('the narrow-panel layout', () => {
   it('sets the spaghetti panel height and the width of both plot hosts', () => {
     expect(rule('.obs-spaghetti canvas')).toMatch(/height:\s*200px/)
     expect(rule('.obs-spaghetti canvas')).not.toMatch(/#/)
+  })
+})
+
+function site(id: number, name: string, over: Partial<ObsSiteRow> = {}): ObsSiteRow {
+  return { siteId: id, site: name, nObs: 7, x: 1, y: 2, xySource: 'own', layer: 1, cell: 4, rule: 'xy columns', note: null, ...over }
+}
+
+function sitesAnswer(rows: ObsSiteRow[], notes: string[] = []) {
+  return { ok: true, rows, notes }
+}
+
+function siteRows(host: HTMLElement): HTMLElement[] {
+  return [...host.querySelectorAll<HTMLElement>('.obs-sites .obs-grid-row')]
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => (resolve = r))
+  return { promise, resolve }
+}
+
+async function openWithGroups(over: Partial<ObsPanelOptions> = {}) {
+  const view = mount(over)
+  await vi.waitFor(() => expect(groupRows(view.host).length).toBe(2))
+  return view
+}
+
+describe('the site list', () => {
+  beforeEach(() => {
+    obsApi.fetchObsSites.mockImplementation(async (name: string) =>
+      sitesAnswer(
+        name === 'gw_head'
+          ? [site(40, 'well_a'), site(41, 'well_b', { layer: -1, xySource: 'none', cell: -1, note: 'no x or y in the file', rule: 'none' })]
+          : [site(50, 'date_a')],
+      ),
+    )
+  })
+
+  it('asks the user to choose a group before one is chosen', async () => {
+    const { host } = await openWithGroups()
+
+    expect(host.querySelector('.obs-sites')?.textContent).toContain('Choose a group above to list its sites')
+    expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
+  })
+
+  it("lists the chosen group's sites with name, observations, layer and placement", async () => {
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    expect(obsApi.fetchObsSites).toHaveBeenCalledWith('gw_head', expect.anything())
+    const [a, b] = siteRows(host)
+    expect(cell(a, 'site').textContent).toBe('well_a')
+    expect(cell(a, 'n_obs').textContent).toBe('7')
+    expect(cell(a, 'layer').textContent).toBe('1')
+    expect(cell(a, 'placement').textContent).toBe('own position')
+    expect(cell(b, 'site').textContent).toBe('well_b')
+    expect(cell(b, 'layer').textContent).toBe('unknown')
+    expect(cell(b, 'placement').textContent).toBe('not placed')
+    expect(cell(b, 'placement').title).toBe('no x or y in the file')
+    expect(host.querySelector('.obs-sites-title')?.textContent).toBe('gw_head: 2 sites')
+  })
+
+  it('shows the site by name and keys it by site_id, never by position', async () => {
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    expect(siteRows(host).map((r) => r.dataset.siteId)).toEqual(['40', '41'])
+    expect(siteRows(host).map((r) => cell(r, 'site').textContent)).toEqual(['well_a', 'well_b'])
+  })
+
+  it('writes the clicked site_id to the selection with the origin obs and marks the row', async () => {
+    const store = makeStore()
+    const heard: { sites: number[]; origins: string[] }[] = []
+    store.subscribe(
+      (s) => s.sites,
+      (next, _prev, origins) => heard.push({ sites: [...next.sites], origins: [...origins] }),
+    )
+    const { host } = await openWithGroups({ store })
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    siteRows(host)[1].click()
+    store.flush()
+
+    expect(heard).toEqual([{ sites: [41], origins: ['obs'] }])
+    expect(siteRows(host)[1].getAttribute('aria-selected')).toBe('true')
+    expect(siteRows(host)[0].getAttribute('aria-selected')).toBe('false')
+  })
+
+  it('marks a site that another view selected', async () => {
+    const { host, store } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    store.set({ sites: new Set([40]) }, 'map')
+    store.flush()
+
+    expect(siteRows(host)[0].getAttribute('aria-selected')).toBe('true')
+    expect(siteRows(host)[1].getAttribute('aria-selected')).toBe('false')
+  })
+
+  it('follows a group chosen on the map, and ignores one the table does not hold', async () => {
+    const { host, store } = await openWithGroups()
+
+    store.set({ obsGroups: new Set(['gw_date']) }, 'map')
+    store.flush()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('true')
+    expect(cell(siteRows(host)[0], 'site').textContent).toBe('date_a')
+
+    obsApi.fetchObsSites.mockClear()
+    store.set({ obsGroups: new Set(['not_a_group']) }, 'map')
+    store.flush()
+    await Promise.resolve()
+
+    expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
+    expect(cell(siteRows(host)[0], 'site').textContent).toBe('date_a')
+    expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('does not fetch again for its own echo', async () => {
+    const { host, store } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    store.flush()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    expect(obsApi.fetchObsSites).toHaveBeenCalledTimes(1)
+  })
+
+  it('follows a group already in the selection when the table arrives', async () => {
+    const { host } = await openWithGroups({ store: makeStore(['gw_date']) })
+
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('draws only the second group when the first answer lands late', async () => {
+    const slow = deferred<ReturnType<typeof sitesAnswer>>()
+    obsApi.fetchObsSites.mockImplementation((name: string) =>
+      name === 'gw_head' ? slow.promise : Promise.resolve(sitesAnswer([site(50, 'date_a')])),
+    )
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    groupRows(host)[1].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    slow.resolve(sitesAnswer([site(40, 'well_a'), site(41, 'well_b')]))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(siteRows(host).map((r) => cell(r, 'site').textContent)).toEqual(['date_a'])
+    expect(host.querySelector('.obs-sites-title')?.textContent).toBe('gw_date: 1 site')
+  })
+
+  it('shows the reason in place of the list when the sites are refused', async () => {
+    obsApi.fetchObsSites.mockResolvedValue({ ok: false, artifact: 'obs_cell', reason: 'obs_cell is not in the cache' })
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(host.querySelector('.obs-sites .notice-parts')).not.toBeNull())
+
+    expect(host.querySelector('.obs-sites')?.textContent).toContain('obs_cell: obs_cell is not in the cache')
+    expect(siteRows(host).length).toBe(0)
+  })
+
+  it('tries again when the same group is chosen after a refusal', async () => {
+    obsApi.fetchObsSites.mockResolvedValueOnce({ ok: false, artifact: 'obs_cell', reason: 'not ready' })
+    const { host } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(host.querySelector('.obs-sites .notice-parts')).not.toBeNull())
+
+    groupRows(host)[0].click()
+
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+  })
+
+  it('shows the server notes that came with the sites', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, 'well_a')], ['2 sites have no position']))
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+
+    expect(host.querySelector('.obs-sites')?.textContent).toContain('2 sites have no position')
+  })
+
+  it('notes a group chosen on the map while hidden, and fetches only when shown', async () => {
+    const { host, store, handle } = await openWithGroups()
+    handle.onHide()
+
+    store.set({ obsGroups: new Set(['gw_date']) }, 'map')
+    store.flush()
+    await Promise.resolve()
+    expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    expect(obsApi.fetchObsSites).toHaveBeenCalledTimes(1)
+    expect(obsApi.fetchObsSites).toHaveBeenCalledWith('gw_date', expect.anything())
+  })
+
+  it('windows a group of 9,086 sites', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer(Array.from({ length: 9086 }, (_, i) => site(i, `site_${i}`))))
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBeGreaterThan(0))
+    expect(siteRows(host).length).toBeLessThan(100)
+
+    const pane = host.querySelector<HTMLElement>('.obs-sites .obs-grid > .scroll-pane')!
+    pane.scrollTop = 7000 * 24
+    pane.dispatchEvent(new Event('scroll'))
+
+    expect(siteRows(host).map((r) => r.dataset.siteId)).toContain('7000')
+    expect(siteRows(host).length).toBeLessThan(100)
+  })
+
+  it('stops following the selection once disposed', async () => {
+    const { host, store, handle } = await openWithGroups()
+
+    handle.dispose()
+    store.set({ obsGroups: new Set(['gw_date']) }, 'map')
+    store.flush()
+    await Promise.resolve()
+
+    expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
+    expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('false')
   })
 })
