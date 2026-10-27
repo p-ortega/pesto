@@ -84,6 +84,8 @@ export async function apiPut(route: string, body: unknown): Promise<unknown> {
 export interface BytesResult {
   buffer: ArrayBuffer
   meta: Record<string, unknown> | null
+  // The server's notes on an Arrow answer; the key is absent when it sent none.
+  notes?: string[]
 }
 
 // apiGet's binary sibling. Shares handleResponse's failure handling, but
@@ -99,7 +101,9 @@ export async function apiGetBytes(route: string, opts?: FetchOptions): Promise<B
   }
   const buffer = await response.arrayBuffer()
   const raw = response.headers.get('X-Pesto-Meta')
-  return { buffer, meta: raw ? (JSON.parse(raw) as Record<string, unknown>) : null }
+  const meta = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+  const rawNotes = response.headers.get('X-Pesto-Notes')
+  return rawNotes ? { buffer, meta, notes: JSON.parse(rawNotes) as string[] } : { buffer, meta }
 }
 
 function typedArrayForDtype(dtype: string, buffer: ArrayBuffer): Float32Array | Int32Array | Uint32Array {
