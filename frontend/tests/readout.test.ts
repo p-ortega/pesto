@@ -244,6 +244,12 @@ describe('renderReadout', () => {
       expect((div as HTMLElement).style.color).toBe('var(--ink-muted)')
     })
 
+    it('says why the observed value could not be read, as text', () => {
+      const el = render([site({ observed: { kind: 'unavailable', reason: 'obs_index: <b>gone</b>' } })])
+      expect(el.textContent).toContain('the observed value could not be read: obs_index: <b>gone</b>')
+      expect(el.querySelector('b')).toBeNull()
+    })
+
     it('a null statistic reads no value at this time', () => {
       const el = render([site({ stat: { label: 'Residual', value: null, iteration: 2 } })])
       expect(el.textContent).toContain('Residual, iteration 2: no value at this time')
