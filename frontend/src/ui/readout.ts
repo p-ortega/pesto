@@ -8,6 +8,28 @@ import type { Contributor } from '../data/fields'
 import type { CellClass, ParIdentity } from '../data/parmap'
 
 const CONTESTED_ROW_CAP = 20
+const SITE_CAP = 20
+
+export interface SiteReadoutEntry {
+  name: string
+  group: string
+  /** World coordinates; the caller adds the mesh origin back. */
+  x: number
+  y: number
+  xySource: 'own' | 'cell_centre'
+  layer: number | null
+  cell: number
+  rule: string
+  /** Already formatted in the site's time kind. */
+  timeText: string
+  observed:
+    | { kind: 'value'; value: number }
+    | { kind: 'zero_weight'; value: number }
+    | { kind: 'no_value' }
+    | { kind: 'no_observation' }
+    | { kind: 'loading' }
+  stat: { label: string; value: number | null; iteration: number }
+}
 
 export type ReadoutPick =
   | { kind: 'none' }
@@ -22,6 +44,7 @@ export type ReadoutPick =
       classification: CellClass
     }
   | { kind: 'point'; row: number; layer: number; x: number; y: number; selectionLabel: string }
+  | { kind: 'sites'; entries: SiteReadoutEntry[]; total: number }
 
 export interface ReadoutOptions {
   pick: ReadoutPick
@@ -69,6 +92,33 @@ function appendFooter(el: HTMLElement, layer: number, cellId: number, selectionL
   appendLine(el, `layer ${layer}, cell ${cellId} · ${selectionLabel}`, 'label')
 }
 
+function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
+  const block = document.createElement('div')
+  const name = appendLine(block, `${site.name} (${site.group})`, 'body', 'truncate')
+  name.title = site.name
+  const where = site.xySource === 'own' ? 'own coordinates' : "centre of the cell's vertices"
+  appendLine(block, `x ${site.x.toFixed(0)}, y ${site.y.toFixed(0)} (${where})`, 'label')
+  const layer = site.layer === null ? 'layer unknown' : `layer ${site.layer}`
+  appendLine(block, `${layer}, cell ${site.cell} · placed by ${site.rule}`, 'label', 'truncate').title = site.rule
+  appendLine(block, site.timeText, 'label')
+  const obs = site.observed
+  if (obs.kind === 'value') {
+    appendLine(block, `observed ${formatValue(obs.value)}`, 'label')
+  } else if (obs.kind === 'zero_weight') {
+    appendLine(block, `observed ${formatValue(obs.value)} — zero weight: a model output, not fitted`, 'label', 'wrap-note')
+  } else if (obs.kind === 'no_value') {
+    appendLine(block, 'no measured value', 'label')
+  } else if (obs.kind === 'no_observation') {
+    appendLine(block, 'no observation at this time', 'label')
+  } else {
+    appendLine(block, 'reading the observed value…', 'label').style.color = 'var(--ink-muted)'
+  }
+  const { label, value, iteration } = site.stat
+  const stat = value === null ? 'no value at this time' : formatValue(value)
+  appendLine(block, `${label}, iteration ${iteration}: ${stat}`, 'label', 'truncate')
+  el.appendChild(block)
+}
+
 export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   el.textContent = ''
   el.classList.add('floating')
@@ -76,6 +126,15 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   if (opts.pick.kind === 'none') {
     const line = appendLine(el, 'Click a cell to see its value.', 'label')
     line.style.color = 'var(--ink-muted)'
+    return
+  }
+
+  if (opts.pick.kind === 'sites') {
+    const { entries, total } = opts.pick
+    if (total > 1) appendLine(el, `${total} sites at this spot`, 'heading')
+    const shown = entries.slice(0, SITE_CAP)
+    for (const site of shown) appendSite(el, site)
+    if (total > shown.length) appendLine(el, `${total - shown.length} more sites here are not listed`, 'label')
     return
   }
 
