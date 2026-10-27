@@ -287,6 +287,39 @@ def test_a_row_of_the_wrong_width_goes_into_a_note_naming_its_line_and_not_into_
     assert any(f"line {bad_line}" in note and "'bad'" in note for note in facts.notes)
 
 
+def _table_text(tmp_path, name, rows):
+    path = write_rec(tmp_path / name, group_tables={"case.1.pcs.csv": rows})
+    text = path.read_text()
+    return text[text.index("   ---  parameter group change"):]
+
+
+def test_a_second_different_table_for_the_same_file_is_left_out_with_a_note_naming_both(tmp_path):
+    first = [("hk_pp", 4, 0.01, 3.8, 226, 76.09, 71, 23.91, 0)]
+    second = [("hk_pp", 4, 9.99, 3.8, 226, 76.09, 71, 23.91, 0)]
+    path = write_rec(tmp_path / "case.rec", group_tables={"case.1.pcs.csv": first})
+    path.write_text(path.read_text() + "\n" + _table_text(tmp_path, "other.rec", second))
+    lines = path.read_text().splitlines()
+    headings = [i for i, t in enumerate(lines, 1) if "parameter group change" in t]
+
+    facts = read_rec(path)
+
+    assert [r.mean_chg for r in facts.group_tables["case.1.pcs.csv"]] == [0.01]
+    assert any(
+        f"lines {headings[0]} and {headings[1]}" in note and "case.1.pcs.csv" in note and "first is kept" in note
+        for note in facts.notes
+    )
+
+
+def test_a_second_identical_table_for_the_same_file_needs_no_note(tmp_path):
+    rows = [("hk_pp", 4, 0.01, 3.8, 226, 76.09, 71, 23.91, 0)]
+    path = write_rec(tmp_path / "case.rec", group_tables={"case.1.pcs.csv": rows})
+    path.write_text(path.read_text() + "\n" + _table_text(tmp_path, "other.rec", rows))
+
+    facts = read_rec(path)
+
+    assert not any("saved to case.1.pcs.csv" in note for note in facts.notes)
+
+
 def test_a_table_with_no_saved_to_line_is_filed_under_the_last_iteration_report_with_a_note(
     tmp_path,
 ):

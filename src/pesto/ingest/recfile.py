@@ -10,7 +10,7 @@ a note saying what was looked for.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -234,6 +234,7 @@ class _GroupTables:
     def __init__(self, case: str) -> None:
         self.case = case
         self.tables: dict[str, tuple[RecGroupRow, ...]] = {}
+        self._table_lines: dict[str, int] = {}
         self.notes: list[str] = []
         self.report_iteration: int | None = None
         self._open: dict | None = None
@@ -250,9 +251,9 @@ class _GroupTables:
         if self._waiting is not None and "saved parameter change summary" in line:
             match = _SAVED_RE.search(line)
             if match:
-                _line, rows, _iteration = self._waiting
+                table_line, rows, _iteration = self._waiting
                 self._waiting = None
-                self.tables.setdefault(re.split(r"[\\/]", match.group(1))[-1], rows)
+                self._file(re.split(r"[\\/]", match.group(1))[-1], rows, table_line)
                 return True
         return False
 
@@ -309,7 +310,19 @@ class _GroupTables:
         self.notes.append(
             f"the parameter group table at line {line} has no saved-to line after it, {where}"
         )
-        self.tables.setdefault(key, rows)
+        self._file(key, rows, line)
+
+    def _file(self, key: str, rows: tuple[RecGroupRow, ...], line: int) -> None:
+        """File ``rows`` under ``key``. A second, different table for the same
+        name is left out and a note names both tables."""
+        if key not in self.tables:
+            self.tables[key] = rows
+            self._table_lines[key] = line
+        elif [replace(r, line=0) for r in self.tables[key]] != [replace(r, line=0) for r in rows]:
+            self.notes.append(
+                f"the parameter group tables at lines {self._table_lines[key]} and {line} are both "
+                f"saved to {key} and differ; the first is kept"
+            )
 
 
 def read_rec(path: Path) -> RecFacts | ReadFailure:
