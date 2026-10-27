@@ -7,7 +7,8 @@
 import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
 import { chipFactsFrom, type ConfigFact } from '../data/config'
-import { pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
+import { pickPoint, pickPointsWithin, pointsOnLayer, type DrawnPoints } from '../data/points'
+import { fetchObsGroups, fetchObsSite, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
 import { frameLogInstalled, markFrame } from '../perf'
@@ -30,7 +31,15 @@ import { renderLegend } from '../ui/legend'
 import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
 import type { RealNamesResult } from '../data/reals'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
-import { renderReadout, type ReadoutPick } from '../ui/readout'
+import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
+import { formatTimeValue } from '../ui/charts/time-axis'
+import {
+  isObsStat,
+  OBS_RAMP,
+  renderObsColourControls,
+  renderObsLegend,
+  type ObsColourControlsHandle,
+} from '../ui/obs-colour-controls'
 import {
   prefersReducedMotion,
   renderHeader,
@@ -55,6 +64,16 @@ import {
   type RecordedPlacement,
   type UnmappedEntry,
 } from './parameter-field-source'
+import {
+  carryTime,
+  countsAtTime,
+  createObservationStatSource,
+  dotsFor,
+  valuesForDots,
+  type ObsDots,
+  type ObsGroupData,
+  type TimePosition,
+} from './observation-stat-source'
 import type { SharedSelection } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 
@@ -153,6 +172,11 @@ export function openingIteration(config: RunConfig | null, state: IngestState): 
     note: "Neither the run's configuration nor the ingest names an iteration, so the map tries iteration 0.",
   }
 }
+
+type ObsSiteRead = { state: 'loading' } | { state: 'done'; payload: ObsSitePayload } | { state: 'failed'; reason: string }
+
+// A site's observed value is read for at most this many listed entries.
+const OBS_SITE_LIST_CAP = 20
 
 function formatSeconds(seconds: number): string {
   return `${seconds.toFixed(1)} s`
@@ -297,6 +321,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const legendEl = document.createElement('div')
   legendEl.classList.add('floating-bottom-left')
   const pickerEl = document.createElement('div')
+  // Hidden by the .colour-obs rules while the map is coloured by observations.
+  pickerEl.setAttribute('data-colour-source', 'par')
   const readoutEl = document.createElement('div')
   readoutEl.classList.add('floating-bottom-right')
   topLeftEl.appendChild(pickerEl)
@@ -313,6 +339,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   iterationNotes.appendChild(drawnNoticeEl)
   iterationNotes.appendChild(selectedNoticeEl)
   mapNotice.appendChild(iterationNotes)
+  // The observation colouring's own notice, replaced on every draw, never stacked.
+  const obsNoticeEl = document.createElement('div')
+  obsNoticeEl.setAttribute('data-testid', 'obs-notices')
+  obsNoticeEl.setAttribute('role', 'status')
+  mapNotice.appendChild(obsNoticeEl)
   mapCanvasArea.appendChild(topLeftEl)
   mapCanvasArea.appendChild(canvas)
   mapCanvasArea.appendChild(legendEl)
@@ -451,6 +482,31 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // The points behind an interpolated cell, fetched on click and kept until
   // the drawn field changes.
   const contributorsMemo = new Map<number, Contributor[] | { failed: string }>()
+
+  // Observation colouring (D-21 to D-26): one group's sites as dots, coloured from a frame.
+  const obsSource = createObservationStatSource({ runId: opts.state.runId ?? null })
+  const loadObsGroups = shareRead(() => fetchObsGroups())
+  let obsControls: ObsColourControlsHandle | null = null
+  // True while the dots own the layer; a parameter field must not draw over them.
+  let obsActive = false
+  // The iteration has no statistics: the parameter colouring is back and a notice says why.
+  let obsParked = false
+  let obsSerial = 0
+  let obsGroupInUse: string | null = null
+  let obsData: ObsGroupData | null = null
+  let obsDots: ObsDots | null = null
+  let obsFrame: Float32Array | null = null
+  let obsStat: ObsStat = 'resid_mean'
+  let obsIteration = 0
+  let obsTimePos: TimePosition | null = null
+  let obsAllLayers = false
+  let obsLayerMoved: number | null = null
+  let obsDotsKey = ''
+  let obsLookLayer: number | null = null
+  let obsPick: ReadoutPick | null = null
+  // Site rows (not dot positions) of the last click, so a time or layer change can redraw its readout.
+  let obsPickedRows: number[] = []
+  const obsSiteMemo = new Map<number, ObsSiteRead>()
 
   function interpolatedEntry(group: string | null): PpGroupInfo | null {
     return findInterpolatedEntry(ppIndex, group)
@@ -605,6 +661,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // already holds the field and the D-05 join, so there is no fetch and no
   // loading state here (D-08).
   function updateReadout(): void {
+    if (obsPick !== null) {
+      renderReadout(readoutEl, { pick: obsPick, group: obsGroupInUse ?? '', joined, field: new Float32Array(0) })
+      return
+    }
     const group = drawnGroup ?? ''
     const field = rawFullField ?? new Float32Array(0)
     const classification = selectedCellId !== null ? currentClasses[selectedCellId] : undefined
@@ -669,7 +729,21 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const [wx, wy] = camera.screenToWorld(x, y)
     // Dots are sized in device pixels, so the reach is 6 CSS pixels at the device's ratio.
     const reach = 6 * (window.devicePixelRatio || 1)
-    const pointIndex = pickPoint(currentPoints, wx, wy, camera.screenToWorld(x + reach, y)[0] - wx)
+    const reachWorld = camera.screenToWorld(x + reach, y)[0] - wx
+    if (obsActive && obsDots !== null && obsData !== null) {
+      const hits = pickPointsWithin({ rows: obsDots.rows, xy: obsDots.xy }, wx, wy, reachWorld)
+      if (hits.length > 0) {
+        pickObservationSites(hits)
+        return
+      }
+      // A miss takes the site ring and readout away, and the sites out of the store with them.
+      if (obsPick !== null || store.get().sites.size > 0) {
+        obsPick = null
+        obsPickedRows = []
+        store.set({ sites: new Set() }, 'map')
+      }
+    }
+    const pointIndex = pickPoint(currentPoints, wx, wy, reachWorld)
     if (pointIndex !== null) {
       clearSelection(false)
       selectedPointRow = currentPoints.rows[pointIndex]
@@ -1126,6 +1200,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // of the group, rather than just the current one, is what keeps the
   // layer slider from moving the legend's own end values (D-01).
   function deriveAndDraw(): void {
+    if (obsActive) {
+      void drawObservations()
+      return
+    }
     if (!rawFullField || !layer) {
       renderLegend(legendEl, null)
       return
@@ -1314,7 +1392,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const patch: Partial<SharedSelection> = {}
     if (before === null || choice.layer !== before.layer) patch.layer = choice.layer
     if (before === null || choice.iteration !== before.iteration) patch.iteration = choice.iteration
-    if (before === null || choice.stat !== before.stat) patch.colour = { source: 'par', stat: choice.stat }
+    // While the map is coloured by observations the colour belongs to them, not to this statistic.
+    if ((before === null || choice.stat !== before.stat) && store.get().colour.source === 'par') {
+      patch.colour = { source: 'par', stat: choice.stat }
+    }
     const named = choice.stat === 'value' ? choice.realization : null
     if (named !== null && (before === null || before.stat !== 'value' || named !== before.realization)) {
       patch.reals = new Set([named])
@@ -1398,6 +1479,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   function handleSelectionChange(next: FieldChoice): void {
+    if (obsActive) {
+      // Only the layer slider is visible in observation mode; the parameter choices stay as they were.
+      committed = { ...committed, layer: next.layer }
+      publishChoice({ ...reported, layer: next.layer })
+      void drawObservations()
+      scheduleViewWrite()
+      return
+    }
     if (next.realization !== null) {
       wantedRealization = next.realization
       realizationMissing = false
@@ -1462,6 +1551,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     scaledFieldScale = null
     currentClasses = []
     currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
+    if (obsActive) {
+      // The dots are not parameter fields; they keep drawing.
+      void drawObservations()
+      return
+    }
     clearSelection()
     renderLegend(legendEl, null)
     if (layer) {
@@ -1696,6 +1790,400 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (group === (pendingGroup ?? drawnGroup)) return
     paintPicker({ ...paintedPicker, selected: group })
     handleGroupChange(group)
+  }
+
+  // ---- observation colouring ----
+
+  function showObsNotice(title: string, detail: string, tone: NoticeTone = 'warning'): void {
+    obsNoticeEl.textContent = ''
+    addNotice(obsNoticeEl, { title, detail, tone })
+  }
+
+  function sitesText(n: number): string {
+    return n === 1 ? '1 site' : `${n} sites`
+  }
+
+  // Cells outside the model are outlined, as under the parameter field.
+  function obsInactiveMask(active: Uint8Array): Uint8Array {
+    const mask = new Uint8Array(active.length)
+    for (let c = 0; c < mask.length; c++) mask[c] = active[c] ? 0 : 1
+    return mask
+  }
+
+  // No parameter field, the quiet footprint only, and no dot until the frame lands.
+  function enterObsLook(): void {
+    if (!layer || !mesh) return
+    if (obsActive && obsLookLayer === committed.layer) return
+    const fresh = !obsActive
+    obsActive = true
+    obsLookLayer = committed.layer
+    mapCanvasArea.classList.add('colour-obs')
+    const active = activeMaskFor(committed.layer)
+    layer.setMissingStyle('ring')
+    layer.setValues(new Float32Array(mesh.nCells).fill(Number.NaN))
+    layer.setContested(new Uint8Array(mesh.nCells))
+    layer.setFootprint(active)
+    layer.setInactive(obsInactiveMask(active))
+    layer.setPoints(new Float32Array(0), new Float32Array(0))
+    obsDotsKey = ''
+    selectedPointRow = null
+    layer.setSelectedPoint(null)
+    if (fresh) renderObsLegend(legendEl, null)
+  }
+
+  // Nothing is drawn as a dot: a failure or an empty group says so, and no stale dot stays.
+  function clearObsDots(): void {
+    obsDots = null
+    obsFrame = null
+    obsDotsKey = ''
+    obsPick = null
+    obsPickedRows = []
+    layer?.setPoints(new Float32Array(0), new Float32Array(0))
+    layer?.setSelectedPoint(null)
+    renderObsLegend(legendEl, null)
+    redraw()
+    updateReadout()
+  }
+
+  // Puts the parameter colouring back exactly as the held field has it.
+  function restoreParameterLook(): void {
+    obsSerial += 1
+    obsActive = false
+    obsLookLayer = null
+    obsGroupInUse = null
+    obsDots = null
+    obsFrame = null
+    obsDotsKey = ''
+    obsPick = null
+    obsPickedRows = []
+    mapCanvasArea.classList.remove('colour-obs')
+    if (!layer) return
+    layer.setMissingStyle('discard')
+    layer.setSelectedPoint(null)
+    if (rawFullField !== null) {
+      deriveAndDraw()
+    } else {
+      layer.setValues(new Float32Array(mesh?.nCells ?? 0).fill(Number.NaN))
+      layer.setPoints(new Float32Array(0), new Float32Array(0))
+      layer.setFootprint(null)
+      layer.setInactive(drawnInactiveMask())
+      renderLegend(legendEl, null)
+      redraw()
+    }
+    updateReadout()
+  }
+
+  function leaveObservations(): void {
+    obsParked = false
+    obsNoticeEl.textContent = ''
+    restoreParameterLook()
+  }
+
+  // The chosen iteration has no observation statistics: never another iteration's, the parameter colouring instead.
+  function parkObservations(title: string, detail: string): void {
+    if (!obsParked || obsActive) restoreParameterLook()
+    obsParked = true
+    showObsNotice(title, detail, 'warning')
+  }
+
+  // The same path a layer written by another view takes, but this view is the writer.
+  function moveObsLayer(target: number): void {
+    committed = { ...committed, layer: target }
+    reported = { ...reported, layer: target }
+    controlsHandle?.setLayer(target)
+    store.set({ layer: target }, 'map')
+    scheduleViewWrite()
+  }
+
+  function observedFor(siteId: number, time: number | null): SiteReadoutEntry['observed'] {
+    if (time === null) return { kind: 'no_observation' }
+    const read = obsSiteMemo.get(siteId)
+    if (read === undefined || read.state === 'loading') return { kind: 'loading' }
+    if (read.state === 'failed') return { kind: 'unavailable', reason: read.reason }
+    const { time: times, obsval, no_value: noValue, sentinel, weighted } = read.payload
+    // The exact time only; the nearest time is never used.
+    const at = times.findIndex((t) => t === time)
+    if (at < 0) return { kind: 'no_observation' }
+    const value = obsval[at]
+    if (noValue[at] || sentinel[at] || value === null) return { kind: 'no_value' }
+    return weighted[at] ? { kind: 'value', value } : { kind: 'zero_weight', value }
+  }
+
+  function sitesPick(rows: number[]): ReadoutPick {
+    const data = obsData!
+    const frame = obsFrame!
+    const position = obsTimePos
+    const time = position !== null && position.index >= 0 ? position.times[position.index] : null
+    const timeText = position === null || time === null ? 'no time' : formatTimeValue(position.kind, time)
+    const [originX, originY] = mesh?.origin ?? [0, 0]
+    const entries: SiteReadoutEntry[] = rows.slice(0, OBS_SITE_LIST_CAP).map((row) => {
+      const site = data.rows[row]
+      const value = frame[row]
+      return {
+        name: site.site,
+        group: data.group,
+        x: data.xy[2 * row] + originX,
+        y: data.xy[2 * row + 1] + originY,
+        xySource: site.xySource === 'own' ? 'own' : 'cell_centre',
+        layer: site.layer >= 0 ? site.layer : null,
+        cell: site.cell,
+        rule: site.rule,
+        timeText,
+        observed: observedFor(site.siteId, time),
+        stat: { label: OBS_STAT_LABEL[obsStat], value: Number.isFinite(value) ? value : null, iteration: obsIteration },
+      }
+    })
+    return { kind: 'sites', entries, total: rows.length }
+  }
+
+  // Rebuilt from the held frame, so a time, layer or statistic change keeps the readout true.
+  function refreshObsPick(): void {
+    const dots = obsDots
+    if (obsPickedRows.length === 0 || dots === null || obsData === null || obsFrame === null) {
+      if (obsPick !== null) {
+        obsPick = null
+        layer?.setSelectedPoint(null)
+        updateReadout()
+      }
+      return
+    }
+    const dotOf = new Map<number, number>()
+    dots.rows.forEach((row, i) => dotOf.set(row, i))
+    obsPickedRows = obsPickedRows.filter((row) => dotOf.has(row))
+    if (obsPickedRows.length === 0) {
+      obsPick = null
+      layer?.setSelectedPoint(null)
+      updateReadout()
+      return
+    }
+    obsPick = sitesPick(obsPickedRows)
+    layer?.setSelectedPoint(dotOf.get(obsPickedRows[0]) ?? null)
+    updateReadout()
+  }
+
+  // At most once per site per page, and only for the entries the readout lists.
+  function readObservedValues(rows: number[]): void {
+    const data = obsData
+    if (data === null) return
+    for (const row of rows.slice(0, OBS_SITE_LIST_CAP)) {
+      const siteId = data.rows[row].siteId
+      if (obsSiteMemo.has(siteId)) continue
+      obsSiteMemo.set(siteId, { state: 'loading' })
+      void fetchObsSite(siteId)
+        .then(
+          (result): ObsSiteRead =>
+            result.ok ? { state: 'done', payload: result.payload } : { state: 'failed', reason: `${result.artifact}: ${result.reason}` },
+          (error: unknown): ObsSiteRead => ({ state: 'failed', reason: describeError(error) }),
+        )
+        .then((read) => {
+          obsSiteMemo.set(siteId, read)
+          if (obsPickedRows.includes(row)) refreshObsPick()
+        })
+    }
+  }
+
+  // D-31, D-32: every site within reach is read out and written to the shared selection.
+  function pickObservationSites(hits: number[]): void {
+    const dots = obsDots
+    const data = obsData
+    if (dots === null || data === null) return
+    const rows = hits.map((i) => dots.rows[i])
+    selectedCellId = null
+    layer?.setSelected(null)
+    obsPickedRows = rows
+    obsPick = sitesPick(rows)
+    layer?.setSelectedPoint(hits[0])
+    redraw()
+    updateReadout()
+    readObservedValues(rows)
+    store.set({ sites: new Set(rows.map((row) => data.rows[row].siteId)), cells: new Set(), pars: new Set() }, 'map')
+  }
+
+  async function drawObservations(): Promise<void> {
+    if (!layer || !mesh) return
+    const selection = store.get()
+    if (selection.colour.source !== 'obs') return
+    const serial = ++obsSerial
+    // A parked map keeps its parameter colouring until the iteration check below passes.
+    if (!obsParked) enterObsLook()
+    try {
+      await drawObservationsFor(serial, selection)
+    } catch (error) {
+      if (serial !== obsSerial) return
+      showObsNotice('The observation colouring could not be drawn', describeError(error), 'serious')
+      if (obsActive) clearObsDots()
+    }
+  }
+
+  async function drawObservationsFor(serial: number, selection: SharedSelection): Promise<void> {
+    const statText = selection.colour.stat
+    if (!isObsStat(statText)) {
+      showObsNotice('That statistic cannot colour the observations', `${statText} is not one of the observation statistics.`)
+      if (obsActive) clearObsDots()
+      return
+    }
+    const stat = statText
+    obsStat = stat
+
+    let group = [...selection.obsGroups][0] ?? null
+    if (group === null) {
+      const groups = await loadObsGroups()
+      if (serial !== obsSerial) return
+      if (!groups.ok) {
+        showObsNotice(`${groups.artifact} could not be read`, groups.reason)
+        if (obsActive) clearObsDots()
+        return
+      }
+      // The first group with a placed site; with none placed, the first group so its legend can say why.
+      const pick = groups.rows.find((row) => (row.nPlaced ?? 0) > 0) ?? groups.rows[0]
+      if (pick === undefined) {
+        showObsNotice('This run has no observation groups', 'obs_index: there is no group to colour the map by.')
+        if (obsActive) clearObsDots()
+        return
+      }
+      group = pick.group
+      obsGroupInUse = group
+      store.set({ obsGroups: new Set([group]) }, 'map')
+    }
+    const groupChanged = group !== obsGroupInUse
+    obsGroupInUse = group
+    if (groupChanged) {
+      obsLayerMoved = null
+      obsPick = null
+      obsPickedRows = []
+      obsDotsKey = ''
+    }
+    obsNoticeEl.textContent = ''
+
+    const loaded = await obsSource.loadGroup(group)
+    if (serial !== obsSerial || loaded.stale) return
+    if ('failed' in loaded) {
+      showObsNotice(`${loaded.failed.artifact} could not be read for ${group}`, loaded.failed.reason)
+      if (obsActive) clearObsDots()
+      return
+    }
+    const data = loaded.data
+    obsData = data
+
+    const iteration = selection.iteration
+    const entry = data.times.iterations.find((i) => i.iteration === iteration)
+    if (entry === undefined || !entry.available) {
+      parkObservations(
+        `No observation statistics for iteration ${iteration}`,
+        `obs_agg/${iteration}: ${entry?.reason ?? 'this iteration is not in the run'}. The map keeps its parameter colouring; no other iteration is drawn in its place.`,
+      )
+      return
+    }
+    obsParked = false
+    obsIteration = iteration
+    enterObsLook()
+
+    const times = data.times.times
+    const kind = data.times.time_kind
+    const notes: string[] = []
+    let index = -1
+    if (data.times.refused !== null) {
+      showObsNotice(`${group} has no time axis`, `obs_index: ${data.times.refused}`)
+    } else if (times.length === 0) {
+      showObsNotice(`${group} has no time to show`, 'obs_index: no observation of this group has a finite time.')
+    } else {
+      const wanted = selection.timeIdx
+      const wantedOk = Number.isInteger(wanted) && wanted >= 0 && wanted < times.length
+      if (obsTimePos !== null && groupChanged) {
+        const carried = carryTime(obsTimePos, { kind, times }, formatTimeValue)
+        index = carried.index
+        if (carried.note !== null) notes.push(carried.note)
+      } else if (wantedOk) {
+        index = wanted
+      } else {
+        index = 0
+        notes.push(`the slider position ${wanted} is not a time of this group, so the first time is shown`)
+      }
+      obsTimePos = { kind, times, index }
+      if (index !== selection.timeIdx) store.set({ timeIdx: index }, 'map')
+    }
+
+    let frame: Float32Array
+    if (index >= 0) {
+      const answer = await obsSource.frames.want(group, iteration, times, index, stat)
+      if (serial !== obsSerial || answer.stale) return
+      if ('failed' in answer) {
+        showObsNotice(`${answer.failed.artifact} could not be read for ${group}`, answer.failed.reason)
+        clearObsDots()
+        return
+      }
+      frame = answer.values
+    } else {
+      frame = new Float32Array(data.rows.length).fill(Number.NaN)
+    }
+
+    let dots = dotsFor(data, committed.layer, obsAllLayers)
+    if (groupChanged && dots.counts.drawn === 0 && dots.lowestLayer !== null) {
+      moveObsLayer(dots.lowestLayer)
+      obsLayerMoved = dots.lowestLayer
+      enterObsLook()
+      dots = dotsFor(data, committed.layer, obsAllLayers)
+    }
+
+    const target = layer
+    if (target === null) return
+    const values = valuesForDots(frame, dots)
+    const limits = data.times.limits[stat]
+    target.setColormap(OBS_RAMP[stat], false)
+    target.setLimits(limits ?? [0, 1])
+    target.setMissingStyle('ring')
+    const key = `${group}|${committed.layer}|${obsAllLayers}`
+    if (key === obsDotsKey && obsDots !== null && obsDots.rows.length === dots.rows.length) {
+      target.setPointValues(values)
+    } else {
+      target.setPoints(dots.xy, values)
+      target.setSelectedPoint(null)
+    }
+    obsDotsKey = key
+    obsDots = dots
+    obsFrame = frame
+    redraw()
+
+    if (obsAllLayers) {
+      let unknown = 0
+      for (const row of dots.rows) if (data.layer[row] < 0) unknown += 1
+      if (unknown > 0) notes.push(`${sitesText(unknown)} with an unknown layer drawn because all layers is on`)
+    }
+    for (const note of data.times.notes) notes.push(note)
+    renderObsLegend(legendEl, {
+      group,
+      stat,
+      iteration,
+      limits,
+      limitsRule: data.times.limits_rule,
+      timeText: index >= 0 ? formatTimeValue(kind, times[index]) : 'no time to show',
+      counts: dots.counts,
+      atTime: index >= 0 ? countsAtTime(frame, dots, data.times.n_at_time[index] ?? 0) : null,
+      layerMoved: obsLayerMoved === committed.layer ? obsLayerMoved : null,
+      notes,
+    })
+    refreshObsPick()
+  }
+
+  function followColour(next: SharedSelection): void {
+    if (next.colour.source === 'obs') {
+      void drawObservations()
+      return
+    }
+    if (obsActive || obsParked) leaveObservations()
+  }
+
+  // Draws from the store whatever view wrote it, but a group this view just chose is already drawing.
+  function followObsGroup(next: SharedSelection): void {
+    if (next.colour.source !== 'obs') return
+    const first = [...next.obsGroups][0]
+    if (first === undefined || first === obsGroupInUse) return
+    void drawObservations()
+  }
+
+  function followObsTime(origins: ReadonlySet<string>): void {
+    if (origins.size === 1 && origins.has('map')) return
+    if (store.get().colour.source === 'obs') void drawObservations()
   }
 
   clearCanvas()
@@ -1997,6 +2485,21 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       })
     }
 
+    // Only a run that recorded observations offers the switch; the Obs tab says why when it did not.
+    const obsCapability = opts.state.capabilities.obs
+    if (obsCapability !== undefined && obsCapability.available) {
+      const colourEl = document.createElement('div')
+      topLeftEl.insertBefore(colourEl, pickerEl)
+      obsControls = renderObsColourControls(colourEl, {
+        store,
+        loadGroups: loadObsGroups,
+        onAllLayersChange: (on) => {
+          obsAllLayers = on
+          if (store.get().colour.source === 'obs') void drawObservations()
+        },
+      })
+    }
+
     reported = committed
     store.set(storePatch(committed, null), 'map')
     store.subscribe(
@@ -2018,9 +2521,30 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       () => renderSelectedNotice(),
     )
 
+    store.subscribe(
+      (selection) => selection.colour,
+      (next) => followColour(next),
+    )
+    store.subscribe(
+      (selection) => selection.obsGroups,
+      (next) => followObsGroup(next),
+    )
+    store.subscribe(
+      (selection) => selection.timeIdx,
+      (_next, _prev, origins) => followObsTime(origins),
+    )
+    // No echo skip: a failed iteration switch writes the old iteration back as 'map'.
+    store.subscribe(
+      (selection) => selection.iteration,
+      () => {
+        if (store.get().colour.source === 'obs') void drawObservations()
+      },
+    )
+
     pending = committed
     await performFetch(committed)
     if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
+    if (store.get().colour.source === 'obs') void drawObservations()
   }
 
   // Built in idle time after the first draw, so the first click does not pay for it.
