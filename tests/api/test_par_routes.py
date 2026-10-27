@@ -8,9 +8,11 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
-from ingest.par_fixtures import make_par_view_run, numeric_space
+from ingest.par_fixtures import make_par_view_run, numeric_space, write_placement
 from ingest.test_control_first import in_process  # noqa: F401  (a fixture, used by name)
 from pesto.api.app import create_app
+from pesto.cache.layout import CacheLayout
+from pesto.ingest.failures import ReadFailure
 from pesto.ingest.runner import ingest_run
 
 BASE_URL = "http://127.0.0.1"
@@ -101,6 +103,72 @@ def test_change_refuses_a_query_field_it_does_not_know(tmp_path, in_process):  #
     response = client.get("/api/run/par/change", params={"group": "hk_pp", "layer": 1})
 
     assert response.status_code == 422
+
+
+def test_placement_gives_each_groups_rule_and_counts_and_keeps_notes_that_name_no_group(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, _manifest, client = _open(tmp_path)
+    notes = (
+        "group 'hk_pp': rule 'idx-layer' placed 4 of 4 parameters; nothing left over",
+        "group 'mix': rule 'idx-layer' placed 3 of 3 parameters; nothing left over",
+        "the grid file holds two idomain arrays and the first was used",
+    )
+    written = write_placement(
+        CacheLayout(root=tmp_path / "cache"), {"hk_pp": 1, "mix": 0}, notes=notes
+    )
+    assert not isinstance(written, ReadFailure), written
+
+    response = client.get("/api/run/grid/placement")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    groups = {g["group"]: g for g in body["groups"]}
+    assert (groups["hk_pp"]["rule"], groups["hk_pp"]["mapped"], groups["hk_pp"]["total"]) == (
+        "idx-layer",
+        4,
+        4,
+    )
+    assert groups["hk_pp"]["notes"] == [notes[0]]
+    assert groups["mix"]["notes"] == [notes[1]]
+    assert groups["rch_gr"]["rule"] == "unmapped"
+    assert groups["rch_gr"]["mapped"] == 0
+    assert groups["rch_gr"]["notes"] == []
+    assert body["notes"] == [notes[2]]
+    assert body["summary"]
+
+
+def test_a_note_for_a_group_whose_name_starts_like_another_goes_to_the_right_group(
+    tmp_path, in_process  # noqa: F811
+):
+    _run, _manifest, client = _open(tmp_path)
+    notes = ("group 'hk_pp': one", "group 'hk_ppx': two")
+    written = write_placement(CacheLayout(root=tmp_path / "cache"), {"hk_pp": 1}, notes=notes)
+    assert not isinstance(written, ReadFailure), written
+
+    body = client.get("/api/run/grid/placement").json()
+
+    groups = {g["group"]: g for g in body["groups"]}
+    assert groups["hk_pp"]["notes"] == ["group 'hk_pp': one"]
+    assert body["notes"] == ["group 'hk_ppx': two"]
+
+
+def test_placement_without_a_par_cell_artifact_is_a_404_naming_par_cell(tmp_path, in_process):  # noqa: F811
+    _run, _manifest, client = _open(tmp_path)
+
+    response = client.get("/api/run/grid/placement")
+
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "par_cell"
+
+
+def test_placement_with_no_run_open_is_409():
+    app, token = create_app()
+    client = TestClient(app, base_url=BASE_URL)
+    client.headers["x-pesto-token"] = token
+
+    assert client.get("/api/run/grid/placement").status_code == 409
 
 
 def test_groups_without_the_cached_file_is_a_404_naming_par_groups(tmp_path, in_process):  # noqa: F811
