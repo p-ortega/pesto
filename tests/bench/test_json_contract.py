@@ -87,9 +87,25 @@ def test_run_and_cache_keys(bench) -> None:
 def test_speed_limit_keys_equal_the_limits_module(bench) -> None:
     limits = bench["body"]["speed_limits"]
     expected = speed_limits_dict()
-    for key in ("reopen_seconds", "slider_fetch_p95_ms", "slider_no_fetch_p95_ms"):
+    for key in ("reopen_seconds", "slider_fetch_p95_ms", "slider_no_fetch_p95_ms", "obs_frame_p95_seconds"):
         assert _number(limits[key])
         assert limits[key] == expected[key]
+    assert limits == expected and len(limits) == 10
+    assert limits["obs_frame_p95_seconds"] == 0.1
+
+
+def test_the_obs_frames_block_says_why_when_the_run_has_no_observation_statistics(bench) -> None:
+    frames = bench["body"]["server"]["obs_frames"]
+    assert frames["summary"] is None
+    assert frames["group"] is None and frames["iteration"] is None
+    assert frames["notes"] == [
+        "obs/frame: this run has no observation statistics, so the frame route is not measured"
+    ]
+    rows = {row["speed_limit"]: row for row in bench["body"]["verdicts"]}
+    row = rows["obs/frame p95"]
+    assert row["status"] == "not measured" and row["measured"] is None
+    assert row["limit"] == 0.1 and row["note"] == frames["notes"][0]
+    assert "obs/frame p95" in bench["table"]
 
 
 def test_browser_target_keys_and_types(bench) -> None:
