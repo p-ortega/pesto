@@ -298,3 +298,49 @@ def numeric_space(run: ParViewRun, iteration: int, parname: str, names: list[str
     numeric space: log10 for a log parameter, native otherwise."""
     column = run.table(iteration).loc[names, parname].to_numpy(dtype=np.float64)
     return np.log10(column) if run.trans[parname] == "log" else column
+
+
+def write_placement(
+    layout,
+    layers: dict[str, int | list[int]],
+    *,
+    rule: str = "idx-layer",
+    notes: tuple[str, ...] = (),
+):
+    """Write a par_cell artifact for the cached control table. A group named in ``layers`` is
+    placed on that layer (or, given a list, one layer per parameter in control
+    order); every other group is left unplaced. Returns the write result."""
+    from pesto.ingest.parcell import write_par_cell
+    from pesto.model import GroupResolution, ParCells
+
+    par = pd.read_parquet(layout.control / "par.parquet")
+    names = [str(n) for n in par["parnme"]]
+    groups_of = {n: str(g) for n, g in zip(names, par["pargp"])}
+    layer = np.full(len(names), -1, dtype=np.int32)
+    cell = np.full(len(names), -1, dtype=np.int32)
+    resolutions = []
+    for group in dict.fromkeys(groups_of.values()):
+        members = [i for i, n in enumerate(names) if groups_of[n] == group]
+        wanted = layers.get(group)
+        if wanted is not None:
+            per_parameter = [wanted] * len(members) if isinstance(wanted, int) else list(wanted)
+            for i, value in zip(members, per_parameter):
+                layer[i] = value
+                cell[i] = i
+        resolutions.append(
+            GroupResolution(
+                group=group,
+                rule=rule if wanted is not None else "unmapped",
+                mapped=len(members) if wanted is not None else 0,
+                total=len(members),
+            )
+        )
+    cells = ParCells(
+        cell=cell,
+        layer=layer,
+        parnme=tuple(names),
+        groups=tuple(resolutions),
+        summary="a stand-in placement",
+        notes=tuple(notes),
+    )
+    return write_par_cell(cells, par, layout)
