@@ -338,7 +338,9 @@ describe('MeshLayer points pass', () => {
       ['POINTS', 0, 2],
       ['POINTS', 1, 1],
     ])
-    const sizes = calls.filter((c) => c.method === 'uniform1f').map((c) => c.args[1])
+    const sizes = calls
+      .filter((c, i) => c.method === 'uniform1f' && calls[i - 1]?.args[1] === 'u_size')
+      .map((c) => c.args[1])
     expect(sizes).toEqual([7, 9])
   })
 })
@@ -380,5 +382,77 @@ describe('MeshLayer footprint pass', () => {
     calls.length = 0
     layer.draw()
     expect(triDraws(calls).map((c) => c.args[1])).toEqual([6, 18])
+  })
+})
+
+describe('MeshLayer points', () => {
+  const xy = new Float32Array([0.5, 0.5, 1.5, 0.5, 2.5, 0.5])
+  const styleValues = (calls: Array<{ method: string; args: unknown[] }>): number[] =>
+    calls.flatMap((c, i) =>
+      c.method === 'uniform1f' && calls[i - 1]?.method === 'getUniformLocation' && calls[i - 1].args[1] === 'u_missingStyle'
+        ? [c.args[1] as number]
+        : [],
+    )
+  const layerWithPoints = () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(xy, new Float32Array([0, 0.5, Number.NaN]))
+    layer.setLimits([0, 1])
+    return { layer, calls }
+  }
+
+  it('a new layer draws points with u_missingStyle 0, so a dot with no value is still discarded', () => {
+    const { layer, calls } = layerWithPoints()
+    layer.draw()
+    expect(styleValues(calls)).toEqual([0])
+    const fragment = calls
+      .filter((c) => c.method === 'shaderSource')
+      .map((c) => c.args[1] as string)
+      .find((src) => src.includes('u_missingStyle')) as string
+    expect(fragment).toMatch(/missing && u_missingStyle < 0\.5\) discard/)
+  })
+
+  it('setMissingStyle switches the next draw between ring (1) and discard (0)', () => {
+    const { layer, calls } = layerWithPoints()
+    layer.setMissingStyle('ring')
+    layer.draw()
+    layer.setMissingStyle('discard')
+    layer.draw()
+    expect(styleValues(calls)).toEqual([1, 0])
+  })
+
+  it('the fragment shader keeps only the ring band of a missing dot under style 1', () => {
+    const { calls } = layerWithPoints()
+    const fragment = calls
+      .filter((c) => c.method === 'shaderSource')
+      .map((c) => c.args[1] as string)
+      .find((src) => src.includes('u_missingStyle')) as string
+    expect(fragment).toMatch(/missing && r <= 0\.36\) discard/)
+  })
+
+  it('setPointValues uploads the value buffer once and never the positions', () => {
+    const { layer, calls } = layerWithPoints()
+    calls.length = 0
+    const next = new Float32Array([1, 0, 0.25])
+    layer.setPointValues(next)
+    const uploads = calls.filter((c) => c.method === 'bufferData')
+    expect(uploads.length).toBe(1)
+    expect(uploads[0].args[1]).toBe(next)
+    expect(uploads.some((c) => c.args[1] === xy)).toBe(false)
+  })
+
+  it('setPointValues refuses a different length with a sentence naming both lengths', () => {
+    const { layer } = layerWithPoints()
+    expect(() => layer.setPointValues(new Float32Array([1, 2]))).toThrow(/2 values for 3 points/)
+  })
+
+  it('reupload restores the values from setPointValues, not the ones setPoints was given', () => {
+    const { layer, calls } = layerWithPoints()
+    const next = new Float32Array([1, 0, 0.25])
+    layer.setPointValues(next)
+    calls.length = 0
+    layer.reupload()
+    const uploads = calls.filter((c) => c.method === 'bufferData')
+    expect(uploads.some((c) => c.args[1] === next)).toBe(true)
   })
 })

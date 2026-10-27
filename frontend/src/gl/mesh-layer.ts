@@ -126,7 +126,8 @@ void main() {
 
 // The points pass draws an x/y group as fixed-size dots, sized in device
 // pixels so they stay the same on screen at any zoom. The ring keeps a dot
-// readable on any fill. A NaN value is discarded, never drawn at a ramp end.
+// readable on any fill. A NaN value is discarded, never drawn at a ramp end,
+// unless u_missingStyle is 1: then it draws as a ring with no fill (absence).
 const POINTS_VERTEX = `#version 300 es
 in vec2 a_pos;
 in float a_value;
@@ -149,13 +150,16 @@ flat in float v_norm;
 flat in float v_missing;
 uniform sampler2D u_ramp;
 uniform vec3 u_ringColor;
+uniform float u_missingStyle;
 out vec4 fragColor;
 
 void main() {
-  if (v_missing > 0.5) discard;
+  bool missing = v_missing > 0.5;
+  if (missing && u_missingStyle < 0.5) discard;
   vec2 d = gl_PointCoord - vec2(0.5);
   float r = length(d);
   if (r > 0.5) discard;
+  if (missing && r <= 0.36) discard;
   fragColor = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
 }`
 
@@ -249,6 +253,7 @@ export class MeshLayer {
   private lastPointValues: Float32Array | null = null
   private pointRingColor: [number, number, number] = [0, 0, 0]
   private selectedPoint: number | null = null
+  private missingStyle: 'discard' | 'ring' = 'discard'
 
   private limits: [number, number] = [0, 1]
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
@@ -605,6 +610,24 @@ export class MeshLayer {
     if (this.selectedPoint !== null && this.selectedPoint >= this.pointCount) this.selectedPoint = null
   }
 
+  /** Replaces the point values only; the dots do not move. The length must match the point count. */
+  setPointValues(values: Float32Array): void {
+    if (values.length !== this.pointCount) {
+      throw new Error(
+        `point values need one value per point, got ${values.length} values for ${this.pointCount} points`,
+      )
+    }
+    this.lastPointValues = values
+    const { gl } = this
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsValueBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW)
+  }
+
+  /** How a point with no value draws: gone (parameter dots) or a ring with no fill (observation sites). */
+  setMissingStyle(style: 'discard' | 'ring'): void {
+    this.missingStyle = style
+  }
+
   setPointRingColor(rgb: [number, number, number]): void {
     this.pointRingColor = rgb
   }
@@ -629,6 +652,7 @@ export class MeshLayer {
     gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 7 * dpr)
     const ring = this.pointRingColor
     gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), ring[0], ring[1], ring[2])
+    gl.uniform1f(gl.getUniformLocation(program, 'u_missingStyle'), this.missingStyle === 'ring' ? 1 : 0)
     gl.drawArrays(gl.POINTS, 0, this.pointCount)
 
     if (this.selectedPoint !== null && this.selectedPoint < this.pointCount) {
