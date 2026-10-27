@@ -24,6 +24,7 @@ project dependency. That is a normal state here, not an error.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,23 @@ def observation_input_files(run_dir: Path) -> tuple[Path, ...]:
     """The MF6 text files a site's placement can come from: ``mfsim.nam``, the
     model name files, the OBS6 files. Empty when the run has no ``mfsim.nam``."""
     return _observation_input_files(Path(run_dir))
+
+
+def _not_found_note(unplaced: int) -> str:
+    return (
+        f"{unplaced} site(s) are unplaced and the model's observation input "
+        "(mfsim.nam) was not found in the run folder"
+    )
+
+
+def note_missing_observation_input(cells: ObsCells) -> ObsCells:
+    """``cells`` with one note that the model's observation input was not
+    found, when some site is unplaced. For a run with no ``mfsim.nam``, where
+    the adapter is built without a run folder."""
+    unplaced = int((cells.cell < 0).sum())
+    if not unplaced:
+        return cells
+    return replace(cells, notes=(*cells.notes, _not_found_note(unplaced)))
 
 
 class Mf6Adapter:
@@ -243,10 +261,7 @@ class Mf6Adapter:
         if not observations.found:
             if not unplaced:
                 return cell, layer, result.groups, result.summary, ()
-            return cell, layer, result.groups, result.summary, (
-                f"{unplaced} site(s) are unplaced and the model's observation input "
-                "(mfsim.nam) was not found in the run folder",
-            )
+            return cell, layer, result.groups, result.summary, (_not_found_note(unplaced),)
         if "id" in sites.columns:
             ids = [("" if pd.isna(v) else str(v)) for v in sites["id"]]
         else:
