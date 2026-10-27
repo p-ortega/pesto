@@ -862,7 +862,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
   })
 
+  // The last picker state painted, so a group chosen elsewhere can move the picker's selection.
+  let paintedPicker: GroupPickerState = { kind: 'loading' }
+
   function paintPicker(state: GroupPickerState): void {
+    paintedPicker = state
     renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange })
   }
 
@@ -1667,6 +1671,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     void switchIteration(iteration)
   }
 
+  // A group chosen in another view moves the map only to a group it can draw, and
+  // never echoes: the map does not write parGroups when its own picker changes.
+  function followGroup(groups: ReadonlySet<string>, origins: ReadonlySet<string>): void {
+    if (origins.size === 1 && origins.has('map')) return
+    if (groups.size !== 1) return
+    const [group] = groups
+    if (paintedPicker.kind !== 'ready' || !paintedPicker.drawable.includes(group)) return
+    if (group === (pendingGroup ?? drawnGroup)) return
+    paintPicker({ ...paintedPicker, selected: group })
+    handleGroupChange(group)
+  }
+
   clearCanvas()
 
   void loadAndDraw(ctx)
@@ -1943,6 +1959,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     store.subscribe(
       (selection) => selection.iteration,
       (next, _prev, origins) => followIteration(next.iteration, origins),
+    )
+    store.subscribe(
+      (selection) => selection.parGroups,
+      (next, _prev, origins) => followGroup(next.parGroups, origins),
     )
     // D-03: the count follows the selection whichever view changes it; the iteration
     // side is redrawn by switchIteration once the new names have landed.

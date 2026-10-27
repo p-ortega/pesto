@@ -298,7 +298,10 @@ function groupCell(column: string, text: string, title: string, extraClasses: st
   return cell
 }
 
-const COLUMN_HEADINGS: { column: string; label: string }[] = [
+type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp'
+type SortDirection = 'ascending' | 'descending'
+
+const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
   { column: 'group', label: 'Group' },
   { column: 'type', label: 'Type' },
   { column: 'layer', label: 'Layer' },
@@ -307,14 +310,79 @@ const COLUMN_HEADINGS: { column: string; label: string }[] = [
   { column: 'pestpp', label: 'Mean change, pestpp' },
 ]
 
-function renderGroupRow(row: ParGroupRow, chosen: boolean, pick: (group: string) => void): HTMLElement {
+// What a column sorts on. null is "no value" and always sorts last; a layer
+// given as "several" sorts after every numbered layer.
+function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
+  switch (key) {
+    case 'group':
+      return row.group
+    case 'type':
+      return row.type.value
+    case 'layer':
+      return row.layer.value === 'several' ? Number.POSITIVE_INFINITY : row.layer.value
+    case 'n_par':
+      return row.n_par
+    case 'pesto':
+      return row.change.pesto?.mean_change_pct ?? null
+    case 'pestpp':
+      return row.change.pestpp.mean_change
+  }
+}
+
+// Stable over the order the server sent, which is the control file's: a tie keeps its place both ways.
+function sortedGroups(
+  groups: readonly ParGroupRow[],
+  sort: { key: SortKey; direction: SortDirection } | null,
+): ParGroupRow[] {
+  if (sort === null) return [...groups]
+  const sign = sort.direction === 'ascending' ? 1 : -1
+  return groups
+    .map((row, index) => ({ row, index, value: sortValue(row, sort.key) }))
+    .sort((a, b) => {
+      if (a.value === null || b.value === null) {
+        if (a.value === b.value) return a.index - b.index
+        return a.value === null ? 1 : -1
+      }
+      if (a.value === b.value) return a.index - b.index
+      return (a.value < b.value ? -1 : 1) * sign
+    })
+    .map((entry) => entry.row)
+}
+
+function renderGroupRow(
+  row: ParGroupRow,
+  chosen: boolean,
+  offMap: { note: string | null } | null,
+  pick: (group: string) => void,
+): HTMLElement {
   const rowEl = document.createElement('div')
   rowEl.classList.add('group-row')
   rowEl.setAttribute('role', 'row')
   rowEl.setAttribute('aria-selected', String(chosen))
   rowEl.tabIndex = 0
   rowEl.dataset.group = row.group
-  rowEl.appendChild(groupCell('group', row.group, row.group, ['truncate']))
+  const groupEl = groupCell('group', row.group, row.group, ['truncate'])
+  if (offMap !== null) {
+    // The name keeps its own span so the second line sits under it.
+    groupEl.textContent = ''
+    groupEl.classList.remove('truncate')
+    groupEl.classList.add('group-name-cell')
+    const name = document.createElement('span')
+    name.classList.add('truncate')
+    name.textContent = row.group
+    groupEl.appendChild(name)
+    const marker = document.createElement('span')
+    marker.classList.add('label')
+    marker.textContent = 'not on the map'
+    groupEl.appendChild(marker)
+    if (offMap.note !== null) {
+      const note = document.createElement('span')
+      note.classList.add('label', 'wrap-note')
+      note.textContent = offMap.note
+      groupEl.appendChild(note)
+    }
+  }
+  rowEl.appendChild(groupEl)
   rowEl.appendChild(groupCell('type', typeText(row), withSource(row.type.source, row.type.note), ['truncate']))
   rowEl.appendChild(groupCell('layer', layerText(row), withSource(row.layer.source, row.layer.note)))
   rowEl.appendChild(groupCell('n_par', String(row.n_par), parCountTitle(row), ['tabular-nums']))
@@ -396,7 +464,40 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     }
   }
 
-  function renderGroups(payload: ParGroupsPayload): void {
+  const offMap = new Map(opts.unmapped.map((entry) => [entry.group, entry.note]))
+  let sort: { key: SortKey; direction: SortDirection } | null = null
+  let groupsPane: HTMLElement | null = null
+
+  function fillRows(): void {
+    if (groups === null || groupsPane === null) return
+    groupsPane.textContent = ''
+    const chosen = chosenGroups()
+    for (const row of sortedGroups(groups.groups, sort)) {
+      const note = offMap.get(row.group)
+      groupsPane.appendChild(
+        renderGroupRow(row, chosen.has(row.group), note === undefined ? null : { note }, pick),
+      )
+    }
+  }
+
+  function markHeadings(): void {
+    for (const heading of groupsHost.querySelectorAll<HTMLElement>('.group-header [role="columnheader"]')) {
+      const mine = sort !== null && heading.dataset.column === sort.key
+      heading.setAttribute('aria-sort', mine ? sort!.direction : 'none')
+      const mark = heading.querySelector('.sort-mark')
+      if (mark) mark.textContent = mine ? (sort!.direction === 'ascending' ? '↑' : '↓') : ''
+    }
+  }
+
+  function sortBy(key: SortKey): void {
+    sort = sort !== null && sort.key === key
+      ? { key, direction: sort.direction === 'ascending' ? 'descending' : 'ascending' }
+      : { key, direction: 'ascending' }
+    markHeadings()
+    fillRows()
+  }
+
+  function renderGroups(): void {
     groupsHost.textContent = ''
     const grid = document.createElement('div')
     grid.setAttribute('role', 'grid')
@@ -407,9 +508,20 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     for (const { column, label } of COLUMN_HEADINGS) {
       const heading = document.createElement('span')
       heading.setAttribute('role', 'columnheader')
+      heading.setAttribute('aria-sort', 'none')
       heading.dataset.column = column
-      heading.classList.add('label')
-      heading.textContent = label
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.classList.add('label', 'sort-button')
+      const text = document.createElement('span')
+      text.textContent = label
+      const mark = document.createElement('span')
+      mark.classList.add('sort-mark')
+      mark.setAttribute('aria-hidden', 'true')
+      button.appendChild(text)
+      button.appendChild(mark)
+      button.addEventListener('click', () => sortBy(column))
+      heading.appendChild(button)
       header.appendChild(heading)
     }
     grid.appendChild(header)
@@ -417,10 +529,10 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     const pane = document.createElement('div')
     pane.classList.add('scroll-pane')
     makeFocusable(pane, 'Parameter groups')
-    const chosen = chosenGroups()
-    for (const row of payload.groups) pane.appendChild(renderGroupRow(row, chosen.has(row.group), pick))
     grid.appendChild(pane)
+    groupsPane = pane
     groupsHost.appendChild(grid)
+    fillRows()
   }
 
   function renderGroupsFailure(artifact: string, reason: string): void {
@@ -442,7 +554,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       (answer) => {
         if (answer.ok) {
           groups = answer.payload
-          renderGroups(answer.payload)
+          renderGroups()
         } else {
           renderGroupsFailure(answer.artifact, answer.reason)
         }
@@ -475,6 +587,16 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     if (chosen.size === 0) {
       renderNotice(tableHost, {
         title: 'Choose a group above to list its parameters',
+        tone: 'info',
+      })
+      return
+    }
+    const refused = (groups?.groups ?? []).filter((row) => chosen.has(row.group) && !row.drill_down.offered)
+    if (refused.length > 0) {
+      const reasons = refused.map((row) => row.drill_down.reason ?? 'no reason was recorded')
+      renderNotice(tableHost, {
+        title: 'No parameter list for this group',
+        detail: refused.length === 1 ? reasons[0] : refused.map((row, i) => `${row.group}: ${reasons[i]}`).join(' '),
         tone: 'info',
       })
       return
