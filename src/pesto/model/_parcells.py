@@ -87,12 +87,6 @@ come out unusable is named by one of the nine causes ahead of it, and this
 last one exists so a future producer of an unusable value cannot silently
 break the counts."""
 
-NO_GROUP = "(no pargp)"
-"""The ``GroupResolution.group`` label for parameters carrying no ``pargp``
-value at all. Parentheses because no real PEST group name has them, so this
-bucket's label cannot collide with a real group. In site mode the label is
-``(no obgnme)``, built the same way from the group column."""
-
 NULL_GROUP_NOTE_NAME_LIMIT = 3
 """How many parameter names the null-group note spells out before it
 switches to a count -- keeps the note readable at the realistic scale of
@@ -687,7 +681,7 @@ def _unplaced_without_placement_columns(
     ]
     notes = [
         f"none of the placement columns ({', '.join(SITE_PLACEMENT_COLUMNS)}) is in the "
-        f"{noun} table, so no {noun} was placed and no rule was tried; the columns present "
+        f"{noun} table, so no column rule was tried; the columns present "
         f"are: {', '.join(str(column) for column in par.columns)}"
     ]
     _null_group_bucket(par, group_column, noun, notes, groups)

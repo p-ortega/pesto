@@ -26,7 +26,9 @@ from pesto.ingest.obsindex import load_obs_index
 from pesto.ingest.runner import ingest_run, plan_artifacts
 from pesto.model import GroupResolution, ObsCells
 
-from .obs_fixtures import GRID_SITES, make_obs_run
+from model.mf6_input import write_mf6_obs_input
+
+from .obs_fixtures import GRID_SITES, SiteSpec, make_obs_run
 
 # Taken at import time, before any fixture swaps the runner's isolation out.
 _REAL_RUN_ISOLATED = runner._run_isolated
@@ -444,3 +446,94 @@ def test_an_ingest_with_obs_cell_changes_nothing_in_the_run_folder(tmp_path, in_
 
     assert manifest.artifacts["obs_cell"].state == "ok"
     assert _snapshot(run_dir) == before
+
+
+# ---------------------------------------------------------------------------
+# placement from the model's own MF6 observation input
+# ---------------------------------------------------------------------------
+
+_W1 = "oname:hds_otype:lst_usecol:w-1"
+_W2 = "oname:hds_otype:lst_usecol:w-2"
+
+
+def _mf6_sites(*ids: str):
+    return tuple(
+        SiteSpec("gw_head", f"oname:hds_otype:lst_usecol:{i}", (None,), "none", extras={"id": i})
+        for i in ids
+    )
+
+
+def test_sites_named_in_the_mf6_observation_input_are_placed_by_ingest_run(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=_mf6_sites("w-1", "w-2"))
+    write_mf6_obs_input(
+        run_dir, obs_files={"coarse_0.obs": [("W-1", "HEAD", "1 1"), ("W-2", "HEAD", "1 3")]}
+    )
+
+    cache_root = tmp_path / "cache"
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["obs_cell"].state == "ok", manifest.artifacts["obs_cell"].reason
+    table = load_obs_cell(CacheLayout(root=cache_root))
+    assert isinstance(table, ObsCellTable)
+    at = _by_site(table)
+    assert (table.cell[at[_W1]], table.layer[at[_W1]], table.rule[at[_W1]]) == (0, 0, "mf6-obs")
+    assert (table.cell[at[_W2]], table.layer[at[_W2]], table.rule[at[_W2]]) == (2, 0, "mf6-obs")
+    assert any("lower-casing" in note for note in table.notes)
+
+
+def test_obs_cell_lists_the_mf6_name_and_observation_files_among_its_sources(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=_mf6_sites("w-1"))
+    write_mf6_obs_input(run_dir, obs_files={"coarse_0.obs": [("W-1", "HEAD", "1 1")]})
+
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))}
+
+    names = [Path(s).name for s in planned["obs_cell"].sources]
+    assert {"mfsim.nam", "model.nam", "coarse_0.obs"} <= set(names)
+    assert not any(n in ("mfsim.nam", "model.nam", "coarse_0.obs") for n in
+                   (Path(s).name for s in planned["obs_index"].sources))
+
+
+def test_editing_the_mf6_observation_file_makes_obs_cell_stale_and_the_next_ingest_moves_the_site(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=_mf6_sites("w-1", "w-2"))
+    files = write_mf6_obs_input(
+        run_dir, obs_files={"coarse_0.obs": [("W-1", "HEAD", "1 1"), ("W-2", "HEAD", "1 3")]}
+    )
+    cache_root = tmp_path / "cache"
+    ingest_run(run_dir, cache_root=cache_root)
+    layout = CacheLayout(root=cache_root)
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+    assert Manifest.load(layout).is_stale("obs_cell", layout, planned["obs_cell"].sources) is False
+
+    files["coarse_0.obs"].write_text(
+        "BEGIN continuous FILEOUT x.csv\n  W-1 HEAD 1 1\n  W-2 HEAD 1 2\nEND continuous\n",
+        encoding="utf-8",
+    )
+
+    assert Manifest.load(layout).is_stale("obs_cell", layout, planned["obs_cell"].sources) is True
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+    assert manifest.artifacts["obs_cell"].state == "ok"
+    table = load_obs_cell(layout)
+    assert table.cell[_by_site(table)[_W2]] == 1
+
+
+def test_a_run_with_no_mfsim_nam_ingests_as_before_and_one_note_says_the_input_was_not_found(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=_mf6_sites("w-1", "w-2"))
+    cache_root = tmp_path / "cache"
+
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), CacheLayout(root=cache_root))}
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert [Path(s).name for s in planned["obs_cell"].sources].count("mfsim.nam") == 0
+    table = load_obs_cell(CacheLayout(root=cache_root))
+    assert list(table.cell) == [-1, -1]
+    found = [n for n in table.notes if "mfsim.nam" in n and "not found" in n]
+    assert len(found) == 1 and found[0].startswith("2 site(s)")
+    assert manifest.artifacts["obs_cell"].state == "ok"
