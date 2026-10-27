@@ -33,6 +33,7 @@ from pesto.bench.report import (
 )
 from pesto.bench.serve import (
     BenchServer,
+    measure_obs_frames,
     measure_reopen_share,
     measure_values,
     pick_browser_targets,
@@ -82,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--values-samples",
         type=_positive_int,
         default=_VALUES_SAMPLES,
-        help=f"grid/values requests timed per kind (default {_VALUES_SAMPLES})",
+        help=f"grid/values requests timed per kind, and obs/frame requests (default {_VALUES_SAMPLES})",
     )
     parser.add_argument(
         "--obs-probe",
@@ -199,10 +200,15 @@ def run_bench(
                 share = measure_reopen_share(server)
                 targets = pick_browser_targets(server)
                 values = measure_values(server, targets.iteration, values_samples, targets.iteration_note)
+                obs_frames = measure_obs_frames(server, values_samples)
                 server_result = ServerMeasures(
-                    started_seconds=server.started_seconds, reopen_share=share, values=values
+                    started_seconds=server.started_seconds,
+                    reopen_share=share,
+                    values=values,
+                    obs_frames=obs_frames,
                 )
             verdicts += _values_verdicts(values)
+            verdicts.append(_obs_frame_verdict(obs_frames))
         except Exception as exc:
             # The two ingests took minutes; their numbers are kept and the server rows say why they are empty.
             server_result = None
@@ -210,8 +216,10 @@ def run_bench(
             server_failure = f"{type(exc).__name__}: {exc}"
             notes.append(f"the server stage failed, so its rows are not measured: {server_failure}")
             verdicts += _values_verdicts(None, f"the server stage failed: {server_failure}")
+            verdicts.append(_obs_frame_verdict(None, f"the server stage failed: {server_failure}"))
     else:
         verdicts += _values_verdicts(None)
+        verdicts.append(_obs_frame_verdict(None))
     observations = observation_facts(run, obs_probe, second.artifacts)
 
     return BenchResult(
@@ -250,6 +258,13 @@ def _values_verdicts(values, off_reason: str = _STAGE_OFF):
         measured = summary.p95_seconds if summary is not None else None
         rows.append(verdict("values_p95_seconds", measured, "s", note, label=label))
     return rows
+
+
+def _obs_frame_verdict(frames, off_reason: str = _STAGE_OFF):
+    summary = frames.summary if frames is not None else None
+    note = off_reason if frames is None else next((n for n in frames.notes if n.startswith("obs/frame:")), "")
+    measured = summary.p95_seconds if summary is not None else None
+    return verdict("obs_frame_p95_seconds", measured, "s", note, label="obs/frame p95")
 
 
 def main(argv: list[str]) -> int:

@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 class SpeedLimits:
     reopen_seconds: float = 1.5
     values_p95_seconds: float = 0.100
+    obs_frame_p95_seconds: float = 0.100
     cache_ratio: float = 1.5
     ingest_growth_data_factor: float = 4.0
     ingest_growth_time_factor: float = 10.0
@@ -29,6 +30,7 @@ SPEED_LIMITS = SpeedLimits()
 _AT_OR_UNDER = (
     "reopen_seconds",
     "values_p95_seconds",
+    "obs_frame_p95_seconds",
     "cache_ratio",
     "pick_index_build_ms",
     "pick_p95_ms",

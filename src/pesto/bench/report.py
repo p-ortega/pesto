@@ -141,10 +141,21 @@ class ValuesLatency:
 
 
 @dataclass(frozen=True)
+class ObsFramesLatency:
+    group: str | None
+    iteration: int | None
+    n_sites: int | None
+    n_times: int | None
+    summary: LatencySummary | None
+    notes: list[str]
+
+
+@dataclass(frozen=True)
 class ServerMeasures:
     started_seconds: float
     reopen_share: ReopenShare
     values: ValuesLatency
+    obs_frames: ObsFramesLatency | None = None
 
 
 @dataclass(frozen=True)
@@ -300,6 +311,20 @@ def _server_lines(result: BenchResult) -> list[str]:
         )
     for note in values.notes:
         lines.append(f"  note: {note}")
+    frames = server.obs_frames
+    if frames is not None:
+        if frames.summary is None:
+            lines.append("obs/frame: not measured")
+        else:
+            summary = frames.summary
+            lines.append(
+                f"obs/frame, group {frames.group}, iteration {frames.iteration} "
+                f"({frames.n_sites} sites, {frames.n_times} times): {summary.count} requests, "
+                f"first {_ms(summary.first_seconds)}, p50 {_ms(summary.p50_seconds)}, "
+                f"p95 {_ms(summary.p95_seconds)} (nearest rank), max {_ms(summary.max_seconds)}"
+            )
+        for note in frames.notes:
+            lines.append(f"  note: {note}")
     return lines
 
 

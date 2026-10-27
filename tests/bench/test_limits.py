@@ -10,10 +10,11 @@ import pytest
 from pesto.bench.limits import SPEED_LIMITS, passes, speed_limits_dict
 
 
-def test_the_nine_speed_limits_hold_the_agreed_values() -> None:
+def test_the_ten_speed_limits_hold_the_agreed_values() -> None:
     assert speed_limits_dict() == {
         "reopen_seconds": 1.5,
         "values_p95_seconds": 0.100,
+        "obs_frame_p95_seconds": 0.100,
         "cache_ratio": 1.5,
         "ingest_growth_data_factor": 4.0,
         "ingest_growth_time_factor": 10.0,
@@ -33,6 +34,8 @@ def test_the_nine_speed_limits_hold_the_agreed_values() -> None:
         ("reopen_seconds", 1.5000001, False),
         ("values_p95_seconds", 0.100, True),
         ("values_p95_seconds", 0.1001, False),
+        ("obs_frame_p95_seconds", 0.100, True),
+        ("obs_frame_p95_seconds", 0.1001, False),
         ("cache_ratio", 1.5, True),
         ("cache_ratio", 1.5000001, False),
         ("ingest_growth_time_factor", 10.0, False),
