@@ -297,6 +297,7 @@ def make_obs_run(
     with_pdc: bool = False,
     adjusted_weights: np.ndarray | None = None,
     with_phi: bool = False,
+    nan_values: dict[int, list[tuple[str, str]]] | None = None,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
@@ -329,7 +330,10 @@ def make_obs_run(
     weights, in reversed column order. Unless ``adjusted_weights`` is given it also writes
     ``<case>.adjusted.weights.jcb`` for the observations that have a weight and a real
     obsval, with weights that differ from the control weights and some zero.
-    ``ObsRun.phi_values`` holds the phi per iteration and realization name."""
+    ``ObsRun.phi_values`` holds the phi per iteration and realization name.
+
+    ``nan_values`` maps an iteration to ``(observation name, realization name)`` pairs whose
+    cell in that iteration's observation ensemble is written as NaN."""
     from pesto.warm import load_pyemu
     from model.fixtures import write_disv_grb
 
@@ -375,6 +379,8 @@ def make_obs_run(
     par_ens: dict[int, Path] = {}
     for iteration in iterations:
         generated = sample_values(n_real, n_obs, seed=iteration + 1000)
+        for obs_name, real_name in (nan_values or {}).get(iteration, ()):
+            generated[real_names.index(real_name), obs_names.index(obs_name)] = np.nan
         values[iteration] = generated
         names_in_file = obs_names
         file_values = generated
