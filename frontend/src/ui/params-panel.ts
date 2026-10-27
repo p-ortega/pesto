@@ -479,8 +479,10 @@ function renderGroupRow(
     groupEl.appendChild(marker)
     if (offMap.note !== null) {
       const note = document.createElement('span')
-      note.classList.add('label', 'wrap-note')
+      // One line in the row; the full note is in the title and in the unmapped list below.
+      note.classList.add('label', 'wrap-note', 'group-row-note')
       note.textContent = offMap.note
+      note.title = offMap.note
       groupEl.appendChild(note)
     }
   }

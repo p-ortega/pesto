@@ -289,16 +289,27 @@ body {
 .params-groups {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 0;
+  /* A zero basis with a floor: hundreds of rows must not win the shrink
+     and crush the table to its header. */
+  flex: 1 1 0;
+  min-height: 10rem;
   max-height: 45%;
   margin-bottom: var(--space-sm);
 }
 
+/* The grid scrolls sideways as one piece, so the header stays over its
+   columns when the panel is narrower than the table. */
 .params-groups > [role='grid'] {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-x: auto;
+}
+
+.params-groups .group-header,
+.params-groups .scroll-pane {
+  min-width: 44em;
 }
 
 .params-groups .scroll-pane {
@@ -365,13 +376,14 @@ body {
 .group-row > :nth-child(1),
 .group-header > :nth-child(1) {
   flex: 3 1 0;
-  min-width: 0;
+  min-width: 8em;
+  overflow-wrap: anywhere;
 }
 
 .group-row > :nth-child(2),
 .group-header > :nth-child(2) {
   flex: 2 1 0;
-  min-width: 0;
+  min-width: 4em;
 }
 
 .group-row > :nth-child(3),
@@ -402,6 +414,14 @@ body {
      otherwise win every shrink against the lists below it. */
   flex: 1 1 0;
   min-height: 0;
+  /* Scrolls sideways as one piece, like the group grid, so a narrow panel
+     never squeezes the name columns to nothing or widens the page. */
+  overflow-x: auto;
+}
+
+.params-table > .param-header,
+.params-table > .scroll-pane {
+  min-width: 46em;
 }
 
 .params-table > .scroll-pane {
@@ -418,8 +438,8 @@ body {
 .params-unmapped {
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
-  min-height: 0;
+  flex: 0 1 auto;
+  min-height: 4rem;
   max-height: 30%;
   margin-top: var(--space-sm);
 }
@@ -430,9 +450,18 @@ body {
 
 /* The artifact notes get the same treatment: a run can carry dozens. */
 .params-notes {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 4rem;
   max-height: 30%;
   margin-top: var(--space-sm);
+}
+
+/* The placement note under an unmapped group's name stays one line in the row. */
+.group-row-note {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
 }
 
 /* The Config tab: a heading, then one row per setup fact in a pane that
@@ -529,13 +558,13 @@ body {
 .param-row > :nth-child(1),
 .param-header > :nth-child(1) {
   flex: 3 1 0;
-  min-width: 0;
+  min-width: 8em;
 }
 
 .param-row > :nth-child(2),
 .param-header > :nth-child(2) {
   flex: 2 1 0;
-  min-width: 0;
+  min-width: 6em;
 }
 
 .param-row > :nth-child(3),
@@ -569,11 +598,12 @@ body {
 
 /* The detail under the group table and under the parameter list: text and one chart. */
 .params-detail-host {
-  flex: 0 0 auto;
+  /* Gives way before the tables do, and scrolls inside itself. */
+  flex: 0 1 auto;
   max-height: 40%;
   margin-bottom: var(--space-sm);
   overflow-y: auto;
-  min-height: 0;
+  min-height: 8rem;
   scrollbar-color: var(--axis) var(--gridline);
 }
 
