@@ -806,6 +806,26 @@ def test_the_ensemble_size_readings_disagree_and_are_all_kept(tmp_path):
     assert fact["agree"] is False
 
 
+def test_an_option_value_that_is_not_a_finite_number_is_not_a_whole_number():
+    from pesto.cache.runconfig import _whole_number
+
+    assert [_whole_number(v) for v in ("nan", "inf", "-inf", "1e999", "2.5", "abc")] == [None] * 6
+    assert _whole_number("300") == 300
+    assert _whole_number("5.0") == 5
+
+
+def test_an_ensemble_size_of_inf_costs_one_reading_and_not_the_whole_config(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False, options=("ies_num_reals inf",))
+    write_rec(run_dir / "case.rec", options={"noptmax": "1e999", "ies_num_reals": "nan"})
+    cache_root = tmp_path / "cache"
+
+    _ingest(run_dir, cache_root)
+
+    size = _facts(cache_root)["ensemble_size"]
+    assert {r["source"]: r["value"] for r in size["readings"]}["control file"] is None
+    assert {r["source"]: r["value"] for r in size["readings"]}["run record"] is None
+
+
 def test_the_noptmax_fact_compares_the_control_file_with_a_record_that_states_one(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

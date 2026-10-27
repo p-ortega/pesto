@@ -19,6 +19,7 @@ describing a past ingest can ever be mistaken for a fact about the run.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -749,7 +750,7 @@ def _regularization_fact(rec: RecFacts | None, options: ControlOptions | None, r
 
 def _whole_number(text: str) -> int | None:
     number = _parse_number(text)
-    if number is None or number != int(number):
+    if number is None or not math.isfinite(number) or number != int(number):
         return None
     return int(number)
 
