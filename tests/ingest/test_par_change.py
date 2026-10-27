@@ -291,7 +291,8 @@ def test_two_iterations_that_share_no_realization_name_refuse_the_change(
 def test_names_that_differ_only_by_case_do_not_join_and_both_count_as_left_out(
     tmp_path, in_process  # noqa: F811
 ):
-    run, layout, _ = _ingest(tmp_path, rename_in_last={"r1": "R1"})
+    # A csv ensemble keeps the names as written; pyemu's binary reader would fold them.
+    run, layout, _ = _ingest(tmp_path, rename_in_last={"r1": "R1"}, ensemble_format="csv")
     change, meta = _change(layout)
 
     assert meta["n_common"] == 4
