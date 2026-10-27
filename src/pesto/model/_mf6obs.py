@@ -55,6 +55,7 @@ class ObsInput:
     files: tuple[Path, ...]
     notes: tuple[str, ...]
     found: bool
+    obs_files: tuple[str, ...] = ()
 
 
 @dataclass
@@ -263,6 +264,7 @@ def read_observation_input(run_dir: Path, grid_file_name: str) -> ObsInput:
         files=scan.files,
         notes=tuple(notes),
         found=scan.found,
+        obs_files=tuple(dict.fromkeys(p.name for m in scan.models if m.name in used for p in m.obs_files)),
     )
 
 
@@ -305,6 +307,7 @@ class SitePlacement:
     layer: np.ndarray
     notes: tuple[str, ...]
     files_used: tuple[str, ...]
+    site_note: tuple[str, ...] = ()
 
 
 def _examples(items: list[str]) -> str:
@@ -326,6 +329,13 @@ _REASON_TEXT = {
 }
 
 
+def _files_text(observations: ObsInput) -> str:
+    names = [Path(f).name for f in observations.obs_files]
+    if not names:
+        return "the model's observation input (it lists no OBS6 file for this grid)"
+    return ", ".join(names[:EXAMPLE_LIMIT]) + (f" and {len(names) - EXAMPLE_LIMIT} more" if len(names) > EXAMPLE_LIMIT else "")
+
+
 def place_sites(
     site_names: list[str],
     ids: list[str],
@@ -344,6 +354,8 @@ def place_sites(
     case_only: list[tuple[str, str]] = []
     disagree: list[str] = []
     files_used: dict[str, None] = {}
+    site_note = [""] * n
+    where_text = _files_text(observations)
 
     for row in range(n):
         site, site_id = site_names[row], ids[row].strip()
@@ -351,11 +363,13 @@ def place_sites(
         if not site_id:
             if not placed:
                 failures["no_id"].append(repr(site))
+                site_note[row] = "no id or usecol value to match an MF6 observation name"
             continue
         entries = observations.entries.get(site_id.lower())
         if not entries:
             if not placed:
                 failures["no_obs"].append(f"{site!r} (id {site_id!r})")
+                site_note[row] = f"no MF6 observation is named {site_id!r} in {where_text}"
             continue
         results = [_cell_of(entry, shape) for entry in entries]
         # Two rows with the same failure reason are one outcome, whatever their text.
@@ -364,20 +378,24 @@ def place_sites(
             if not placed:
                 where = " and ".join(sorted({e.file for e in entries}))
                 failures["ambiguous"].append(f"{site!r}: id {site_id!r} appears with different cells in {where}")
+                site_note[row] = f"id {site_id!r} appears with different cells in {where}"
             continue
         status, first, second = results[0]
         entry = entries[0]
         if placed:
             if status == "ok" and (first != cell[row] or (layer[row] >= 0 and second != layer[row])):
-                disagree.append(
-                    f"{site!r}: columns say cell {int(cell[row])} layer {int(layer[row])}, "
+                text = (
+                    f"columns say cell {int(cell[row])} layer {int(layer[row])}, "
                     f"{entry.name} in {entry.file} says cell {first} layer {second}"
                 )
+                disagree.append(f"{site!r}: {text}")
+                site_note[row] = f"the control file's columns were kept; {text}"
             continue
         if not any(e.name == site_id for e in entries):
             case_only.append((site_id, entry.name))
         if status == "fail":
             failures[first].append(f"{site!r}: {second}")
+            site_note[row] = second
             continue
         new_cell[row], new_layer[row] = first, second
         files_used[entry.file] = None
@@ -404,4 +422,4 @@ def place_sites(
     for key, items in failures.items():
         if items:
             notes.append(f"{len(items)} site(s) {_REASON_TEXT[key]} and stay unplaced ({_examples(items)})")
-    return SitePlacement(new_cell, new_layer, tuple(notes), tuple(files_used))
+    return SitePlacement(new_cell, new_layer, tuple(notes), tuple(files_used), tuple(site_note))
