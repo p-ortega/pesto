@@ -15,6 +15,7 @@ from typing import Annotated
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Query, Request
+from pydantic import field_validator
 from starlette.responses import JSONResponse, Response
 
 from pesto.api import obscache
@@ -27,7 +28,12 @@ from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.basereal import find_base
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.obs1to1 import RMSE_RULE, _group_bounds, rms_of_mean_residual
+from pesto.ingest.obs1to1 import (
+    RMSE_RULE,
+    _group_bounds,
+    load_obs_1to1,
+    rms_of_mean_residual,
+)
 from pesto.ingest.obsagg import OBS_STATS
 from pesto.ingest.obsindex import FLAG_HAS_TARGET, FLAG_WEIGHTED, SENTINEL_LIMIT
 
@@ -38,6 +44,43 @@ class ObsSiteQuery(RunQuery):
     """``site`` is the one accepted field; ``RunQuery`` turns any other into a 422."""
 
     site: int
+
+
+class ObsGroupQuery(RunQuery):
+    """``group`` is the one accepted field; ``RunQuery`` turns any other into a 422."""
+
+    group: str
+
+
+MAX_POINT_SITES = 20
+
+
+def _parse_site_ids(text: str) -> list[int]:
+    """Comma-separated whole numbers, at least one and at most ``MAX_POINT_SITES``."""
+    try:
+        ids = [int(part) for part in text.split(",")]
+    except ValueError:
+        raise ValueError("sites must be whole numbers separated by commas") from None
+    if len(ids) > MAX_POINT_SITES:
+        raise ValueError(f"at most {MAX_POINT_SITES} sites can be asked for at once, got {len(ids)}")
+    return ids
+
+
+class ObsPointsQuery(RunQuery):
+    """``group`` and ``sites`` (comma-separated site ids) are the accepted fields."""
+
+    group: str
+    sites: str
+
+    @field_validator("sites")
+    @classmethod
+    def _sites_are_ids(cls, value: str) -> str:
+        _parse_site_ids(value)
+        return value
+
+    @property
+    def site_ids(self) -> list[int]:
+        return _parse_site_ids(self.sites)
 
 
 class ObsSeriesQuery(RunQuery):
@@ -354,3 +397,198 @@ async def get_obs_groups(request: Request, params: Annotated[RunQuery, Query()])
         return problem_from_failure(404, built)
     table, notes = built
     return arrow_response(table, notes=notes)
+
+
+def _group_range(index, group: str) -> tuple[int, int] | None:
+    """The stored rows of the group called ``group``, matched by name, or None."""
+    bounds = _ranges(index)
+    if isinstance(bounds, ReadFailure):
+        return None
+    for name, start, stop in bounds:
+        if name == group:
+            return start, stop
+    return None
+
+
+def _unknown_group(group: str, artifact: str) -> Response:
+    return problem(
+        404,
+        "no observation group has that name",
+        artifact=artifact,
+        detail=f"the cached observations hold no group named {group!r}",
+    )
+
+
+def _site_points(index, aggs: list[tuple[int, object]], site_ids: list[int]) -> list[dict]:
+    """Each site's observations that have a target, one series per iteration in ``aggs``:
+    observed value, ensemble mean, 5th and 95th percentile, and whether it carries weight.
+    ``rmse_last`` is ``RMSE_RULE`` at the last of ``aggs``."""
+    rows = {name: OBS_STATS.index(name) for name in ("mean", "q05", "q95", "resid_mean")}
+    site_index = pd.Index(index.sites["site_id"])
+    out = []
+    for site_id in site_ids:
+        site = index.sites.iloc[int(site_index.get_indexer([site_id])[0])]
+        window = slice(int(site["start"]), int(site["start"]) + int(site["count"]))
+        flags = index.flags[window]
+        target = (flags & FLAG_HAS_TARGET) != 0
+        series = [
+            {
+                "iteration": int(iteration),
+                "obsval": _numbers(index.value[window][target]),
+                "mean": _numbers(agg.values[rows["mean"], window][target]),
+                "q05": _numbers(agg.values[rows["q05"], window][target]),
+                "q95": _numbers(agg.values[rows["q95"], window][target]),
+                "weighted": [bool(v) for v in (flags[target] & FLAG_WEIGHTED) != 0],
+            }
+            for iteration, agg in aggs
+        ]
+        rmse_last, _used = rms_of_mean_residual(aggs[-1][1].values[rows["resid_mean"], window])
+        out.append(
+            {"site_id": int(site_id), "site": str(site["site"]), "rmse_last": rmse_last, "series": series}
+        )
+    return out
+
+
+def _load_aggs(state, cache_root, iterations: list[int]) -> list[tuple[int, object]] | ReadFailure:
+    aggs = []
+    for iteration in iterations:
+        agg = obscache.get_agg(state, cache_root, iteration)
+        if isinstance(agg, ReadFailure):
+            return agg
+        aggs.append((iteration, agg))
+    return aggs
+
+
+def _densify(rows: pd.DataFrame, n_bins: int) -> list[int] | None:
+    """The stored non-empty bins as ``n_bins`` squared counts, index ``iy * n_bins + ix``;
+    None when a bin lies outside the grid."""
+    ix = rows["ix"].to_numpy(dtype=np.int64)
+    iy = rows["iy"].to_numpy(dtype=np.int64)
+    if ix.size and (ix.min() < 0 or iy.min() < 0 or ix.max() >= n_bins or iy.max() >= n_bins):
+        return None
+    counts = np.zeros(n_bins * n_bins, dtype=np.int64)
+    counts[iy * n_bins + ix] = rows["count"].to_numpy(dtype=np.int64)
+    return counts.tolist()
+
+
+@router.get("/obs/1to1")
+async def get_obs_1to1(request: Request, params: Annotated[ObsGroupQuery, Query()]) -> Response:
+    """One group's 1:1 grid for each end, the counts left out, and the points of its most
+    outlying sites. A group that cannot be drawn says why and has no grid."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return problem_from_failure(404, index)
+    loaded = obscache.memoised(
+        state, cache_root, ("1to1",), ("obs_index", "obs_1to1"), lambda layout: load_obs_1to1(layout)
+    )
+    if isinstance(loaded, ReadFailure):
+        return problem_from_failure(404, loaded)
+    frame, meta = loaded
+    if meta["order_digest"] != index.order_digest:
+        return problem(
+            409,
+            "the 1:1 grid does not match the observations",
+            artifact="obs_1to1",
+            detail="the 1:1 grid was built from a different observation table; run the ingest again",
+        )
+    entry = next((g for g in meta["groups"] if g["group"] == params.group), None)
+    if entry is None:
+        return _unknown_group(params.group, "obs_1to1")
+
+    n_bins = int(meta["n_bins"])
+    body = {
+        "group": entry["group"],
+        "n_bins": n_bins,
+        "lo": entry["lo"],
+        "hi": entry["hi"],
+        "x_label": "observed (obsval)",
+        "y_label": "simulated",
+        "grids": [],
+        "n_with_target": int(entry["n_with_target"]),
+        "n_zero_weight": int(entry["n_zero_weight"]),
+        "left_out": {k: int(entry["left_out"][k]) for k in ("no_value", "sentinel")},
+        "outlying": [],
+        "ranking_rule": str(meta["ranking_rule"]),
+        "rmse_rule": str(meta["rmse_rule"]),
+        "refused": entry["refused"],
+        "notes": [],
+    }
+    if entry["refused"] is not None:
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+    mine = frame[(frame["group"] == entry["group"]).to_numpy()]
+    for counted in entry["iterations"]:
+        counts = _densify(mine[(mine["iteration"] == counted["iteration"]).to_numpy()], n_bins)
+        if counts is None:
+            return problem(
+                404,
+                "the 1:1 grid is damaged",
+                artifact="obs_1to1",
+                detail=f"a stored bin of group {entry['group']!r} lies outside the {n_bins} x {n_bins} grid",
+            )
+        body["grids"].append({**{key: int(value) for key, value in counted.items()}, "counts": counts})
+        if counted["n_outside"]:
+            body["notes"].append(
+                f"iteration {counted['iteration']}: {counted['n_outside']} simulated value(s) fall "
+                "outside the drawn range and are not drawn"
+            )
+    if meta["single_iteration"]:
+        body["notes"].append(
+            f"only iteration {meta['first_iteration']} has an observation ensemble, "
+            "so the 1:1 plot has one panel"
+        )
+
+    ends = [int(meta["first_iteration"])]
+    if not meta["single_iteration"]:
+        ends.append(int(meta["last_iteration"]))
+    aggs = _load_aggs(state, cache_root, ends)
+    if isinstance(aggs, ReadFailure):
+        return problem_from_failure(404, aggs)
+    body["outlying"] = _site_points(index, aggs, [int(v) for v in entry["outlying"]])
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/obs/points")
+async def get_obs_points(request: Request, params: Annotated[ObsPointsQuery, Query()]) -> Response:
+    """The 1:1 points of chosen sites of one group. An id that is not in the group, or in
+    no group, is listed back, never skipped quietly."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return problem_from_failure(404, index)
+    if _group_range(index, params.group) is None:
+        return _unknown_group(params.group, "obs_index")
+    ends = _ends(Manifest.load(CacheLayout(root=Path(cache_root))))
+    if ends is None:
+        return _no_ensemble()
+    first, last = ends
+    aggs = _load_aggs(state, cache_root, [first] if last is None else [first, last])
+    if isinstance(aggs, ReadFailure):
+        return problem_from_failure(404, aggs)
+
+    known = pd.Index(index.sites["site_id"])
+    wanted, not_in_group, unknown = [], [], []
+    for site_id in dict.fromkeys(params.site_ids):
+        found = int(known.get_indexer([site_id])[0])
+        if found < 0:
+            unknown.append(site_id)
+        elif str(index.sites.iloc[found]["group"]) != params.group:
+            not_in_group.append(site_id)
+        else:
+            wanted.append(site_id)
+    body = {
+        "group": params.group,
+        "sites": _site_points(index, aggs, wanted),
+        "not_in_group": not_in_group,
+        "unknown": unknown,
+    }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})

@@ -202,3 +202,241 @@ def test_a_site_in_no_cell_is_not_counted_as_placed(tmp_path, in_process, monkey
     assert table.loc["gw_icpl", "n_placed"] == 1
     assert table.loc["gw_icpl", "n_sites"] == 2
     assert table.loc["gw_xy", "n_placed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# /obs/1to1 and /obs/points
+# ---------------------------------------------------------------------------
+
+
+def _stored_1to1(client):
+    loaded = obs1to1.load_obs_1to1(_layout(client))
+    assert not isinstance(loaded, obs1to1.ReadFailure)
+    return loaded
+
+
+def _agg_rows(client, iteration: int) -> dict[str, np.ndarray]:
+    agg = load_obs_agg(iteration, _layout(client))
+    return {name: np.asarray(agg.values[i], dtype=np.float64) for i, name in enumerate(OBS_STATS)}
+
+
+def test_1to1_densifies_the_stored_rows_into_one_grid_per_end(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    frame, meta = _stored_1to1(client)
+    entry = next(g for g in meta["groups"] if g["group"] == "gw_head")
+
+    response = client.get("/api/run/obs/1to1", params={"group": "gw_head"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["n_bins"] == 180
+    assert (body["lo"], body["hi"]) == (entry["lo"], entry["hi"])
+    assert [g["iteration"] for g in body["grids"]] == [0, 1]
+    for grid, stored in zip(body["grids"], entry["iterations"]):
+        counts = np.asarray(grid["counts"]).reshape(180, 180)
+        rows = frame[(frame["group"] == "gw_head") & (frame["iteration"] == grid["iteration"])]
+        expected = np.zeros((180, 180), dtype=np.int64)
+        for ix, iy, count in zip(rows["ix"], rows["iy"], rows["count"]):
+            expected[int(iy), int(ix)] = int(count)
+        assert (counts == expected).all()
+        assert counts.sum() == rows["count"].sum() > 0
+        assert grid["n_points"] == stored["n_points"]
+        assert grid["n_outside"] == stored["n_outside"]
+    assert body["x_label"] == "observed (obsval)"
+    assert body["y_label"] == "simulated"
+    assert body["ranking_rule"] == obs1to1.RANKING_RULE
+    assert body["rmse_rule"] == obs1to1.RMSE_RULE
+    assert body["refused"] is None
+
+
+def test_1to1_outlying_sites_carry_the_aggregate_rows_for_both_ends(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    _frame, meta = _stored_1to1(client)
+    entry = next(g for g in meta["groups"] if g["group"] == "gw_head")
+    index = load_obs_index(_layout(client))
+    aggs = {0: _agg_rows(client, 0), 1: _agg_rows(client, 1)}
+
+    body = client.get("/api/run/obs/1to1", params={"group": "gw_head"}).json()
+
+    assert [s["site_id"] for s in body["outlying"]] == entry["outlying"]
+    assert entry["outlying"]
+    for served in body["outlying"]:
+        row = index.sites.loc[index.sites["site_id"] == served["site_id"]].iloc[0]
+        window = slice(int(row["start"]), int(row["start"]) + int(row["count"]))
+        assert served["site"] == row["site"]
+        assert [s["iteration"] for s in served["series"]] == [0, 1]
+        for series in served["series"]:
+            agg = aggs[series["iteration"]]
+            assert series["mean"] == list(agg["mean"][window])
+            assert series["q05"] == list(agg["q05"][window])
+            assert series["q95"] == list(agg["q95"][window])
+            assert series["obsval"] == list(index.value[window])
+            assert series["weighted"] == [bool(f & FLAG_WEIGHTED) for f in index.flags[window]]
+        expected, _used = obs1to1.rms_of_mean_residual(aggs[1]["resid_mean"][window])
+        assert served["rmse_last"] == expected
+
+
+def test_1to1_for_a_group_with_no_target_is_refused_with_the_stored_reason(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    _frame, meta = _stored_1to1(client)
+    entry = next(g for g in meta["groups"] if g["group"] == "gw_none")
+
+    body = client.get("/api/run/obs/1to1", params={"group": "gw_none"}).json()
+
+    assert body["refused"] == entry["refused"]
+    assert "no observation in this group has a measured value" in body["refused"]
+    assert body["grids"] == []
+    assert body["lo"] is None and body["hi"] is None
+    assert body["left_out"] == {"no_value": 0, "sentinel": 1}
+    assert body["outlying"] == []
+
+
+def test_1to1_for_an_unknown_group_is_a_404_naming_obs_1to1(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+
+    response = client.get("/api/run/obs/1to1", params={"group": "nope"})
+
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "obs_1to1"
+
+
+def test_1to1_built_from_a_different_observation_table_is_a_409_naming_obs_1to1(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    assert client.get("/api/run/obs/1to1", params={"group": "gw_head"}).status_code == 200
+    sidecar = _layout(client).obs_1to1_meta
+    stored = json.loads(sidecar.read_text())
+    stored["order_digest"] = "0" * 64
+    sidecar.write_text(json.dumps(stored))
+
+    response = client.get("/api/run/obs/1to1", params={"group": "gw_head"})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["artifact"] == "obs_1to1"
+    assert "the 1:1 grid was built from a different observation table; run the ingest again" in body["detail"]
+
+
+def test_1to1_with_no_obs_1to1_cached_is_a_404_naming_it(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    _layout(client).obs_1to1_meta.unlink()
+
+    response = client.get("/api/run/obs/1to1", params={"group": "gw_head"})
+
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "obs_1to1"
+
+
+def test_1to1_with_one_iteration_has_one_grid_and_says_so(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0,), n_real=4)
+
+    body = client.get("/api/run/obs/1to1", params={"group": "gw_head"}).json()
+
+    assert [g["iteration"] for g in body["grids"]] == [0]
+    assert [s["iteration"] for s in body["outlying"][0]["series"]] == [0]
+    assert any("only iteration 0" in n for n in body["notes"])
+
+
+MIXED_SITES = (
+    *DEFAULT_SITES,
+    SiteSpec("gw_mix", "oname:mix:a", (None,), "none", obsval=2.0),
+    SiteSpec("gw_mix", "oname:mix:b", (None,), "none", obsval=1e30),
+)
+
+
+def _mixed(tmp_path):
+    return open_obs_run(tmp_path, iterations=(0, 1), n_real=4, sites=MIXED_SITES)
+
+
+def test_points_for_chosen_sites_match_the_aggregate_rows(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    site = site_id(_root(client), HEAD_SITE)
+    index = load_obs_index(_layout(client))
+    row = index.sites.loc[index.sites["site_id"] == site].iloc[0]
+    window = slice(int(row["start"]), int(row["start"]) + int(row["count"]))
+
+    body = client.get("/api/run/obs/points", params={"group": "gw_head", "sites": str(site)}).json()
+
+    assert body["not_in_group"] == [] and body["unknown"] == []
+    assert [s["site_id"] for s in body["sites"]] == [site]
+    series = body["sites"][0]["series"]
+    assert [s["iteration"] for s in series] == [0, 1]
+    assert series[1]["mean"] == list(_agg_rows(client, 1)["mean"][window])
+    assert series[1]["obsval"] == [1.5, 1.5, 1.5]
+
+
+def test_points_lists_ids_that_are_not_in_the_group_or_unknown(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    head = site_id(_root(client), HEAD_SITE)
+    other = site_id(_root(client), "oname:hds_otype:lst_usecol:trgw-0-2")
+
+    body = client.get(
+        "/api/run/obs/points", params={"group": "gw_head", "sites": f"{head},{other},999999"}
+    ).json()
+
+    assert [s["site_id"] for s in body["sites"]] == [head]
+    assert body["not_in_group"] == [other]
+    assert body["unknown"] == [999999]
+
+
+def test_points_for_a_site_with_no_target_has_empty_series_and_no_rmse(tmp_path, in_process):  # noqa: F811
+    client, _run = _mixed(tmp_path)
+    no_target = site_id(_root(client), "oname:mix:b")
+    with_target = site_id(_root(client), "oname:mix:a")
+
+    body = client.get(
+        "/api/run/obs/points", params={"group": "gw_mix", "sites": f"{no_target},{with_target}"}
+    ).json()
+
+    bare, full = body["sites"]
+    assert bare["rmse_last"] is None
+    assert all(s["obsval"] == [] and s["mean"] == [] and s["weighted"] == [] for s in bare["series"])
+    assert full["rmse_last"] is not None
+    assert all(len(s["obsval"]) == 1 for s in full["series"])
+
+
+def test_the_1to1_outlying_list_leaves_out_a_site_with_no_residual(tmp_path, in_process):  # noqa: F811
+    client, _run = _mixed(tmp_path)
+    no_target = site_id(_root(client), "oname:mix:b")
+    with_target = site_id(_root(client), "oname:mix:a")
+
+    body = client.get("/api/run/obs/1to1", params={"group": "gw_mix"}).json()
+
+    assert [s["site_id"] for s in body["outlying"]] == [with_target]
+    assert no_target not in [s["site_id"] for s in body["outlying"]]
+    assert body["left_out"]["sentinel"] == 1
+
+
+def test_points_refuses_more_than_twenty_ids_and_ids_that_are_not_numbers(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+
+    twenty = client.get("/api/run/obs/points", params={"group": "gw_head", "sites": ",".join(["1"] * 20)})
+    over = client.get("/api/run/obs/points", params={"group": "gw_head", "sites": ",".join(["1"] * 21)})
+    words = client.get("/api/run/obs/points", params={"group": "gw_head", "sites": "a,b"})
+    blank = client.get("/api/run/obs/points", params={"group": "gw_head", "sites": "1,,2"})
+
+    assert twenty.status_code == 200
+    assert over.status_code == 422
+    assert words.status_code == 422
+    assert blank.status_code == 422
+
+
+def test_points_for_an_unknown_group_is_a_404(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+
+    response = client.get("/api/run/obs/points", params={"group": "nope", "sites": "1"})
+
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "obs_index"
+
+
+def test_1to1_and_points_with_no_run_open_are_409():
+    from fastapi.testclient import TestClient
+
+    from pesto.api.app import create_app
+
+    app, token = create_app()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    client.headers["x-pesto-token"] = token
+
+    assert client.get("/api/run/obs/1to1", params={"group": "g"}).status_code == 409
+    assert client.get("/api/run/obs/points", params={"group": "g", "sites": "1"}).status_code == 409
