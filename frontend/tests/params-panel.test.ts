@@ -21,7 +21,10 @@ const parApi = vi.hoisted(() => ({
   fetchParChange: vi.fn(),
   fetchParValues: vi.fn(),
 }))
-vi.mock('../src/data/par', () => parApi)
+vi.mock('../src/data/par', async () => ({
+  ...parApi,
+  shareGroupsRead: (await vi.importActual<typeof import('../src/data/par')>('../src/data/par')).shareGroupsRead,
+}))
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
