@@ -807,6 +807,75 @@ def test_capability_phi_check_names_the_artifact_and_its_recorded_reason(
     assert _obs_stats_capability(app, token) == {"available": True, "blocked_by": []}
 
 
+def _par_view_capability(app, token):
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    return response.json()["capabilities"]["par_view"]
+
+
+def test_capability_par_view_is_available_after_a_full_ingest(tmp_path, in_process):
+    from ingest.par_fixtures import make_par_view_run
+
+    run = make_par_view_run(tmp_path / "run")
+    cache_root = tmp_path / "cache"
+    runner_module.ingest_run(run.root, cache_root=cache_root)
+
+    app, token = _app_for(run.root, cache_root)
+
+    assert _par_view_capability(app, token) == {"available": True, "blocked_by": []}
+
+
+def test_capability_par_view_names_par_hist_and_its_reason_when_it_failed(
+    tmp_path, in_process, monkeypatch
+):
+    from ingest.par_fixtures import make_par_view_run
+
+    run = make_par_view_run(tmp_path / "run")
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        runner_module,
+        "_write_par_hist_artifact",
+        lambda cache_root, first, last: ReadFailure(
+            name="par_hist", path="x", reason="the histograms would not write"
+        ),
+    )
+    runner_module.ingest_run(run.root, cache_root=cache_root)
+
+    app, token = _app_for(run.root, cache_root)
+    capability = _par_view_capability(app, token)
+
+    assert capability["available"] is False
+    assert capability["blocked_by"] == [
+        {"artifact": "par_hist", "reason": "the histograms would not write"}
+    ]
+
+
+def test_capability_par_view_is_blocked_before_anything_is_ingested(tmp_path):
+    from ingest.par_fixtures import make_par_view_run
+
+    run = make_par_view_run(tmp_path / "run")
+    app, token = _app_for(run.root, tmp_path / "cache")
+
+    capability = _par_view_capability(app, token)
+
+    assert capability["available"] is False
+    assert [b["artifact"] for b in capability["blocked_by"]] == ["par_change", "par_groups", "par_hist"]
+    assert {b["reason"] for b in capability["blocked_by"]} == {"not yet ingested"}
+
+
+def test_capability_par_view_for_a_run_with_no_parameter_ensemble_says_so(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=())
+    app, token = _app_for(run_dir, tmp_path / "cache")
+
+    capability = _par_view_capability(app, token)
+
+    assert capability == {
+        "available": False,
+        "blocked_by": [
+            {"artifact": "par_ens", "reason": "no parameter ensemble file was found for this run"}
+        ],
+    }
+
+
 # --- the byte estimate (GET /estimate) --------------------------------------
 
 
