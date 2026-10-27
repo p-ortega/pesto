@@ -11,6 +11,7 @@ import { createSelectionStore, type SelectionStore } from '../src/state/selectio
 import { renderSpaghetti, type SpaghettiHandle, type SpaghettiOptions } from '../src/ui/obs-spaghetti'
 import { createRecording2d, type RecordedCall as Call2d } from './support/recording-2d'
 import { createRecordingGl, type RecordedCall as CallGl } from './support/recording-gl'
+import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
 const obsApi = vi.hoisted(() => ({
   fetchObsSite: vi.fn(),
@@ -235,5 +236,229 @@ describe('a site written into the selection', () => {
     expect(count(gl, 'drawElements')).toBe(0)
     expect(host.textContent).toContain('Choose a site')
     expect(host.querySelector('canvas')).toBeNull()
+  })
+})
+
+interface Polyline {
+  colour: unknown
+  width: number
+  moves: number
+  lines: number
+}
+
+// A stroke at 2.5 px or more is a bold base line; the cursor and axes are 1 px.
+function boldLines(calls: Call2d[]): Polyline[] {
+  const found: Polyline[] = []
+  let moves = 0
+  let lines = 0
+  for (const call of calls) {
+    if (call.method === 'beginPath') {
+      moves = 0
+      lines = 0
+    } else if (call.method === 'moveTo') moves += 1
+    else if (call.method === 'lineTo') lines += 1
+    else if (call.method === 'stroke' && call.state.lineWidth >= 2.5) {
+      found.push({ colour: call.state.strokeStyle, width: call.state.lineWidth, moves, lines })
+    }
+  }
+  return found
+}
+
+async function drawn(m: Mounted, id = 7): Promise<void> {
+  select(m.store, [id])
+  await vi.waitFor(() => expect(count(m.front, 'stroke')).toBeGreaterThan(0))
+}
+
+describe('base', () => {
+  it('is one bold polyline per iteration in that iteration colour', async () => {
+    const m = mount()
+    await drawn(m)
+
+    const bold = boldLines(m.front)
+    expect(bold.map((b) => b.colour)).toEqual([INK_MUTED, SERIES_1])
+    for (const line of bold) {
+      expect(line.width).toBeGreaterThanOrEqual(2.5)
+      expect(line.moves).toBe(1)
+      expect(line.lines).toBe(3)
+    }
+  })
+
+  it('says so in the legend for an iteration that has none, and draws no line for it', async () => {
+    answerSite(sitePayload(), (iteration) => (iteration === 6 ? { baseIndex: [] } : {}))
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host)).toContain('no base realization in iteration 6')
+    expect(legendText(m.host)).not.toContain('no base realization in iteration 0')
+    expect(boldLines(m.front)).toHaveLength(1)
+  })
+
+  it('breaks at a missing simulated value, which the legend counts', async () => {
+    // Row 1, realization 1 is the base column's second value.
+    answerSite(sitePayload(), (iteration) => (iteration === 0 ? { nanAt: 4, nNaN: 2 } : {}))
+    const m = mount()
+    await drawn(m)
+
+    const first = boldLines(m.front)[0]
+    expect(first.moves).toBe(2)
+    expect(first.lines).toBe(1)
+    expect(legendText(m.host)).toContain('2 simulated values are missing; their lines break there, never joined')
+    // No index in the line layer's index buffer points at the missing value.
+    const indexUpload = m.gl.find((c) => c.method === 'bufferData' && c.args[0] === 'ELEMENT_ARRAY_BUFFER')!
+    expect([...(indexUpload.args[1] as Uint32Array)]).not.toContain(4)
+  })
+})
+
+describe('observed markers', () => {
+  it('are hollow for zero weight, and the legend says what zero weight means', async () => {
+    answerSite(sitePayload({ weighted: [true, false, true, true] }))
+    const m = mount()
+    await drawn(m)
+
+    expect(count(m.front, 'arc')).toBe(4)
+    expect(count(m.front, 'fill')).toBe(3)
+    expect(legendText(m.host)).toContain('hollow marker: zero weight: a model output, not fitted')
+  })
+
+  it('draw no hollow words when every observation is weighted', async () => {
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host).some((line) => line.includes('zero weight'))).toBe(false)
+    expect(legendText(m.host)).toContain('filled marker: observed value, weight above zero')
+  })
+
+  it('are left out for an observation with no measured value, and the legend counts them by reason', async () => {
+    answerSite(
+      sitePayload({
+        obsval: [10, null, null, 13],
+        sentinel: [false, true, false, false],
+        no_value: [false, false, true, false],
+      }),
+    )
+    const m = mount()
+    await drawn(m)
+
+    expect(count(m.front, 'arc')).toBe(2)
+    expect(legendText(m.host)).toContain(
+      '2 observations have no measured value (1 sentinel, 1 not a number), so they have no marker',
+    )
+  })
+
+  it('say when an observation is an inequality', async () => {
+    answerSite(sitePayload({ inequality: 'greater' }))
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host)).toContain('observations are inequality constraints (greater)')
+  })
+})
+
+describe('the noise band', () => {
+  const noise = (base: 'excluded' | 'not present') => ({
+    available: true as const,
+    q05: [9, 10, null, 12],
+    q95: [11, 12, 13, 14],
+    source: 'pest_noise.csv',
+    base,
+    n_real_used: 100,
+  })
+
+  it('is shaded on the back layer and names its source file and that base was excluded', async () => {
+    answerSite(sitePayload({ noise: noise('excluded') }))
+    const m = mount()
+    await drawn(m)
+
+    // The null at row 2 splits the band into two runs.
+    expect(count(m.back, 'fill')).toBe(2)
+    expect(legendText(m.host)).toContain('noise band: 5 to 95 percent of pest_noise.csv; base excluded')
+  })
+
+  it('says the noise file has no base when it has none', async () => {
+    answerSite(sitePayload({ noise: noise('not present') }))
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host)).toContain('noise band: 5 to 95 percent of pest_noise.csv; the noise file has no base')
+  })
+
+  it('is not drawn when unavailable, and the legend gives the reason', async () => {
+    const m = mount()
+    await drawn(m)
+
+    expect(count(m.back, 'fill')).toBe(0)
+    expect(legendText(m.host)).toContain('no noise band: no noise file was found')
+  })
+
+  it('never appears without a legend line that names its source', async () => {
+    answerSite(sitePayload({ noise: noise('excluded') }))
+    const m = mount()
+    await drawn(m)
+
+    expect(count(m.back, 'fill')).toBeGreaterThan(0)
+    expect(legendText(m.host).some((line) => line.startsWith('noise band:') && line.includes('pest_noise.csv'))).toBe(true)
+  })
+})
+
+describe('the x axis', () => {
+  it.each([
+    ['datetime', 'date'],
+    ['numeric', 'model time (days)'],
+    ['ordinal (no time found)', 'position in site (no time found)'],
+  ])('for a %s site is titled %s, on the canvas and in the legend', async (kind, title) => {
+    answerSite(sitePayload({ time_kind: kind }))
+    const m = mount()
+    await drawn(m)
+
+    expect(m.back.filter((c) => c.method === 'fillText').map((c) => c.args[0])).toContain(title)
+    expect(legendText(m.host)).toContain(`x axis: ${title}`)
+  })
+})
+
+describe('the counts and the legend', () => {
+  it('gives each iteration its own realization count', async () => {
+    answerSite(sitePayload(), (iteration) => ({ nReal: iteration === 0 ? 4 : 3 }))
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host)).toContain('first iteration 0: 4 realizations')
+    expect(legendText(m.host)).toContain('last iteration 6: 3 realizations')
+  })
+
+  it('says so for an iteration the server refused, and still draws the other', async () => {
+    obsApi.fetchObsSeries.mockImplementation(async (id: number, iteration: number) =>
+      iteration === 6 ? { ok: false, artifact: 'obs_ens', reason: 'no ensemble' } : seriesAnswer(iteration, { siteId: id }),
+    )
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(1))
+
+    expect(legendText(m.host)).toContain('iteration 6: obs_ens: no ensemble')
+  })
+
+  it('refuses a series whose rows do not match the site rather than pairing them by position', async () => {
+    answerSite(sitePayload(), (iteration) => (iteration === 6 ? { count: 3 } : {}))
+    const m = mount()
+    select(m.store, [7])
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(1))
+
+    expect(legendText(m.host).some((line) => line.includes('the series has 3 observations but the site has 4'))).toBe(true)
+  })
+
+  it('says how many observations have no time', async () => {
+    answerSite(sitePayload({ time: [19000, Number.NaN, 19020, 19030] }))
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host)).toContain('1 observation has no time, so it is not drawn')
+  })
+
+  it('does not run its text together', async () => {
+    loadRealStylesheet()
+    answerSite(sitePayload({ weighted: [true, false, true, true], inequality: 'less' }), () => ({ nNaN: 1 }))
+    const m = mount()
+    await drawn(m)
+
+    expectNoRunTogetherText(m.host, 'obs-spaghetti')
   })
 })
