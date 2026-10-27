@@ -414,6 +414,7 @@ async def start_ingest(request: Request) -> JSONResponse:
         from pesto.api.enscache import invalidate as _invalidate_enscache
     except ImportError:
         _invalidate_enscache = None
+    from pesto.api.obscache import invalidate as _invalidate_obscache
 
     state = _IngestState(cancel=threading.Event(), queue=asyncio.Queue())
     request.app.state.ingest = state
@@ -437,6 +438,7 @@ async def start_ingest(request: Request) -> JSONResponse:
             # so the memo goes either way, and before the stream ends.
             if _invalidate_enscache is not None:
                 _invalidate_enscache(request.app.state, str(layout.root))
+            _invalidate_obscache(request.app.state, str(layout.root))
             state.done = True
             await state.queue.put(None)
 
