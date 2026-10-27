@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .fixtures import _ENSEMBLE_WRITERS, write_control_file
+from .rec_fixtures import write_rec
 
 LOG_BOUNDS = (0.01, 1000.0)
 NONE_BOUNDS = (-1000.0, 1000.0)
@@ -63,6 +64,8 @@ class ParViewRun:
     values: dict[int, np.ndarray]
     dropped: list[str]
     pcs_path: Path | None
+    rec_path: Path | None = None
+    reinflate_paths: tuple[Path, ...] = ()
     lower: dict[str, float] = field(default_factory=dict)
     upper: dict[str, float] = field(default_factory=dict)
 
@@ -124,6 +127,10 @@ def make_par_view_run(
     rename_in_last: dict[str, str] | None = None,
     ensemble_format: str = "jcb",
     pcs_rows: list[dict] | None = None,
+    noptmax: int | None = None,
+    pestpp_options: dict | None = None,
+    rec: dict | bool | None = None,
+    reinflate_pcs: tuple[int, ...] = (),
     seed: int = 0,
 ) -> ParViewRun:
     """Write a control file, one jcb parameter ensemble per iteration and,
@@ -140,6 +147,11 @@ def make_par_view_run(
     ``nonpositive_log`` puts -19.0 into the first log parameter of the first
     iteration. ``overrides`` maps ``(iteration, parameter name)`` to the whole
     column, in the order of that iteration's realizations.
+
+    ``noptmax`` and ``pestpp_options`` go into the control file (the noptmax
+    defaults to the last iteration label). ``rec`` writes ``case.rec``: a
+    dict is passed on to ``write_rec``, ``True`` writes a plain record.
+    ``reinflate_pcs`` writes one empty ``case.N.reinflate.pcs.csv`` per label.
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -178,7 +190,8 @@ def make_par_view_run(
         pst_path,
         par_names=par_names,
         obs_names=["obs0", "obs1"],
-        noptmax=max(iterations),
+        noptmax=max(iterations) if noptmax is None else noptmax,
+        pestpp_options=pestpp_options,
         par_meta=("pname", "pstyle"),
     )
     csv_path = root / f"{case}.par_data.csv"
@@ -276,6 +289,12 @@ def make_par_view_run(
     pcs_path = None
     if pcs_rows is not None:
         pcs_path = write_pcs(root / f"{case}.{ordered[-1]}.pcs.csv", pcs_rows)
+    reinflate_paths = tuple(
+        write_pcs(root / f"{case}.{label}.reinflate.pcs.csv", []) for label in reinflate_pcs
+    )
+    rec_path = None
+    if rec:
+        rec_path = write_rec(root / f"{case}.rec", **({} if rec is True else rec))
 
     return ParViewRun(
         root=root,
@@ -289,6 +308,8 @@ def make_par_view_run(
         values=values,
         dropped=dropped,
         pcs_path=pcs_path,
+        rec_path=rec_path,
+        reinflate_paths=reinflate_paths,
         lower=lower,
         upper=upper,
     )
