@@ -350,7 +350,10 @@ def _site_table(state, cache_root, manifest: Manifest, index, rows: GroupRows, g
             notes.append(
                 f"placement rule {entry['rule']}: {entry['mapped']} of {entry['total']} sites placed"
             )
-    notes.extend(table.notes)
+    # A note that opens with another group's name is that group's own; its /obs/sites carries it.
+    notes.extend(
+        t for t in table.notes if not t.startswith("group '") or t.startswith(f"group '{group}'")
+    )
     return site_id, names, n_obs, x, y, source, layer, cell, rule, note, notes
 
 
