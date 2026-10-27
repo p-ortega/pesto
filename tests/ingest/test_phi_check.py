@@ -303,6 +303,86 @@ def test_a_name_that_matches_only_after_trimming_and_lower_casing_is_compared_wi
     assert any("'r1' for 'R1'" in n and "lower-casing" in n for n in check.notes)
 
 
+@pytest.mark.parametrize("cell", ["inf", "-inf", "1e400"])
+def test_a_value_in_the_phi_file_that_is_not_finite_keeps_the_check_and_is_named(
+    tmp_path, in_process, cell
+):
+    def plant(run):
+        cells = _phi_row(run, 0, {})
+        cells[_columns(run).index("34")] = cell
+        _rewrite_phi(run, _columns(run), {0: cells})
+
+    _run, layout, manifest = _run_with_phi(tmp_path, plant)
+
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    stored = json.loads(layout.phi_check(0).read_text())
+    by_name = {r["realization"]: r for r in stored["rows"]}
+    assert set(by_name) == {"base", "34", "35", "176"}
+    assert by_name["34"]["file"] is None
+    assert by_name["34"]["rel_diff"] is None
+    assert by_name["34"]["match"] is False
+    for name in ("base", "35", "176"):
+        assert isinstance(by_name[name]["file"], float) and by_name[name]["match"] is True
+    assert stored["n_mismatch"] == 1
+    notes = manifest.artifacts["phi_check/0"].notes
+    assert any("'34'" in n and "not a finite number" in n for n in notes)
+
+
+def test_a_phi_row_whose_only_value_is_not_finite_is_checked_with_one_named_mismatch(
+    tmp_path, in_process
+):
+    def plant(run):
+        _rewrite_phi(run, ["34"], {0: ["inf"]})
+
+    _run, layout, manifest = _run_with_phi(tmp_path, plant)
+
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    check = load_phi_check(0, layout)
+    assert check.status == "checked"
+    assert check.n_compared == 1 and check.n_mismatch == 1
+    assert check.rows[0].realization == "34" and check.rows[0].file is None
+    assert check.max_rel_diff is None
+
+
+def test_writing_a_check_with_values_that_are_not_finite_stores_them_as_null_and_says_so(
+    tmp_path,
+):
+    from pesto.ingest.phicheck import PhiCheck, PhiRow, write_phi_check
+
+    layout = CacheLayout(root=tmp_path / "cache")
+    rows = (
+        PhiRow("a", float("inf"), 1.0, float("nan"), False),
+        PhiRow("b", 1.0, 1.0, 0.0, True),
+    )
+    check = PhiCheck(
+        iteration=0,
+        tolerance=PHI_TOLERANCE,
+        weights_source="w",
+        phi_file="p.csv",
+        status="checked",
+        reason="",
+        n_compared=2,
+        n_mismatch=1,
+        n_only_in_cache=0,
+        n_only_in_file=0,
+        max_rel_diff=float("inf"),
+        median_rel_diff=None,
+        rows=rows,
+        summary="s",
+        notes=(),
+    )
+
+    written = write_phi_check(check, 0, layout)
+
+    assert not isinstance(written, ReadFailure), written
+    stored = json.loads(layout.phi_check(0).read_text())
+    assert stored["max_rel_diff"] is None
+    assert stored["rows"][0]["recomputed"] is None and stored["rows"][0]["rel_diff"] is None
+    assert stored["rows"][1]["recomputed"] == 1.0
+    assert sum("stored as null" in n for n in stored["notes"]) == 1
+    assert "3 value(s)" in stored["notes"][-1]
+
+
 def test_greater_and_less_than_groups_count_one_sided(tmp_path, in_process):
     from .obs_fixtures import SiteSpec
 

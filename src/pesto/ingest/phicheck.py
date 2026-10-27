@@ -206,6 +206,14 @@ def _read_phi_row(
         dtype=np.float64
     )
     blank = np.array([t == "" for t in texts], dtype=bool)
+    # pandas turns an overflowing number such as 1e400 into NaN; Python reads it as inf.
+    for k in np.flatnonzero(np.isnan(values) & ~blank):
+        try:
+            as_float = float(texts[k])
+        except ValueError:
+            continue
+        if np.isinf(as_float):
+            values[k] = as_float
     unreadable = int((np.isnan(values) & ~blank).sum())
     # A realization with no value in this row was not part of that iteration.
     return names, values, unreadable, int(blank.sum())
@@ -461,12 +469,19 @@ def check_phi(
                 PhiRow(
                     realization=stored.real_names[i],
                     recomputed=float(recomputed[k]) if np.isfinite(recomputed[k]) else None,
-                    file=float(file_values[j]),
+                    file=float(file_values[j]) if np.isfinite(file_values[j]) else None,
                     rel_diff=rel,
                     match=match,
                 )
             )
         rows.sort(key=lambda r: r.realization)
+        not_finite = [r.realization for r in rows if r.file is None]
+        if not_finite:
+            notes.append(
+                f"{len(not_finite)} realization(s) have a phi in {phi_path.name} for iteration "
+                f"{iteration} that is not a finite number; they are kept as mismatches with no "
+                f"file value{_examples_text(not_finite)}"
+            )
         mismatched = [r.realization for r in rows if not r.match]
         defined = np.array([r.rel_diff for r in rows if r.rel_diff is not None], dtype=np.float64)
         undefined = len(rows) - defined.size
@@ -521,6 +536,30 @@ def write_phi_check(
     path = layout.phi_check(iteration)
     try:
         layout.ensure()
+        nulled = 0
+
+        def finite(value: float | None) -> float | None:
+            nonlocal nulled
+            if value is None or np.isfinite(value):
+                return value
+            nulled += 1
+            return None
+
+        rows = [
+            {
+                "realization": r.realization,
+                "recomputed": finite(r.recomputed),
+                "file": finite(r.file),
+                "rel_diff": finite(r.rel_diff),
+                "match": r.match,
+            }
+            for r in check.rows
+        ]
+        max_rel_diff = finite(check.max_rel_diff)
+        median_rel_diff = finite(check.median_rel_diff)
+        notes = list(check.notes)
+        if nulled:
+            notes.append(f"{nulled} value(s) that are not a finite number were stored as null")
         payload = {
             "cache_version": CACHE_VERSION,
             "iteration": int(iteration),
@@ -533,24 +572,15 @@ def write_phi_check(
             "n_mismatch": check.n_mismatch,
             "n_only_in_cache": check.n_only_in_cache,
             "n_only_in_file": check.n_only_in_file,
-            "max_rel_diff": check.max_rel_diff,
-            "median_rel_diff": check.median_rel_diff,
-            "rows": [
-                {
-                    "realization": r.realization,
-                    "recomputed": r.recomputed,
-                    "file": r.file,
-                    "rel_diff": r.rel_diff,
-                    "match": r.match,
-                }
-                for r in check.rows
-            ],
+            "max_rel_diff": max_rel_diff,
+            "median_rel_diff": median_rel_diff,
+            "rows": rows,
             "summary": check.summary,
-            "notes": list(check.notes),
+            "notes": notes,
         }
         written = write_atomic_text(path, json.dumps(payload, indent=2, allow_nan=False))
         files = (CacheFile(path=str(path.relative_to(layout.root)), bytes=written),)
-        return WrittenArtifact(name=name, files=files, notes=check.notes)
+        return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
         path.unlink(missing_ok=True)
         return _fail(name, path, f"failed to write the phi check: {exc}")
