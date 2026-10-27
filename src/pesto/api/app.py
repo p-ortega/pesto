@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from pesto import __version__
-from pesto.api import fs, grid, ingest, par, pp, runs, tables, values
+from pesto.api import fs, grid, ingest, obs, par, pp, runs, tables, values
 from pesto.api.problem import install_problem_handlers
 from pesto.api.security import install_security, mint_token
 from pesto.api.static import mount_static
@@ -40,6 +40,7 @@ def create_app() -> tuple[FastAPI, str]:
     app.include_router(tables.router)
     app.include_router(grid.router)
     app.include_router(values.router)
+    app.include_router(obs.router)
     app.include_router(par.router)
     app.include_router(pp.router)
     app.include_router(ingest.router)
