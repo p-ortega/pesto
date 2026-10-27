@@ -481,6 +481,191 @@ describe('the group summary', () => {
   })
 })
 
+function withChange(row: ParGroupRow, pesto: number | null, pestpp: number | null): ParGroupRow {
+  return {
+    ...row,
+    change: {
+      pesto: pesto === null ? null : { ...row.change.pesto!, mean_change_pct: pesto },
+      pestpp: { ...row.change.pestpp, mean_change: pestpp },
+      reason: pesto === null ? 'no figure' : null,
+    },
+  }
+}
+
+function headingButton(el: HTMLElement, column: string): HTMLButtonElement {
+  return el.querySelector(`.group-header [data-column="${column}"] button`) as HTMLButtonElement
+}
+
+function shownOrder(el: HTMLElement): (string | undefined)[] {
+  return groupRows(el).map((r) => r.dataset.group)
+}
+
+describe('sorting the group table', () => {
+  const rows = [
+    withChange(groupRow('a'), 5, 1),
+    withChange(groupRow('b'), null, null),
+    withChange(groupRow('c'), 20, 3),
+    withChange(groupRow('d'), 5, 2),
+    withChange(groupRow('e'), 1, null),
+  ]
+
+  async function mounted() {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer(rows))
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(5))
+    return el
+  }
+
+  it('starts in control-file order', async () => {
+    const el = await mounted()
+
+    expect(shownOrder(el)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(el.querySelector('[data-column="pesto"][role="columnheader"]')?.getAttribute('aria-sort')).toBe('none')
+  })
+
+  it('sorts a number column ascending, then descending, with empty values last both ways', async () => {
+    const el = await mounted()
+
+    headingButton(el, 'pesto').click()
+    expect(shownOrder(el)).toEqual(['e', 'a', 'd', 'c', 'b'])
+    expect(el.querySelector('[data-column="pesto"][role="columnheader"]')?.getAttribute('aria-sort')).toBe('ascending')
+
+    headingButton(el, 'pesto').click()
+    expect(shownOrder(el)).toEqual(['c', 'a', 'd', 'e', 'b'])
+    expect(el.querySelector('[data-column="pesto"][role="columnheader"]')?.getAttribute('aria-sort')).toBe('descending')
+  })
+
+  it('keeps control-file order between two equal values, whichever way it sorts', async () => {
+    const el = await mounted()
+
+    headingButton(el, 'pesto').click()
+    const ascending = shownOrder(el)
+    expect(ascending.indexOf('a')).toBeLessThan(ascending.indexOf('d'))
+
+    headingButton(el, 'pesto').click()
+    const descending = shownOrder(el)
+    expect(descending.indexOf('a')).toBeLessThan(descending.indexOf('d'))
+  })
+
+  it('starts a new column ascending and clears the mark on the old one', async () => {
+    const el = await mounted()
+
+    headingButton(el, 'pesto').click()
+    headingButton(el, 'pestpp').click()
+
+    expect(shownOrder(el)).toEqual(['a', 'd', 'c', 'b', 'e'])
+    expect(el.querySelector('[data-column="pesto"][role="columnheader"]')?.getAttribute('aria-sort')).toBe('none')
+    expect(el.querySelector('[data-column="pestpp"][role="columnheader"]')?.getAttribute('aria-sort')).toBe('ascending')
+  })
+
+  it('sorts the group column as text and keeps the chosen row marked after a sort', async () => {
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([groupRow('rch'), groupRow('hk'), groupRow('ghb')]),
+    )
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ store: makeStore(['hk']) }))
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(3))
+
+    headingButton(el, 'group').click()
+
+    expect(shownOrder(el)).toEqual(['ghb', 'hk', 'rch'])
+    expect(groupRows(el).map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false'])
+  })
+
+  it('puts a layer given as "several" after the numbered layers and a layer that is not stated last', async () => {
+    const layered = (group: string, value: number | 'several' | null) =>
+      groupRow(group, { layer: { value, source: 'placement rule grid', note: null } })
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([layered('s', 'several'), layered('n', null), layered('l2', 2), layered('l0', 0)]),
+    )
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(4))
+
+    headingButton(el, 'layer').click()
+
+    expect(shownOrder(el)).toEqual(['l0', 'l2', 's', 'n'])
+  })
+})
+
+describe('the drill-down list and the groups that are not on the map', () => {
+  const TWO_GROUPS = {
+    parnme: ['hk1', 'hk2', 'hk3', 'rch1', 'rch2'],
+    pargp: ['hk', 'hk', 'hk', 'rch', 'rch'],
+    parlbnd: [0, 0, 0, 0, 0],
+    parubnd: [1, 1, 1, 1, 1],
+    partrans: ['none', 'none', 'none', 'none', 'none'],
+  }
+
+  function listedNames(el: HTMLElement): (string | null)[] {
+    return [...el.querySelectorAll('.param-row')].map((r) => r.firstElementChild!.textContent)
+  }
+
+  it('asks for a group to be chosen before it lists any parameter', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('rch')]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ parTable: Promise.resolve(parTableBuffer(TWO_GROUPS)) }))
+
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
+    expect(el.textContent).toContain('Choose a group above to list its parameters')
+    expect(el.querySelectorAll('.param-row').length).toBe(0)
+  })
+
+  it('lists only the chosen group\'s parameters, and follows the choice when it moves', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('rch')]))
+    const store = makeStore()
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ parTable: Promise.resolve(parTableBuffer(TWO_GROUPS)), store }))
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
+
+    groupRows(el)[0].click()
+    store.flush()
+    expect(listedNames(el)).toEqual(['hk1', 'hk2', 'hk3'])
+
+    groupRows(el)[1].click()
+    store.flush()
+    expect(listedNames(el)).toEqual(['rch1', 'rch2'])
+  })
+
+  it('shows the stored reason and no list for a group the drill-down is not offered for', async () => {
+    const reason = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([groupRow('hk', { drill_down: { offered: false, reason } }), groupRow('rch')]),
+    )
+    const store = makeStore(['hk'])
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ parTable: Promise.resolve(parTableBuffer(TWO_GROUPS)), store }))
+
+    await vi.waitFor(() => expect(el.textContent).toContain(reason))
+    expect(el.querySelectorAll('.param-row').length).toBe(0)
+  })
+
+  it('says "not on the map" for a group the map cannot draw, with the recorded note as secondary text', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('u')]))
+    const el = mount()
+    renderParamsPanel(
+      el,
+      panelOptions({ unmapped: [{ group: 'u', note: "group 'u' carries 'layer', which looks like placement data but ..." }] }),
+    )
+
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
+    const [onMap, offMap] = groupRows(el)
+    expect(onMap.textContent).not.toContain('not on the map')
+    expect(offMap.textContent).toContain('not on the map')
+    expect(offMap.textContent).toContain("group 'u' carries 'layer'")
+  })
+
+  it('says only "not on the map" when the unmapped entry has no note', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('u')]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: [{ group: 'u', note: null }] }))
+
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(1))
+    expect(groupRows(el)[0].textContent).toContain('not on the map')
+  })
+})
+
 describe('the status bar carries real figures (Task 3)', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
