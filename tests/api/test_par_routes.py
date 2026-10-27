@@ -179,3 +179,45 @@ def test_groups_without_the_cached_file_is_a_404_naming_par_groups(tmp_path, in_
 
     assert response.status_code == 404
     assert response.json()["artifact"] == "par_groups"
+
+
+# ---------------------------------------------------------------------------
+# /par/hist
+# ---------------------------------------------------------------------------
+
+
+def test_hist_serves_one_groups_shared_edge_histograms(tmp_path, in_process):  # noqa: F811
+    run, manifest, client = _open(tmp_path)
+    assert manifest.artifacts["par_hist"].state == "ok", manifest.artifacts["par_hist"].reason
+
+    response = client.get("/api/run/par/hist", params={"group": "hk_pp"})
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["group"] == "hk_pp"
+    assert body["space"] == "log10"
+    assert len(body["edges"]) == 51
+    assert body["edges"] == sorted(body["edges"])
+    assert (body["first"]["iteration"], body["last"]["iteration"]) == (0, 1)
+    assert len(body["first"]["counts"]) == len(body["first"]["density"]) == 50
+    assert sum(body["first"]["counts"]) == body["first"]["n"]
+    assert body["n_common"] == 5
+    assert body["refused"] is None
+
+
+def test_hist_for_an_unknown_group_is_a_404_naming_par_hist(tmp_path, in_process):  # noqa: F811
+    _run, _manifest, client = _open(tmp_path)
+
+    response = client.get("/api/run/par/hist", params={"group": "nosuch"})
+
+    assert response.status_code == 404
+    assert response.json()["artifact"] == "par_hist"
+
+
+def test_hist_with_no_run_open_is_409():
+    app, token = create_app()
+    client = TestClient(app, base_url=BASE_URL)
+    client.headers["x-pesto-token"] = token
+
+    assert client.get("/api/run/par/hist", params={"group": "g"}).status_code == 409
