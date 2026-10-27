@@ -591,6 +591,17 @@ body {
   flex: 0 0 5.5em;
 }
 
+.obs-col-text[data-column='placement'] {
+  flex-basis: 8em;
+}
+
+/* Notes the server sent with the site list: a few lines, then they scroll. */
+.obs-site-notes {
+  flex: 0 0 auto;
+  max-height: 4.5rem;
+  margin-bottom: var(--space-xs);
+}
+
 .obs-col-figure[data-column^='rmse'] {
   flex-basis: 8.5em;
 }

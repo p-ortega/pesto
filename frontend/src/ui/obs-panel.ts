@@ -5,7 +5,17 @@
 // the origin 'obs'; this file never reads a site by row position.
 
 import { ApiError } from '../data/client'
-import { fetchObsGroups, shareRead, TABLE_RMSE_LABEL, type ObsGroupRow, type ObsGroupsResult } from '../data/obs'
+import { LatestWins } from '../data/latest-wins'
+import {
+  fetchObsGroups,
+  fetchObsSites,
+  shareRead,
+  TABLE_RMSE_LABEL,
+  type ObsGroupRow,
+  type ObsGroupsResult,
+  type ObsSiteRow,
+  type ObsSitesResult,
+} from '../data/obs'
 import type { Capability, IngestState } from '../data/client'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
@@ -251,6 +261,31 @@ function iterationSuffix(iteration: number | null): string {
   return iteration === null ? '' : ` (iteration ${iteration})`
 }
 
+const LAYER_UNKNOWN = 'unknown'
+
+function layerText(row: ObsSiteRow): string {
+  return row.layer === -1 ? LAYER_UNKNOWN : String(row.layer)
+}
+
+function placementText(row: ObsSiteRow): string {
+  if (row.xySource === 'none') return 'not placed'
+  return row.xySource === 'own' ? 'own position' : 'cell centre'
+}
+
+// The title says where the position came from, or why there is none.
+function placementTitle(row: ObsSiteRow): string {
+  const rule = `rule: ${row.rule}`
+  if (row.xySource === 'none') return row.note ?? `no position (${rule})`
+  return row.note === null ? rule : `${rule}; ${row.note}`
+}
+
+const SITE_COLUMNS: GridColumn<ObsSiteRow>[] = [
+  { key: 'site', label: 'Site', kind: 'name', text: (r) => r.site },
+  { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs) },
+  { key: 'layer', label: 'Layer', kind: 'figure', text: layerText, title: (r) => (r.layer === -1 ? 'no layer could be worked out for this site' : '') },
+  { key: 'placement', label: 'Placement', kind: 'text', text: placementText, title: placementTitle },
+]
+
 function blockedReason(capability: Capability): string {
   const why = capability.blockedBy.map((entry) => `${entry.artifact}: ${entry.reason}`).join(' ')
   return why === '' ? 'no reason was recorded' : why
@@ -330,11 +365,100 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   let chosenGroup: string | null = null
   let groupsRequested = false
   let groupsGrid: Grid<ObsGroupRow> | null = null
+  let groupNames: ReadonlySet<string> | null = null
+  let sitesGrid: Grid<ObsSiteRow> | null = null
+  // The group whose sites were asked for, and whether a choice made while hidden is still to be followed.
+  let sitesFor: string | null = null
+  let sitesPending = false
+  const sitesSlot = new LatestWins<ObsSitesResult>()
+
+  function renderSitePrompt(): void {
+    sitesGrid = null
+    renderNotice(sitesHost, { title: 'Choose a group above to list its sites', tone: 'info' })
+  }
+
+  function renderSitesFailure(artifact: string, reason: string): void {
+    sitesGrid = null
+    sitesFor = null
+    renderNotice(sitesHost, { title: 'The site list could not be read', detail: `${artifact}: ${reason}`, tone: 'serious' })
+  }
+
+  function pickSite(row: ObsSiteRow): void {
+    opts.store.set({ sites: new Set([row.siteId]) }, 'obs')
+    sitesGrid?.markRows()
+  }
+
+  function renderSites(group: string, rows: readonly ObsSiteRow[], notes: readonly string[]): void {
+    sitesHost.textContent = ''
+    const heading = document.createElement('div')
+    heading.classList.add('label', 'obs-sites-title', 'truncate')
+    heading.textContent = `${group}: ${rows.length} ${rows.length === 1 ? 'site' : 'sites'}`
+    heading.title = heading.textContent
+    sitesHost.appendChild(heading)
+    if (notes.length > 0) {
+      const noteBox = document.createElement('div')
+      noteBox.classList.add('obs-site-notes', 'scroll-pane')
+      makeFocusable(noteBox, 'Site list notes')
+      for (const note of notes) appendNote(noteBox, note)
+      sitesHost.appendChild(noteBox)
+    }
+    const grid = createGrid<ObsSiteRow>({
+      ariaLabel: `Sites of ${group}`,
+      dataKey: 'siteId',
+      columns: SITE_COLUMNS,
+      rowId: (row) => String(row.siteId),
+      isSelected: (row) => opts.store.get().sites.has(row.siteId),
+      pick: pickSite,
+      isHidden: () => hidden,
+    })
+    sitesGrid = grid
+    sitesHost.appendChild(grid.el)
+    grid.setRows(rows)
+  }
+
+  // One group at a time: each fetch goes through the same slot, so an older answer is never drawn.
+  function loadSites(group: string): void {
+    sitesFor = group
+    sitesGrid = null
+    sitesHost.textContent = ''
+    const loading = document.createElement('div')
+    loading.classList.add('label')
+    loading.style.color = 'var(--ink-muted)'
+    loading.textContent = 'Loading sites…'
+    sitesHost.appendChild(loading)
+    void sitesSlot.run(group, (signal) => fetchObsSites(group, { signal })).then(
+      (answer) => {
+        if (answer.stale) return
+        if (answer.value.ok) renderSites(group, answer.value.rows, answer.value.notes)
+        else renderSitesFailure(answer.value.artifact, answer.value.reason)
+      },
+      (error: unknown) => {
+        const { artifact, reason } = describeFailure(error, 'obs_cell')
+        renderSitesFailure(artifact, reason)
+      },
+    )
+  }
+
+  // The first group of the shared selection that the table holds; any other choice is not this panel's to show.
+  function followSelection(): void {
+    if (groupNames === null) return
+    const wanted = [...opts.store.get().obsGroups][0]
+    if (wanted === undefined || !groupNames.has(wanted)) return
+    chosenGroup = wanted
+    groupsGrid?.markRows()
+    if (hidden) {
+      sitesPending = true
+      return
+    }
+    sitesPending = false
+    if (wanted !== sitesFor) loadSites(wanted)
+  }
 
   function pickGroup(group: string): void {
     chosenGroup = group
     groupsGrid?.markRows()
     opts.store.set({ obsGroups: new Set([group]) }, 'obs')
+    if (group !== sitesFor) loadSites(group)
   }
 
   function groupColumns(rows: readonly ObsGroupRow[]): GridColumn<ObsGroupRow>[] {
@@ -434,7 +558,10 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     void loadGroups().then(
       (answer) => {
         if (answer.ok) {
+          groupNames = new Set(answer.rows.map((row) => row.group))
+          for (const note of answer.notes) appendNote(noticesHost, note)
           renderGroups(answer.rows)
+          followSelection()
         } else {
           groupsRequested = false
           renderGroupsFailure(answer.artifact, answer.reason)
@@ -448,7 +575,21 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     )
   }
 
+  if (!blocked) renderSitePrompt()
   if (!hidden) requestGroups()
+
+  // A choice another view makes is followed; the panel's own echo is not.
+  const unsubscribeGroups = opts.store.subscribe(
+    (selection) => selection.obsGroups,
+    (_next, _prev, origins) => {
+      if (origins.size === 1 && origins.has('obs')) return
+      followSelection()
+    },
+  )
+  const unsubscribeSites = opts.store.subscribe(
+    (selection) => selection.sites,
+    () => sitesGrid?.markRows(),
+  )
 
   return {
     onShow() {
@@ -457,12 +598,18 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       groupsGrid?.redraw()
+      sitesGrid?.redraw()
+      if (sitesPending) followSelection()
     },
     onHide() {
       hidden = true
       savedScroll.clear()
       for (const pane of host.querySelectorAll('.scroll-pane')) savedScroll.set(pane, pane.scrollTop)
     },
-    dispose() {},
+    dispose() {
+      unsubscribeGroups()
+      unsubscribeSites()
+      sitesSlot.cancel()
+    },
   }
 }
