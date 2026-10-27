@@ -30,7 +30,8 @@ from pesto.cache._atomic import write_atomic_bytes, write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.aggregate import summarise
-from pesto.ingest.ensfile import EnsembleData, _clean
+from pesto.ingest.basereal import find_base
+from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.obsens import load_obs_ensemble
 from pesto.ingest.obsindex import (
@@ -70,7 +71,6 @@ NOISE_STATS = (
     "n_valid",
 )
 RESIDUAL_TEXT = "simulated minus observed"
-BASE_NAME = "base"
 _EXAMPLES = 3
 
 
@@ -407,23 +407,6 @@ def load_obs_agg(iteration: int, layout: CacheLayout) -> StoredObsAgg | ReadFail
     )
 
 
-def _find_base(real_names: tuple[str, ...]) -> tuple[list[int], str | None]:
-    """Positions of the base realization, by the name rule used everywhere
-    else: exact ``base`` first, then trimmed and lower-cased. The second item
-    is a note when only the folded name matched."""
-    exact = [i for i, n in enumerate(real_names) if n == BASE_NAME]
-    if exact:
-        return exact, None
-    folded = [i for i, n in enumerate(real_names) if _clean(n) == BASE_NAME]
-    if not folded:
-        return [], None
-    shown = ", ".join(repr(real_names[i]) for i in folded[:_EXAMPLES])
-    return folded, (
-        f"the base realization matched only after trimming spaces and lower-casing "
-        f"(the file names it {shown})"
-    )
-
-
 def write_noise_agg(
     data: EnsembleData,
     index: ObsIndex,
@@ -473,7 +456,7 @@ def write_noise_agg(
                 f"{source_name} has {n_file_real} realizations but {len(data.real_names)} names",
             )
 
-        base_rows, base_note = _find_base(tuple(data.real_names))
+        base_rows, base_note = find_base(tuple(data.real_names))
         base_set = set(base_rows)
         keep = np.array([i for i in range(n_file_real) if i not in base_set], dtype=np.int64)
         if keep.size == 0:

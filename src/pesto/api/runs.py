@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse
 from pesto.api.prefs import read_view_state, write_view_state
 from pesto.api.problem import problem, problem_from_failure
 from pesto.cache.layout import CacheLayout
-from pesto.cache.runconfig import fact_to_json, load_config, restat_localization
+from pesto.cache.runconfig import fact_to_json, load_config, served_facts
 from pesto.ingest.failures import ReadFailure
 
 router = APIRouter(prefix="/api/run")
@@ -67,10 +67,7 @@ async def get_run_config(request: Request) -> JSONResponse:
         },
         "notes": list(config.notes),
         "facts_version": config.facts_version,
-        "facts": [
-            fact_to_json(restat_localization(f, config.run_dir) if f.key == "localization" else f)
-            for f in config.facts
-        ],
+        "facts": [fact_to_json(f) for f in served_facts(config, layout)],
         "par_iterations": list(config.par_iterations),
     }
     if config.facts_version is None:
