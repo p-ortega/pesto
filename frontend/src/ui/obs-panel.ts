@@ -19,6 +19,7 @@ import {
 import type { Capability, IngestState } from '../data/client'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
+import { renderSpaghetti } from './obs-spaghetti'
 
 export interface ObsPanelOptions {
   store: SelectionStore
@@ -323,7 +324,7 @@ function appendNote(host: HTMLElement, note: string): void {
 /**
  * Fills `host` with the Obs panel. The panel's sections, top to bottom, are
  * `.obs-notices`, `.obs-groups`, `.obs-fit`, `.obs-sites` and `.obs-spaghetti`;
- * the fit and spaghetti hosts stay empty until the plot plans mount into them.
+ * the fit host stays empty until its plan mounts into it.
  */
 export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPanelHandle {
   host.textContent = ''
@@ -361,6 +362,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   const spaghettiHost = document.createElement('div')
   spaghettiHost.classList.add('obs-spaghetti')
   host.appendChild(spaghettiHost)
+  const spaghetti = renderSpaghetti(spaghettiHost, { store: opts.store, startHidden: hidden })
 
   let chosenGroup: string | null = null
   let groupsRequested = false
@@ -594,6 +596,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   return {
     onShow() {
       hidden = false
+      spaghetti.onShow()
       requestGroups()
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
@@ -603,6 +606,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     },
     onHide() {
       hidden = true
+      spaghetti.onHide()
       savedScroll.clear()
       for (const pane of host.querySelectorAll('.scroll-pane')) savedScroll.set(pane, pane.scrollTop)
     },
@@ -610,6 +614,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       unsubscribeGroups()
       unsubscribeSites()
       sitesSlot.cancel()
+      spaghetti.dispose()
     },
   }
 }
