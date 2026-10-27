@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConfigFact, ConfigReading } from '../src/data/config'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
+import { renderConfigPanel } from '../src/ui/config-panel'
+import { formatBytes } from '../src/ui/progress'
 
 vi.mock('../src/views/map-view', () => ({
   CONTEXT_RECOVERY_WINDOW_MS: 0,
@@ -157,6 +159,251 @@ describe('the Config tab in the map shell', () => {
     const panel = root.querySelector<HTMLElement>('#panel-config')!
 
     expect(panel.querySelectorAll('.notice-parts').length).toBe(1)
-    expect(panel.textContent).toContain("configuration could not be read")
+    expect(panel.textContent).toContain('configuration could not be read')
+  })
+})
+
+function panelWith(...facts: ConfigFact[]): HTMLElement {
+  const host = mount()
+  renderConfigPanel(host, { config: runConfig({ facts }) })
+  return host
+}
+
+function texts(row: HTMLElement, selector: string): string[] {
+  return Array.from(row.querySelectorAll(selector)).map((el) => el.textContent ?? '')
+}
+
+describe('a fact whose sources disagree (D-14, CONF-04)', () => {
+  const noise = fact(
+    'noise',
+    'Measurement noise',
+    [
+      reading('run record', false, 'no noise: pestpp reset ies_no_noise', { evidence: 'case.rec line 12' }),
+      reading('control file', true, 'noise on: a supplied observation ensemble'),
+    ],
+    { agree: false },
+  )
+
+  it('shows the run record first, then the control file as "control file says X", under a warning', () => {
+    const row = rowFor(panelWith(noise), 'noise')
+
+    expect(row.querySelector('.config-main .config-value')?.textContent).toBe('no noise: pestpp reset ies_no_noise')
+    expect(row.querySelector('.config-main .config-source')?.textContent).toBe('run record')
+    expect(texts(row, '.config-line .config-value')).toEqual(['control file says noise on: a supplied observation ensemble'])
+
+    const notice = row.querySelector('.notice-parts') as HTMLElement
+    expect(notice.textContent).toContain('⚠')
+    expect(notice.textContent).toContain('Warning')
+    expect(notice.textContent).toContain('Sources disagree')
+  })
+
+  it('shows every reading of another fact too, in the order the server sent them', () => {
+    const size = fact(
+      'ensemble_size',
+      'Ensemble size',
+      [reading('run record', 200, '200'), reading('control file', 100, '100'), reading('cache', 50, '50')],
+      { agree: false },
+    )
+    const row = rowFor(panelWith(size), 'ensemble_size')
+
+    expect(row.querySelector('.config-main .config-value')?.textContent).toBe('200')
+    expect(texts(row, '.config-line .config-value')).toEqual(['control file says 100', 'cache says 50'])
+  })
+
+  it('shows no warning when the sources agree', () => {
+    const row = rowFor(panelWith(REGULARIZATION), 'regularization')
+    expect(row.querySelector('.notice-parts')).toBeNull()
+  })
+
+  it('shows a supporting reading with no value as a muted line, never as a disagreement', () => {
+    const quiet = fact(
+      'noise',
+      'Measurement noise',
+      [
+        reading('run record', false, 'no noise: pestpp reset ies_no_noise'),
+        reading('run record', null, 'ies_no_noise: true in the options dump'),
+        reading('files present', null, 'an obs+noise file is present', { evidence: 'case.obs+noise.csv' }),
+      ],
+      { agree: null },
+    )
+    const row = rowFor(panelWith(quiet), 'noise')
+
+    expect(row.querySelector('.notice-parts')).toBeNull()
+    const muted = Array.from(row.querySelectorAll('.config-line.config-muted'))
+    expect(muted.map((el) => el.querySelector('.config-value')?.textContent)).toEqual([
+      'ies_no_noise: true in the options dump',
+      'an obs+noise file is present',
+    ])
+    expect(row.querySelector('.config-main .config-value')?.textContent).toBe('no noise: pestpp reset ies_no_noise')
+  })
+})
+
+describe('the localization row (CONF-02)', () => {
+  const FILE = 898_800_000
+  const stat = (now: boolean, size: number) =>
+    reading('files present', null, `localization.jcb, ${size} bytes`, {
+      evidence: now ? 'stat now; the file was not opened' : 'stat at the ingest; the file was not opened',
+      extra: { name: 'localization.jcb', size_bytes: size, mtime_ns: 1, ...(now ? { now: true } : {}) },
+    })
+  const localization = (...extra: ConfigReading[]) =>
+    fact(
+      'localization',
+      'Localization',
+      [
+        reading('run record', true, 'on, 5 sequential upgrade steps'),
+        reading('control file', true, 'ies_localizer names localization.jcb'),
+        stat(false, FILE),
+        ...extra,
+      ],
+      { agree: true },
+    )
+
+  it('says on, gives the file name and size, and says pesto did not read the file', () => {
+    const row = rowFor(panelWith(localization()), 'localization')
+
+    expect(row.querySelector('.config-main .config-value')?.textContent).toBe('on')
+    expect(row.textContent).toContain(`localization.jcb, ${formatBytes(FILE)}`)
+    expect(formatBytes(FILE)).toBe('857.2 MB')
+    expect(row.textContent).toContain('pesto did not read this file')
+  })
+
+  it('says off when the sources say off', () => {
+    const off = fact('localization', 'Localization', [reading('run record', false, 'off (not using localization)')])
+    const row = rowFor(panelWith(off), 'localization')
+
+    expect(row.querySelector('.config-main .config-value')?.textContent).toBe('off')
+    expect(row.textContent).not.toContain('pesto did not read this file')
+  })
+
+  it('shows both sizes and the note when the file changed since the ingest', () => {
+    const note = 'the localization file changed since the ingest'
+    const changed = { ...localization(stat(true, FILE * 2)), note }
+    const row = rowFor(panelWith(changed), 'localization')
+
+    expect(row.textContent).toContain(`at the ingest: localization.jcb, ${formatBytes(FILE)}`)
+    expect(row.textContent).toContain(`now: localization.jcb, ${formatBytes(FILE * 2)}`)
+    expect(row.textContent).toContain(note)
+  })
+})
+
+describe('the base row (D-16, CONF-03)', () => {
+  const cache = (iteration: number, value: boolean | null, shown: string) =>
+    reading('cache', value, shown, { extra: { iteration } })
+
+  it('shows one line per ingested iteration in the order sent', () => {
+    const base = fact(
+      'base',
+      'Base realization',
+      [
+        reading('control file', true, 'ies_include_base is true'),
+        cache(0, true, 'iteration 0: base present'),
+        cache(3, false, 'iteration 3: base missing'),
+        cache(6, true, 'iteration 6: base present'),
+      ],
+      { agree: false },
+    )
+    const row = rowFor(panelWith(base), 'base')
+
+    const cacheLines = texts(row, '.config-value').filter((t) => t.startsWith('iteration'))
+    expect(cacheLines).toEqual(['iteration 0: base present', 'iteration 3: base missing', 'iteration 6: base present'])
+  })
+
+  it('does not call a change over the run a disagreement between sources', () => {
+    const base = fact(
+      'base',
+      'Base realization',
+      [cache(0, true, 'iteration 0: base present'), cache(3, false, 'iteration 3: base missing')],
+      { agree: false },
+    )
+    expect(rowFor(panelWith(base), 'base').querySelector('.notice-parts')).toBeNull()
+  })
+
+  it('warns when the control file says base was included and the first iteration has none', () => {
+    const base = fact(
+      'base',
+      'Base realization',
+      [
+        reading('control file', true, 'ies_include_base is true'),
+        cache(0, false, 'iteration 0: base was not included in this run'),
+      ],
+      { agree: false },
+    )
+    const row = rowFor(panelWith(base), 'base')
+
+    expect(row.querySelector('.notice-parts')).not.toBeNull()
+    expect(row.textContent).toContain('control file says ies_include_base is true')
+  })
+
+  it('shows "base was not included in this run" as sent and never builds the word lost', () => {
+    const base = fact('base', 'Base realization', [
+      cache(0, false, 'iteration 0: base was not included in this run'),
+      cache(6, false, 'iteration 6: base was not included in this run'),
+    ])
+    const row = rowFor(panelWith(base), 'base')
+
+    expect(row.textContent).toContain('iteration 0: base was not included in this run')
+    expect(row.textContent).not.toMatch(/lost/i)
+  })
+
+  it('shows an iteration that was not ingested as sent', () => {
+    const base = fact('base', 'Base realization', [
+      cache(0, true, 'iteration 0: base present'),
+      cache(2, null, 'iteration 2: not ingested'),
+    ])
+    expect(rowFor(panelWith(base), 'base').textContent).toContain('iteration 2: not ingested')
+  })
+})
+
+describe('facts with nothing to compare', () => {
+  it('says "not found" and lists what pesto looked for when there is no reading', () => {
+    const none = fact('reinflation', 'Reinflation', [], {
+      looked_for: ['reinflation lines in case.rec', 'files named like case.N.reinflate.pcs.csv'],
+      note: 'not found',
+    })
+    const row = rowFor(panelWith(none), 'reinflation')
+
+    expect(row.querySelector('.config-main .config-value')?.textContent).toBe('not found')
+    expect(texts(row, '.config-line .config-value')).toEqual([
+      'pesto looked for:',
+      'reinflation lines in case.rec',
+      'files named like case.N.reinflate.pcs.csv',
+    ])
+    expect(row.textContent?.match(/not found/g)?.length).toBe(1)
+  })
+
+  it('shows the noise band row naming the file and the base exclusion as sent', () => {
+    const band = fact('noise_band', 'Noise band', [
+      reading('files present', null, 'case.obs+noise.csv is the source of the band', { evidence: 'case.obs+noise.csv' }),
+      reading('cache', null, 'base excluded from the band, 49 realizations used', { extra: { base: 'excluded' } }),
+    ])
+    const row = rowFor(panelWith(band), 'noise_band')
+
+    expect(row.textContent).toContain('case.obs+noise.csv is the source of the band')
+    expect(row.textContent).toContain('base excluded from the band, 49 realizations used')
+  })
+
+  it('puts the evidence of each reading in the row title', () => {
+    const both = fact('noise', 'Measurement noise', [
+      reading('run record', false, 'no noise', { evidence: 'case.rec line 12' }),
+      reading('control file', false, 'no noise', { evidence: 'case.pst line 40' }),
+    ])
+    const row = rowFor(panelWith(both), 'noise')
+
+    expect(row.title).toContain('run record: case.rec line 12')
+    expect(row.title).toContain('control file: case.pst line 40')
+  })
+})
+
+describe('text from the run (T-09-22)', () => {
+  it('is set as text, never as markup', () => {
+    const hostile = '<img src=x onerror=alert(1)>'
+    const bad = fact('noise', 'Measurement noise', [reading('run record', false, hostile, { evidence: hostile })], {
+      note: hostile,
+    })
+    const host = panelWith(bad)
+
+    expect(host.querySelector('img')).toBeNull()
+    expect(host.textContent).toContain(hostile)
+    expect(rowFor(host, 'noise').title).toContain(hostile)
   })
 })
