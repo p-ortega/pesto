@@ -56,7 +56,7 @@ export interface SigmaRatio {
 }
 
 export interface ReinflationFacts {
-  verdict: 'found' | 'none' | 'unchecked'
+  verdict: 'found' | 'none_found' | 'unchecked'
   first: number
   last: number
   checked: string[]
