@@ -173,9 +173,15 @@ _GRID_BOUND = ("grid", "par_cell", "obs_cell")
 def _assert_only_par_ens_0_and_grid_are_not_ok(manifest):
     """``grid`` and ``par_cell`` fail for every synthetic fixture (its grid
     file is a placeholder flopy cannot parse) -- excluded here the same way
-    the other whole-run tests in this file exclude them."""
+    the other whole-run tests in this file exclude them. ``par_change`` needs
+    ``par_ens/0`` and ``par_groups`` needs ``par_change``, so both fail with it
+    and say why."""
     for name, artifact in manifest.artifacts.items():
         if name == "par_ens/0" or name in _GRID_BOUND:
+            continue
+        if name in ("par_change", "par_groups"):
+            assert artifact.state == "failed", name
+            assert "depends on" in artifact.reason, (name, artifact.reason)
             continue
         assert artifact.state == "ok", (name, artifact.reason)
 
