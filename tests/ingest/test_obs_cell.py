@@ -26,7 +26,7 @@ from pesto.ingest.obsindex import load_obs_index
 from pesto.ingest.runner import ingest_run, plan_artifacts
 from pesto.model import GroupResolution, ObsCells
 
-from model.mf6_input import write_mf6_obs_input
+from model.mf6_input import PackageSpec, write_mf6_obs_input
 
 from .obs_fixtures import GRID_SITES, SiteSpec, make_obs_run
 
@@ -598,6 +598,32 @@ def test_a_group_holding_a_column_site_and_an_mf6_obs_site_stores_both_rules(tmp
     assert table.group[at[_SITE_A]] == table.group[at[_MIXED]] == "gw_icpl"
     assert (table.cell[at[_MIXED]], table.rule[at[_MIXED]]) == (2, "mf6-obs")
     assert table.rule[at[_SITE_A]] == "icpl-layer"
+
+
+def test_editing_a_package_period_file_makes_obs_cell_stale_and_the_next_ingest_moves_the_site(
+    tmp_path, in_process
+):
+    run_dir = tmp_path / "run"
+    sites = (SiteSpec("gw_head", "oname:wel_otype:lst_usecol:PW-1", (None,), "none"),)
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=sites)
+    spec = PackageSpec(
+        "WEL6", "m.wel", obs_rows=[("pw-1", "WEL", "pw-1")], open_close={"rows_1.txt": ["1 1 -1 pw-1"]}
+    )
+    files = write_mf6_obs_input(run_dir, packages=[spec])
+    cache_root = tmp_path / "cache"
+    ingest_run(run_dir, cache_root=cache_root)
+    layout = CacheLayout(root=cache_root)
+    planned = {a.name: a for a in plan_artifacts(discover(run_dir), layout)}
+    names = {Path(s).name for s in planned["obs_cell"].sources}
+    assert {"m.wel", "m.wel.obs", "rows_1.txt"} <= names
+    assert load_obs_cell(layout).cell[0] == 0
+    assert Manifest.load(layout).is_stale("obs_cell", layout, planned["obs_cell"].sources) is False
+
+    files["rows_1.txt"].write_text("  1 3 -1 pw-1\n", encoding="utf-8")
+
+    assert Manifest.load(layout).is_stale("obs_cell", layout, planned["obs_cell"].sources) is True
+    ingest_run(run_dir, cache_root=cache_root)
+    assert load_obs_cell(layout).cell[0] == 2
 
 
 def test_an_obs_cell_without_the_note_column_loads_and_says_to_ingest_again(tmp_path, in_process):
