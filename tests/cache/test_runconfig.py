@@ -118,7 +118,7 @@ def test_no_evidence_at_all_yields_undetermined_not_false(tmp_path):
 
 def test_ies_no_noise_with_a_noise_file_present_is_still_no_noise(tmp_path):
     run, tables = _build_control(
-        tmp_path, pestpp_options={"ies_no_noise": "true"}, noise_ensemble=True
+        tmp_path, pestpp_options={"ies_no_noise": "true"}, noise_ensemble=True, obs_meta=()
     )
 
     fact = describe_noise(run, tables)

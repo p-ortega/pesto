@@ -21,12 +21,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
+from pesto.ingest.discover import resolve_named_file
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.recfile import RecFacts, read_rec
 from pesto.ingest.runopts import ControlOptions, OPTION_ALIASES, scan_options
@@ -206,10 +208,6 @@ def fact_from_json(data: object) -> Fact:
     )
 
 
-# The legacy "++option(value)" dialect, alongside the plain
-# "option    value" keyword form _scan_ies_no_noise also recognises --
-# pyemu's own version=2 writer produces the latter.
-_IES_NO_NOISE_LEGACY_RE = re.compile(r"^\s*\+\+\s*ies_no_noise\s*\(\s*([^)]*)\)", re.IGNORECASE)
 
 _TRUE_TOKENS = frozenset({"true", "1", "yes"})
 _FALSE_TOKENS = frozenset({"false", "0", "no"})
@@ -224,39 +222,10 @@ def _parse_bool_token(token: str) -> bool | None:
     return None
 
 
-def _scan_ies_no_noise(pst_path: Path) -> tuple[bool | None, str | None]:
-    """Line-scan ``pst_path`` for an ``ies_no_noise`` option, the same
-    plain-text idiom ``discover.py``'s own control-file scan uses -- never a
-    ``pyemu.Pst()`` parse.
-
-    Returns ``(value, evidence)``. ``evidence`` is ``None`` only when the
-    option was not found at all, or the file could not be read, so a caller
-    can tell "not mentioned" from "mentioned with a value that made no
-    sense" -- the latter still returns evidence, with ``value=None``.
-    """
-    try:
-        with pst_path.open("r", encoding="utf-8", errors="strict") as f:
-            for line in f:
-                legacy = _IES_NO_NOISE_LEGACY_RE.match(line)
-                if legacy:
-                    token = legacy.group(1).strip()
-                    return _parse_bool_token(token), f"ies_no_noise={token}"
-
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                parts = stripped.split(None, 1)
-                if len(parts) != 2:
-                    continue
-                key, rest = parts
-                if key.strip().lower() != "ies_no_noise":
-                    continue
-                rest_tokens = rest.split()
-                token = rest_tokens[0] if rest_tokens else ""
-                return _parse_bool_token(token), f"ies_no_noise={token}"
-    except (OSError, UnicodeDecodeError):
-        return None, None
-    return None, None
+def _base_name(text: str) -> str:
+    """The last part of a file name as written, so no directory the control
+    file spelled out reaches the screen."""
+    return re.split(r"[\\/]", text.strip())[-1]
 
 
 @dataclass(frozen=True)
@@ -265,9 +234,11 @@ class NoiseFact:
 
     ``has_noise`` is ``None`` when pesto could not tell -- a different
     answer from ``False``, and one that must stay different all the way to
-    the screen. ``decided_by`` is one of ``"noise_ensemble"``,
-    ``"ies_no_noise"``, ``"standard_deviation_column"`` or
-    ``"undetermined"``, and is never empty.
+    the screen. ``decided_by`` is one of ``"run_record"``,
+    ``"ies_no_noise"``, ``"observation_ensemble_option"``,
+    ``"standard_deviation_column"`` or ``"undetermined"``, and is never empty.
+    A present ``case.obs+noise.*`` file never decides: pestpp writes it
+    whether or not it drew noise.
     """
 
     has_noise: bool | None
@@ -276,80 +247,383 @@ class NoiseFact:
     notes: tuple[str, ...]
 
 
-def describe_noise(run: "RunLayout", tables: "ControlTables") -> NoiseFact:
-    """Work out what pesto found about measurement noise, checking in
-    order: the control file's ``ies_no_noise`` option, a noise ensemble
-    named by ``run.noise`` and present on disk, and a ``standard_deviation``
-    column in ``tables.obs``.
+_NOISE_KINDS = frozenset({"drawn_noise", "loaded_obs_ensemble", "standard_deviation_column"})
+_NOISE_SHOWN = {
+    "reset_to_no_noise": "no noise: pestpp reset ies_no_noise to true",
+    "no_noise_ensemble": "no noise: pestpp built a no-noise observation ensemble",
+    "drawn_noise": "noise: pestpp drew the observation noise",
+    "loaded_obs_ensemble": "noise: pestpp loaded an observation ensemble",
+    "standard_deviation_column": "noise: pestpp used the standard_deviation column",
+}
+_NOISE_DECIDED_TEXT = {
+    "run_record": "decided by the run record's own lines",
+    "ies_no_noise": "decided by ies_no_noise in the control file",
+    "observation_ensemble_option": "decided by the observation ensemble the control file names",
+    "standard_deviation_column": "decided by the standard_deviation column",
+    "undetermined": "could not be decided",
+}
 
-    The control-file option wins when it disagrees with a noise ensemble on
-    disk, because a run whose author switched noise off is describing their
-    own intent -- the disagreement goes into ``notes`` rather than being
-    resolved silently. Where the observation table's ``standard_deviation``
-    column carries one of Phase 2's stripped-header notes, that note is
-    carried into ``evidence`` -- a column that only parsed after a leading
-    space was stripped and one that was written cleanly are the same fact
-    with different provenance, and the difference is exactly what tells a
-    modeller whether their run was deliberately calibrated without noise or
-    whether a stray space ate their column. When nothing decides it,
-    ``has_noise`` is ``None``, ``decided_by`` is ``"undetermined"``, and
-    ``evidence`` lists each place pesto looked.
+
+def _noise_decision(
+    run: "RunLayout",
+    tables: "ControlTables",
+    rec: RecFacts | ReadFailure | None,
+    options: ControlOptions | ReadFailure | None,
+) -> tuple[NoiseFact, list[Reading]]:
+    """Decide measurement noise and return every reading that bears on it.
+
+    The order is the run record's own narrative lines (pestpp prints its
+    options dump before it resets ``ies_no_noise``, so the dump never
+    decides), then the control file's ``ies_no_noise``, then an observation
+    ensemble the control file names, then a ``standard_deviation`` column.
+    The dump and a present obs+noise file are kept as readings with no value.
     """
+    readings: list[Reading] = []
+    checked: list[str] = []
     notes: list[str] = []
 
-    no_noise_value, no_noise_evidence = _scan_ies_no_noise(run.pst_path)
-    ensemble_found = run.noise is not None
-
-    if no_noise_evidence is not None and no_noise_value is not None:
-        has_noise = not no_noise_value
-        if has_noise is False and ensemble_found:
-            notes.append(
-                f"ies_no_noise says there is no noise, but a noise ensemble "
-                f"{run.noise.name} is present on disk -- the control-file "
-                f"option takes precedence"
+    record_readings: list[Reading] = []
+    if isinstance(rec, RecFacts):
+        for line in rec.noise:
+            shown = _NOISE_SHOWN[line.kind]
+            if line.kind == "loaded_obs_ensemble":
+                shown = f"noise: pestpp loaded the observation ensemble {line.value}"
+            record_readings.append(
+                Reading("run record", line.kind in _NOISE_KINDS, shown, f"{rec.name} line {line.line}: {line.text}")
             )
-        return NoiseFact(
-            has_noise=has_noise,
-            decided_by="ies_no_noise",
-            evidence=(no_noise_evidence,),
-            notes=tuple(notes),
-        )
-
-    checked: list[str] = []
-    if no_noise_evidence is not None:
-        checked.append(
-            f"ies_no_noise was set but its value could not be read as true or false ({no_noise_evidence})"
-        )
+        readings.extend(record_readings)
+        dump = _rec_option(rec, "ies_no_noise")
+        if dump is not None:
+            key, option = dump
+            readings.append(
+                Reading(
+                    "run record",
+                    None,
+                    f"options dump says {key} {option.value}",
+                    f"{rec.name} options dump, line {option.line}: {key}: {option.value}; "
+                    "pestpp prints the dump before it decides, so it does not decide",
+                )
+            )
+        if not record_readings:
+            checked.append(f"run record {rec.name}: no line saying whether observation noise was drawn")
+    elif isinstance(rec, ReadFailure):
+        checked.append(f"run record: not read ({rec.reason})")
     else:
-        checked.append("no ies_no_noise option in the control file")
+        checked.append("run record: there is none in the run directory")
 
-    if ensemble_found:
-        return NoiseFact(
-            has_noise=True,
-            decided_by="noise_ensemble",
-            evidence=(run.noise.name,),
-            notes=tuple(notes),
+    no_noise = obs_ensemble = None
+    if isinstance(options, ControlOptions):
+        no_noise = options.get("ies_no_noise")
+        obs_ensemble = options.get("ies_observation_ensemble")
+    else:
+        checked.append("control file: its options were not read, so ies_no_noise is not known")
+    flag = _parse_bool_token(no_noise.value) if no_noise is not None else None
+    if no_noise is not None:
+        readings.append(
+            Reading(
+                "control file",
+                None if flag is None else not flag,
+                f"ies_no_noise {no_noise.value}"
+                + ("" if flag is None else (": no noise" if flag else ": noise")),
+                _control_where(options, no_noise),
+            )
         )
-    checked.append("no measurement-noise ensemble found on disk")
-
+    if obs_ensemble is not None:
+        readings.append(
+            Reading(
+                "control file",
+                True,
+                f"an observation ensemble is named: {_base_name(obs_ensemble.value)}",
+                f"{options.path_name} line {obs_ensemble.line}: {obs_ensemble.raw_key} "
+                f"{_base_name(obs_ensemble.value)}",
+            )
+        )
+    column_evidence: list[str] = []
     if "standard_deviation" in tables.obs.columns:
-        evidence = ["observation table carries a standard_deviation column"]
-        for note in tables.notes:
-            if "standard_deviation" in note and "stripped" in note:
-                evidence.append(note)
-        return NoiseFact(
-            has_noise=True,
-            decided_by="standard_deviation_column",
-            evidence=tuple(evidence),
-            notes=tuple(notes),
+        column_evidence = ["observation table carries a standard_deviation column"]
+        column_evidence.extend(
+            note for note in tables.notes if "standard_deviation" in note and "stripped" in note
         )
-    checked.append("no standard_deviation column in the observation table")
+        readings.append(
+            Reading("control file", True, "the observation data has a standard_deviation column",
+                    "; ".join(column_evidence))
+        )
+    if run.noise is not None:
+        readings.append(
+            Reading(
+                "files present",
+                None,
+                f"{run.noise.name} is present",
+                "pestpp writes this file whether or not noise was drawn, so it does not decide",
+            )
+        )
 
-    return NoiseFact(
-        has_noise=None,
-        decided_by="undetermined",
-        evidence=tuple(checked),
-        notes=tuple(notes),
+    decided = [r for r in record_readings if r.value is not None]
+    polarities = {r.value for r in decided}
+    if len(polarities) > 1:
+        notes.append("the run record's own noise lines disagree, so it does not decide")
+    if len(polarities) == 1:
+        has_noise, decided_by = polarities.pop(), "run_record"
+        evidence = tuple(r.evidence for r in decided)
+    elif no_noise is not None and flag is not None:
+        has_noise, decided_by = not flag, "ies_no_noise"
+        evidence = (f"ies_no_noise={no_noise.value}",)
+    elif obs_ensemble is not None:
+        has_noise, decided_by = True, "observation_ensemble_option"
+        evidence = (f"{obs_ensemble.raw_key}={_base_name(obs_ensemble.value)}",)
+    elif column_evidence:
+        has_noise, decided_by, evidence = True, "standard_deviation_column", tuple(column_evidence)
+    else:
+        if no_noise is not None:
+            checked.append(
+                f"ies_no_noise was set but its value could not be read as true or false ({no_noise.value})"
+            )
+        else:
+            checked.append("no ies_no_noise option in the control file")
+        checked.append("no observation ensemble option in the control file")
+        checked.append("no standard_deviation column in the observation table")
+        has_noise, decided_by, evidence = None, "undetermined", tuple(checked)
+
+    if has_noise is not None:
+        for reading in readings:
+            if reading.value is not None and reading.value != has_noise:
+                notes.append(
+                    f"{reading.source} says otherwise ({reading.evidence}); "
+                    f"the setup facts keep both readings"
+                )
+    return NoiseFact(has_noise, decided_by, evidence, tuple(notes)), readings
+
+
+def describe_noise(
+    run: "RunLayout",
+    tables: "ControlTables",
+    rec: RecFacts | ReadFailure | None = None,
+    options: ControlOptions | ReadFailure | None = None,
+) -> NoiseFact:
+    """What pesto found about measurement noise and what decided it.
+
+    ``rec`` and ``options`` are read from the run directory when not given.
+    The order is the run record's narrative lines, the control file's
+    ``ies_no_noise``, an observation ensemble the control file names, then a
+    ``standard_deviation`` column. When nothing decides it, ``has_noise`` is
+    ``None``, ``decided_by`` is ``"undetermined"`` and ``evidence`` lists each
+    place pesto looked. A column that only parsed after a leading space was
+    stripped carries that note in ``evidence``, so a modeller can tell a run
+    deliberately calibrated without noise from a stray space that ate the column.
+    """
+    decision, _readings = _noise_decision(
+        run, tables, _resolve_rec(run, rec), _resolve_options(run, options)
+    )
+    return decision
+
+
+def _noise_fact(noise: NoiseFact, readings: list[Reading], rec_name: str, pst_name: str) -> Fact:
+    return make_fact(
+        "noise",
+        "Measurement noise",
+        readings,
+        (
+            f"the observation-noise lines in {rec_name}",
+            f"ies_no_noise and the observation ensemble option in {pst_name}",
+            f"a standard_deviation column in the observation data of {pst_name}",
+        ),
+        note=_NOISE_DECIDED_TEXT[noise.decided_by],
+    )
+
+
+def _noise_band_fact(run: "RunLayout", noise: NoiseFact, layout: CacheLayout | None) -> Fact:
+    """The obs+noise file the cached noise band was built from, or why there
+    is no band. Read from the sidecar the ``noise_agg`` artifact wrote."""
+    from pesto.ingest.obsagg import load_noise_agg
+
+    readings: list[Reading] = []
+    notes: list[str] = []
+    if run.noise is None:
+        notes.append("no noise band: no obs+noise file was found in the run directory")
+    else:
+        readings.append(
+            Reading(
+                "files present",
+                None,
+                f"{run.noise.name} is present",
+                "found by name in the run directory",
+            )
+        )
+        if layout is None:
+            notes.append("no noise band was read: no cache was given")
+        else:
+            stored = load_noise_agg(layout)
+            if isinstance(stored, ReadFailure):
+                notes.append(f"no noise band is stored: {stored.reason}")
+            else:
+                base = (
+                    "base was left out" if stored.base == "excluded" else "the file holds no base realization"
+                )
+                readings.append(
+                    Reading(
+                        "cache",
+                        None,
+                        f"built from {stored.source}; {base}; {stored.n_real_used} realizations used",
+                        "the stored noise band's sidecar",
+                        {"source": stored.source, "base": stored.base, "n_real_used": stored.n_real_used},
+                    )
+                )
+        if noise.has_noise is False:
+            notes.append("no noise was drawn, so the file holds the observed values without noise")
+    return make_fact(
+        "noise_band",
+        "Noise band",
+        readings,
+        (
+            f"an obs+noise ensemble file named like {run.case}.obs+noise.* in the run directory",
+            "the noise band stored in the cache",
+        ),
+        note=" ".join(notes) if notes else None,
+    )
+
+
+def _file_time(mtime_ns: int) -> str:
+    stamp = datetime.fromtimestamp(mtime_ns / 1e9, tz=timezone.utc)
+    return stamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _stat_reading(base_name: str, size_bytes: int, mtime_ns: int, *, now: bool, relative: str | None) -> Reading:
+    extra: dict[str, str | int | float | bool] = {
+        "name": base_name,
+        "size_bytes": size_bytes,
+        "mtime_ns": mtime_ns,
+    }
+    if relative is not None:
+        extra["relative_path"] = relative
+    if now:
+        extra["now"] = True
+    when = "now" if now else "at the ingest"
+    return Reading(
+        "files present",
+        None,
+        f"{base_name}, {size_bytes:,} bytes, modified {_file_time(mtime_ns)}",
+        f"stat {when}; the file was not opened",
+        extra,
+    )
+
+
+def _localization_fact(
+    run: "RunLayout", rec: RecFacts | None, options: ControlOptions | None, rec_name: str, pst_name: str
+) -> Fact:
+    """Localization from the run record's line, the control file's
+    ``ies_localizer`` and one ``stat`` of the file it names. The file can be
+    hundreds of megabytes: it is never opened, read, hashed or made a source."""
+    readings: list[Reading] = []
+    notes: list[str] = []
+    if rec is not None and rec.localization is not None:
+        line = rec.localization
+        on = line.kind == "on"
+        readings.append(
+            Reading(
+                "run record",
+                on,
+                f"on, {line.value} sequential upgrade steps" if on else "off (not using localization)",
+                f"{rec.name} line {line.line}: {line.text}",
+            )
+        )
+    dump = _rec_option(rec, "ies_localizer")
+    if dump is not None and dump[1].value:
+        key, option = dump
+        readings.append(
+            Reading(
+                "run record",
+                True,
+                f"options dump names {_base_name(option.value)}",
+                f"{rec.name} options dump, line {option.line}: {key}: {_base_name(option.value)}",
+            )
+        )
+    named = options.get("ies_localizer") if options is not None else None
+    if named is not None and named.value:
+        base = _base_name(named.value)
+        readings.append(
+            Reading(
+                "control file",
+                True,
+                f"ies_localizer names {base}",
+                f"{options.path_name} line {named.line}: {named.raw_key} {base}",
+            )
+        )
+        found: list[str] = []
+        path = resolve_named_file(run.run_dir, "ies_localizer", named.value, found)
+        if path is None:
+            if any("resolves outside" in text for text in found):
+                notes.append(
+                    f"ies_localizer names {base!r}, which resolves outside the run directory, "
+                    f"so it was not looked at"
+                )
+            else:
+                notes.append(f"ies_localizer names {base!r}, which is not present in the run directory")
+        else:
+            try:
+                info = path.stat()
+            except OSError as error:
+                notes.append(f"{base!r} could not be stated: {error.strerror or error}")
+            else:
+                relative = None
+                if base != named.value.strip():
+                    relative = path.resolve().relative_to(run.run_dir.resolve()).as_posix()
+                readings.append(_stat_reading(base, info.st_size, info.st_mtime_ns, now=False, relative=relative))
+    return make_fact(
+        "localization",
+        "Localization",
+        readings,
+        (
+            f"the localization line in {rec_name}",
+            f"ies_localizer in the options dump of {rec_name}",
+            f"ies_localizer in {pst_name}",
+            "one stat of the file ies_localizer names, never opened",
+        ),
+        note=" ".join(notes) if notes else None,
+    )
+
+
+def restat_localization(fact: Fact, run_dir: str | Path) -> Fact:
+    """Stat the localization file again and, when its size or time differs
+    from the ingest, add a reading marked ``now`` and a note. The file is
+    resolved inside ``run_dir`` the same way as at the ingest and only
+    stated, never opened."""
+    stored = next(
+        (
+            r
+            for r in fact.readings
+            if r.source == "files present" and r.extra and "size_bytes" in r.extra and not r.extra.get("now")
+        ),
+        None,
+    )
+    if stored is None:
+        return fact
+    base = str(stored.extra["name"])
+    name = str(stored.extra.get("relative_path", base))
+    ignored: list[str] = []
+    path = resolve_named_file(Path(run_dir), "ies_localizer", name, ignored)
+    try:
+        info = path.stat() if path is not None else None
+    except OSError:
+        info = None
+    if info is None:
+        now = Reading(
+            "files present",
+            None,
+            f"{base} is not there now",
+            "stat now; the file was not opened",
+            {"name": base, "now": True},
+        )
+    elif (info.st_size, info.st_mtime_ns) == (stored.extra["size_bytes"], stored.extra["mtime_ns"]):
+        return fact
+    else:
+        now = _stat_reading(base, info.st_size, info.st_mtime_ns, now=True, relative=None)
+    changed = "the localization file changed since the ingest"
+    return make_fact(
+        fact.key,
+        fact.label,
+        (*fact.readings, now),
+        fact.looked_for,
+        note=f"{fact.note} {changed}" if fact.note else changed,
     )
 
 
@@ -473,6 +747,10 @@ def _regularization_fact(rec: RecFacts | None, options: ControlOptions | None, r
     )
 
 
+def _in_fact_order(facts: Sequence[Fact]) -> tuple[Fact, ...]:
+    return tuple(sorted(facts, key=lambda f: FACT_ORDER.index(f.key)))
+
+
 def _resolve_rec(run: "RunLayout", rec: RecFacts | ReadFailure | None) -> RecFacts | ReadFailure | None:
     """The record the caller gave, else the one in the run directory."""
     if rec is None and run.rec is not None:
@@ -493,6 +771,7 @@ def build_config(
     rec: RecFacts | ReadFailure | None = None,
     options: ControlOptions | ReadFailure | None = None,
     par_iterations: Sequence[int] = (),
+    layout: CacheLayout | None = None,
 ) -> RunConfig:
     """Assemble one run's facts from what earlier phases already read.
 
@@ -556,11 +835,17 @@ def build_config(
             projection = crs_result
             projection_known = True
 
-    noise = describe_noise(run, tables)
+    noise, noise_readings = _noise_decision(run, tables, rec, options)
+    pst_name = run.pst_path.name
 
-    facts = (
-        _version_fact(rec_ok, rec_name),
-        _regularization_fact(rec_ok, options_ok, rec_name, run.pst_path.name),
+    facts = _in_fact_order(
+        (
+            _version_fact(rec_ok, rec_name),
+            _noise_fact(noise, noise_readings, rec_name, pst_name),
+            _noise_band_fact(run, noise, layout),
+            _regularization_fact(rec_ok, options_ok, rec_name, pst_name),
+            _localization_fact(run, rec_ok, options_ok, rec_name, pst_name),
+        )
     )
 
     return RunConfig(
