@@ -10,6 +10,7 @@ import { PAR_TABLE_COLUMNS, PAR_TABLE_OPTIONAL_COLUMNS } from '../src/data/parma
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
 import { createRecordingGl } from './support/recording-gl'
+import { storeWithGroup } from './support/chosen-group'
 
 const recording = createRecordingGl()
 
@@ -149,7 +150,7 @@ describe('one parameter table request per mounted map', () => {
     const metaUrls = stubEnvironment(200)
     const { mountMap } = await import('../src/views/map')
     const root = mountFreshRoot()
-    mountMap(root, { config: CONFIG, state: baseState() })
+    mountMap(root, { config: CONFIG, state: baseState(), store: storeWithGroup('G1') })
 
     await vi.waitFor(() => {
       expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
@@ -168,7 +169,7 @@ describe('one parameter table request per mounted map', () => {
     const metaUrls = stubEnvironment(200, bare)
     const { mountMap } = await import('../src/views/map')
     const root = mountFreshRoot()
-    mountMap(root, { config: CONFIG, state: baseState() })
+    mountMap(root, { config: CONFIG, state: baseState(), store: storeWithGroup('G1') })
 
     await vi.waitFor(() => {
       expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
@@ -184,7 +185,7 @@ describe('one parameter table request per mounted map', () => {
     const metaUrls = stubEnvironment(502)
     const { mountMap } = await import('../src/views/map')
     const root = mountFreshRoot()
-    mountMap(root, { config: CONFIG, state: baseState() })
+    mountMap(root, { config: CONFIG, state: baseState(), store: storeWithGroup('G1') })
 
     await vi.waitFor(() => {
       expect(root.textContent).toContain('The parameter table could not be read')

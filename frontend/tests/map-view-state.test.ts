@@ -11,6 +11,7 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
+import { storeWithGroup } from './support/chosen-group'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -299,7 +300,7 @@ describe('the remembered right-panel tab (D-09)', () => {
     stubEnvironment()
     const { mountMap } = await import('../src/views/map')
     const root = mountFreshRoot()
-    mountMap(root, { config: CONFIG, state: baseState() })
+    mountMap(root, { config: CONFIG, state: baseState(), store: storeWithGroup('G1') })
     await vi.waitFor(() => {
       expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
     })
