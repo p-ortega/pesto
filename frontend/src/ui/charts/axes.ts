@@ -32,7 +32,8 @@ export function logAxis(nativeDomain: [number, number], range: [number, number])
   // About one label per 50 px; d3 blanks the rest so a narrow chart over
   // many decades does not print labels on top of each other.
   const count = Math.max(2, Math.floor(Math.abs(range[1] - range[0]) / 50))
-  const format = scale.tickFormat(count)
+  // '~g' prints 0.01 or 1e-5, never SI prefixes like 10µ that read oddly for parameter values.
+  const format = scale.tickFormat(count, '~g')
   return {
     toPx: (value) => scale(value),
     ticks: scale.ticks(count).map((value) => ({ value, label: format(value), px: scale(value) })),
