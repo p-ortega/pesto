@@ -16,6 +16,9 @@ import { createSelectionStore, type SelectionStore } from '../src/state/selectio
 const obsApi = vi.hoisted(() => ({
   fetchObsGroups: vi.fn(),
   fetchObsSites: vi.fn(),
+  fetchObsSite: vi.fn(),
+  fetchObsSeries: vi.fn(),
+  fetchObsTimes: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -84,6 +87,9 @@ beforeEach(() => {
   document.body.innerHTML = ''
   obsApi.fetchObsGroups.mockReset()
   obsApi.fetchObsSites.mockReset()
+  obsApi.fetchObsSite.mockReset()
+  obsApi.fetchObsSeries.mockReset()
+  obsApi.fetchObsTimes.mockReset()
   obsApi.fetchObsSites.mockResolvedValue({ ok: true, rows: [], notes: [] })
   obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('gw_head'), group('gw_date')]))
 })
@@ -645,5 +651,39 @@ describe('the site list', () => {
 
     expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
     expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('false')
+  })
+})
+
+describe('the spaghetti plot mounted in the panel', () => {
+  it('sits in the .obs-spaghetti host', () => {
+    const { host } = mount({ startHidden: true })
+
+    expect(host.querySelector('.obs-spaghetti .obs-spaghetti-stage')).not.toBeNull()
+  })
+
+  it('fetches a selected site only once the tab is shown, and stops when it is hidden again', async () => {
+    obsApi.fetchObsSite.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no such site' })
+    const { store, handle } = mount({ startHidden: true })
+    store.set({ sites: new Set([7]) }, 'map')
+    store.flush()
+    expect(obsApi.fetchObsSite).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(1))
+
+    handle.onHide()
+    store.set({ sites: new Set([7, 8]) }, 'map')
+    store.flush()
+    expect(obsApi.fetchObsSite).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops following the selection once the panel is disposed', async () => {
+    obsApi.fetchObsSite.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no such site' })
+    const { store, handle } = mount()
+    handle.dispose()
+    store.set({ sites: new Set([7]) }, 'map')
+    store.flush()
+
+    expect(obsApi.fetchObsSite).not.toHaveBeenCalled()
   })
 })
