@@ -19,6 +19,7 @@ without being counted and given a reason.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -620,11 +621,12 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
         return None, f"the pcs.csv file for iteration {last} was not found"
     try:
         with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-            reader = csv.reader(handle)
-            header = next(reader, None)
-            rows = list(reader)
+            text = handle.read()
     except OSError as exc:
         return None, f"{path.name} could not be read: {_base_names(str(exc))}"
+    replaced = text.count("\ufffd")
+    reader = csv.reader(io.StringIO(text, newline=""))
+    header = next(reader, None)
     if not header:
         return None, f"{path.name} is empty, so pestpp's figures were not read"
     columns = [h.strip() for h in header]
@@ -635,12 +637,20 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
         )
     position = {c: i for i, c in enumerate(columns)}
     out: dict[str, dict] = {}
-    for row in rows:
+    first_line: dict[str, int] = {}
+    notes: list[str] = []
+    for row in reader:
         if len(row) <= position["group"]:
             continue
         group = row[position["group"]].strip()
-        if group in out:
+        key = group.lower()
+        if key in out:
+            notes.append(
+                f"{path.name} names group {group!r} on lines {first_line[key]} and "
+                f"{reader.line_num}; the first row is kept"
+            )
             continue
+        first_line[key] = reader.line_num
         figures: dict[str, float | int | None] = {}
         for figure in _PCS_FIGURES:
             at = position.get(figure)
@@ -655,10 +665,13 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
             if value is not None and figure.startswith("num_"):
                 value = int(value)
             figures[figure] = value
-        out[group] = figures
+        out[key] = figures
+    if replaced:
+        notes.append(f"{replaced} characters in {path.name} were not valid UTF-8 and were replaced")
     missing = [f for f in _PCS_FIGURES if f not in position]
-    note = f"{path.name} has no column {', '.join(repr(m) for m in missing)}" if missing else None
-    return out, note
+    if missing:
+        notes.append(f"{path.name} has no column {', '.join(repr(m) for m in missing)}")
+    return out, "; ".join(notes) or None
 
 
 # The record prints four significant digits, so a figure may be off by half a unit of the fourth.

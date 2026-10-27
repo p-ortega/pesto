@@ -286,6 +286,41 @@ def test_without_the_csv_and_without_a_record_table_the_figures_stay_empty_with_
     assert "not found" in pestpp["note"]
 
 
+def _pcs_file(tmp_path, text: str | bytes):
+    path = tmp_path / "case.1.pcs.csv"
+    path.write_bytes(text if isinstance(text, bytes) else text.encode())
+    return path
+
+
+def test_a_group_named_twice_in_the_pcs_file_keeps_the_first_row_and_names_both_lines(tmp_path):
+    path = _pcs_file(tmp_path, "group,mean_change\nhk_pp,1.5\nhk_pp,9.5\n")
+
+    figures, note = parview._read_pcs(path, 1)
+
+    assert figures["hk_pp"]["mean_change"] == 1.5
+    assert "'hk_pp'" in note and "lines 2 and 3" in note and "first row is kept" in note
+
+
+def test_a_group_name_in_capitals_is_joined_on_its_lower_case_name(tmp_path):
+    path = _pcs_file(tmp_path, "group,mean_change\nHK_PP,1.5\n")
+
+    figures, _note = parview._read_pcs(path, 1)
+    entry = parview._pestpp_entry("hk_pp", figures, path.name, None)
+
+    assert entry["mean_change"] == 1.5
+    assert entry["source"] == "pestpp, case.1.pcs.csv"
+
+
+def test_bytes_that_are_not_utf8_in_the_pcs_file_are_counted_in_the_note(tmp_path):
+    header = "group,mean_change,std_change,num_at_near_lbound,num_at_near_ubound\n"
+    path = _pcs_file(tmp_path, header.encode() + b"hk\xff\xfe,1.5,1,0,0\n")
+
+    figures, note = parview._read_pcs(path, 1)
+
+    assert len(figures) == 1
+    assert "2 characters in case.1.pcs.csv were not valid UTF-8" in note
+
+
 def test_a_csv_and_a_record_that_agree_to_the_records_rounding_show_no_disagreement(
     tmp_path, in_process  # noqa: F811
 ):
