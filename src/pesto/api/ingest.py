@@ -312,6 +312,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
     obs_index_names = [pa.name for pa in planned if pa.kind == "obs_index"]
     obs_ens_names = [pa.name for pa in planned if pa.kind == "obs_ens"]
     obs_agg_names = [pa.name for pa in planned if pa.kind == "obs_agg"]
+    obs_1to1_names = [pa.name for pa in planned if pa.kind == "obs_1to1"]
     noise_names = [pa.name for pa in planned if pa.kind == "noise_agg"]
     pdc_names = [pa.name for pa in planned if pa.kind == "pdc"]
     phi_names = [pa.name for pa in planned if pa.kind == "phi_check"]
@@ -333,6 +334,13 @@ async def get_ingest_state(request: Request) -> JSONResponse:
                 obs_index_names=[],
                 obs_ens_names=obs_agg_names,
                 missing_artifact="obs_agg",
+            ),
+            "obs_1to1": _obs_capability(
+                manifest,
+                run,
+                obs_index_names=[],
+                obs_ens_names=obs_1to1_names,
+                missing_artifact="obs_1to1",
             ),
             "noise": _noise_capability(manifest, noise_names),
             "pdc": _pdc_capability(manifest, run, pdc_names),
