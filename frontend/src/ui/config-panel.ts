@@ -92,6 +92,10 @@ function generalParts(fact: ConfigFact, disagree: boolean): RowParts {
     headline = line(first, readingText(fact, first), false)
   }
   for (const r of supporting) lines.push(line(r, readingText(fact, r), true))
+  // The file can be hundreds of megabytes, so pesto only states it (CONF-02).
+  if (fact.key === 'localization' && fact.readings.some(isFileReading)) {
+    lines.push({ text: 'pesto did not read this file', source: null, title: '', muted: true })
+  }
   return { headline, lines }
 }
 
