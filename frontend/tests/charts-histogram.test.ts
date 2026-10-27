@@ -47,6 +47,13 @@ describe('axes', () => {
     }
   })
 
+  it('a log axis labels small values in plain or exponent form, never with an SI prefix', () => {
+    const axis = logAxis([1e-5, 1], [0, 300])!
+    const labels = axis.ticks.map((t) => t.label).filter((l) => l !== '')
+    expect(labels).toContain('0.00001')
+    expect(labels.some((l) => /[µmkMGn]$/.test(l))).toBe(false)
+  })
+
   it('a log axis refuses a domain that is not strictly positive', () => {
     expect(logAxis([0, 100], [0, 100])).toBeNull()
     expect(logAxis([-1, 100], [0, 100])).toBeNull()
