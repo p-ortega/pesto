@@ -9,3 +9,7 @@ export interface ChartTokens {
   series1: string
   series2: string
 }
+
+export function readChartTokens(_el: Element): ChartTokens {
+  return { axis: '', gridline: '', inkPrimary: '', inkMuted: '', series1: '', series2: '' }
+}
