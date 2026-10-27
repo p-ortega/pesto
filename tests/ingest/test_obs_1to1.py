@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from pesto.cache.layout import CacheLayout
+from pesto.cache.manifest import Manifest
 from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.obs1to1 import (
@@ -29,9 +30,10 @@ from pesto.ingest.obs1to1 import (
 from pesto.ingest.obsagg import OBS_STATS, load_obs_agg
 from pesto.ingest.obsindex import load_obs_index
 from pesto.ingest.parhist import identical_values_reason
-from pesto.ingest.runner import ingest_run, plan_artifacts
+from pesto.ingest import runner
+from pesto.ingest.runner import Progress, ingest_run, plan_artifacts
 
-from .fixtures import _ENSEMBLE_WRITERS
+from .fixtures import _ENSEMBLE_WRITERS, sample_values
 from .obs_fixtures import DEFAULT_SITES, SiteSpec, make_obs_run
 from .test_control_first import in_process  # noqa: F401  (a fixture, used by name)
 
@@ -459,3 +461,77 @@ def test_nothing_is_left_behind_when_the_cache_cannot_be_read(tmp_path):
 
     assert isinstance(result, ReadFailure)
     assert not layout.obs_1to1.exists() and not layout.obs_1to1_meta.exists()
+
+
+# ---------------------------------------------------------------------------
+# Staleness and failed upstream artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_obs_1to1_is_skipped_when_nothing_changed(tmp_path, in_process):  # noqa: F811
+    run, layout, _ = _ingest(tmp_path)
+    rows: list[Progress] = []
+
+    ingest_run(run.root, cache_root=layout.root, on_progress=rows.append)
+
+    assert {r.artifact: r.state for r in rows}["obs_1to1"] == "skipped"
+
+
+def test_a_rewritten_observation_file_rebuilds_obs_1to1_on_the_new_values(tmp_path, in_process):  # noqa: F811
+    run, layout, _ = _ingest(tmp_path)
+    before = Manifest.load(layout).artifacts["obs_1to1"]
+    new = sample_values(len(run.real_names), len(run.obs_names), seed=99) * 2.0
+    _ENSEMBLE_WRITERS["jcb"][0](run.obs_ens[1], new, run.real_names, run.obs_names)
+    rows: list[Progress] = []
+
+    ingest_run(run.root, cache_root=layout.root, on_progress=rows.append)
+
+    after = Manifest.load(layout).artifacts["obs_1to1"]
+    assert {r.artifact: r.state for r in rows}["obs_1to1"] == "ok"
+    old_sums = {s.path: s for s in before.sources}
+    new_sums = {s.path: s for s in after.sources}
+    assert new_sums["case.1.obs.jcb"] != old_sums["case.1.obs.jcb"]
+    assert new_sums["case.0.obs.jcb"] == old_sums["case.0.obs.jcb"]
+
+    frame, meta = _grids(layout)
+    entry = _entry(meta, "gw_head")
+    columns = _group_columns(run, "gw_head")
+    sim = new[:, columns].astype(np.float32).astype(np.float64)
+    obsval = np.array([float(run.rows[c]["obsval"]) for c in columns])
+    edges = np.linspace(entry["lo"], entry["hi"], OBS_1TO1_BINS + 1)
+    expected, _, _ = np.histogram2d(
+        np.tile(obsval, (sim.shape[0], 1)).ravel(), sim.ravel(), bins=[edges, edges]
+    )
+    assert np.array_equal(_dense(frame, "gw_head", 1), expected.astype(np.int64))
+
+
+def test_obs_1to1_lists_both_observation_files_and_the_control_sources_once_each(tmp_path, in_process):  # noqa: F811
+    run, _layout, manifest = _ingest(tmp_path)
+
+    recorded = [s.path for s in manifest.artifacts["obs_1to1"].sources]
+
+    assert recorded[:2] == ["case.0.obs.jcb", "case.1.obs.jcb"]
+    assert len(set(recorded)) == len(recorded)
+    assert "case.pst" in recorded
+
+
+def test_obs_1to1_fails_by_name_when_obs_ens_1_failed(tmp_path, in_process, monkeypatch):  # noqa: F811
+    run = make_obs_run(tmp_path / "run")
+    real = runner._write_obs_ens_artifact
+
+    def _last_iteration_fails(source, cache_root, iteration):
+        if iteration == 1:
+            return ReadFailure(name="obs_ens/1", path=source, reason="the file is unreadable")
+        return real(source, cache_root, iteration)
+
+    monkeypatch.setattr(runner, "_write_obs_ens_artifact", _last_iteration_fails)
+
+    manifest = ingest_run(run.root, cache_root=tmp_path / "cache")
+
+    assert manifest.artifacts["obs_1to1"].state == "failed"
+    assert manifest.artifacts["obs_1to1"].reason == (
+        "obs_1to1 depends on obs_ens/1, which failed: the file is unreadable"
+    )
+    for name in ("obs_index", "obs_ens/0", "obs_agg/0", "par_hist", "config"):
+        assert manifest.artifacts[name].state == "ok", name
+    assert manifest.artifacts["obs_agg/1"].state == "failed"
