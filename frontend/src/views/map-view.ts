@@ -2131,7 +2131,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const limits = data.times.limits[stat]
     target.setColormap(OBS_RAMP[stat], false)
     target.setLimits(limits ?? [0, 1])
-    target.setMissingStyle('ring')
     const key = `${group}|${committed.layer}|${obsAllLayers}`
     if (key === obsDotsKey && obsDots !== null && obsDots.rows.length === dots.rows.length) {
       target.setPointValues(values)
