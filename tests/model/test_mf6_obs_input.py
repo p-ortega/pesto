@@ -312,6 +312,7 @@ def test_a_model_on_another_grid_is_skipped_and_one_note_names_the_model_file_an
     notes = [n for n in cells.notes if "was skipped" in n]
     assert len(notes) == 1
     assert "'model'" in notes[0] and "other.disv" in notes[0] and "coarse.disv.grb" in notes[0]
+    assert "m.obs" in notes[0]
 
 
 def test_a_run_with_no_simulation_file_keeps_its_cells_and_one_note_says_the_input_was_not_found(tmp_path):

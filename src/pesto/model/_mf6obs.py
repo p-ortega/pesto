@@ -464,9 +464,11 @@ def read_observation_input(run_dir: Path, grid_file_name: str) -> ObsInput:
             notes.append(f"model {model.name!r} ({model.name_file}) lists no discretization file, so its observations were not used")
             continue
         if f"{Path(model.dis_file).name}.grb" != grid_name:
+            skipped = [p.name for p in model.obs_files] + [p.name for p, _ in model.package_obs]
+            tail = f"; its observation file(s) {', '.join(skipped)} were not read" if skipped else ""
             notes.append(
                 f"model {model.name!r} was skipped: its discretization file {model.dis_file} gives "
-                f"{Path(model.dis_file).name}.grb, but the run's grid file is {grid_name}"
+                f"{Path(model.dis_file).name}.grb, but the run's grid file is {grid_name}{tail}"
             )
             continue
         used.append(model.name)
