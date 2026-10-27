@@ -891,7 +891,7 @@ def test_touching_one_iterations_ensemble_file_reingests_only_that_iteration(tmp
     ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
 
     touched = {r.artifact for r in rows if r.state != "skipped"}
-    assert touched == {"par_ens/1", "par_agg/1", "par_change", "par_groups", "par_hist"}
+    assert touched == {"par_ens/1", "par_agg/1", "par_change", "par_groups", "par_hist", "config"}
 
 
 
@@ -1119,7 +1119,9 @@ def test_a_source_that_vanishes_after_a_successful_read_fails_that_artifact_by_n
     assert manifest.artifacts["par_ens/0"].state == "failed"
     assert run.par_ens[0].name in manifest.artifacts["par_ens/0"].reason
     assert manifest.artifacts["control"].state == "ok"
-    assert manifest.artifacts["config"].state == "ok"
+    # The setup facts list the end ensembles, so they cannot prove themselves fresh either.
+    assert manifest.artifacts["config"].state == "failed"
+    assert run.par_ens[0].name in manifest.artifacts["config"].reason
 
 
 def test_the_failed_artifacts_recorded_sources_hold_exactly_what_could_be_fingerprinted(

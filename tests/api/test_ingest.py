@@ -90,7 +90,7 @@ def _mark_ok_with_file(manifest: Manifest, layout: CacheLayout, name: str, *, so
     file_name = name.replace("/", "_") + ".bin"
     if name == "config":
         # The state route also asks whether config.json carries the current facts version.
-        content = json.dumps({"facts_version": FACTS_VERSION}).encode()
+        content = json.dumps({"facts_version": FACTS_VERSION, "facts": []}).encode()
         file_name = layout.config.name
     (layout.root / file_name).write_bytes(content)
     manifest.mark_ok(
@@ -200,7 +200,8 @@ def test_fresh_false_with_only_the_touched_artifact_stale(tmp_path):
     assert by_name["par_agg/0"]["stale"] is True
     assert by_name["control"]["stale"] is False
     assert by_name["grid"]["stale"] is False
-    assert by_name["config"]["stale"] is False
+    # The setup facts are read from the end ensembles, so they go stale with them.
+    assert by_name["config"]["stale"] is True
 
 
 def _mark_every_planned_artifact_ok(run_dir: Path, layout: CacheLayout) -> Manifest:
