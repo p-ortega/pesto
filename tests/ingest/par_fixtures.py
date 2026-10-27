@@ -26,7 +26,8 @@ FIXED_VALUE = 5.0
 class ParGroupSpec:
     """One parameter group. ``tag`` is the ptype token written into the
     parameter names (None writes none); ``column`` is the value of the ptype
-    column (None leaves it blank). The last ``n_tied`` parameters are tied to
+    column (None leaves it blank). pyemu overwrites that column from the names
+    when they carry a tag, so a disagreement has to be made in the cache. The last ``n_tied`` parameters are tied to
     the group's first parameter."""
 
     name: str

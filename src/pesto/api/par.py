@@ -1,5 +1,5 @@
-"""The parameter view's routes: the per-group summary and one group's
-per-parameter change.
+"""The parameter view's routes: the per-group summary, one group's
+per-parameter change, and the placement notes behind each group's layer.
 
 Both read the cache, never a run directory. A group name arrives as query
 text and is matched by value against the cached ``pargp`` column; it is never
@@ -19,6 +19,7 @@ from pesto.api.query import RunQuery
 from pesto.api.tables import arrow_response
 from pesto.cache.layout import CacheLayout
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.parcell import load_par_cell
 from pesto.ingest.parview import load_par_change, load_par_groups
 
 router = APIRouter(prefix="/api/run")
@@ -40,6 +41,30 @@ async def get_par_groups(request: Request, params: Annotated[RunQuery, Query()])
     if isinstance(loaded, ReadFailure):
         return problem_from_failure(404, loaded)
     return JSONResponse(loaded, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/grid/placement")
+async def get_placement(request: Request, params: Annotated[RunQuery, Query()]) -> Response:
+    """Each parameter group's placement rule and counts, with the notes that name
+    it. A note that names no group comes back at the top level: nothing is dropped."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+
+    placed = load_par_cell(CacheLayout(root=Path(cache_root)))
+    if isinstance(placed, ReadFailure):
+        return problem_from_failure(404, placed)
+
+    claimed: set[int] = set()
+    groups = []
+    for entry in placed.groups:
+        prefix = f"group {entry['group']!r}"
+        mine = [i for i, note in enumerate(placed.notes) if i not in claimed and note.startswith(prefix)]
+        claimed.update(mine)
+        groups.append({**entry, "notes": [placed.notes[i] for i in mine]})
+    rest = [note for i, note in enumerate(placed.notes) if i not in claimed]
+    body = {"groups": groups, "summary": placed.summary, "notes": rest}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/par/change")
