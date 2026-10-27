@@ -1419,6 +1419,26 @@ def test_plan_artifacts_plans_par_change_and_par_groups_right_after_the_last_par
     assert str(run.pcs_file(1)) in by_name["par_groups"].sources
 
 
+def test_plan_artifacts_lists_the_run_record_and_every_reinflate_pcs_file_as_par_groups_sources(
+    tmp_path,
+):
+    from .par_fixtures import write_pcs
+    from .rec_fixtures import write_rec
+
+    make_run(tmp_path, iterations=(0, 1))
+    record = write_rec(tmp_path / "case.rec")
+    reinflated = write_pcs(tmp_path / "case.4.reinflate.pcs.csv", [])
+    run = discover(tmp_path)
+    layout = CacheLayout(root=tmp_path / ".pesto")
+
+    by_name = {a.name: a for a in plan_artifacts(run, layout)}
+
+    assert str(record) in by_name["par_groups"].sources
+    assert str(reinflated) in by_name["par_groups"].sources
+    assert str(record) not in by_name["par_change"].sources
+    assert str(record) not in by_name["par_hist"].sources
+
+
 def test_plan_artifacts_plans_par_hist_right_after_par_groups(tmp_path):
     make_run(tmp_path, iterations=(0, 1))
     run = discover(tmp_path)
