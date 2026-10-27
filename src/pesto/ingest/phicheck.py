@@ -37,7 +37,6 @@ from pesto.ingest.obsindex import (
     ObsIndex,
     load_obs_index,
 )
-from pesto.ingest.obsread import _examples
 from pesto.ingest.obsweights import AdjustedWeights
 from pesto.ingest.tables import load_control_table
 
@@ -66,6 +65,8 @@ class PhiRow:
     file: float | None
     rel_diff: float | None
     match: bool
+    # Largest relative change float32 storage of the simulated values can make; None when undefined.
+    rounding_bound: float | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -95,17 +96,21 @@ def _fail(name: str, path: Path | str, reason: str) -> ReadFailure:
     return ReadFailure(name=name, path=str(path), reason=f"{name}: {reason}")
 
 
-def compare_phi(recomputed: float, file_value: float) -> tuple[float | None, bool]:
+def compare_phi(
+    recomputed: float, file_value: float, *, bound: float = 0.0
+) -> tuple[float | None, bool]:
     """The relative difference ``|recomputed - file| / |file|`` and whether it
-    is within ``PHI_TOLERANCE``. Both zero agree. A file value of 0 against a
-    non-zero recomputation, or a value that is not a finite number, does not
-    agree; the difference is then ``None``."""
+    is within ``PHI_TOLERANCE`` plus ``bound``, the relative rounding bound of
+    the stored values. Both zero agree. A file value of 0 against a non-zero
+    recomputation, or a value that is not a finite number, does not agree; the
+    difference is then ``None``."""
     if not (np.isfinite(recomputed) and np.isfinite(file_value)):
         return None, False
     if file_value == 0.0:
         return (0.0, True) if recomputed == 0.0 else (None, False)
     rel = abs(recomputed - file_value) / abs(file_value)
-    return float(rel), bool(rel <= PHI_TOLERANCE)
+    allowed = PHI_TOLERANCE + (bound if np.isfinite(bound) and bound > 0.0 else 0.0)
+    return float(rel), bool(rel <= allowed)
 
 
 def _join_names(
@@ -125,7 +130,12 @@ def _join_names(
     taken: set[int] = set()
     pairs: list[tuple[int, int]] = []
     left: list[int] = []
+    cache_counts = Counter(cache_names)
+    # A name the cache holds twice cannot say which column is its own.
+    repeated_in_cache = [i for i, name in enumerate(cache_names) if cache_counts[name] > 1]
     for i, name in enumerate(cache_names):
+        if cache_counts[name] > 1:
+            continue
         found = exact.get(name, [])
         if len(found) == 1:
             pairs.append((i, found[0]))
@@ -133,11 +143,11 @@ def _join_names(
         else:
             left.append(i)
     other_left = [j for j in range(len(other_names)) if j not in taken]
-    cache_keys = Counter(_clean(cache_names[i]) for i in left)
+    cache_keys = Counter(_clean(cache_names[i]) for i in [*left, *repeated_in_cache])
     other_keys = Counter(_clean(other_names[j]) for j in other_left)
     other_by_key = {_clean(other_names[j]): j for j in other_left}
     repaired: list[tuple[str, str]] = []
-    cache_only: list[int] = []
+    cache_only: list[int] = list(repeated_in_cache)
     for i in left:
         key = _clean(cache_names[i])
         if key in other_by_key and cache_keys[key] == 1 and other_keys[key] == 1:
@@ -153,6 +163,12 @@ def _join_names(
         notes.append(
             f"{len(repaired)} realization name(s) matched {other_label} only after trimming "
             f"spaces and lower-casing (e.g. {shown})"
+        )
+    repeated_names = [n for n, k in cache_counts.items() if k > 1]
+    if repeated_names:
+        notes.append(
+            f"{len(repeated_names)} realization name(s) appear more than once in the cache and "
+            f"were not matched{_examples_text(repeated_names)}"
         )
     repeated = [n for n, k in Counter(other_names).items() if k > 1]
     if repeated:
@@ -206,6 +222,14 @@ def _read_phi_row(
         dtype=np.float64
     )
     blank = np.array([t == "" for t in texts], dtype=bool)
+    # pandas turns an overflowing number such as 1e400 into NaN; Python reads it as inf.
+    for k in np.flatnonzero(np.isnan(values) & ~blank):
+        try:
+            as_float = float(texts[k])
+        except ValueError:
+            continue
+        if np.isinf(as_float):
+            values[k] = as_float
     unreadable = int((np.isnan(values) & ~blank).sum())
     # A realization with no value in this row was not part of that iteration.
     return names, values, unreadable, int(blank.sum())
@@ -218,17 +242,19 @@ def recompute_phi(
     weights: AdjustedWeights | None,
     weight_rows: list[int] | None,
     control_weight: np.ndarray | None,
-) -> tuple[np.ndarray, list[str]]:
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """phi per chosen realization, float64: the sum over weighted
     observations of (weight times residual) squared, where residual is
     simulated minus obsval, one-sided for inequality groups. ``cache_columns``
     are columns of ``values`` (observations in ``obs_index`` order);
     ``weight_rows`` the matching rows of ``weights.weights`` when adjusted
     weights are used; otherwise ``control_weight`` holds one weight per
-    sorted position. Also returns notes."""
+    sorted position. Also returns, per realization, the absolute bound on how
+    much float32 storage of the simulated values can move phi, and notes."""
     notes: list[str] = []
     n_pick = len(cache_columns)
     phi = np.zeros(n_pick, dtype=np.float64)
+    bound = np.zeros(n_pick, dtype=np.float64)
     has_target = (index.flags & FLAG_HAS_TARGET) != 0
 
     if weights is not None:
@@ -245,17 +271,17 @@ def recompute_phi(
         columns = np.flatnonzero(keep)
         columns = columns[np.argsort(pos[columns], kind="stable")]
         sorted_pos = pos[columns]
-        picked_weights = np.asarray(weights.weights[weight_rows], dtype=np.float64)
+        rows_array = np.asarray(weight_rows, dtype=np.int64)
         select_rows = np.asarray(cache_columns, dtype=np.int64)
         for start in range(0, columns.size, BLOCK_ROWS):
             block = slice(start, start + BLOCK_ROWS)
-            phi += _block_phi(
-                index,
-                values,
-                sorted_pos[block],
-                select_rows,
-                picked_weights[:, columns[block]].T,
-            )
+            # Read only this block of the weights, so a large run never holds a second copy.
+            weight = np.asarray(
+                weights.weights[np.ix_(rows_array, columns[block])], dtype=np.float64
+            ).T
+            block_phi, block_bound = _block_phi(index, values, sorted_pos[block], select_rows, weight)
+            phi += block_phi
+            bound += block_bound
     else:
         weighted = np.flatnonzero((control_weight > 0) & has_target)
         left_out = int(((control_weight > 0) & ~has_target).sum())
@@ -268,8 +294,10 @@ def recompute_phi(
         for start in range(0, weighted.size, BLOCK_ROWS):
             sorted_pos = weighted[start : start + BLOCK_ROWS]
             w = np.repeat(control_weight[sorted_pos][:, None], n_pick, axis=1)
-            phi += _block_phi(index, values, sorted_pos, select_rows, w)
-    return phi, notes
+            block_phi, block_bound = _block_phi(index, values, sorted_pos, select_rows, w)
+            phi += block_phi
+            bound += block_bound
+    return phi, bound, notes
 
 
 def _block_phi(
@@ -278,9 +306,11 @@ def _block_phi(
     sorted_pos: np.ndarray,
     select_rows: np.ndarray,
     weight: np.ndarray,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """phi contribution of one block of observations (rows ``sorted_pos``) for
-    the chosen realizations. ``weight`` is (observations, realizations)."""
+    the chosen realizations, and the first-order bound on how much float32
+    storage of the simulated values moves it. ``weight`` is (observations,
+    realizations)."""
     sim = np.asarray(values[sorted_pos][:, select_rows], dtype=np.float64)
     obsval = index.value[sorted_pos][:, None]
     flags = index.flags[sorted_pos]
@@ -290,9 +320,14 @@ def _block_phi(
     # A greater-than observation counts only when simulated is below its value.
     resid = np.where(greater, np.minimum(resid, 0.0), resid)
     resid = np.where(less, np.maximum(resid, 0.0), resid)
-    with np.errstate(invalid="ignore"):
+    # float32 keeps 24 bits, so a stored value is off by at most 2**-24 of itself.
+    delta = np.abs(sim) * 2.0**-24
+    with np.errstate(invalid="ignore", over="ignore"):
         term = np.where(weight > 0, (weight * resid) ** 2, 0.0)
-    return term.sum(axis=0)
+        w2 = weight**2
+        live = (weight > 0) & np.isfinite(resid)
+        slack = np.where(live, (2.0 * w2 * np.abs(resid) + w2 * delta) * delta, 0.0)
+    return term.sum(axis=0), slack.sum(axis=0)
 
 
 def _not_checked(
@@ -444,7 +479,7 @@ def check_phi(
             control_weight = by_row[index.order.astype(np.int64)]
 
         cache_columns = [i for i, _j in pairs]
-        recomputed, calc_notes = recompute_phi(
+        recomputed, phi_bound, calc_notes = recompute_phi(
             index,
             stored.values,
             cache_columns,
@@ -456,17 +491,31 @@ def check_phi(
 
         rows: list[PhiRow] = []
         for k, (i, j) in enumerate(pairs):
-            rel, match = compare_phi(float(recomputed[k]), float(file_values[j]))
+            file_value = float(file_values[j])
+            rel_bound = None
+            if np.isfinite(file_value) and file_value != 0.0 and np.isfinite(phi_bound[k]):
+                rel_bound = float(phi_bound[k]) / abs(file_value)
+            rel, match = compare_phi(
+                float(recomputed[k]), file_value, bound=rel_bound if rel_bound is not None else 0.0
+            )
             rows.append(
                 PhiRow(
                     realization=stored.real_names[i],
                     recomputed=float(recomputed[k]) if np.isfinite(recomputed[k]) else None,
-                    file=float(file_values[j]),
+                    file=float(file_values[j]) if np.isfinite(file_values[j]) else None,
                     rel_diff=rel,
                     match=match,
+                    rounding_bound=rel_bound,
                 )
             )
         rows.sort(key=lambda r: r.realization)
+        not_finite = [r.realization for r in rows if r.file is None]
+        if not_finite:
+            notes.append(
+                f"{len(not_finite)} realization(s) have a phi in {phi_path.name} for iteration "
+                f"{iteration} that is not a finite number; they are kept as mismatches with no "
+                f"file value{_examples_text(not_finite)}"
+            )
         mismatched = [r.realization for r in rows if not r.match]
         defined = np.array([r.rel_diff for r in rows if r.rel_diff is not None], dtype=np.float64)
         undefined = len(rows) - defined.size
@@ -476,6 +525,12 @@ def check_phi(
                 "finite number, or a file value of 0 against a non-zero recomputation); they "
                 "count as mismatches"
             )
+        bounds = [r.rounding_bound for r in rows if r.rounding_bound is not None]
+        largest_bound = max(bounds) if bounds else 0.0
+        float32_clause = (
+            f"; simulated values are stored as float32, so each realization has a tolerance of "
+            f"{PHI_TOLERANCE:g} plus its own rounding bound (largest {largest_bound:.2g})"
+        )
         max_rel = float(defined.max()) if defined.size else None
         median_rel = float(np.median(defined)) if defined.size else None
 
@@ -483,13 +538,13 @@ def check_phi(
             summary = (
                 f"phi mismatch at iteration {iteration}: {len(mismatched)} of {len(rows)} "
                 f"realization(s) differ from {phi_path.name} by more than {PHI_TOLERANCE:g}"
-                f"{_examples_text(mismatched)}"
+                f"{_examples_text(mismatched)}{float32_clause}"
             )
             notes.append(summary)
         else:
             summary = (
                 f"phi matches {phi_path.name} for all {len(rows)} realization(s) at iteration "
-                f"{iteration} within {PHI_TOLERANCE:g}"
+                f"{iteration} within {PHI_TOLERANCE:g}{float32_clause}"
             )
         return PhiCheck(
             iteration=iteration,
@@ -521,6 +576,31 @@ def write_phi_check(
     path = layout.phi_check(iteration)
     try:
         layout.ensure()
+        nulled = 0
+
+        def finite(value: float | None) -> float | None:
+            nonlocal nulled
+            if value is None or np.isfinite(value):
+                return value
+            nulled += 1
+            return None
+
+        rows = [
+            {
+                "realization": r.realization,
+                "recomputed": finite(r.recomputed),
+                "file": finite(r.file),
+                "rel_diff": finite(r.rel_diff),
+                "match": r.match,
+                "rounding_bound": finite(r.rounding_bound),
+            }
+            for r in check.rows
+        ]
+        max_rel_diff = finite(check.max_rel_diff)
+        median_rel_diff = finite(check.median_rel_diff)
+        notes = list(check.notes)
+        if nulled:
+            notes.append(f"{nulled} value(s) that are not a finite number were stored as null")
         payload = {
             "cache_version": CACHE_VERSION,
             "iteration": int(iteration),
@@ -533,24 +613,15 @@ def write_phi_check(
             "n_mismatch": check.n_mismatch,
             "n_only_in_cache": check.n_only_in_cache,
             "n_only_in_file": check.n_only_in_file,
-            "max_rel_diff": check.max_rel_diff,
-            "median_rel_diff": check.median_rel_diff,
-            "rows": [
-                {
-                    "realization": r.realization,
-                    "recomputed": r.recomputed,
-                    "file": r.file,
-                    "rel_diff": r.rel_diff,
-                    "match": r.match,
-                }
-                for r in check.rows
-            ],
+            "max_rel_diff": max_rel_diff,
+            "median_rel_diff": median_rel_diff,
+            "rows": rows,
             "summary": check.summary,
-            "notes": list(check.notes),
+            "notes": notes,
         }
         written = write_atomic_text(path, json.dumps(payload, indent=2, allow_nan=False))
         files = (CacheFile(path=str(path.relative_to(layout.root)), bytes=written),)
-        return WrittenArtifact(name=name, files=files, notes=check.notes)
+        return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
         path.unlink(missing_ok=True)
         return _fail(name, path, f"failed to write the phi check: {exc}")
@@ -586,6 +657,7 @@ def load_phi_check(iteration: int, layout: CacheLayout) -> PhiCheck | ReadFailur
                 file=optional(r["file"]),
                 rel_diff=optional(r["rel_diff"]),
                 match=bool(r["match"]),
+                rounding_bound=optional(r.get("rounding_bound")),
             )
             for r in raw["rows"]
         )
