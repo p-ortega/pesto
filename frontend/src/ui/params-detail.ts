@@ -340,6 +340,11 @@ export function renderParameterDetail(host: HTMLElement, opts: ParameterDetailOp
   )
   line(host, moments(payload.last === null ? 'iteration' : 'prior', payload.first, payload.space))
   if (payload.last !== null) line(host, moments('posterior', payload.last, payload.space))
+  if (payload.left_out.count > 0) {
+    line(host, `${plural(payload.left_out.count, 'realization', 'realizations')} left out: present in only one iteration`, {
+      title: payload.left_out.reason ?? undefined,
+    })
+  }
   for (const note of payload.notes) line(host, note, { muted: true })
   return handle
 }
