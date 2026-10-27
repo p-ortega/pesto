@@ -29,6 +29,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     FLOAT: 'FLOAT',
     TRIANGLES: 'TRIANGLES',
     LINES: 'LINES',
+    LINE_STRIP: 'LINE_STRIP',
     POINTS: 'POINTS',
     UNSIGNED_INT: 'UNSIGNED_INT',
     R32F: 'R32F',
@@ -49,6 +50,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     TEXTURE1: 1,
     COLOR_BUFFER_BIT: 'COLOR_BUFFER_BIT',
     BLEND: 'BLEND',
+    SCISSOR_TEST: 'SCISSOR_TEST',
     SRC_ALPHA: 'SRC_ALPHA',
     ONE_MINUS_SRC_ALPHA: 'ONE_MINUS_SRC_ALPHA',
   }
@@ -84,6 +86,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     bufferData: record('bufferData'),
     getAttribLocation: () => nextId++,
     enableVertexAttribArray: record('enableVertexAttribArray'),
+    disableVertexAttribArray: record('disableVertexAttribArray'),
     vertexAttribPointer: record('vertexAttribPointer'),
     createTexture: (...a: unknown[]) => {
       record('createTexture')(...a)
@@ -120,6 +123,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     deleteBuffer: record('deleteBuffer'),
     deleteTexture: record('deleteTexture'),
     viewport: record('viewport'),
+    scissor: record('scissor'),
     clearColor: record('clearColor'),
     clear: record('clear'),
   }
