@@ -7,7 +7,8 @@
 
 import { describe, expect, it } from 'vitest'
 import type { CellClass, ParIdentity } from '../src/data/parmap'
-import { renderReadout, type ReadoutPick } from '../src/ui/readout'
+import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../src/ui/readout'
+import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
 function mount(): HTMLElement {
   const el = document.createElement('div')
@@ -184,5 +185,94 @@ describe('renderReadout', () => {
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([42.5]) })
 
     expect(el.textContent).toContain('x 712345, y 7019874 · layer 0 · base')
+  })
+
+  describe('sites', () => {
+    const site = (over: Partial<SiteReadoutEntry> = {}): SiteReadoutEntry => ({
+      name: 'well_a',
+      group: 'heads',
+      x: 512300,
+      y: 7020100,
+      xySource: 'own',
+      layer: 3,
+      cell: 42,
+      rule: 'mf6-obs',
+      timeText: 'day 120',
+      observed: { kind: 'value', value: 12.5 },
+      stat: { label: 'Residual', value: 0.25, iteration: 1 },
+      ...over,
+    })
+    const render = (entries: SiteReadoutEntry[], total = entries.length): HTMLElement => {
+      const el = mount()
+      renderReadout(el, { pick: { kind: 'sites', entries, total }, group: '', joined: [], field: new Float32Array(0) })
+      return el
+    }
+    const lines = (el: HTMLElement) => Array.from(el.querySelectorAll('div > div')).map((d) => d.textContent)
+
+    it('lists two stacked sites, each with every part of its block', () => {
+      const el = render([site(), site({ name: 'well_b', xySource: 'cell_centre', layer: null })])
+      expect(el.textContent).toContain('2 sites at this spot')
+      expect(el.textContent).toContain('well_a (heads)')
+      expect(el.textContent).toContain('well_b (heads)')
+      expect(el.textContent).toContain('x 512300, y 7020100 (own coordinates)')
+      expect(el.textContent).toContain("x 512300, y 7020100 (centre of the cell's vertices)")
+      expect(el.textContent).toContain('layer 3, cell 42 · placed by mf6-obs')
+      expect(el.textContent).toContain('layer unknown, cell 42 · placed by mf6-obs')
+      expect(el.textContent).toContain('day 120')
+      expect(el.textContent).toContain('observed 12.50')
+      expect(el.textContent).toContain('Residual, iteration 1: 0.2500')
+    })
+
+    it('one site shows the full block with no heading', () => {
+      const el = render([site()])
+      expect(el.textContent).not.toContain('sites at this spot')
+      expect(el.textContent).toContain('well_a (heads)')
+    })
+
+    it('names the zero-weight case as a model output, not fitted', () => {
+      const el = render([site({ observed: { kind: 'zero_weight', value: 2.5 } })])
+      expect(el.textContent).toContain('observed 2.500 — zero weight: a model output, not fitted')
+    })
+
+    it('says no measured value, no observation at this time, and reading in muted ink', () => {
+      expect(render([site({ observed: { kind: 'no_value' } })]).textContent).toContain('no measured value')
+      expect(render([site({ observed: { kind: 'no_observation' } })]).textContent).toContain('no observation at this time')
+      const el = render([site({ observed: { kind: 'loading' } })])
+      const line = lines(el).findIndex((t) => t === 'reading the observed value…')
+      expect(line).toBeGreaterThanOrEqual(0)
+      const div = Array.from(el.querySelectorAll('div > div')).find((d) => d.textContent === 'reading the observed value…')
+      expect((div as HTMLElement).style.color).toBe('var(--ink-muted)')
+    })
+
+    it('a null statistic reads no value at this time', () => {
+      const el = render([site({ stat: { label: 'Residual', value: null, iteration: 2 } })])
+      expect(el.textContent).toContain('Residual, iteration 2: no value at this time')
+    })
+
+    it('25 sites show 20 blocks and say how many are not listed', () => {
+      const entries = Array.from({ length: 25 }, (_, i) => site({ name: `w${i}` }))
+      const el = render(entries)
+      expect(el.textContent).toContain('25 sites at this spot')
+      expect(el.querySelectorAll('.truncate[title^="w"]').length).toBe(20)
+      expect(el.textContent).toContain('w19 (heads)')
+      expect(el.textContent).not.toContain('w20 (heads)')
+      expect(el.textContent).toContain('5 more sites here are not listed')
+    })
+
+    it('a long name with markup is plain text, cut by css, with the full name in the title', () => {
+      const name = `<b>${'x'.repeat(125)}</b>`
+      expect(name.length).toBe(132)
+      const el = render([site({ name, group: '<i>g</i>' })])
+      expect(el.querySelector('b, i')).toBeNull()
+      const line = el.querySelector('.truncate') as HTMLElement
+      expect(line.title).toBe(name)
+      expect(line.textContent).toContain(name)
+    })
+
+    it('no two lines run together', () => {
+      loadRealStylesheet()
+      const el = render([site(), site({ name: 'well_b', observed: { kind: 'no_value' } })])
+      expectNoRunTogetherText(el, 'sites readout')
+    })
   })
 })
