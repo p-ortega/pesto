@@ -171,6 +171,68 @@ describe('computeGroupPlacement', () => {
   })
 })
 
+describe('computeGroupPlacement with the recorded placement', () => {
+  const identities = [id('a', 'G1'), id('b', 'u'), id('c', 'v'), id('d', 'pp_bad')]
+  const joined = [identities[0]]
+  const cells = new Int32Array([0])
+  const noteOfU = "group 'u' carries 'layer', which look like placement data but the rules do not read them"
+  const placement = new Map([
+    ['G1', { rule: 'grid', mapped: 1, total: 1, notes: [] as string[] }],
+    ['u', { rule: 'unmapped', mapped: 0, total: 12, notes: [noteOfU] }],
+    ['v', { rule: 'unmapped', mapped: 0, total: 12, notes: [] as string[] }],
+  ])
+
+  it('gives an unmapped group the notes recorded for it, word for word', () => {
+    const out = computeGroupPlacement(identities, joined, cells, NO_PP, placement)
+
+    expect(out.unmapped.find((e) => e.group === 'u')?.note).toBe(noteOfU)
+  })
+
+  it('joins several recorded notes with a semicolon', () => {
+    const several = new Map(placement)
+    several.set('u', { rule: 'unmapped', mapped: 0, total: 12, notes: ['first note', 'second note'] })
+
+    const out = computeGroupPlacement(identities, joined, cells, NO_PP, several)
+
+    expect(out.unmapped.find((e) => e.group === 'u')?.note).toBe('first note; second note')
+  })
+
+  it('says no rule matched, and how many were placed, for a reported group with no note', () => {
+    const out = computeGroupPlacement(identities, joined, cells, NO_PP, placement)
+
+    expect(out.unmapped.find((e) => e.group === 'v')?.note).toBe('v — no placement rule matched, placed 0 of 12')
+  })
+
+  it('names the rule instead when a rule did match but placed nothing', () => {
+    const matched = new Map(placement)
+    matched.set('v', { rule: 'grid', mapped: 0, total: 12, notes: [] })
+
+    const out = computeGroupPlacement(identities, joined, cells, NO_PP, matched)
+
+    expect(out.unmapped.find((e) => e.group === 'v')?.note).toBe('v — placement rule grid placed 0 of 12')
+  })
+
+  it('keeps the old null for a group the placement route did not report', () => {
+    const out = computeGroupPlacement(identities, joined, cells, NO_PP, placement)
+
+    expect(out.unmapped.find((e) => e.group === 'pp_bad')?.note).toBeNull()
+  })
+
+  it('lets a pilot-point refusal win over a recorded note', () => {
+    const ppIndex: PpIndex = { groups: [], not_interpolable: [{ group: 'u', reason: 'no factors file' }], notes: [] }
+
+    const out = computeGroupPlacement(identities, joined, cells, ppIndex, placement)
+
+    expect(out.unmapped.find((e) => e.group === 'u')?.note).toBe('u — no factors file')
+  })
+
+  it('answers as before when no placement is given', () => {
+    const out = computeGroupPlacement(identities, joined, cells, NO_PP)
+
+    expect(out.unmapped.map((e) => e.note)).toEqual([null, null, null])
+  })
+})
+
 describe('partransForGroup', () => {
   it('reads the partrans from the joined row, falling back to the control table for a group not in the block', () => {
     const identities = [id('a', 'G1', 'log'), id('b', 'pp', 'fixed')]
