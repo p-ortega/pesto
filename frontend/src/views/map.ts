@@ -7,7 +7,7 @@
 
 import type { IngestState, PanelTab, ViewState } from '../data/client'
 import { readViewState, writeViewState } from '../data/client'
-import { fetchParGroups, type ParGroupsResult } from '../data/par'
+import { fetchParGroups, shareGroupsRead } from '../data/par'
 import { emptySelection } from '../state/rules'
 import { createSelectionStore, type SelectionStore } from '../state/selection'
 import { renderDivider } from '../ui/divider'
@@ -109,18 +109,8 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // latest one.
   let paramsHandle: ParamsPanelHandle | null = null
   // The group summary does not change with the iteration, so one read serves
-  // every panel drawn; a failed read is forgotten so the next show asks again.
-  let groupsRead: Promise<ParGroupsResult> | null = null
-  function loadGroups(): Promise<ParGroupsResult> {
-    if (groupsRead === null) {
-      const read = fetchParGroups()
-      groupsRead = read
-      read.catch(() => {
-        if (groupsRead === read) groupsRead = null
-      })
-    }
-    return groupsRead
-  }
+  // every panel drawn; a refused or failed read is forgotten so the next show asks again.
+  const loadGroups = shareGroupsRead(() => fetchParGroups())
 
   let configHandle: ConfigPanelHandle | null = null
 

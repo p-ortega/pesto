@@ -203,6 +203,22 @@ export async function fetchParGroups(opts?: FetchOptions): Promise<ParGroupsResu
   }
 }
 
+/** One read shared by every caller. A refused or thrown answer is forgotten, so the next call asks again. */
+export function shareGroupsRead(read: () => Promise<ParGroupsResult>): () => Promise<ParGroupsResult> {
+  let pending: Promise<ParGroupsResult> | null = null
+  return () => {
+    if (pending === null) {
+      const answer = read()
+      pending = answer
+      const forget = (): void => {
+        if (pending === answer) pending = null
+      }
+      answer.then((result) => (result.ok ? undefined : forget()), forget)
+    }
+    return pending
+  }
+}
+
 export async function fetchPlacement(opts?: FetchOptions): Promise<PlacementResult> {
   try {
     const payload = await apiGet(runUrl(activeRunId(), '/api/run/grid/placement'), opts)
