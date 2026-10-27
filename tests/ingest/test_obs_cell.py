@@ -424,7 +424,7 @@ def test_the_synthetic_cache_holds_an_empty_obs_cell_recorded_ok(tmp_path):
     frame = pd.read_parquet(layout.obs_cell)
     assert len(frame) == 0
     assert list(frame.columns) == [
-        "site_id", "site", "group", "cell", "layer", "x", "y", "rule",
+        "site_id", "site", "group", "cell", "layer", "x", "y", "rule", "note",
     ]
     table = load_obs_cell(layout)
     assert isinstance(table, ObsCellTable)
@@ -541,3 +541,96 @@ def test_a_run_with_no_mfsim_nam_ingests_as_before_and_one_note_says_the_input_w
     found = [n for n in table.notes if "mfsim.nam" in n and "not found" in n]
     assert len(found) == 1 and found[0].startswith("2 site(s)")
     assert manifest.artifacts["obs_cell"].state == "ok"
+
+
+# ---------------------------------------------------------------------------
+# a rule and a reason for every site
+# ---------------------------------------------------------------------------
+
+_NOWHERE = "oname:hds_otype:lst_usecol:nowhere"
+_NO_ID = "plain-site-without-id-or-usecol"
+_MIXED = "oname:hds_otype:lst_usecol:mixed"
+
+
+def _reason_sites():
+    return (
+        *GRID_SITES,
+        *_mf6_sites("w-1", "nowhere"),
+        SiteSpec("gw_head", _NO_ID, (None,), "none"),
+        SiteSpec("gw_icpl", _MIXED, (None,), "none", extras={"id": "w-2"}),
+    )
+
+
+def _ingest_reason_run(tmp_path):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=_reason_sites())
+    write_mf6_obs_input(
+        run_dir, obs_files={"coarse_0.obs": [("W-1", "HEAD", "1 1"), ("W-2", "HEAD", "1 3")]}
+    )
+    cache_root = tmp_path / "cache"
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+    assert manifest.artifacts["obs_cell"].state == "ok", manifest.artifacts["obs_cell"].reason
+    table = load_obs_cell(CacheLayout(root=cache_root))
+    assert isinstance(table, ObsCellTable)
+    return table
+
+
+def test_every_site_stores_its_own_rule_and_every_unplaced_site_says_why(tmp_path, in_process):
+    table = _ingest_reason_run(tmp_path)
+    at = _by_site(table)
+
+    assert table.rule[at[_SITE_A]] == "icpl-layer"
+    assert table.rule[at[_SITE_C]] == "xyz-host-cell"
+    assert table.rule[at[_W1]] == "mf6-obs"
+    assert table.note is not None
+    unplaced = [i for i, cell in enumerate(table.cell) if cell == -1]
+    assert unplaced
+    assert all(table.note[i] for i in unplaced)
+    assert "nowhere" in table.note[at[_NOWHERE]] and "coarse_0.obs" in table.note[at[_NOWHERE]]
+    assert "no id or usecol" in table.note[at[_NO_ID]]
+    assert "unknown" in table.note[at[_SITE_B]]
+
+
+def test_a_group_holding_a_column_site_and_an_mf6_obs_site_stores_both_rules(tmp_path, in_process):
+    table = _ingest_reason_run(tmp_path)
+    at = _by_site(table)
+
+    assert table.group[at[_SITE_A]] == table.group[at[_MIXED]] == "gw_icpl"
+    assert (table.cell[at[_MIXED]], table.rule[at[_MIXED]]) == (2, "mf6-obs")
+    assert table.rule[at[_SITE_A]] == "icpl-layer"
+
+
+def test_an_obs_cell_without_the_note_column_loads_and_says_to_ingest_again(tmp_path, in_process):
+    _run, layout, _manifest = _ingest_grid_run(tmp_path)
+    frame = pd.read_parquet(layout.obs_cell)
+    assert "note" in frame.columns
+    frame.drop(columns="note").to_parquet(layout.obs_cell)
+
+    table = load_obs_cell(layout)
+
+    assert isinstance(table, ObsCellTable)
+    assert table.note is None
+    assert any("per-site notes" in n and "ingest again" in n for n in table.notes)
+
+
+def test_write_obs_cell_takes_the_rule_and_note_per_site_when_given(tmp_path):
+    names = ["a", "b"]
+    cells = ObsCells(
+        cell=np.array([0, -1], np.int32),
+        layer=np.array([0, -1], np.int32),
+        site=tuple(names),
+        groups=(GroupResolution("g", "icpl-layer", 1, 2),),
+        summary="s",
+        notes=(),
+        site_rule=("mf6-obs", "unmapped"),
+        site_note=("", "no id"),
+    )
+    layout = CacheLayout(root=tmp_path / "cache")
+    index = pd.DataFrame({"site": names, "group": ["g", "g"], "site_id": [0, 1]})
+
+    written = write_obs_cell(cells, index, "d", layout)
+
+    assert not isinstance(written, ReadFailure), written
+    frame = pd.read_parquet(layout.obs_cell)
+    assert list(frame["rule"]) == ["mf6-obs", "unmapped"]
+    assert list(frame["note"]) == ["", "no id"]
