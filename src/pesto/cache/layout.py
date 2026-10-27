@@ -294,6 +294,14 @@ class CacheLayout:
     def par_hist_meta(self) -> Path:
         return self.agg / "par_hist.json"
 
+    @property
+    def obs_1to1(self) -> Path:
+        return self.agg / "obs_1to1.parquet"
+
+    @property
+    def obs_1to1_meta(self) -> Path:
+        return self.agg / "obs_1to1.json"
+
 
 def for_run(run_dir: Path, override: Path | None = None) -> CacheLayout:
     """Resolve this run's cache root, ensure a git-tracked run directory
