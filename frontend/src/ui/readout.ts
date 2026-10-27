@@ -28,6 +28,7 @@ export interface SiteReadoutEntry {
     | { kind: 'no_value' }
     | { kind: 'no_observation' }
     | { kind: 'loading' }
+    | { kind: 'unavailable'; reason: string }
   stat: { label: string; value: number | null; iteration: number }
 }
 
@@ -110,6 +111,8 @@ function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
     appendLine(block, 'no measured value', 'label')
   } else if (obs.kind === 'no_observation') {
     appendLine(block, 'no observation at this time', 'label')
+  } else if (obs.kind === 'unavailable') {
+    appendLine(block, `the observed value could not be read: ${obs.reason}`, 'label', 'wrap-note')
   } else {
     appendLine(block, 'reading the observed value…', 'label').style.color = 'var(--ink-muted)'
   }

@@ -719,6 +719,39 @@ body {
   pointer-events: none;
 }
 
+/* Coloured by observations: the controls and the group picker that only describe a parameter
+   field give way. !important because the picker sets its own display inline. */
+.map-area.colour-obs [data-colour-source='par'] {
+  display: none !important;
+}
+
+.obs-colour,
+.obs-colour-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.obs-colour-rows[hidden] {
+  display: none;
+}
+
+.obs-colour-switch {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.obs-colour-switch button[aria-pressed='true'] {
+  font-weight: 600;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* A long group name must not widen the panel over the map. */
+.obs-colour select {
+  max-width: 22rem;
+}
+
 /* A header chip: one fact in its own small surface, so the run's
    configuration reads as a row of facts rather than a sentence. */
 .chip {
