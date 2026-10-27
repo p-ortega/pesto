@@ -72,7 +72,7 @@ def write_rec(
     ``localization`` is ``"off"`` or a number of upgrade steps.
     ``group_tables`` maps the pcs file a table is saved to onto its rows,
     each ``(group, count, mean_chg, std_chg, n_ub, pct_ub, n_lb, pct_lb,
-    n_std_decr)``. ``heading`` is ``"summary"`` or the 5.2.17 spelling
+    n_std_decr)`` (a row of any other width is written as given). ``heading`` is ``"summary"`` or the 5.2.17 spelling
     ``"summmary"``.
     """
     lines: list[str] = ["             pestpp-ies", ""]
@@ -125,6 +125,10 @@ def write_rec(
     for file_name, rows in (group_tables or {}).items():
         lines.extend(["", "", f"   ---  parameter group change {spelled}  ---    ", GROUP_HEADER])
         for row in rows:
+            if len(row) != 9:
+                # a row of the wrong width, written as it is
+                lines.append("  ".join(str(v) for v in row))
+                continue
             group, count, mean_chg, std_chg, n_ub, pct_ub, n_lb, pct_lb, n_dec = row
             lines.append(
                 f"{group:<38}{count:>5}{mean_chg:>10}{std_chg:>9}{n_ub:>11}{pct_ub:>11}"

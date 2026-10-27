@@ -208,3 +208,135 @@ def test_reading_a_record_changes_nothing_in_its_folder(tmp_path):
 
     assert _snapshot(run) == before
     assert sorted(os.listdir(run)) == ["case.pst", "case.rec"]
+
+
+# ---------------------------------------------------------------------------
+# The parameter group change table
+# ---------------------------------------------------------------------------
+
+_TABLE = {
+    "case.1.pcs.csv": [
+        ("hk_pp", 4, 0.01411, 3.848, 226, 76.09, 71, 23.91, 0),
+        ("rch_gr", 3, 12.35, 5.52, 5, 1.5, 9, 3.0, 2),
+    ]
+}
+
+
+def test_a_group_table_is_keyed_by_the_file_it_was_saved_to_and_read_by_header_name(tmp_path):
+    facts = _read(tmp_path, group_tables=_TABLE, heading="summmary")
+
+    rows = facts.group_tables["case.1.pcs.csv"]
+    assert [r.group for r in rows] == ["hk_pp", "rch_gr"]
+    second = rows[1]
+    assert second.count == 3
+    assert second.mean_chg == 12.35
+    assert second.std_chg == 5.52
+    assert second.n_at_ubnd == 5
+    assert second.n_at_lbnd == 9
+    assert second.n_std_decr == 2
+
+
+def test_both_heading_spellings_give_the_same_rows(tmp_path):
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    old = _read(tmp_path / "old", group_tables=_TABLE, heading="summmary")
+    new = _read(tmp_path / "new", group_tables=_TABLE, heading="summary")
+
+    assert old.group_tables == new.group_tables
+    assert old.group_tables["case.1.pcs.csv"]
+
+
+def test_ubnd_and_lbnd_are_mapped_by_header_name_even_when_the_columns_swap(tmp_path):
+    path = tmp_path / "case.rec"
+    path.write_text(
+        "   ---  parameter group change summary  ---    \n"
+        "group   count  mean chg  std chg  n at lbnd  % at lbnd  n at ubnd  % at ubnd  n std decr\n"
+        "hk_pp   4      1.5       2.5      11         5.0        22         9.0        0\n"
+        "\n"
+        "...saved parameter change summary to case.1.pcs.csv\n"
+    )
+
+    row = read_rec(path).group_tables["case.1.pcs.csv"][0]
+
+    assert (row.n_at_lbnd, row.n_at_ubnd) == (11, 22)
+    assert (row.pct_at_lbnd, row.pct_at_ubnd) == (5.0, 9.0)
+
+
+def test_pestpps_own_column_order_puts_ubnd_before_lbnd_and_is_still_read_right(tmp_path):
+    rows = [("hk_pp", 4, 1.5, 2.5, 11, 5.0, 22, 9.0, 0)]
+    facts = _read(tmp_path, group_tables={"case.1.pcs.csv": rows})
+
+    row = facts.group_tables["case.1.pcs.csv"][0]
+    assert (row.n_at_ubnd, row.n_at_lbnd) == (11, 22)
+
+
+def test_a_row_of_the_wrong_width_goes_into_a_note_naming_its_line_and_not_into_the_table(tmp_path):
+    table = {
+        "case.1.pcs.csv": [
+            ("hk_pp", 4, 1.5, 2.5, 3, 1.0, 7, 2.0, 0),
+            ("bad", 4, 1.5, 2.5, 3, 1.0, 7, 2.0),
+        ]
+    }
+    path = write_rec(tmp_path / "case.rec", group_tables=table)
+    facts = read_rec(path)
+
+    assert [r.group for r in facts.group_tables["case.1.pcs.csv"]] == ["hk_pp"]
+    bad_line = next(
+        i for i, text in enumerate(path.read_text().splitlines(), 1) if text.startswith("bad")
+    )
+    assert any(f"line {bad_line}" in note and "'bad'" in note for note in facts.notes)
+
+
+def test_a_table_with_no_saved_to_line_is_filed_under_the_last_iteration_report_with_a_note(
+    tmp_path,
+):
+    path = tmp_path / "case.rec"
+    path.write_text(
+        "  ---  EnsembleMethod iteration 2 report  ---  \n"
+        "   ---  parameter group change summary  ---    \n"
+        "group   count  mean chg  std chg  n at ubnd  % at ubnd  n at lbnd  % at lbnd  n std decr\n"
+        "hk_pp   4      1.5       2.5      3          1.0        7          2.0        0\n"
+        "\n"
+    )
+
+    facts = read_rec(path)
+
+    assert list(facts.group_tables) == ["case.2.pcs.csv"]
+    assert any("no saved-to line" in note and "iteration 2" in note for note in facts.notes)
+
+
+def test_the_notes_pestpp_prints_right_under_the_last_row_end_the_table_without_a_note_of_ours(
+    tmp_path,
+):
+    path = tmp_path / "case.rec"
+    path.write_text(
+        "   ---  parameter group change summary  ---    \n"
+        "group   count  mean chg  std chg  n at ubnd  % at ubnd  n at lbnd  % at lbnd  n std decr\n"
+        "hk_pp   4      1.5       2.5      3          1.0        7          2.0        0\n"
+        "    Note: parameter change summary sorted according to percent at bounds.\n"
+        "    Note: the parameter change statistics implicitly include the effect of \n"
+        "          realizations that have failed or have been dropped.\n"
+        "\n"
+        "...saved parameter change summary to case.1.pcs.csv\n"
+    )
+
+    facts = read_rec(path)
+
+    assert [r.group for r in facts.group_tables["case.1.pcs.csv"]] == ["hk_pp"]
+    assert not any("parameter group table" in note for note in facts.notes)
+
+
+def test_a_header_this_reader_does_not_know_leaves_the_table_out_and_says_so(tmp_path):
+    path = tmp_path / "case.rec"
+    path.write_text(
+        "   ---  parameter group change summary  ---    \n"
+        "group   count  something new  mean chg\n"
+        "hk_pp   4      1              1.5\n"
+        "\n"
+        "...saved parameter change summary to case.1.pcs.csv\n"
+    )
+
+    facts = read_rec(path)
+
+    assert facts.group_tables == {}
+    assert any("header" in note and "line 2" in note for note in facts.notes)

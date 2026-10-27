@@ -10,7 +10,7 @@ a note saying what was looked for.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -45,6 +45,24 @@ class RecReinflation:
 
 
 @dataclass(frozen=True)
+class RecGroupRow:
+    """One row of the record's parameter group change table, read by column
+    name. The record prints four significant digits, so the figures are
+    rounded. A figure the header does not name is ``None``."""
+
+    group: str
+    count: int | None
+    mean_chg: float | None
+    std_chg: float | None
+    n_at_ubnd: int | None
+    pct_at_ubnd: float | None
+    n_at_lbnd: int | None
+    pct_at_lbnd: float | None
+    n_std_decr: int | None
+    line: int
+
+
+@dataclass(frozen=True)
 class RecFacts:
     name: str
     version: RecLine | None
@@ -56,6 +74,8 @@ class RecFacts:
     reinflations: tuple[RecReinflation, ...]
     replaced_chars: int
     notes: tuple[str, ...]
+    # Keyed by the pcs file name each table was saved to, rows in record order.
+    group_tables: Mapping[str, tuple[RecGroupRow, ...]] = field(default_factory=dict)
 
 
 _TEXT_CAP = 200
@@ -81,6 +101,21 @@ _BASE_RE = re.compile(r"'base' realization already in parameter ensemble, ignori
 _REINFLATE_START = "incrementing iteration count for reinflation cycle"
 _REINFLATE_FACTOR_RE = re.compile(r"reinflation factor:\s*([-+0-9.eE]+)")
 _REPORT_RE = re.compile(r"EnsembleMethod iteration (\d+) report")
+# 5.2.17 prints "summmary"; later releases fix the spelling.
+_GROUP_HEADING_RE = re.compile(r"parameter group change summ+ary", re.IGNORECASE)
+_SAVED_RE = re.compile(r"saved parameter change summary to\s+(\S.*?)\s*$")
+# Column name -> (RecGroupRow field, kind); the order the record prints is read from its header.
+_GROUP_COLUMNS = {
+    "group": ("group", "text"),
+    "count": ("count", "int"),
+    "mean chg": ("mean_chg", "float"),
+    "std chg": ("std_chg", "float"),
+    "n at ubnd": ("n_at_ubnd", "int"),
+    "% at ubnd": ("pct_at_ubnd", "float"),
+    "n at lbnd": ("n_at_lbnd", "int"),
+    "% at lbnd": ("pct_at_lbnd", "float"),
+    "n std decr": ("n_std_decr", "int"),
+}
 
 
 def _number(text: str) -> float | None:
@@ -132,6 +167,151 @@ def _classify(line: str, number: int) -> RecLine | None:
     return None
 
 
+def _group_header(line: str) -> list[str] | None:
+    """The column names of a group table header in the order printed, or None
+    when the line holds a word this reader does not know. Names are matched
+    from the left, longest first, so "mean chg" is one column."""
+    words = line.split()
+    known = sorted((name.split() for name in _GROUP_COLUMNS), key=len, reverse=True)
+    columns: list[str] = []
+    at = 0
+    while at < len(words):
+        for name in known:
+            if words[at : at + len(name)] == name:
+                columns.append(" ".join(name))
+                at += len(name)
+                break
+        else:
+            return None
+    if "group" not in columns or len(set(columns)) != len(columns):
+        return None
+    return columns
+
+
+def _group_row(columns: list[str], line: str, number: int) -> RecGroupRow | str:
+    """One data row read by the header's names, or the reason it was refused."""
+    tokens = line.split()
+    if len(tokens) != len(columns):
+        return (
+            f"the parameter group table row {tokens[0]!r} on line {number} has {len(tokens)} "
+            f"values where the header names {len(columns)}, so it was left out"
+        )
+    values: dict[str, object] = {name: None for name, _ in _GROUP_COLUMNS.values()}
+    for column, token in zip(columns, tokens):
+        name, kind = _GROUP_COLUMNS[column]
+        if kind == "text":
+            values[name] = token
+            continue
+        try:
+            number_value = float(token)
+        except ValueError:
+            return (
+                f"the parameter group table row {tokens[0]!r} on line {number} holds {token!r} "
+                f"under {column!r}, which is not a number, so it was left out"
+            )
+        if number_value != number_value or number_value in (float("inf"), float("-inf")):
+            values[name] = None
+        elif kind == "int":
+            if number_value != int(number_value):
+                return (
+                    f"the parameter group table row {tokens[0]!r} on line {number} holds "
+                    f"{token!r} under {column!r}, which is not a whole number, so it was left out"
+                )
+            values[name] = int(number_value)
+        else:
+            values[name] = number_value
+    return RecGroupRow(line=number, **values)
+
+
+class _GroupTables:
+    """Collects the parameter group change tables while the record streams past.
+
+    A table opens at its heading, ends at the first blank line or ``Note:`` line after its rows,
+    and takes its key from the ``saved parameter change summary to`` line that
+    follows a few lines later. One that never gets such a line is filed under
+    the pcs name of the last iteration report, with a note."""
+
+    def __init__(self, case: str) -> None:
+        self.case = case
+        self.tables: dict[str, tuple[RecGroupRow, ...]] = {}
+        self.notes: list[str] = []
+        self.report_iteration: int | None = None
+        self._open: dict | None = None
+        self._waiting: tuple[int, tuple[RecGroupRow, ...], int | None] | None = None
+
+    def feed(self, line: str, number: int) -> bool:
+        """Take ``line`` if it belongs to a table. Returns True when it did."""
+        if self._open is not None:
+            return self._feed_open(line, number)
+        if "parameter group change" in line and _GROUP_HEADING_RE.search(line):
+            self._file_waiting_without_a_name()
+            self._open = {"line": number, "columns": None, "rows": []}
+            return True
+        if self._waiting is not None and "saved parameter change summary" in line:
+            match = _SAVED_RE.search(line)
+            if match:
+                _line, rows, _iteration = self._waiting
+                self._waiting = None
+                self.tables.setdefault(re.split(r"[\\/]", match.group(1))[-1], rows)
+                return True
+        return False
+
+    def finish(self) -> None:
+        if self._open is not None:
+            self._close_open()
+        self._file_waiting_without_a_name()
+
+    def _feed_open(self, line: str, number: int) -> bool:
+        table = self._open
+        blank = not line.strip()
+        if table["columns"] is None:
+            if blank:
+                return True
+            columns = _group_header(line)
+            if columns is None:
+                self.notes.append(
+                    f"the parameter group table at line {table['line']} has a header this reader "
+                    f"does not know (line {number}), so the table was left out"
+                )
+                self._open = None
+                return True
+            table["columns"] = columns
+            return True
+        # pestpp prints its notes right under the last row, with no blank line between.
+        if blank or line.lstrip().startswith("Note:"):
+            self._close_open()
+            return True
+        row = _group_row(table["columns"], line, number)
+        if isinstance(row, str):
+            self.notes.append(row)
+        else:
+            table["rows"].append(row)
+        return True
+
+    def _close_open(self) -> None:
+        table, self._open = self._open, None
+        if table["columns"] is None:
+            return
+        self._file_waiting_without_a_name()
+        self._waiting = (table["line"], tuple(table["rows"]), self.report_iteration)
+
+    def _file_waiting_without_a_name(self) -> None:
+        if self._waiting is None:
+            return
+        line, rows, iteration = self._waiting
+        self._waiting = None
+        if iteration is None:
+            key = f"the table at line {line}"
+            where = "and no iteration report came before it"
+        else:
+            key = f"{self.case}.{iteration}.pcs.csv"
+            where = f"so it is filed under {key} from the last report, iteration {iteration}"
+        self.notes.append(
+            f"the parameter group table at line {line} has no saved-to line after it, {where}"
+        )
+        self.tables.setdefault(key, rows)
+
+
 def read_rec(path: Path) -> RecFacts | ReadFailure:
     """Read ``path`` in one pass. Returns a :class:`ReadFailure` only when the
     file cannot be opened; a record that states nothing pesto knows comes
@@ -152,6 +332,7 @@ def read_rec(path: Path) -> RecFacts | ReadFailure:
     notes: list[str] = []
     disagreements: list[str] = []
     replaced = 0
+    tables = _GroupTables(path.stem)
 
     in_dump = False
     pending_key: str | None = None
@@ -216,6 +397,13 @@ def read_rec(path: Path) -> RecFacts | ReadFailure:
                     in_dump = True
                     continue
 
+                if "EnsembleMethod iteration" in line:
+                    report = _REPORT_RE.search(line)
+                    if report:
+                        tables.report_iteration = int(report.group(1))
+                if tables.feed(line, number):
+                    continue
+
                 if open_reinflation is not None:
                     match = _REPORT_RE.search(line)
                     if match:
@@ -262,6 +450,8 @@ def read_rec(path: Path) -> RecFacts | ReadFailure:
         options.setdefault(pending_key, RecOption("", pending_line))
     if open_reinflation is not None:
         close_reinflation(None)
+    tables.finish()
+    notes.extend(tables.notes)
 
     if replaced:
         notes.append(
@@ -270,7 +460,10 @@ def read_rec(path: Path) -> RecFacts | ReadFailure:
         )
     notes.extend(disagreements)
 
-    found = version or options or noise or reg_factor or localization or base_kept or reinflations
+    found = (
+        version or options or noise or reg_factor or localization or base_kept or reinflations
+        or tables.tables
+    )
     if not found:
         notes.append(f"the run record {path.name} states none of what was looked for: {_LOOKED_FOR}")
 
@@ -285,4 +478,5 @@ def read_rec(path: Path) -> RecFacts | ReadFailure:
         reinflations=tuple(reinflations),
         replaced_chars=replaced,
         notes=tuple(notes),
+        group_tables=tables.tables,
     )

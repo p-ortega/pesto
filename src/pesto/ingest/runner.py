@@ -821,6 +821,13 @@ def _plan_par_view(
     pcs = run.pcs_file(last)
     if pcs is not None:
         extras.append(str(pcs))
+    # The run record and the reinflate pcs files decide whether the sigma ratio is shown.
+    if run.rec is not None:
+        extras.append(str(run.rec))
+    extras.extend(
+        str(path)
+        for path in sorted(path for key, path in run.pcs.items() if key[1] == "reinflate")
+    )
     group_sources = _unique((*control_sources, *extras))
     artifacts.append(
         PlannedArtifact(
@@ -888,8 +895,8 @@ def plan_artifacts(
     same and, when one exists, the grid file too, an observation ensemble its
     observation file and then the control sources, ``par_change`` both ensemble
     files and then the control sources, ``par_groups`` the control sources, both
-    ensemble files, the grid file and the last iteration's plain pcs file, each
-    only when it exists, ``par_hist`` the same sources as ``par_change``, ``pp_factors`` its own
+    ensemble files, the grid file, the last iteration's plain pcs file, the run record and
+    every reinflate pcs file, each only when it exists, ``par_hist`` the same sources as ``par_change``, ``pp_factors`` its own
     files, the grid file and the control sources, and ``config`` the control
     sources and, when one exists, the grid file. A run with no grid file
     plans no ``grid``, no ``par_cell`` and no ``obs_cell`` artifact. No artifact lists a path

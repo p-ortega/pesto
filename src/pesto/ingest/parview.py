@@ -31,9 +31,13 @@ from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.aggregate import near_bound_counts
+from pesto.ingest.discover import RunLayout, discover
 from pesto.ingest.ensembles import StoredEnsemble, align_realizations, load_stored
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.parcell import load_par_cell
+from pesto.ingest.recfile import RecFacts, RecGroupRow, read_rec
+from pesto.ingest.reinflate import ReinflationVerdict, assess_reinflation
+from pesto.ingest.runopts import ControlOptions, scan_options
 from pesto.ingest.tables import _write_parquet_atomic, load_control_table
 
 CHUNK_PARAMS = 4096
@@ -657,9 +661,66 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
     return out, note
 
 
+# The record prints four significant digits, so a figure may be off by half a unit of the fourth.
+_RECORD_DIGITS = 4
+_RECORD_FIGURES = (
+    ("mean_change", "mean_chg", "float"),
+    ("std_change", "std_chg", "float"),
+    ("num_at_near_lbound", "n_at_lbnd", "int"),
+    ("num_at_near_ubound", "n_at_ubnd", "int"),
+)
+
+
+def _record_table(rec: RecFacts, csv_name: str) -> dict[str, RecGroupRow] | None:
+    """The record's group table saved to ``csv_name`` by lower-cased group
+    name, or None when the record holds none for that file."""
+    for key, rows in rec.group_tables.items():
+        if key.lower() == csv_name.lower():
+            return {row.group.lower(): row for row in rows}
+    return None
+
+
+def _record_figures(table: dict[str, RecGroupRow]) -> dict[str, dict]:
+    """The record's rows named the way the pcs.csv names its columns."""
+    return {
+        group: {csv_name: getattr(row, field) for csv_name, field, _kind in _RECORD_FIGURES}
+        for group, row in table.items()
+    }
+
+
+def _record_tolerance(value: float) -> float:
+    """Half a unit in the fourth significant digit of a printed ``value``."""
+    if value == 0.0:
+        return 0.0
+    return 0.5 * 10.0 ** (int(np.floor(np.log10(abs(value)))) - (_RECORD_DIGITS - 1))
+
+
+def _disagreements(csv_row: dict, record_row: RecGroupRow) -> list[tuple[str, float | int, float | int]]:
+    """The figures where the csv and the record differ by more than the record's rounding."""
+    found = []
+    for csv_name, field, kind in _RECORD_FIGURES:
+        ours, theirs = csv_row.get(csv_name), getattr(record_row, field)
+        if ours is None or theirs is None:
+            continue
+        tolerance = 0.0 if kind == "int" else _record_tolerance(theirs)
+        if abs(ours - theirs) > tolerance * (1.0 + 1e-9):
+            found.append((csv_name, ours, theirs))
+    return found
+
+
 def _pestpp_entry(
-    group: str, pcs: dict[str, dict] | None, file_name: str | None, file_note: str | None
+    group: str,
+    pcs: dict[str, dict] | None,
+    file_name: str | None,
+    file_note: str | None,
+    *,
+    source: str | None = None,
+    record: dict[str, RecGroupRow] | None = None,
+    record_name: str | None = None,
 ) -> dict:
+    """pestpp's own figures for ``group``. ``source`` overrides the label when
+    the figures came from the run record. ``record`` is the record's table for
+    the same file as ``pcs``, compared against it when both exist."""
     entry: dict = {figure: None for figure in _PCS_FIGURES}
     entry["source"] = None
     entry["note"] = None
@@ -672,7 +733,7 @@ def _pestpp_entry(
         entry["note"] = f"not joined: {file_name} has no row for group {lowered!r}"
         return entry
     entry.update(row)
-    entry["source"] = f"pestpp, {file_name}"
+    entry["source"] = source or f"pestpp, {file_name}"
     notes = []
     if lowered != group:
         notes.append(
@@ -680,6 +741,22 @@ def _pestpp_entry(
         )
     if file_note:
         notes.append(file_note)
+    record_row = record.get(lowered) if record is not None else None
+    if record_row is not None:
+        differing = _disagreements(row, record_row)
+        if differing:
+            parts = "; ".join(
+                f"{name} is {ours:.10g} in {file_name} and {theirs:.10g} in {record_name}"
+                for name, ours, theirs in differing
+            )
+            notes.append(
+                f"{file_name} and the run record {record_name} disagree beyond the record's "
+                f"{_RECORD_DIGITS}-digit rounding: {parts}"
+            )
+            entry["record"] = {
+                "source": f"{record_name}, from the run record, {_RECORD_DIGITS} significant digits",
+                **{name: getattr(record_row, field) for name, field, _kind in _RECORD_FIGURES},
+            }
     entry["note"] = "; ".join(notes) if notes else None
     return entry
 
@@ -822,6 +899,205 @@ def group_layer(placed_layers, rule: str | None, group_name: str, placement_note
     }
 
 
+def group_sigma_ratio(sd_first, sd_last, included) -> dict:
+    """The spread shrinkage of one group: the median of its parameters'
+    ``sd_last / sd_first`` with the 10th and 90th percentile beside it.
+
+    ``sd_first`` and ``sd_last`` are in pestpp's numeric space (log10 for a log
+    parameter), one entry per parameter of the group; ``included`` marks the
+    ones that count. Everything is float64 and the percentiles use numpy's
+    default linear method. A parameter with no spread at the first iteration
+    has no ratio and is counted in ``n_no_spread``. ``reason`` is None when a
+    ratio came out, and says why none could when it did not."""
+    sd_first = np.asarray(sd_first, dtype=np.float64)
+    sd_last = np.asarray(sd_last, dtype=np.float64)
+    included = np.asarray(included, dtype=bool)
+    with np.errstate(all="ignore"):
+        usable = included & np.isfinite(sd_first) & np.isfinite(sd_last)
+        has_spread = usable & (sd_first > 0.0)
+        n_no_spread = int((usable & (sd_first == 0.0)).sum())
+        ratios = sd_last[has_spread] / sd_first[has_spread]
+    if not included.any():
+        reason = "no adjustable parameters in this group"
+    elif not has_spread.any():
+        reason = "no parameter in this group had any spread at the first iteration"
+    else:
+        reason = None
+    if reason is not None:
+        return {
+            "median": None,
+            "p10": None,
+            "p90": None,
+            "n_used": 0,
+            "n_no_spread": n_no_spread,
+            "reason": reason,
+        }
+    p10, p90 = np.percentile(ratios, [10, 90])
+    return {
+        "median": _number(np.median(ratios)),
+        "p10": _number(p10),
+        "p90": _number(p90),
+        "n_used": int(ratios.size),
+        "n_no_spread": n_no_spread,
+        "reason": None,
+    }
+
+
+_SETTING = "ies_n_iter_reinflate"
+_NAMES_REUSED = (
+    "Pestpp reuses the prior's realization names for the new draws, so a join by name "
+    "would pair unrelated realizations."
+)
+
+
+def _read_record(run: RunLayout) -> RecFacts | ReadFailure | None:
+    """The run record of ``run`` read once, or None when it has none."""
+    if run.rec is None:
+        return None
+    try:
+        return read_rec(run.rec)
+    except Exception as exc:
+        return ReadFailure(
+            name="rec",
+            path=str(run.rec),
+            reason=f"could not read the run record: {_base_names(str(exc))}",
+        )
+
+
+def _assess_reinflation(
+    run: RunLayout, first: int, last: int, rec: RecFacts | ReadFailure | None
+) -> tuple[ReinflationVerdict, ControlOptions | None]:
+    """Ask whether the ensemble was reinflated between ``first`` and ``last``,
+    from the run record already read and the control-file options."""
+    try:
+        options = scan_options(run.pst_path)
+    except Exception as exc:
+        options = ReadFailure(
+            name="control file",
+            path=str(run.pst_path),
+            reason=f"could not read the options in the control file: {_base_names(str(exc))}",
+        )
+    verdict = assess_reinflation(run, first, last, rec, options)
+    return verdict, options if isinstance(options, ControlOptions) else None
+
+
+def _source_name(evidence, run: RunLayout, options: ControlOptions | None) -> str:
+    """The file or setting one piece of evidence came from, by base name."""
+    if evidence.source == "run record":
+        return run.rec.name if run.rec is not None else "the run record"
+    if evidence.source == "files present":
+        path = run.pcs.get((evidence.iteration, "reinflate"))
+        return path.name if path is not None else "a reinflate pcs file"
+    reading = options.get(_SETTING) if options is not None else None
+    if reading is None:
+        return f"the {_SETTING} setting"
+    return f"{reading.raw_key} {reading.value} in {options.path_name}"
+
+
+def _reinflation_json(verdict: ReinflationVerdict) -> dict:
+    findings = [
+        {
+            "iteration": iteration,
+            "in_range": any(e.in_range for e in evidence),
+            "evidence": [
+                {"source": e.source, "text": e.text, "in_range": e.in_range} for e in evidence
+            ],
+        }
+        for iteration, evidence in verdict.findings
+    ]
+    notes = list(verdict.notes)
+    for iteration, evidence in verdict.findings:
+        if iteration is not None and not any(e.in_range for e in evidence):
+            notes.append(
+                f"a reinflation at iteration {iteration} was found, but it lies outside "
+                f"iterations {verdict.first} to {verdict.last}, so it does not touch the ratio"
+            )
+    return {
+        "verdict": verdict.verdict,
+        "first": verdict.first,
+        "last": verdict.last,
+        "findings": findings,
+        "checked": list(verdict.checked),
+        "notes": notes,
+    }
+
+
+def _capital(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _reinflation_refusal(verdict: ReinflationVerdict, run: RunLayout, options: ControlOptions | None) -> str:
+    """The sentence shown in place of a ratio across a reinflation: the
+    iteration, every source that found it, and why a join by name misleads."""
+    placed = []
+    for iteration, evidence in verdict.findings:
+        hits = [e for e in evidence if e.in_range]
+        if hits:
+            names = ", ".join(dict.fromkeys(_source_name(e, run, options) for e in hits))
+            placed.append((iteration, names))
+    if len(placed) == 1:
+        iteration, names = placed[0]
+        head = (
+            f"Not shown: the ensemble was reinflated at iteration {iteration}, so the spread "
+            f"before and after is not comparable (source: {names})."
+        )
+    else:
+        listed = " and ".join(f"iteration {i} (source: {names})" for i, names in placed)
+        head = (
+            f"Not shown: the ensemble was reinflated at {listed}, so the spread before and "
+            "after is not comparable."
+        )
+    disagree = [_capital(n) + "." for n in verdict.notes if n.startswith("the sources disagree")]
+    return " ".join([head, *disagree, _NAMES_REUSED])
+
+
+def _unchecked_warning(verdict: ReinflationVerdict) -> str:
+    looked = "; ".join(verdict.checked)
+    notes = " ".join(_capital(n) + "." for n in verdict.notes)
+    text = (
+        "Reinflation could not be checked, so this ratio may compare draws that are not "
+        f"related. Looked for: {looked}."
+    )
+    return f"{text} {notes}" if notes else text
+
+
+def _group_sigma_entry(
+    included: pd.DataFrame,
+    single: bool,
+    single_reason: str,
+    nothing_reason: str | None,
+    reinflation_refusal: str | None,
+    unchecked_warning: str | None,
+) -> dict:
+    """One group's ``sigma_ratio``: shown, shown with a warning (``unchecked``)
+    or refused, and the reason for anything but shown. Refusals that come
+    before any arithmetic leave every figure None."""
+
+    def refused(reason: str, computed: dict | None = None) -> dict:
+        entry = {"median": None, "p10": None, "p90": None, "n_used": None, "n_no_spread": None}
+        if computed is not None:
+            entry["n_used"], entry["n_no_spread"] = computed["n_used"], computed["n_no_spread"]
+        return {"state": "refused", **entry, "reason": reason}
+
+    if included.empty:
+        return refused(nothing_reason or "no adjustable parameters in this group")
+    if single:
+        return refused(single_reason)
+    if reinflation_refusal is not None:
+        return refused(reinflation_refusal)
+    computed = group_sigma_ratio(
+        included["sd_first"].to_numpy(), included["sd_last"].to_numpy(), np.ones(len(included), dtype=bool)
+    )
+    if computed["reason"] is not None:
+        return refused(computed["reason"], computed)
+    state = "unchecked" if unchecked_warning is not None else "shown"
+    return {
+        "state": state,
+        **{k: computed[k] for k in ("median", "p10", "p90", "n_used", "n_no_spread")},
+        "reason": unchecked_warning,
+    }
+
+
 def drill_down_offer(n_par: int, limit: int) -> dict:
     """Whether a group of ``n_par`` parameters is offered a per-parameter
     drill-down, and the sentence to show when it is not."""
@@ -836,7 +1112,8 @@ def drill_down_offer(n_par: int, limit: int) -> dict:
 def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | ReadFailure:
     """Write ``agg/par_groups.json``: one entry per parameter group, in the
     order the control table first names them. ``run_dir`` is read only to find
-    pestpp's own group summary, the last iteration's plain ``pcs.csv``."""
+    pestpp's own group summary (the last iteration's plain ``pcs.csv``, or the
+    run record's table when that is missing) and the reinflation evidence."""
     name = "par_groups"
     path = layout.par_groups
     try:
@@ -850,19 +1127,33 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
         run_notes: list[str] = []
 
         pcs_path = None
+        run_layout: RunLayout | None = None
         try:
-            from pesto.ingest.discover import discover
-
-            pcs_path = discover(Path(run_dir)).pcs_file(last)
+            run_layout = discover(Path(run_dir))
+            pcs_path = run_layout.pcs_file(last)
         except Exception as exc:
             run_notes.append(
                 f"the run folder could not be searched for a pcs.csv file: {_base_names(str(exc))}"
             )
+        rec = _read_record(run_layout) if run_layout is not None else None
         pcs, pcs_note = _read_pcs(pcs_path, last)
         pcs_name = pcs_path.name if pcs_path is not None else None
         if pcs is not None and pcs_note:
             run_notes.append(pcs_note)
             pcs_note = None
+        record_table = None
+        if isinstance(rec, RecFacts):
+            record_table = _record_table(rec, pcs_name or f"{run_layout.case}.{last}.pcs.csv")
+            run_notes.extend(n for n in rec.notes if n.startswith("the parameter group table"))
+        pestpp_source = None
+        if pcs is None and record_table is not None:
+            pcs, pcs_name = _record_figures(record_table), rec.name
+            pestpp_source = f"{rec.name}, from the run record, 4 significant digits"
+            pcs_note = (
+                f"{pcs_note}; the figures are from the run record's group table instead"
+                if pcs_note
+                else "the figures are from the run record's group table"
+            )
 
         control = load_control_table(layout, "par", columns=["parnme"], optional_columns=["ptype"])
         if isinstance(control, ReadFailure):
@@ -901,6 +1192,32 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
                     "and count as unplaced"
                 )
 
+        verdict: ReinflationVerdict | None = None
+        control_options: ControlOptions | None = None
+        if run_layout is not None:
+            verdict, control_options = _assess_reinflation(run_layout, first, last, rec)
+            reinflation = _reinflation_json(verdict)
+        else:
+            reinflation = {
+                "verdict": "unchecked",
+                "first": first,
+                "last": last,
+                "findings": [],
+                "checked": ["the run folder could not be searched, so nothing was looked for"],
+                "notes": [],
+            }
+        reinflation_refusal = (
+            _reinflation_refusal(verdict, run_layout, control_options)
+            if verdict is not None and verdict.verdict == "found"
+            else None
+        )
+        if verdict is None:
+            unchecked_warning = "Reinflation could not be checked: " + "; ".join(reinflation["checked"]) + "."
+        elif verdict.verdict == "unchecked":
+            unchecked_warning = _unchecked_warning(verdict)
+        else:
+            unchecked_warning = None
+
         groups = []
         for group, block in frame.groupby("pargp", sort=False):
             group = str(group)
@@ -927,6 +1244,9 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
                 hit = block.loc[block["excluded_kind"] == kind, "parnme"].tolist()
                 if hit:
                     group_notes.append(_count_note(len(hit), label, hit))
+            sigma = _group_sigma_entry(
+                included, single, str(meta["reason"]), reason, reinflation_refusal, unchecked_warning
+            )
             members = block["parnme"].tolist()
             placed = [layer_of[m] for m in members if m in layer_of]
             groups.append(
@@ -948,9 +1268,18 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
                     ),
                     "change": {
                         "pesto": pesto,
-                        "pestpp": _pestpp_entry(group, pcs, pcs_name, pcs_note),
+                        "pestpp": _pestpp_entry(
+                            group,
+                            pcs,
+                            pcs_name,
+                            pcs_note,
+                            source=pestpp_source,
+                            record=record_table if pestpp_source is None else None,
+                            record_name=rec.name if isinstance(rec, RecFacts) else None,
+                        ),
                         "reason": reason,
                     },
+                    "sigma_ratio": sigma,
                     "at_bounds_last": at_bounds,
                     "drill_down": drill_down_offer(n_par, DRILL_DOWN_MAX_PARAMS),
                     "notes": group_notes,
@@ -977,10 +1306,12 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
                     else None
                 ),
             },
+            "reinflation": reinflation,
             "groups": groups,
             "notes": [*[str(n) for n in meta["notes"]], *run_notes],
         }
-        size = write_atomic_text(path, json.dumps(payload, indent=2))
+        # allow_nan=False makes a stray NaN fail here instead of writing a file no browser can parse.
+        size = write_atomic_text(path, json.dumps(payload, indent=2, allow_nan=False))
         files = (CacheFile(path=str(path.relative_to(layout.root)), bytes=size),)
         return WrittenArtifact(name=name, files=files, notes=tuple(payload["notes"]))
     except Exception as exc:
