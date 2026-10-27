@@ -33,6 +33,7 @@ from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import write_grid_from_adapter
 from pesto.ingest.obsagg import write_noise_agg, write_obs_agg
 from pesto.ingest.obscell import write_obs_cell
+from pesto.ingest.obs1to1 import write_obs_1to1
 from pesto.ingest.obsens import write_obs_ensemble
 from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
 from pesto.ingest.obspdc import FIRST_ITERATION, compute_pdc, read_pdc_file, write_pdc
@@ -78,7 +79,7 @@ class PlannedArtifact:
     name: str
     # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
     # | "par_agg" | "par_change" | "par_groups" | "par_hist" | "obs_ens" | "obs_agg" | "pdc" | "phi_check"
-    # | "pp_factors" | "config"
+    # | "obs_1to1" | "pp_factors" | "config"
     kind: str
     sources: tuple[str, ...]
     outputs: tuple[str, ...]
@@ -305,6 +306,14 @@ def _write_par_hist_artifact(
     """The worker for the group histograms: reads par_change and both cached
     ensembles, never the source files."""
     return write_par_hist(first, last, CacheLayout(root=Path(cache_root)))
+
+
+def _write_obs_1to1_artifact(
+    cache_root: str, first: int, last: int
+) -> "WrittenArtifact | ReadFailure":
+    """The worker for the 1:1 density grids: reads the cached observation
+    ensembles and statistics of the first and last iteration, never a source file."""
+    return write_obs_1to1(first, last, CacheLayout(root=Path(cache_root)))
 
 
 def _write_control_artifact(pst_path: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
@@ -875,6 +884,39 @@ def _plan_par_view(
     )
 
 
+def _plan_obs_1to1(
+    artifacts: list[PlannedArtifact],
+    run: RunLayout,
+    layout: CacheLayout,
+    control_sources: tuple[str, ...],
+) -> None:
+    """Plan ``obs_1to1`` after the observation iterations, from the first and
+    last ``obs_ens/K`` that were actually planned -- not the iterations asked
+    for. It lists both observation files so it goes stale with them; they are
+    named upstream, so they are hashed once."""
+    ends = sorted(
+        int(a.name.split("/", 1)[1]) for a in artifacts if a.kind == "obs_ens"
+    )
+    if not ends:
+        return
+    first, last = ends[0], ends[-1]
+    chosen = tuple(dict.fromkeys((first, last)))
+    sources = _unique((*(str(run.obs_ens[k]) for k in chosen), *control_sources))
+    artifacts.append(
+        PlannedArtifact(
+            name="obs_1to1",
+            kind="obs_1to1",
+            sources=sources,
+            outputs=(str(layout.obs_1to1), str(layout.obs_1to1_meta)),
+            source_bytes=_size_of(sources),
+            needs=(
+                "obs_index",
+                *(name for k in chosen for name in (f"obs_ens/{k}", f"obs_agg/{k}")),
+            ),
+        )
+    )
+
+
 def plan_artifacts(
     run: RunLayout, layout: CacheLayout, iterations: Sequence[int] | None = None
 ) -> tuple[PlannedArtifact, ...]:
@@ -897,7 +939,9 @@ def plan_artifacts(
     pestpp's own ``case.K.pdc.csv`` when it exists, a computation from the
     cached statistics only when it does not and an obs+noise file exists,
     and nothing when neither is possible, then ``phi_check/K`` when the run
-    has ``case.phi.actual.csv``; then ``pp_factors`` when the
+    has ``case.phi.actual.csv``; then ``obs_1to1`` (the 1:1 density grids, which need the
+    first and last planned ``obs_ens/K`` and ``obs_agg/K``) when any observation ensemble is planned;
+    then ``pp_factors`` when the
     run carries pilot-point files; then ``config``. A caller watching rows
     go past sees the same sequence every time this is called for the same
     run and layout.
@@ -1130,6 +1174,8 @@ def plan_artifacts(
         _plan_pdc(artifacts, run, layout, iteration, control_sources)
         _plan_phi_check(artifacts, run, layout, iteration, control_sources)
 
+    _plan_obs_1to1(artifacts, run, layout, control_sources)
+
     pp_sources = [str(p) for p in run.factor_files]
     if run.mult2model is not None:
         pp_sources.insert(0, str(run.mult2model))
@@ -1360,6 +1406,13 @@ def estimate_bytes(
             "rather than any source file's size -- excluded rather than guessed"
         )
 
+    if any(run.obs_ens.get(k) is not None for k in obs_selected):
+        notes.append(
+            "obs_1to1: 180 x 180 bins for each group and each of the two iterations, whose size "
+            "follows the group count rather than any source file's size -- excluded rather than "
+            "guessed"
+        )
+
     notes.append(
         "obs_index: a few files whose size follows the control table's observation count "
         "rather than any source file's size -- excluded rather than guessed"
@@ -1442,6 +1495,9 @@ def _dispatch(
     if artifact.kind == "obs_agg":
         iteration = int(artifact.name.split("/", 1)[1])
         return _write_obs_agg_artifact, (cache_root, iteration)
+    if artifact.kind == "obs_1to1":
+        ends = [int(need.split("/", 1)[1]) for need in artifact.needs if need.startswith("obs_ens/")]
+        return _write_obs_1to1_artifact, (cache_root, min(ends), max(ends))
     if artifact.kind == "noise_agg":
         return _write_noise_agg_artifact, (artifact.sources[0], cache_root)
     if artifact.kind == "pdc":
@@ -1481,6 +1537,7 @@ _CONTROL_DEPENDENTS = frozenset(
         "par_hist",
         "obs_ens",
         "obs_agg",
+        "obs_1to1",
         "noise_agg",
         "pdc",
         "phi_check",

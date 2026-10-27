@@ -454,6 +454,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
                 *((f"phi_check/{k}",) if k in run.obs_ens and run.phi.get("actual") else ()),
             )
         ],
+        *(("obs_1to1",) if run.obs_ens else ()),
         "config",
     ]
     assert [a.name for a in second] == names
@@ -490,6 +491,7 @@ def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_a
         "obs_ens/1",
         "obs_agg/1",
         "pdc/1",
+        "obs_1to1",
         "config",
     ]
     noise = next(a for a in planned if a.name == "noise_agg")
