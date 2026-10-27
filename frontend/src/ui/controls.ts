@@ -101,6 +101,12 @@ export interface SelectionControlsHandle {
   setRealizations(names: RealNamesResult, wanted: string | null): number | null
 }
 
+// The map hides these rows while it is coloured by observations (style.css, .colour-obs).
+function parameterOnly<T extends HTMLElement>(el: T): T {
+  el.setAttribute('data-colour-source', 'par')
+  return el
+}
+
 function isStatistic(value: string): value is Statistic {
   return (STATISTICS as readonly string[]).includes(value)
 }
@@ -176,7 +182,7 @@ export function renderSelectionControls(
 
   // Statistic: exactly the eight servable statistics (enscache.STATS is the
   // authority this list mirrors), never a value this control invents.
-  const statLabel = document.createElement('label')
+  const statLabel = parameterOnly(document.createElement('label'))
   statLabel.classList.add('label')
   statLabel.textContent = 'Statistic'
   const statSelect = document.createElement('select')
@@ -196,7 +202,7 @@ export function renderSelectionControls(
   // Realization: positions are the names fetchRealNames returned, in the
   // order the route served them, never a row number standing in for a
   // missing name.
-  const realLabel = document.createElement('label')
+  const realLabel = parameterOnly(document.createElement('label'))
   realLabel.classList.add('label')
   realLabel.textContent = 'Realization'
   const realInput = document.createElement('input')
@@ -209,7 +215,7 @@ export function renderSelectionControls(
 
   // Go to: type or pick a realization by name. The text is looked up as a
   // name, exactly as typed -- never read as a slider position.
-  const goLabel = document.createElement('label')
+  const goLabel = parameterOnly(document.createElement('label'))
   goLabel.classList.add('label')
   goLabel.textContent = 'Go to'
   const goInput = document.createElement('input')
@@ -222,7 +228,7 @@ export function renderSelectionControls(
   namesList.id = REAL_NAMES_LIST_ID
   goLabel.appendChild(goInput)
   // Always in the page, empty until a refusal, so a screen reader hears the text arrive.
-  const refusalLine = document.createElement('div')
+  const refusalLine = parameterOnly(document.createElement('div'))
   refusalLine.classList.add('label')
   refusalLine.id = GO_TO_REFUSAL_ID
   refusalLine.setAttribute('role', 'status')
@@ -287,7 +293,7 @@ export function renderSelectionControls(
     realInput.disabled = true
     goInput.disabled = true
     showReal()
-    warningLine = document.createElement('div')
+    warningLine = parameterOnly(document.createElement('div'))
     warningLine.classList.add('label')
     warningLine.style.color = 'var(--status-warning)'
     warningLine.textContent = notRecordedText(opts.realNames.iteration)
@@ -295,7 +301,7 @@ export function renderSelectionControls(
 
   // Colormap: the nine names colormap.ts's STOPS declares. jet is offered,
   // not removed, but flagged -- the reason lives in its option title.
-  const colormapLabel = document.createElement('label')
+  const colormapLabel = parameterOnly(document.createElement('label'))
   colormapLabel.classList.add('label')
   colormapLabel.textContent = 'Colormap'
   const colormapSelect = document.createElement('select')
@@ -322,7 +328,7 @@ export function renderSelectionControls(
 
   // Reverse: applies to whichever ramp is chosen, a plain on/off switch
   // rather than a reversed duplicate of every ramp in the list.
-  const reverseLabel = document.createElement('label')
+  const reverseLabel = parameterOnly(document.createElement('label'))
   reverseLabel.classList.add('label')
   const reverseInput = document.createElement('input')
   reverseInput.type = 'checkbox'
@@ -335,7 +341,7 @@ export function renderSelectionControls(
   // case-insensitively after trimming; anything this code has never seen
   // is treated as linear by a named default, never a crash and never a
   // guess (D-03).
-  const scaleLabel = document.createElement('label')
+  const scaleLabel = parameterOnly(document.createElement('label'))
   scaleLabel.classList.add('label')
   scaleLabel.textContent = 'Value scale'
   const scaleSelect = document.createElement('select')
@@ -368,7 +374,7 @@ export function renderSelectionControls(
   // Limits mode: robust 2-98% by default, with min-max and manual as the
   // two alternatives. The manual pair is two number inputs, revealed only
   // in manual mode.
-  const limitsLabel = document.createElement('label')
+  const limitsLabel = parameterOnly(document.createElement('label'))
   limitsLabel.classList.add('label')
   limitsLabel.textContent = 'Limits'
   const limitsSelect = document.createElement('select')
@@ -387,12 +393,12 @@ export function renderSelectionControls(
   limitsSelect.value = opts.initial ? opts.initial.limitsMode : 'robust'
   limitsLabel.appendChild(limitsSelect)
 
-  const manualLower = document.createElement('input')
+  const manualLower = parameterOnly(document.createElement('input'))
   manualLower.type = 'number'
   manualLower.setAttribute('aria-label', 'Lower limit')
   manualLower.style.display = 'none'
   if (opts.initial?.manualLimits) manualLower.value = String(opts.initial.manualLimits[0])
-  const manualUpper = document.createElement('input')
+  const manualUpper = parameterOnly(document.createElement('input'))
   manualUpper.type = 'number'
   manualUpper.setAttribute('aria-label', 'Upper limit')
   if (opts.initial?.manualLimits) manualUpper.value = String(opts.initial.manualLimits[1])
@@ -580,7 +586,7 @@ export function renderSelectionControls(
         realValue.textContent = '—'
         const text = notRecordedText(names.iteration)
         if (warningLine === null) {
-          warningLine = document.createElement('div')
+          warningLine = parameterOnly(document.createElement('div'))
           warningLine.classList.add('label')
           warningLine.style.color = 'var(--status-warning)'
           refusalLine.after(warningLine)
