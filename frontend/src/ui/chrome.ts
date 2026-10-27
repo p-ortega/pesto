@@ -4,6 +4,7 @@
 // `var(--...)` reference into the tokens `index.html` defines -- nothing
 // in this module picks a colour of its own.
 
+import type { BaseFactState } from '../data/config'
 import type { ThemeChoice } from './theme'
 
 const THEME_CHOICES: readonly ThemeChoice[] = ['dark', 'light', 'system']
@@ -57,6 +58,10 @@ export interface ChipRunConfig {
   noptmax: number | null
   projection: string | null
   has_noise: boolean | null
+  /** Keys of the facts whose sources disagree (D-17); absent for a config with no facts. */
+  disagree?: string[]
+  /** What the base fact says about the last ingested iteration; null when it says nothing. */
+  base?: BaseFactState | null
 }
 
 export interface ChipFailure {
@@ -72,10 +77,11 @@ export type ChipsInput = { config: ChipRunConfig; failure: null } | { config: nu
 function appendChip(
   el: HTMLElement,
   text: string,
-  opts?: { colorVar?: string; numeric?: boolean; truncate?: boolean },
+  opts?: { colorVar?: string; numeric?: boolean; truncate?: boolean; title?: string },
 ): HTMLElement {
   const chip = document.createElement('span')
   chip.classList.add('chip')
+  if (opts?.title) chip.title = opts.title
   if (opts?.numeric) chip.classList.add('tabular-nums')
   if (opts?.truncate) chip.classList.add('truncate')
   if (opts?.colorVar) chip.style.color = opts.colorVar
@@ -84,12 +90,57 @@ function appendChip(
   return chip
 }
 
+const FACT_WORDS: Record<string, string> = {
+  ensemble_size: 'ensemble size',
+  base: 'base',
+  noptmax: 'iterations (noptmax)',
+  noise: 'measurement noise',
+}
+
+function disagreeing(disagree: string[], keys: string[]): string[] {
+  return keys.filter((key) => disagree.includes(key))
+}
+
+// The base part of the realization chip: the base fact when it says something, else the old yes or no.
+function baseChipWord(config: ChipRunConfig): string | null {
+  const base = config.base
+  if (base?.state === 'present') return 'base alive'
+  if (base?.state === 'not_included') return 'no base'
+  if (base?.state === 'missing' && base.iteration !== undefined) return `base missing at iteration ${base.iteration}`
+  if (config.base_realization === null) return null
+  return config.base_realization ? 'base alive' : 'base lost'
+}
+
+// A chip whose sources disagree carries the warning icon and the words, never colour alone (D-17).
+function appendFactChip(
+  el: HTMLElement,
+  parts: (string | null)[],
+  marked: string[],
+  opts: { numeric?: boolean; warn?: boolean } = {},
+): void {
+  const text = parts.filter((p): p is string => p !== null)
+  if (marked.length === 0) {
+    const plain = text.join(' · ')
+    appendChip(el, opts.warn ? `${TONE_STYLE.warning.icon} ${plain}` : plain, {
+      numeric: opts.numeric,
+      colorVar: opts.warn ? TONE_STYLE.warning.colorVar : undefined,
+    })
+    return
+  }
+  const names = marked.map((key) => FACT_WORDS[key] ?? key).join(', ')
+  appendChip(el, `${TONE_STYLE.warning.icon} ${[...text, 'sources disagree'].join(' · ')}`, {
+    numeric: opts.numeric,
+    colorVar: TONE_STYLE.warning.colorVar,
+    title: `The sources disagree about: ${names}. The Config tab shows each reading.`,
+  })
+}
+
 /**
  * MAP-10's five header chips, or the single D-12 failure chip. Follows
  * `renderStatusBar`'s one-span-per-fact, `tabular-nums`-on-the-number shape.
  * The realization chip is shown only once both the count and whether base
- * survived are known -- a count with no verdict on base is not one of the
- * two copy forms this chip has, so it stays silent rather than guessing.
+ * survived are known, or its sources disagree -- a count with no verdict on
+ * base and no disagreement stays silent rather than guessing.
  */
 export function renderChips(el: HTMLElement, opts: ChipsInput): void {
   el.textContent = ''
@@ -108,14 +159,16 @@ export function renderChips(el: HTMLElement, opts: ChipsInput): void {
   }
 
   const config = opts.config
+  const disagree = config.disagree ?? []
+  const baseWord = baseChipWord(config)
 
   if (config.n_par !== null) {
     appendChip(el, `${config.n_par} par`, { numeric: true })
   }
 
-  if (config.n_real !== null && config.base_realization !== null) {
-    const baseWord = config.base_realization ? 'base alive' : 'base lost'
-    appendChip(el, `${config.n_real} reals · ${baseWord}`, { numeric: true })
+  const realMarked = disagreeing(disagree, ['ensemble_size', 'base'])
+  if (config.n_real !== null && (baseWord !== null || realMarked.length > 0)) {
+    appendFactChip(el, [`${config.n_real} reals`, baseWord], realMarked, { numeric: true })
   }
 
   if (config.n_iterations !== null) {
@@ -125,11 +178,14 @@ export function renderChips(el: HTMLElement, opts: ChipsInput): void {
       config.noptmax !== null && config.n_iterations < config.noptmax
         ? `${config.n_iterations} of ${config.noptmax} iter`
         : `${config.n_iterations} iter`
-    appendChip(el, text, { numeric: true })
+    appendFactChip(el, [text], disagreeing(disagree, ['noptmax']), { numeric: true })
   }
 
+  const noiseMarked = disagreeing(disagree, ['noise'])
   if (config.has_noise === false) {
-    appendChip(el, '⚠ no measurement noise', { colorVar: TONE_STYLE.warning.colorVar })
+    appendFactChip(el, ['no measurement noise'], noiseMarked, { warn: true })
+  } else if (noiseMarked.length > 0) {
+    appendFactChip(el, ['measurement noise'], noiseMarked)
   }
 
   appendChip(el, config.projection ? 'crs' : 'no crs', { colorVar: 'var(--ink-muted)' })

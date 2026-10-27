@@ -6,6 +6,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { renderChips, renderHeader, type ChipRunConfig, type ChipsInput } from '../src/ui/chrome'
+import { chipFactsFrom, type ConfigFact, type ConfigReading } from '../src/data/config'
 
 function mount(): HTMLElement {
   const el = document.createElement('div')
@@ -131,5 +132,148 @@ describe('renderChips', () => {
     for (const chip of numericChips) {
       expect(chip.classList.contains('tabular-nums')).toBe(true)
     }
+  })
+})
+
+function chipTexts(el: HTMLElement): string[] {
+  return Array.from(el.children).map((c) => c.textContent ?? '')
+}
+
+describe('chips whose sources disagree (D-17)', () => {
+  it('marks the realization chip with the warning icon and the words, in the warning colour', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'] }, failure: null })
+
+    const chip = (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes('reals'))!
+    expect(chip.textContent?.startsWith('⚠')).toBe(true)
+    expect(chip.textContent).toContain('200 reals')
+    expect(chip.textContent).toContain('sources disagree')
+    expect(chip.style.color).toBe('var(--status-warning)')
+  })
+
+  it('marks the realization chip when the base fact disagrees', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['base'] }, failure: null })
+    expect(chipTexts(el).filter((t) => t.includes('sources disagree')).length).toBe(1)
+    expect(chipTexts(el).find((t) => t.includes('reals'))).toContain('sources disagree')
+  })
+
+  it('marks the iteration chip when noptmax disagrees and leaves the others alone', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['noptmax'] }, failure: null })
+
+    const marked = chipTexts(el).filter((t) => t.includes('sources disagree'))
+    expect(marked.length).toBe(1)
+    expect(marked[0]).toContain('3 iter')
+  })
+
+  it('marks the noise chip when noise disagrees and there is no noise', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, has_noise: false, disagree: ['noise'] }, failure: null })
+
+    const noise = chipTexts(el).find((t) => t.includes('no measurement noise'))!
+    expect(noise.startsWith('⚠')).toBe(true)
+    expect(noise).toContain('sources disagree')
+  })
+
+  it('shows a noise chip for a noise disagreement even when the answer is noise on', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, has_noise: true, disagree: ['noise'] }, failure: null })
+
+    const noise = chipTexts(el).find((t) => t.includes('measurement noise'))!
+    expect(noise.startsWith('⚠')).toBe(true)
+    expect(noise).toContain('sources disagree')
+    expect(noise).not.toContain('no measurement noise')
+  })
+
+  it('names the facts that disagree in the chip title', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'] }, failure: null })
+    const chip = (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes('reals'))!
+    expect(chip.title).toContain('ensemble size')
+  })
+
+  it('gives the same chips as before for a config with no facts', () => {
+    const plain = mount()
+    renderChips(plain, { config: FULL_CONFIG, failure: null })
+    const empty = mount()
+    renderChips(empty, { config: { ...FULL_CONFIG, disagree: [], base: null }, failure: null })
+    expect(chipTexts(empty)).toEqual(chipTexts(plain))
+    expect(chipTexts(plain).join('|')).not.toContain('sources disagree')
+  })
+})
+
+describe('the base chip follows the base fact (D-16, D-17)', () => {
+  it('says base alive when the last ingested iteration has base', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, base_realization: false, base: { state: 'present' } }, failure: null })
+    expect(el.textContent).toContain('200 reals · base alive')
+  })
+
+  it('says where base went missing', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, base: { state: 'missing', iteration: 3 } }, failure: null })
+    expect(el.textContent).toContain('200 reals · base missing at iteration 3')
+  })
+
+  it('says "no base", not "base lost", when the run never included it', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, base_realization: false, base: { state: 'not_included' } }, failure: null })
+    expect(el.textContent).toContain('200 reals · no base')
+    expect(el.textContent).not.toContain('lost')
+  })
+
+  it('falls back to base_realization when the base fact says nothing', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, base_realization: false, base: null }, failure: null })
+    expect(el.textContent).toContain('200 reals · base lost')
+
+    const unknown = mount()
+    renderChips(unknown, { config: { ...FULL_CONFIG, base_realization: true, base: { state: 'unknown' } }, failure: null })
+    expect(unknown.textContent).toContain('200 reals · base alive')
+  })
+})
+
+function reading(source: string, value: ConfigReading['value'], shown: string, extra: ConfigReading['extra'] = null): ConfigReading {
+  return { source, value, shown, evidence: '', extra }
+}
+
+function fact(key: string, readings: ConfigReading[], agree: boolean | null = null): ConfigFact {
+  return { key, label: key, readings, agree, looked_for: [], note: null }
+}
+
+describe('chipFactsFrom', () => {
+  const cache = (iteration: number, value: boolean | null) =>
+    reading('cache', value, `iteration ${iteration}`, { iteration })
+
+  it('lists the facts whose sources disagree', () => {
+    const facts = [
+      fact('noptmax', [reading('control file', 5, '5'), reading('run record', 4, '4')], false),
+      fact('noise', [reading('run record', false, 'no noise')], null),
+      fact('ensemble_size', [reading('run record', 50, '50'), reading('control file', 50, '50')], true),
+    ]
+    expect(chipFactsFrom(facts).disagree).toEqual(['noptmax'])
+  })
+
+  it('takes the base state from the last cache reading', () => {
+    const present = fact('base', [cache(0, true), cache(3, true)], null)
+    expect(chipFactsFrom([present]).base).toEqual({ state: 'present' })
+
+    const missing = fact('base', [cache(0, true), cache(3, false), cache(6, false)], false)
+    expect(chipFactsFrom([missing]).base).toEqual({ state: 'missing', iteration: 3 })
+    expect(chipFactsFrom([missing]).disagree).toEqual([])
+
+    const never = fact('base', [cache(0, false), cache(3, false)], null)
+    expect(chipFactsFrom([never]).base).toEqual({ state: 'not_included' })
+  })
+
+  it('skips an iteration that was not ingested', () => {
+    const base = fact('base', [cache(0, true), cache(3, null)], null)
+    expect(chipFactsFrom([base]).base).toEqual({ state: 'present' })
+  })
+
+  it('has nothing to say without facts', () => {
+    expect(chipFactsFrom(undefined)).toEqual({ disagree: [], base: null })
+    expect(chipFactsFrom([])).toEqual({ disagree: [], base: null })
   })
 })
