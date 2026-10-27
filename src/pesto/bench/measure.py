@@ -24,7 +24,7 @@ from pesto.bench.report import (
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.discover import discover
-from pesto.ingest.runner import Progress, plan_artifacts
+from pesto.ingest.runner import PlannedArtifact, Progress, plan_artifacts
 from pesto.warm import load_pyemu
 
 try:
@@ -88,7 +88,32 @@ def _planned(run_dir: Path, cache_dir: Path):
     return plan_artifacts(discover(run_dir), CacheLayout(root=Path(cache_dir)))
 
 
-def _source_paths(run_dir: Path, cache_dir: Path) -> list[Path]:
+def split_readable(paths: Sequence[Path]) -> tuple[list[Path], list[str]]:
+    """The paths that exist and open read-only, and the names of those that do not."""
+    readable: list[Path] = []
+    missing: list[str] = []
+    for path in paths:
+        path = Path(path)
+        if not path.is_file():
+            missing.append(path.name)
+            continue
+        try:
+            os.close(os.open(path, os.O_RDONLY))
+        except OSError:
+            missing.append(path.name)
+            continue
+        readable.append(path)
+    return readable, missing
+
+
+def missing_note(names: Sequence[str]) -> str | None:
+    if not names:
+        return None
+    return f"{len(names)} planned source file(s) were not found and were skipped: {', '.join(names)}"
+
+
+def source_paths(run_dir: Path, cache_dir: Path) -> list[Path]:
+    """Each source file the artifact plan names, once, whether or not it is on disk."""
     seen: dict[Path, None] = {}
     for artifact in _planned(run_dir, cache_dir):
         for source in artifact.sources:
@@ -98,26 +123,37 @@ def _source_paths(run_dir: Path, cache_dir: Path) -> list[Path]:
 
 def source_files(run_dir: Path, cache_dir: Path) -> list[SourceFile]:
     """Each source file the artifact plan names, once, however many artifacts name it."""
-    return [SourceFile(name=p.name, bytes=_size(p)) for p in _source_paths(run_dir, cache_dir)]
+    readable, _missing = split_readable(source_paths(run_dir, cache_dir))
+    return [SourceFile(name=p.name, bytes=_size(p)) for p in readable]
+
+
+def _reads_by_artifact(plan: Sequence[PlannedArtifact]) -> dict[str, tuple[Path, ...]]:
+    """Which source files each artifact reads from the run folder, walking the plan in order."""
+    control_files: set[Path] = set()
+    listed: dict[str, set[Path]] = {}
+    reads: dict[str, tuple[Path, ...]] = {}
+    for artifact in plan:
+        paths = tuple(dict.fromkeys(Path(source).resolve() for source in artifact.sources))
+        listed[artifact.name] = set(paths)
+        # A file an artifact it needs also lists was read there; this one reads the cache.
+        already_read = set().union(*(listed.get(need, set()) for need in artifact.needs))
+        if artifact.name == "control":
+            control_files.update(paths)
+            reads[artifact.name] = paths
+        else:
+            reads[artifact.name] = tuple(
+                p for p in paths if p not in control_files and p not in already_read
+            )
+    return reads
 
 
 def source_reads(run_dir: Path, cache_dir: Path) -> list[SourceRead]:
     counts: dict[Path, int] = {}
-    control_files: set[Path] = set()
-    read_by: dict[str, set[Path]] = {}
-    for artifact in _planned(run_dir, cache_dir):
-        paths = {Path(source).resolve() for source in artifact.sources}
-        read_by[artifact.name] = paths
-        # A file an artifact it needs also lists was read there; this one reads the cache.
-        already_read = set().union(*(read_by.get(need, set()) for need in artifact.needs))
-        for source in artifact.sources:
-            path = Path(source).resolve()
-            if artifact.name == "control":
-                control_files.add(path)
-            elif path in control_files or path in already_read:
-                continue
+    for paths in _reads_by_artifact(_planned(run_dir, cache_dir)).values():
+        for path in paths:
             counts[path] = counts.get(path, 0) + 2
-    return [SourceRead(name=p.name, bytes=_size(p), reads_implied=n) for p, n in counts.items()]
+    readable, _missing = split_readable(list(counts))
+    return [SourceRead(name=p.name, bytes=_size(p), reads_implied=counts[p]) for p in readable]
 
 
 def source_reads_note() -> str:
@@ -132,6 +168,22 @@ def _children_cpu() -> float:
 def _own_cpu() -> float:
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return usage.ru_utime + usage.ru_stime
+
+
+def _started_read_bytes(
+    run_dir: Path, cache_dir: Path, started: set[str]
+) -> tuple[int | None, str | None]:
+    """Bytes of every source file read once, from the run folder, by an artifact that started.
+
+    The plan is made after the ingest so that planning never touches a file before it.
+    """
+    try:
+        reads = _reads_by_artifact(_planned(run_dir, cache_dir))
+    except Exception as exc:
+        return None, f"the source read figure is not measured: the artifact plan could not be made ({exc})"
+    once = dict.fromkeys(p for name, paths in reads.items() if name in started for p in paths)
+    readable, missing = split_readable(list(once))
+    return sum(_size(p) for p in readable), missing_note(missing)
 
 
 def time_ingest(
@@ -157,18 +209,18 @@ def time_ingest(
 
     artifacts: list[ArtifactTiming] = []
     started_at: dict[str, float] = {}
+    started_names: set[str] = set()
     worker = 0.0
-    worker_source_bytes = 0
     skipped = 0
     for row, children in zip(rows, children_at):
         if row.state == "started":
             started_at[row.artifact] = children
+            started_names.add(row.artifact)
             continue
         if row.state == "skipped":
             skipped += 1
         if row.state in ("ok", "failed"):
             worker += row.seconds
-            worker_source_bytes += row.source_bytes
         artifact_cpu = None
         if has_cpu and row.artifact in started_at:
             artifact_cpu = children - started_at.pop(row.artifact)
@@ -191,6 +243,9 @@ def time_ingest(
         notes.append(
             f"{skipped} artifacts were skipped as fresh, so this ingest did not re-read them"
         )
+    read_bytes, read_note = _started_read_bytes(run_dir, cache_dir, started_names)
+    if read_note:
+        notes.append(read_note)
     wait = wall - cpu if cpu is not None else None
     if wait is not None and wait < 0:
         notes.append(
@@ -207,7 +262,7 @@ def time_ingest(
         wait_seconds=wait,
         artifacts=artifacts,
         notes=notes,
-        read_mb_per_second=_rate(worker_source_bytes, worker),
+        read_mb_per_second=_rate(read_bytes, worker) if read_bytes is not None else None,
     )
 
 
@@ -232,15 +287,17 @@ def cache_size(run_dir: Path, cache_dir: Path) -> CacheSize:
 
 def read_floor(files: Sequence[Path]) -> ReadFloor:
     """How fast the source bytes read once, start to end, in one pass."""
+    readable, missing = split_readable(files)
     total = 0
     start = time.perf_counter()
-    for path in files:
+    for path in readable:
         with open(path, "rb") as handle:
             while chunk := handle.read(_READ_CHUNK):
                 total += len(chunk)
     seconds = time.perf_counter() - start
     rate = total / 1e6 / seconds if seconds > 0 and total > 0 else None
-    return ReadFloor(bytes=total, seconds=seconds, mb_per_second=rate, note=_FLOOR_NOTE)
+    note = "; ".join(filter(None, [_FLOOR_NOTE, missing_note(missing)]))
+    return ReadFloor(bytes=total, seconds=seconds, mb_per_second=rate, note=note)
 
 
 # A read pass takes the files and "first" or "reread" and returns (bytes, seconds, method).
@@ -268,8 +325,9 @@ def _skip_cache(fd: int) -> str | None:
 def _default_pass(files: Sequence[Path], which: str) -> tuple[int, float, str]:
     total = 0
     methods: set[str] = set()
+    readable, _missing = split_readable(files)
     start = time.perf_counter()
-    for path in files:
+    for path in readable:
         fd = os.open(path, os.O_RDONLY)
         try:
             if which == "first":
@@ -294,15 +352,19 @@ def _mbs(rate: float) -> str:
     return f"{rate:,.0f} MB/s" if rate >= 10 else f"{rate:.2f} MB/s"
 
 
-def cold_read(files: Sequence[Path], read_pass: ReadPass | None = None) -> ColdRead:
+def cold_read(
+    files: Sequence[Path], read_pass: ReadPass | None = None, *, after_ingest: bool = False
+) -> ColdRead:
     """Read every file once, then again at once, and label the first read only as far as the numbers show.
 
     D-03: "cold" needs the first rate to be at most COLD_RATIO_LIMIT of the re-read rate.
     Nothing is run to empty the cache; the note tells the user how to do that themselves.
+    With after_ingest the files were just read by the ingests, so the label is never "cold".
     """
     run_pass = read_pass or _default_pass
-    first_bytes, first_seconds, method = run_pass(files, "first")
-    reread_bytes, reread_seconds, _ = run_pass(files, "reread")
+    readable, missing = split_readable(files)
+    first_bytes, first_seconds, method = run_pass(readable, "first")
+    reread_bytes, reread_seconds, _ = run_pass(readable, "reread")
     first_rate = _rate(first_bytes, first_seconds)
     reread_rate = _rate(reread_bytes, reread_seconds)
     ratio = first_rate / reread_rate if first_rate is not None and reread_rate else None
@@ -313,6 +375,14 @@ def cold_read(files: Sequence[Path], read_pass: ReadPass | None = None) -> ColdR
     elif ratio is None:
         label, proven = "not measured", False
         note = "a read took no measurable time, so the two rates cannot be compared"
+    elif after_ingest:
+        label, proven = "not proven cold", False
+        note = (
+            "this read ran after both ingests, so its files were likely in memory: the first "
+            f"read ran at {_mbs(first_rate)} and the re-read at {_mbs(reread_rate)} "
+            f"(ratio {ratio:.2f}), which cannot show the disk was cold. The as-found ingest "
+            "is the first read of the run in this bench."
+        )
     elif ratio <= COLD_RATIO_LIMIT:
         label, proven = "cold", True
         note = (
@@ -328,9 +398,11 @@ def cold_read(files: Sequence[Path], read_pass: ReadPass | None = None) -> ColdR
             "may have come from memory. Run sudo purge in your own terminal right before "
             "pesto bench for a proven cold figure; pesto never runs it."
         )
+    if (skipped := missing_note(missing)) is not None:
+        note = f"{note}; {skipped}"
     return ColdRead(
         bytes=first_bytes,
-        files=len(files),
+        files=len(readable),
         first_seconds=first_seconds,
         first_mb_per_second=first_rate,
         reread_seconds=reread_seconds,
@@ -344,7 +416,7 @@ def cold_read(files: Sequence[Path], read_pass: ReadPass | None = None) -> ColdR
 
 
 def read_floor_for(run_dir: Path, cache_dir: Path) -> ReadFloor:
-    return read_floor(_source_paths(run_dir, cache_dir))
+    return read_floor(source_paths(run_dir, cache_dir))
 
 
 def _memory_bytes() -> int | None:

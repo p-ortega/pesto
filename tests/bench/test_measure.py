@@ -256,6 +256,25 @@ def test_read_floor_adds_up_the_bytes_and_reports_a_rate(tmp_path: Path) -> None
     assert "3,000 MB/s" in floor.note
 
 
+def test_read_floor_and_cold_read_skip_a_missing_path_and_name_it(tmp_path: Path) -> None:
+    real = tmp_path / "real.bin"
+    real.write_bytes(b"x" * 1000)
+    gone = tmp_path / "gone.bin"
+    floor = read_floor([gone, real])
+    assert floor.bytes == 1000
+    assert "1 planned source file(s) were not found and were skipped: gone.bin" in floor.note
+    cold = cold_read([gone, real])
+    assert cold.bytes == 1000 and cold.files == 1
+    assert "gone.bin" in cold.note
+
+
+def test_cold_read_after_the_ingests_is_never_cold_even_at_a_low_ratio(tmp_path: Path) -> None:
+    result = cold_read([_file(tmp_path)], read_pass=_timed(10.0, 1.0), after_ingest=True)
+    assert result.ratio == pytest.approx(0.1)
+    assert result.label == "not proven cold" and result.proven_cold is False
+    assert result.note.startswith("this read ran after both ingests, so its files were likely in memory")
+
+
 def test_machine_facts_name_the_machine_or_say_unknown() -> None:
     facts = machine_facts()
     assert set(facts) == {"platform", "machine", "cpu_count", "memory_bytes", "python"}
@@ -328,8 +347,14 @@ def _timed(first: float, reread: float, size: int = 1_000_000):
     return lambda files, which: (size, first if which == "first" else reread, "test pass")
 
 
+def _file(tmp_path: Path, name: str = "a") -> Path:
+    path = tmp_path / name
+    path.write_bytes(b"x" * 10)
+    return path
+
+
 def test_a_ratio_of_exactly_one_half_counts_as_cold(tmp_path: Path) -> None:
-    result = cold_read([tmp_path / "a"], read_pass=_timed(2.0, 1.0))
+    result = cold_read([_file(tmp_path)], read_pass=_timed(2.0, 1.0))
     assert result.ratio == 0.5
     assert result.proven_cold is True
     assert result.label == "cold"
@@ -337,7 +362,7 @@ def test_a_ratio_of_exactly_one_half_counts_as_cold(tmp_path: Path) -> None:
 
 
 def test_a_ratio_above_one_half_is_not_proven_cold_and_the_note_says_why(tmp_path: Path) -> None:
-    result = cold_read([tmp_path / "a"], read_pass=_timed(1.0, 0.6))
+    result = cold_read([_file(tmp_path)], read_pass=_timed(1.0, 0.6))
     assert result.ratio == pytest.approx(0.6)
     assert result.proven_cold is False
     assert result.label == "not proven cold"
@@ -371,7 +396,7 @@ def test_a_default_cold_read_counts_the_bytes_names_its_method_and_leaves_the_ru
     tmp_path: Path,
 ) -> None:
     run_dir = _small_run(tmp_path)
-    files = measure._source_paths(run_dir, tmp_path / "cache")
+    files = measure.source_paths(run_dir, tmp_path / "cache")
     before = snapshot(run_dir)
     result = cold_read(files)
     assert result.bytes == sum(f.stat().st_size for f in files) > 0
@@ -405,16 +430,64 @@ def _sized_row(artifact: str, state: str, seconds: float, source_bytes: int) -> 
     )
 
 
-def test_read_rate_is_source_bytes_of_ok_and_failed_artifacts_over_worker_seconds() -> None:
-    rows = [
-        _sized_row("a", "started", 0.0, 4_000_000),
-        _sized_row("a", "ok", 1.0, 4_000_000),
-        _sized_row("b", "started", 0.0, 2_000_000),
-        _sized_row("b", "failed", 1.0, 2_000_000),
-        _sized_row("c", "skipped", 5.0, 9_000_000),
+def _obs_run_rows(started_ok: list[str], blocked: list[str]) -> list[Progress]:
+    rows: list[Progress] = []
+    for name in started_ok:
+        rows += [_sized_row(name, "started", 0.0, 1), _sized_row(name, "ok", 1.0, 1)]
+    # A row blocked by a failed dependency is "failed" with no "started" row before it.
+    rows += [_sized_row(name, "failed", 1.0, 1) for name in blocked]
+    return rows
+
+
+def test_the_read_figure_counts_each_source_file_once_for_artifacts_that_started(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    cache = tmp_path / "cache"
+    # The control file and its tables are listed by many artifacts, the grid file by several,
+    # case.0.obs.jcb by obs_ens/0 and obs_agg/0 (which reads the cache), and par_ens/1 never started.
+    names = ["control", "grid", "par_ens/0", "obs_ens/0", "obs_agg/0"]
+    rows = _obs_run_rows(names, blocked=["par_ens/1"])
+    timing = time_ingest(run_dir, cache, "as found", _fake_ingest(rows))
+
+    read = [
+        "case.pst", "case.pargp_data.csv", "case.par_data.csv", "case.obs_data.csv",
+        "case.tplfile_data.csv", "case.insfile_data.csv", "coarse.disv.grb",
+        "case.0.par.jcb", "case.0.obs.jcb",
     ]
-    timing = time_ingest(Path("run"), Path("cache"), "as found", _fake_ingest(rows))
-    assert timing.read_mb_per_second == pytest.approx(6.0 / 2.0)
+    total = sum(os.stat(run_dir / name).st_size for name in read)
+    assert timing.read_mb_per_second == pytest.approx(total / 1e6 / 6.0)
+
+
+def test_an_artifact_that_only_reads_the_cache_adds_no_bytes(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    cache = tmp_path / "cache"
+    with_agg = time_ingest(
+        run_dir, cache, "a", _fake_ingest(_obs_run_rows(["control", "obs_ens/0", "obs_agg/0"], []))
+    )
+    without = time_ingest(
+        run_dir, cache, "a", _fake_ingest(_obs_run_rows(["control", "obs_ens/0"], []))
+    )
+    # One more worker second for obs_agg/0 and not one more byte.
+    assert with_agg.read_mb_per_second == pytest.approx(without.read_mb_per_second * 2 / 3)
+
+
+def test_a_missing_source_file_is_left_out_of_the_read_figure_and_named(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir)
+    (run_dir / "case.par_data.csv").unlink()
+    rows = _obs_run_rows(["control"], [])
+    timing = time_ingest(run_dir, tmp_path / "cache", "as found", _fake_ingest(rows))
+    kept = ["case.pst", "case.pargp_data.csv", "case.obs_data.csv", "case.tplfile_data.csv", "case.insfile_data.csv"]
+    assert timing.read_mb_per_second == pytest.approx(sum(os.stat(run_dir / n).st_size for n in kept) / 1e6 / 1.0)
+    assert any("1 planned source file(s) were not found and were skipped: case.par_data.csv" in n for n in timing.notes)
+
+
+def test_the_read_figure_is_not_measured_and_says_why_when_the_plan_cannot_be_made() -> None:
+    rows = [_sized_row("a", "started", 0.0, 1), _sized_row("a", "ok", 1.0, 1)]
+    timing = time_ingest(Path("no-such-run"), Path("cache"), "as found", _fake_ingest(rows))
+    assert timing.read_mb_per_second is None
+    assert any("source read figure is not measured" in n for n in timing.notes)
 
 
 def test_read_rate_is_none_when_no_worker_ran() -> None:
