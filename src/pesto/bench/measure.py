@@ -26,7 +26,7 @@ from pesto.bench.report import (
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.discover import discover
-from pesto.ingest.runner import PlannedArtifact, Progress, plan_artifacts
+from pesto.ingest.runner import PlannedArtifact, Progress, plan_artifacts, upstream_artifacts
 from pesto.warm import load_pyemu
 
 try:
@@ -51,7 +51,7 @@ _PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
     "counted from the artifact plan: an artifact that names a source reads it once in its "
     "worker and once more to checksum it, unless the control artifact or an artifact it "
-    "needs already read that file, in which case it reads the cache instead"
+    "builds on already read that file, in which case it reads the cache instead"
 )
 
 
@@ -132,8 +132,10 @@ def _reads_by_artifact(plan: Sequence[PlannedArtifact]) -> dict[str, tuple[Path,
     for artifact in plan:
         paths = tuple(dict.fromkeys(Path(source).resolve() for source in artifact.sources))
         listed[artifact.name] = set(paths)
-        # A file an artifact it needs also lists was read there; this one reads the cache.
-        already_read = set().union(*(listed.get(need, set()) for need in artifact.needs))
+        # A file an upstream artifact also lists was read there; this one reads the cache.
+        already_read = set().union(
+            *(listed.get(name, set()) for name in upstream_artifacts(artifact, plan))
+        )
         if artifact.name == "control":
             control_files.update(paths)
             reads[artifact.name] = paths

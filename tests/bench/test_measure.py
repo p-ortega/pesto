@@ -37,7 +37,9 @@ from pesto.bench.report import (
     result_to_dict,
     verdict,
 )
-from pesto.ingest.runner import Progress
+from pesto.cache.manifest import SourceFingerprint
+from pesto.ingest import runner
+from pesto.ingest.runner import Progress, ingest_run
 
 
 def _row(artifact: str, state: str, seconds: float = 0.0, index: int = 0) -> Progress:
@@ -233,6 +235,49 @@ def test_source_reads_count_an_observation_file_for_the_artifact_that_reads_it(
     # A parameter ensemble is still named by two artifacts that each read it.
     assert reads["case.0.par.jcb"].reads_implied == 4
     assert "reads the cache" in measure.source_reads_note()
+
+
+def test_source_reads_count_the_obs_noise_file_for_noise_agg_alone(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    reads = {r.name: r for r in source_reads(run_dir, tmp_path / "cache")}
+    # obs_agg builds on noise_agg and config reuses its checksum, so neither reads the file again.
+    assert reads["case.obs+noise.jcb"].reads_implied == 2
+    assert reads["case.0.par.jcb"].reads_implied == 4
+    assert reads["case.1.par.jcb"].reads_implied == 4
+
+
+def _run_in_process(fn, *args):
+    try:
+        return True, fn(*args)
+    except Exception as exc:
+        return False, exc
+
+
+def test_source_reads_agree_with_the_checksums_a_real_ingest_takes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    cache_dir = tmp_path / "cache"
+    hashed: list[str] = []
+    real = SourceFingerprint.of
+
+    def _counting(path: Path) -> SourceFingerprint:
+        hashed.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(SourceFingerprint, "of", staticmethod(_counting))
+    # Workers run in this process here, so the real ingest stays quick.
+    monkeypatch.setattr(runner, "_run_isolated", _run_in_process)
+
+    ingest_run(run_dir, cache_root=cache_dir)
+
+    reads = {r.name: r.reads_implied for r in source_reads(run_dir, cache_dir)}
+    assert reads
+    # Each implied read is a worker read plus a checksum read, so the checksums are half.
+    for name, implied in reads.items():
+        assert hashed.count(name) == implied // 2, name
 
 
 def test_source_reads_count_a_file_control_lists_for_control_alone(tmp_path: Path) -> None:

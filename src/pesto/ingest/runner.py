@@ -1516,6 +1516,16 @@ def _needs_failure_reason(manifest: Manifest, artifact: PlannedArtifact) -> str 
     return None
 
 
+def upstream_artifacts(
+    artifact: PlannedArtifact, planned: Sequence[PlannedArtifact]
+) -> tuple[str, ...]:
+    """The artifacts whose files ``artifact`` does not read again: its ``needs``, and for ``config``
+    also the ensembles and ``noise_agg``, which it lists to go stale with them without needing them."""
+    if artifact.kind != "config":
+        return artifact.needs
+    return (*artifact.needs, *(a.name for a in planned if a.kind in ("par_ens", "noise_agg")))
+
+
 def _fingerprint_as_upstream_read_them(
     manifest: Manifest, sources: Sequence[str], upstream: Sequence[str] = ()
 ) -> tuple[list[SourceFingerprint], tuple[str, ...]]:
@@ -1753,15 +1763,8 @@ def ingest_run(
         seconds = time.perf_counter() - start
 
         if artifact.kind in _CONTROL_DEPENDENTS:
-            # config lists the end ensembles without needing them, so a failed
-            # ensemble does not cost the setup facts; it still reuses their hashes.
-            upstream = (
-                tuple(a.name for a in planned if a.kind == "par_ens")
-                if artifact.kind == "config"
-                else artifact.needs
-            )
             sources, unfingerprinted = _fingerprint_as_upstream_read_them(
-                manifest, artifact.sources, upstream
+                manifest, artifact.sources, upstream_artifacts(artifact, planned)
             )
         else:
             sources, unfingerprinted = _fingerprint_sources(artifact.sources)

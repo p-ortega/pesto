@@ -39,6 +39,7 @@ from pesto.ingest.runner import (
     estimate_bytes,
     ingest_run,
     plan_artifacts,
+    upstream_artifacts,
 )
 from pesto.ingest.tables import load_control_tables
 
@@ -711,6 +712,23 @@ def test_plan_artifacts_names_the_source_files_each_artifact_depends_on(tmp_path
     for artifact in planned.values():
         assert len(set(artifact.sources)) == len(artifact.sources), artifact.name
         assert artifact.source_bytes == sum(Path(s).stat().st_size for s in artifact.sources)
+
+
+def test_config_builds_on_the_ensembles_and_noise_band_without_needing_them(tmp_path):
+    from .obs_fixtures import make_obs_run
+
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, with_noise=True)
+    planned = plan_artifacts(discover(run_dir), CacheLayout(root=tmp_path / "cache"))
+    by_name = {a.name: a for a in planned}
+
+    config = by_name["config"]
+    assert config.needs == ()
+    assert set(upstream_artifacts(config, planned)) == {"par_ens/0", "par_ens/1", "noise_agg"}
+    # Every other artifact builds on exactly what it needs.
+    for artifact in planned:
+        if artifact.kind != "config":
+            assert upstream_artifacts(artifact, planned) == artifact.needs, artifact.name
 
 
 def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
