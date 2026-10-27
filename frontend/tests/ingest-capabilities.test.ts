@@ -97,4 +97,16 @@ describe('ingestState observation capabilities', () => {
     expect(none.capabilities.parView).toBeUndefined()
     expect(Object.keys(none.capabilities).sort()).toEqual(['chips', 'map', 'stats'])
   })
+
+  it('maps obs_1to1 to obs1to1, and leaves it absent when the server sends none', async () => {
+    const blocked = [{ artifact: 'obs_1to1', reason: 'no observation ensemble for the first or last iteration' }]
+    stubState({ map: OK, stats: OK, chips: OK, obs_1to1: { available: false, blocked_by: blocked } })
+    const sent = await ingestState()
+    expect(sent.capabilities.obs1to1).toEqual({ available: false, blockedBy: blocked })
+
+    stubState({ map: OK, stats: OK, chips: OK })
+    const none = await ingestState()
+    expect(none.capabilities.obs1to1).toBeUndefined()
+    expect(Object.keys(none.capabilities).sort()).toEqual(['chips', 'map', 'stats'])
+  })
 })
