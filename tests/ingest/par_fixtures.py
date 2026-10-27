@@ -120,6 +120,7 @@ def make_par_view_run(
     zero_sd: bool = False,
     nonpositive_log: bool = False,
     overrides: dict[tuple[int, str], np.ndarray] | None = None,
+    rename_in_last: dict[str, str] | None = None,
     pcs_rows: list[dict] | None = None,
     seed: int = 0,
 ) -> ParViewRun:
@@ -130,7 +131,8 @@ def make_par_view_run(
     iteration but the first; ``reverse_last`` writes the last iteration's
     rows in the opposite order, so a join by position would pair the wrong
     rows. ``shared_names=False`` renames every realization of the last
-    iteration so the two share none. ``near_zero`` gives the first ``none``
+    iteration so the two share none, and ``rename_in_last`` renames only the
+    realizations it names (for example ``{"r1": "R1"}``). ``near_zero`` gives the first ``none``
     parameter a first-iteration mean of 0.005 standard deviations, ``zero_sd``
     makes the second ``none`` parameter constant in the first iteration, and
     ``nonpositive_log`` puts -19.0 into the first log parameter of the first
@@ -193,12 +195,13 @@ def make_par_view_run(
 
     first_names = [f"r{i}" for i in range(n_real)]
     dropped: list[str] = []
-    last_names = list(first_names)
+    last_source = list(first_names)
     if drop_in_last is not None:
         dropped = [first_names[drop_in_last]]
-        last_names = [n for n in first_names if n not in dropped]
+        last_source = [n for n in first_names if n not in dropped]
     if reverse_last:
-        last_names = last_names[::-1]
+        last_source = last_source[::-1]
+    last_names = [(rename_in_last or {}).get(n, n) for n in last_source]
     if not shared_names:
         last_names = [f"other_{n}" for n in last_names]
     ordered = sorted(iterations)
@@ -236,9 +239,9 @@ def make_par_view_run(
     for iteration in ordered:
         later = iteration != ordered[0]
         names = last_names if later else first_names
-        # The last iteration's names may be the originals reversed or renamed;
-        # the values follow the original realization either way.
-        source = [n.removeprefix("other_") for n in names]
+        # The names written may be reordered or renamed; the values follow
+        # the original realization either way.
+        source = last_source if later else first_names
         array = np.vstack([base_values[iteration][s] for s in source])
         real_names[iteration] = list(names)
         values[iteration] = array

@@ -25,6 +25,7 @@ from pesto.ingest.aggregate import (
     PERCENTILES,
     align_to_control,
     at_bounds_fraction,
+    near_bound_counts,
     summarise,
     write_par_agg,
 )
@@ -387,6 +388,96 @@ def test_a_fixed_parameter_sitting_at_a_bound_yields_a_missing_value_and_a_note(
 
     assert np.isnan(fraction[0])
     assert any("fixed or tied" in note for note in notes)
+
+
+# ---------------------------------------------------------------------------
+# near_bound_counts: the one core of the rule above, lower and upper apart
+# ---------------------------------------------------------------------------
+
+
+def test_near_bound_counts_keeps_the_lower_and_upper_counts_apart():
+    lower = np.array([1.0, 1.0])
+    upper = np.array([100.0, 100.0])
+    log_mask = np.array([False, False])
+    values = np.array([[0.5, 99.5], [0.2, 50.0], [99.9, 99.1], [50.0, 50.0]])
+
+    n_lower, n_upper, n_valid, missing, notes = near_bound_counts(values, lower, upper, log_mask)
+
+    assert n_lower.tolist() == [2, 0]
+    assert n_upper.tolist() == [1, 2]
+    assert n_valid.tolist() == [4, 4]
+    assert not missing.any()
+    assert notes == []
+
+
+def test_near_bound_counts_checks_the_upper_bound_first_so_a_value_counts_once():
+    lower = np.array([99.0])
+    upper = np.array([100.0])
+
+    n_lower, n_upper, _n_valid, _missing, _notes = near_bound_counts(
+        np.array([[99.5]]), lower, upper, np.array([False])
+    )
+
+    assert (n_lower[0], n_upper[0]) == (0, 1)
+
+
+def test_near_bound_counts_leaves_a_log_parameter_with_a_non_positive_value_missing_and_names_it():
+    lower = np.array([0.01, 0.01])
+    upper = np.array([1000.0, 1000.0])
+    log_mask = np.array([True, True])
+    values = np.array([[5.0, -19.0], [5.0, 5.0]])
+
+    _l, _u, n_valid, missing, notes = near_bound_counts(
+        values, lower, upper, log_mask, names=["fine", "broken"]
+    )
+
+    assert missing.tolist() == [False, True]
+    assert n_valid.tolist() == [2, 2]
+    assert any("broken" in note and "non-positive" in note for note in notes)
+    assert not any("fine" in note for note in notes)
+
+
+def test_a_log_parameter_with_a_non_positive_value_has_a_missing_at_bounds_fraction():
+    values = np.array([[5.0], [0.0]])
+
+    fraction, notes = at_bounds_fraction(
+        values, np.array([0.01]), np.array([1000.0]), np.array([True]), names=["p"]
+    )
+
+    assert np.isnan(fraction[0])
+    assert any("p" in note for note in notes)
+
+
+def test_near_bound_counts_marks_missing_what_has_no_valid_value_or_cannot_be_adjusted():
+    lower = np.array([0.0, 0.0, 0.0])
+    upper = np.array([10.0, 10.0, 10.0])
+    values = np.array([[np.nan, 9.99, 9.99], [np.nan, 5.0, 9.99]])
+
+    n_lower, n_upper, n_valid, missing, _notes = near_bound_counts(
+        values,
+        lower,
+        upper,
+        np.array([False, False, False]),
+        adjustable_mask=np.array([True, True, False]),
+    )
+
+    assert missing.tolist() == [True, False, True]
+    assert n_valid.tolist() == [0, 2, 2]
+    assert (n_lower[1], n_upper[1]) == (0, 1)
+
+
+def test_the_fraction_at_bounds_fraction_gives_is_the_counts_over_the_valid_realizations():
+    rng = np.random.default_rng(3)
+    values = rng.uniform(0.0, 10.0, size=(40, 6))
+    lower = np.zeros(6)
+    upper = np.full(6, 10.0)
+    log_mask = np.zeros(6, dtype=bool)
+
+    n_lower, n_upper, n_valid, missing, _notes = near_bound_counts(values, lower, upper, log_mask)
+    fraction, _ = at_bounds_fraction(values, lower, upper, log_mask)
+
+    assert not missing.any()
+    assert fraction == pytest.approx((n_lower + n_upper) / n_valid)
 
 
 # ---------------------------------------------------------------------------
