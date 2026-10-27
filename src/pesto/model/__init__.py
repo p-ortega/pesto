@@ -152,7 +152,11 @@ class ObsCells:
     so a caller never infers identity from position. ``groups`` has one
     :class:`GroupResolution` per observation group, always.
     ``point_xy`` is ``(n, 2)`` float64, the real-world x/y of each site the
-    ``xyz-host-cell`` rule placed, ``NaN`` elsewhere.
+    ``xyz-host-cell`` rule placed, ``NaN`` elsewhere. ``site_rule`` and
+    ``site_note`` are parallel to ``site``: the rule that placed each site
+    (``unmapped`` when none did) and one plain sentence for a site that is
+    unplaced or has no layer, empty otherwise. ``None`` means the adapter did
+    not give them, and the group's rule stands for every site.
     """
 
     cell: np.ndarray
@@ -162,6 +166,8 @@ class ObsCells:
     summary: str
     notes: tuple[str, ...]
     point_xy: np.ndarray | None = None
+    site_rule: tuple[str, ...] | None = None
+    site_note: tuple[str, ...] | None = None
 
     @property
     def placed_sites(self) -> int:

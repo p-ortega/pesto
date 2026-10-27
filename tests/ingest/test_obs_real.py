@@ -14,6 +14,7 @@ artifacts behind it are ok.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -149,3 +150,213 @@ def test_a_run_with_no_observation_ensemble_file_says_so_and_a_pdc_file_is_still
         assert path.is_file()
         sidecar = json.loads(layout.pdc_meta(key).read_text())
         assert sidecar["source"] == "file", f"{name} has a pestpp pdc file but says {sidecar['source']!r}"
+
+
+# ---------------------------------------------------------------------------
+# where each site sits: reasons, the model's own input, and the placement gate
+# ---------------------------------------------------------------------------
+
+LIST_PACKAGE_TAGS = ("CHD", "DRN", "GHB", "RIV", "WEL", "RCH", "EVT", "CNC", "SRC")
+MODEL_OBSERVATION_TYPES = ("HEAD", "DRAWDOWN", "CONCENTRATION")
+
+
+def _obs_cell_plan(run_dir: Path, cache_root: Path, manifest: Manifest):
+    """The layout and the planned obs_cell artifact. Skips when none was
+    planned; fails with the manifest's reason when it was planned and is not ok,
+    because a failed obs_cell places nothing."""
+    layout = CacheLayout(root=cache_root)
+    planned = [pa for pa in plan_artifacts(discover(run_dir), layout) if pa.kind == "obs_cell"]
+    if not planned:
+        pytest.skip("obs_cell was not planned for this run")
+    artifact = manifest.artifacts.get(planned[0].name)
+    if artifact is None or artifact.state != "ok":
+        reason = None if artifact is None else artifact.reason
+        pytest.fail(f"{planned[0].name} was planned but is not ok: {reason}")
+    return layout, planned[0], artifact
+
+
+def _loaded_obs_cell(layout: CacheLayout):
+    from pesto.ingest.obscell import ObsCellTable, load_obs_cell
+
+    table = load_obs_cell(layout)
+    assert isinstance(table, ObsCellTable), getattr(table, "reason", table)
+    return table
+
+
+def _grid_file_name(plan) -> str:
+    grids = [Path(s).name for s in plan.sources if s.endswith(".grb")]
+    assert grids, f"{plan.name} records no .grb among its sources: {plan.sources}"
+    return grids[0]
+
+
+@pytest.mark.parametrize("run_fixture", RUN_FIXTURES)
+def test_every_unplaced_site_says_why_and_every_site_from_the_model_input_sits_in_the_grid(
+    ingested, run_fixture: str
+):
+    from pesto.model import GridShape
+    from pesto.model.mf6 import Mf6Adapter
+
+    run_dir, cache_root, manifest, _before = ingested
+    layout, plan, _artifact = _obs_cell_plan(run_dir, cache_root, manifest)
+    table = _loaded_obs_cell(layout)
+    assert table.note is not None, "obs_cell has no per-site notes"
+
+    for i, cell in enumerate(table.cell):
+        if cell == -1:
+            assert table.note[i], f"unplaced site {table.site[i]!r} has no note"
+
+    shape = Mf6Adapter(run_dir / _grid_file_name(plan)).grid_shape()
+    assert isinstance(shape, GridShape), shape
+    for i, rule in enumerate(table.rule):
+        if rule != "mf6-obs":
+            continue
+        assert 0 <= table.cell[i] < shape.ncpl, f"{table.site[i]!r} has cell {table.cell[i]} outside the grid"
+        if table.layer[i] == -1:
+            assert "spans layers" in table.note[i] or "layer unknown" in table.note[i], (
+                f"{table.site[i]!r} has no layer and its note does not say why: {table.note[i]!r}"
+            )
+        else:
+            assert 0 <= table.layer[i] < shape.nlay, f"{table.site[i]!r} has layer {table.layer[i]} outside the grid"
+
+
+@pytest.mark.parametrize("run_fixture", RUN_FIXTURES)
+def test_a_run_with_a_simulation_file_lists_it_among_obs_cell_sources(ingested, run_fixture: str):
+    run_dir, cache_root, manifest, _before = ingested
+    _layout, plan, artifact = _obs_cell_plan(run_dir, cache_root, manifest)
+
+    if not (run_dir / "mfsim.nam").is_file():
+        pytest.skip("this run has no mfsim.nam")
+
+    recorded = {Path(s.path).name for s in artifact.sources}
+    assert "mfsim.nam" in recorded, f"{plan.name} records no mfsim.nam among its sources"
+
+
+@pytest.mark.parametrize("run_fixture", RUN_FIXTURES)
+def test_listing_the_model_observation_files_takes_under_a_second(ingested, run_fixture: str):
+    import time
+
+    from pesto.model.mf6 import observation_input_files
+
+    run_dir, _cache_root, _manifest, _before = ingested
+
+    started = time.perf_counter()
+    observation_input_files(run_dir)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0, f"listing the observation input files took {elapsed:.2f} s"
+
+
+def _usecol_token(site: str) -> str:
+    """The text after the last ``usecol:`` up to the next ``_word:`` or the end, case-folded."""
+    _head, found, rest = site.rpartition("usecol:")
+    if not found:
+        return ""
+    return re.split(r"_[A-Za-z][A-Za-z0-9]*:", rest, maxsplit=1)[0].strip().casefold()
+
+
+def _block_first_tokens(path: Path) -> set[str]:
+    """A crude scan of an OBS6 file: the first word of each line inside a
+    continuous or single block, lower-cased, quotes stripped, no OPEN/CLOSE followed."""
+    found: set[str] = set()
+    inside = False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return found
+    for line in lines:
+        words = line.split()
+        if not words:
+            continue
+        head = words[0].lower()
+        if head == "begin" and len(words) > 1 and words[1].lower() in ("continuous", "single"):
+            inside = True
+        elif head == "end":
+            inside = False
+        elif inside:
+            found.add(words[0].strip("'\"").lower())
+    return found
+
+
+def _show(candidates, table, at: dict[str, int]) -> str:
+    return "; ".join(f"{name!r}: {table.note[at[name]]!r}" for name in candidates[:3])
+
+
+@pytest.mark.parametrize("run_fixture", RUN_FIXTURES)
+def test_sites_named_in_the_model_observation_input_are_placed(ingested, run_fixture: str):
+    from pesto.ingest.failures import ReadFailure
+    from pesto.ingest.obsindex import load_obs_index
+    from pesto.model._mf6obs import observation_input_files, read_observation_input
+
+    run_dir, cache_root, manifest, _before = ingested
+    layout, plan, _artifact = _obs_cell_plan(run_dir, cache_root, manifest)
+    table = _loaded_obs_cell(layout)
+    assert table.note is not None, "obs_cell has no per-site notes"
+    index = load_obs_index(layout)
+    assert not isinstance(index, ReadFailure), index
+
+    at = {name: i for i, name in enumerate(table.site)}
+    if "id" in index.sites.columns:
+        raw_ids = dict(zip(index.sites["site"].astype(str), index.sites["id"]))
+    else:
+        raw_ids = {}
+    ids = {name: ("" if value is None or value != value else str(value).strip()) for name, value in raw_ids.items()}
+
+    is_open = [table.cell[i] == -1 or table.rule[i] == "mf6-obs" for i in range(len(table.site))]
+    open_sites = [name for i, name in enumerate(table.site) if is_open[i]]
+
+    observations = read_observation_input(run_dir, _grid_file_name(plan))
+    model_names = {
+        entry.name.casefold()
+        for entries in observations.entries.values()
+        for entry in entries
+        if not entry.package and entry.type in MODEL_OBSERVATION_TYPES
+    }
+    package_names = {
+        entry.name.casefold()
+        for entries in observations.entries.values()
+        for entry in entries
+        if entry.package in LIST_PACKAGE_TAGS
+    }
+
+    id_candidates = [name for name in open_sites if ids.get(name) and ids[name].casefold() in model_names]
+    usecol_candidates = [
+        name
+        for name in open_sites
+        if not ids.get(name) and _usecol_token(name) and _usecol_token(name) in package_names
+    ]
+    from_input = {name for name in table.site if table.rule[at[name]] == "mf6-obs"}
+    usecol_placed = [name for name in usecol_candidates if name in from_input]
+
+    print(
+        f"placement {run_fixture}: {int((table.cell >= 0).sum())} of {len(table.site)} sites placed, "
+        f"{len(from_input)} with rule mf6-obs, {len(id_candidates)} id candidates, "
+        f"{len(usecol_candidates)} usecol candidates of which {len(usecol_placed)} placed"
+    )
+
+    notes = " | ".join(table.notes)[:1500]
+    if id_candidates:
+        assert from_input, (
+            f"{len(id_candidates)} open site(s) have an id that a model-level observation names, and none "
+            f"was placed from the model's observation input; e.g. {_show(id_candidates, table, at)}; "
+            f"obs_cell notes: {notes}"
+        )
+    if usecol_candidates:
+        assert usecol_placed, (
+            f"{len(usecol_candidates)} open site(s) with no id have a usecol value that a list-package "
+            f"observation names, and none was placed; e.g. {_show(usecol_candidates, table, at)}; "
+            f"obs_cell notes: {notes}"
+        )
+
+    keys = {ids[name].casefold() for name in open_sites if ids.get(name)}
+    keys |= {_usecol_token(name) for name in open_sites if _usecol_token(name)}
+    read_from = {entry.file for entries in observations.entries.values() for entry in entries}
+    for path in observation_input_files(run_dir):
+        if path.name in read_from:
+            continue
+        tokens = _block_first_tokens(path)
+        if not tokens & keys:
+            continue
+        assert any(path.name in note for note in observations.notes), (
+            f"{path.name} has observation rows named like open sites, but the reader returned no entry "
+            "from it and no note names it"
+        )
