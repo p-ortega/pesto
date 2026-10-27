@@ -8,7 +8,6 @@ observation name. The later tests pin each way a read can fail.
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import threading
 from pathlib import Path
@@ -27,7 +26,7 @@ from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.obsens import load_obs_ensemble, write_obs_ensemble
-from pesto.ingest.obsindex import load_obs_index, write_obs_index
+from pesto.ingest.obsindex import _content_digest, load_obs_index, write_obs_index
 from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.runner import ingest_run, plan_artifacts
 from pesto.ingest.tables import load_control_table
@@ -356,7 +355,9 @@ def test_a_load_against_a_rebuilt_obs_index_with_a_different_order_is_refused(
     other = dataclasses.replace(
         index,
         order=reversed_order,
-        order_digest=hashlib.sha256(reversed_order.astype("<i4").tobytes()).hexdigest(),
+        order_digest=_content_digest(
+            reversed_order, index.time, index.value, index.flags, index.sites
+        ),
     )
     written = write_obs_index(other, layout)
     assert not isinstance(written, ReadFailure), written
