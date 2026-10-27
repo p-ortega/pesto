@@ -33,7 +33,7 @@ import pandas as pd
 
 from pesto.cache.layout import CACHE_VERSION, CacheLayout, for_run
 from pesto.cache.manifest import Manifest, SourceFingerprint
-from pesto.cache.runconfig import NoiseFact, RunConfig, write_config
+from pesto.cache.runconfig import FACTS_VERSION, NoiseFact, RunConfig, make_fact, write_config
 from pesto.ingest.aggregate import write_par_agg
 from pesto.ingest.control import ControlTables
 from pesto.ingest.discover import discover
@@ -237,6 +237,12 @@ def _build_config(run_dir: Path) -> RunConfig:
         projection_known=False,
         noise=noise,
         notes=(),
+        # The synthetic run has no run record, so its one fact says so.
+        facts=(
+            make_fact("pestpp_version", "pestpp version", [], ("a 'version:' line in case.rec",)),
+        ),
+        facts_version=FACTS_VERSION,
+        par_iterations=ITERATIONS,
     )
 
 

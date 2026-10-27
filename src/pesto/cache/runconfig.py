@@ -22,12 +22,14 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.recfile import RecFacts, read_rec
+from pesto.ingest.runopts import ControlOptions, OPTION_ALIASES, scan_options
 
 if TYPE_CHECKING:
     from pesto.ingest.control import ControlTables
@@ -39,6 +41,170 @@ if TYPE_CHECKING:
     # attribute access on an object the caller already read, and importing
     # pesto.model from pesto.cache would add a real dependency this module
     # does not need to carry.
+
+# Bump when the shape or meaning of the facts changes: an older config.json is
+# then treated as stale and rewritten once.
+FACTS_VERSION = 1
+SOURCE_ORDER = ("run record", "control file", "files present", "cache")
+FACT_ORDER = (
+    "pestpp_version",
+    "noptmax",
+    "ensemble_size",
+    "noise",
+    "noise_band",
+    "regularization",
+    "localization",
+    "reinflation",
+    "base",
+)
+
+
+@dataclass(frozen=True)
+class Reading:
+    """What one source says about one fact.
+
+    ``value`` is the comparable form (a number, a bool or short text) and is
+    ``None`` for a reading that only supports the fact. ``shown`` is the text
+    for the screen and ``evidence`` says where it came from.
+    """
+
+    source: str
+    value: str | int | float | bool | None
+    shown: str
+    evidence: str
+    extra: Mapping[str, str | int | float | bool] | None = None
+
+
+@dataclass(frozen=True)
+class Fact:
+    """One thing about how the run was set up, with every source's reading.
+
+    ``agree`` is ``True`` when two or more sources give the same value,
+    ``False`` when any two differ, and ``None`` when there is nothing to
+    compare. ``looked_for`` lists each place pesto looked, found or not.
+    """
+
+    key: str
+    label: str
+    readings: tuple[Reading, ...]
+    agree: bool | None
+    looked_for: tuple[str, ...]
+    note: str | None
+
+
+def _comparable(value: object) -> tuple[str, object]:
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, (int, float)):
+        return ("number", float(value))
+    return ("text", str(value).strip())
+
+
+def make_fact(
+    key: str,
+    label: str,
+    readings: Sequence[Reading],
+    looked_for: Sequence[str],
+    note: str | None = None,
+) -> Fact:
+    """The one place a fact's ``agree`` is set. Readings are put in
+    ``SOURCE_ORDER`` (stable inside one source); numbers compare as numbers.
+
+    Two readings from one source never count as agreement, because that is
+    one source repeating itself.
+    """
+    rank = {name: position for position, name in enumerate(SOURCE_ORDER)}
+    for reading in readings:
+        if reading.source not in rank:
+            raise ValueError(f"unknown reading source {reading.source!r} for fact {key!r}")
+    ordered = tuple(sorted(readings, key=lambda r: rank[r.source]))
+    valued = [r for r in ordered if r.value is not None]
+    agree: bool | None
+    if len(valued) < 2:
+        agree = None
+    elif len({_comparable(r.value) for r in valued}) > 1:
+        agree = False
+    elif len({r.source for r in valued}) < 2:
+        agree = None
+    else:
+        agree = True
+    if not ordered and note is None:
+        note = "not found"
+    return Fact(
+        key=key,
+        label=label,
+        readings=ordered,
+        agree=agree,
+        looked_for=tuple(looked_for),
+        note=note,
+    )
+
+
+def _reading_to_json(reading: Reading) -> dict:
+    return {
+        "source": reading.source,
+        "value": reading.value,
+        "shown": reading.shown,
+        "evidence": reading.evidence,
+        "extra": dict(reading.extra) if reading.extra is not None else None,
+    }
+
+
+def fact_to_json(fact: Fact) -> dict:
+    return {
+        "key": fact.key,
+        "label": fact.label,
+        "readings": [_reading_to_json(r) for r in fact.readings],
+        "agree": fact.agree,
+        "looked_for": list(fact.looked_for),
+        "note": fact.note,
+    }
+
+
+def _scalar(value: object) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _reading_from_json(data: object) -> Reading:
+    if not isinstance(data, dict):
+        raise ValueError("a reading is not an object")
+    source, shown, evidence = data.get("source"), data.get("shown"), data.get("evidence")
+    if source not in SOURCE_ORDER or not isinstance(shown, str) or not isinstance(evidence, str):
+        raise ValueError("a reading lacks its source, shown text or evidence")
+    value, extra = data.get("value"), data.get("extra")
+    if not _scalar(value):
+        raise ValueError("a reading's value is not a plain value")
+    if extra is not None and not (
+        isinstance(extra, dict) and all(isinstance(k, str) and _scalar(v) for k, v in extra.items())
+    ):
+        raise ValueError("a reading's extra is not a flat object")
+    return Reading(source, value, shown, evidence, extra)
+
+
+def fact_from_json(data: object) -> Fact:
+    """A stored fact back as it was written, ``agree`` included; a malformed
+    one raises ``ValueError`` so the caller can refuse the whole list."""
+    if not isinstance(data, dict):
+        raise ValueError("a fact is not an object")
+    key, label, readings = data.get("key"), data.get("label"), data.get("readings")
+    agree, looked_for, note = data.get("agree"), data.get("looked_for"), data.get("note")
+    if not (isinstance(key, str) and isinstance(label, str) and isinstance(readings, list)):
+        raise ValueError("a fact lacks its key, label or readings")
+    if agree is not None and not isinstance(agree, bool):
+        raise ValueError("a fact's agree is not true, false or null")
+    if not isinstance(looked_for, list) or not all(isinstance(x, str) for x in looked_for):
+        raise ValueError("a fact's looked_for is not a list of text")
+    if note is not None and not isinstance(note, str):
+        raise ValueError("a fact's note is not text")
+    return Fact(
+        key=key,
+        label=label,
+        readings=tuple(_reading_from_json(r) for r in readings),
+        agree=agree,
+        looked_for=tuple(looked_for),
+        note=note,
+    )
+
 
 # The legacy "++option(value)" dialect, alongside the plain
 # "option    value" keyword form _scan_ies_no_noise also recognises --
@@ -212,6 +378,110 @@ class RunConfig:
     projection_known: bool
     noise: NoiseFact
     notes: tuple[str, ...]
+    # ``facts_version`` is ``None`` for a config written before facts existed.
+    facts: tuple[Fact, ...] = ()
+    facts_version: int | None = None
+    par_iterations: tuple[int, ...] = ()
+
+
+def _parse_number(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _rec_option(rec: RecFacts | None, name: str):
+    """The run record's dump entry for ``name`` under any spelling pestpp
+    accepts, as ``(printed key, option)``, or ``None``."""
+    if rec is None:
+        return None
+    for spelling in OPTION_ALIASES.get(name, (name,)):
+        found = rec.options.get(spelling)
+        if found is not None:
+            return spelling, found
+    return None
+
+
+def _control_where(options: ControlOptions | None, reading) -> str:
+    return f"{options.path_name} line {reading.line}: {reading.raw_key} {reading.value}"
+
+
+def _version_fact(rec: RecFacts | None, rec_name: str) -> Fact:
+    readings = []
+    if rec is not None and rec.version is not None:
+        readings.append(
+            Reading("run record", str(rec.version.value), str(rec.version.value),
+                    f"{rec.name} line {rec.version.line}: {rec.version.text}")
+        )
+    return make_fact(
+        "pestpp_version",
+        "pestpp version",
+        readings,
+        (f"a 'version:' line in {rec_name}",),
+    )
+
+
+def _reg_shown(value: float) -> str:
+    if value == 0:
+        return "off (reg_factor 0)"
+    if value < 0:
+        return f"on, full solution (reg_factor {value:g})"
+    return f"on (reg_factor {value:g})"
+
+
+def _regularization_fact(rec: RecFacts | None, options: ControlOptions | None, rec_name: str, pst_name: str) -> Fact:
+    readings = []
+    dump = _rec_option(rec, "ies_reg_factor")
+    if dump is not None:
+        key, option = dump
+        value = _parse_number(option.value)
+        readings.append(
+            Reading(
+                "run record",
+                value,
+                _reg_shown(value) if value is not None else f"{key} {option.value!r}, not a number",
+                f"{rec.name} options dump, line {option.line}: {key}: {option.value}",
+            )
+        )
+    if rec is not None and rec.reg_factor is not None:
+        line = rec.reg_factor
+        readings.append(
+            Reading("run record", float(line.value), _reg_shown(float(line.value)),
+                    f"{rec.name} line {line.line}: {line.text}")
+        )
+    reading = options.get("ies_reg_factor") if options is not None else None
+    if reading is not None:
+        value = _parse_number(reading.value)
+        readings.append(
+            Reading(
+                "control file",
+                value,
+                _reg_shown(value) if value is not None else f"{reading.raw_key} {reading.value!r}, not a number",
+                _control_where(options, reading),
+            )
+        )
+    return make_fact(
+        "regularization",
+        "Regularization",
+        readings,
+        (
+            f"the reg_factor line in {rec_name}",
+            f"ies_reg_factor in the options dump of {rec_name}",
+            f"ies_reg_factor or ies_reg_fac in {pst_name}",
+        ),
+    )
+
+
+def _resolve_rec(run: "RunLayout", rec: RecFacts | ReadFailure | None) -> RecFacts | ReadFailure | None:
+    """The record the caller gave, else the one in the run directory."""
+    if rec is None and run.rec is not None:
+        return read_rec(run.rec)
+    return rec
+
+
+def _resolve_options(run: "RunLayout", options: ControlOptions | ReadFailure | None) -> ControlOptions | ReadFailure:
+    return options if options is not None else scan_options(run.pst_path)
 
 
 def build_config(
@@ -219,6 +489,10 @@ def build_config(
     tables: "ControlTables",
     first: "EnsembleData | None",
     adapter: "SpatialAdapter | None",
+    *,
+    rec: RecFacts | ReadFailure | None = None,
+    options: ControlOptions | ReadFailure | None = None,
+    par_iterations: Sequence[int] = (),
 ) -> RunConfig:
     """Assemble one run's facts from what earlier phases already read.
 
@@ -231,8 +505,25 @@ def build_config(
     ``run``. The projection comes from ``adapter.crs()`` when an adapter
     exists; a ``ReadFailure`` or a missing adapter leaves ``projection``
     unknown rather than guessing at "there is none".
+
+    ``rec`` and ``options`` are the run record and the control-file options
+    when the caller already read them; otherwise they are read here. Every
+    fact keeps each source's reading side by side, and a source that could
+    not be read is named in ``notes``.
     """
     notes: list[str] = list(run.notes) + list(tables.notes)
+    rec = _resolve_rec(run, rec)
+    options = _resolve_options(run, options)
+    for source in (rec, options):
+        if isinstance(source, ReadFailure):
+            notes.append(source.reason)
+    rec_ok = rec if isinstance(rec, RecFacts) else None
+    options_ok = options if isinstance(options, ControlOptions) else None
+    if rec_ok is not None:
+        notes.extend(rec_ok.notes)
+    if options_ok is not None:
+        notes.extend(options_ok.notes)
+    rec_name = run.rec.name if run.rec is not None else f"{run.case}.rec"
 
     n_par = len(tables.par)
 
@@ -267,6 +558,11 @@ def build_config(
 
     noise = describe_noise(run, tables)
 
+    facts = (
+        _version_fact(rec_ok, rec_name),
+        _regularization_fact(rec_ok, options_ok, rec_name, run.pst_path.name),
+    )
+
     return RunConfig(
         cache_version=CACHE_VERSION,
         run_dir=str(run.run_dir),
@@ -282,6 +578,9 @@ def build_config(
         projection_known=projection_known,
         noise=noise,
         notes=tuple(notes),
+        facts=facts,
+        facts_version=FACTS_VERSION,
+        par_iterations=tuple(par_iterations),
     )
 
 
@@ -318,6 +617,9 @@ def write_config(config: RunConfig, layout: CacheLayout) -> WrittenArtifact | Re
                 "notes": list(config.noise.notes),
             },
             "notes": list(config.notes),
+            "facts_version": FACTS_VERSION,
+            "facts": [fact_to_json(f) for f in config.facts],
+            "par_iterations": list(config.par_iterations),
         }
         written = write_atomic_text(target, json.dumps(payload, indent=2))
         cache_file = CacheFile(path=str(target.relative_to(layout.root)), bytes=written)
@@ -380,6 +682,35 @@ def _empty_config() -> RunConfig:
     )
 
 
+def _load_facts(data: dict) -> tuple[tuple[Fact, ...], int | None]:
+    """The stored facts and their version. A config with no version, or with
+    facts that are not shaped right, gives no facts and no version, so it
+    reads as an old one rather than as a half-trusted one."""
+    version = data.get("facts_version")
+    if type(version) is not int:
+        return (), None
+    stored = data.get("facts")
+    if not isinstance(stored, list):
+        return (), None
+    try:
+        return tuple(fact_from_json(item) for item in stored), version
+    except ValueError:
+        return (), None
+
+
+def config_outdated(layout: CacheLayout) -> bool:
+    """Whether ``config.json`` needs writing again: it is missing, unreadable,
+    or carries no facts of the current version. Reads only the one file."""
+    try:
+        data = json.loads(layout.config.read_text())
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    version = data.get("facts_version")
+    return type(version) is not int or version != FACTS_VERSION
+
+
 def load_config(layout: CacheLayout) -> RunConfig:
     """Read ``layout.config`` back, following ``Manifest.load``'s shape
     exactly.
@@ -423,6 +754,8 @@ def load_config(layout: CacheLayout) -> RunConfig:
             notes=_tuple_of_str(noise_data.get("notes")),
         )
 
+        facts, facts_version = _load_facts(data)
+        par_iterations = data.get("par_iterations")
         return RunConfig(
             cache_version=CACHE_VERSION,
             run_dir=run_dir,
@@ -438,6 +771,13 @@ def load_config(layout: CacheLayout) -> RunConfig:
             projection_known=bool(data.get("projection_known", False)),
             noise=noise,
             notes=_tuple_of_str(data.get("notes")),
+            facts=facts,
+            facts_version=facts_version,
+            par_iterations=tuple(
+                v for v in par_iterations if isinstance(v, int) and not isinstance(v, bool)
+            )
+            if isinstance(par_iterations, list)
+            else (),
         )
     except (KeyError, TypeError, ValueError, AttributeError):
         return _empty_config()
