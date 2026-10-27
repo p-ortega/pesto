@@ -2,7 +2,9 @@
 
 ``grid/obs_cell.parquet`` holds one row per site of ``obs_index``, in that
 index's site order, named by the site name taken from the index. A site with
-a cell but no known layer is stored with layer ``-1``, never ``0``.
+a cell but no known layer is stored with layer ``-1``, never ``0``. Each row
+carries the rule that placed that site and a ``note`` saying why it is
+unplaced or has no layer.
 ``grid/obs_cell.json`` keeps every group's rule and counts, the summary, the
 layer-unknown count and every note the resolver left, plus the order digest of
 the ``obs_index`` the cells were placed for. The file lives apart from the
@@ -31,6 +33,7 @@ from pesto.ingest.tables import _write_parquet_atomic
 
 _UNMAPPED = "unmapped"
 _COLUMNS = ("site_id", "site", "group", "cell", "layer", "x", "y", "rule")
+_NOTE_COLUMN = "note"
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class ObsCellTable:
     placed_sites: int
     layer_unknown: int
     order_digest: str
+    note: tuple[str, ...] | None = None
 
 
 def _failure(path: Path | str, reason: str) -> ReadFailure:
@@ -105,6 +109,13 @@ def write_obs_cell(
         groups = [None if pd.isna(v) else str(v) for v in sites["group"]]
         rule_of = {g.group: g.rule for g in cells.groups}
         rules = [rule_of.get(g, _UNMAPPED) if g is not None else _UNMAPPED for g in groups]
+        if cells.site_rule is not None:
+            if len(cells.site_rule) != n:
+                return _failure(layout.grid, f"refusing to write obs_cell: {len(cells.site_rule)} site rules for {n} sites")
+            rules = [str(r) for r in cells.site_rule]
+        if cells.site_note is not None and len(cells.site_note) != n:
+            return _failure(layout.grid, f"refusing to write obs_cell: {len(cells.site_note)} site notes for {n} sites")
+        site_notes = [""] * n if cells.site_note is None else [str(t) for t in cells.site_note]
 
         x, y = _own_xy(sites)
         if cells.point_xy is not None:
@@ -128,6 +139,7 @@ def write_obs_cell(
                 "x": x,
                 "y": y,
                 "rule": pd.Series(rules, dtype="object"),
+                _NOTE_COLUMN: pd.Series(site_notes, dtype="object"),
             }
         )
 
@@ -239,6 +251,16 @@ def load_obs_cell(layout: CacheLayout) -> ObsCellTable | ReadFailure:
             f"{len(wrong)} position(s) differ; ingest again",
         )
 
+    notes_column = None
+    if _NOTE_COLUMN in frame.columns:
+        notes_column = tuple("" if pd.isna(v) else str(v) for v in frame[_NOTE_COLUMN])
+    else:
+        notes = (
+            *notes,
+            f"{parquet_path.name} predates per-site notes, so no site says why it is unplaced; "
+            "ingest again to get them",
+        )
+
     return ObsCellTable(
         site_id=frame["site_id"].to_numpy(dtype=np.int64),
         site=tuple(str(v) for v in frame["site"]),
@@ -254,4 +276,5 @@ def load_obs_cell(layout: CacheLayout) -> ObsCellTable | ReadFailure:
         placed_sites=placed_sites,
         layer_unknown=layer_unknown,
         order_digest=digest,
+        note=notes_column,
     )
