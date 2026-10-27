@@ -371,10 +371,11 @@ describe('the map shell with tabs', () => {
     expect(store.get()).toBe(before)
   })
 
-  it('says what will appear in the Obs tab and why the Config tab has nothing', async () => {
+  it('mounts the Obs panel in the Obs tab and says why the Config tab has nothing', async () => {
     const { root } = await openShell()
 
-    expect(root.querySelector('#panel-obs')?.textContent).toContain('Observations will show here')
+    expect(root.querySelector('#panel-obs .obs-groups')).not.toBeNull()
+    expect(root.querySelector('#panel-obs')?.textContent).not.toContain('Observations will show here')
     expect(root.querySelector('#panel-config')?.textContent).toContain('configuration could not be read')
     // Reachable by clicking, with the note shown and the table panel only hidden.
     tabEl(root, 'config').click()
@@ -387,7 +388,7 @@ describe('the map shell with tabs', () => {
     const { root } = await openShell()
 
     expectNoRunTogetherText(root.querySelector('.tabs-bar')!, 'map shell tab bar')
-    expectNoRunTogetherText(root.querySelector('#panel-obs')!, 'map shell Obs note')
+    expectNoRunTogetherText(root.querySelector('#panel-obs')!, 'map shell Obs panel')
   })
 
   it('hides a Params panel that is rendered again while another tab is open', async () => {

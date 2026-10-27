@@ -1,6 +1,6 @@
 // Source scan: views talk to each other only through the shared store and
-// the shell. No view imports another view, and the Params panel is mounted
-// by the shell alone. views/map.ts is the shell, so it may import them all.
+// the shell. No view imports another view, and the Params and Obs panels are
+// mounted by the shell alone. views/map.ts is the shell, so it may import them all.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, posix } from 'node:path'
@@ -12,8 +12,9 @@ const srcRoot = join(testDir, '..', 'src')
 
 const SHELL = 'views/map.ts'
 // Data halves load and classify but draw nothing, so a view may use one.
-const DATA_MODULES = new Set(['views/parameter-field-source'])
+const DATA_MODULES = new Set(['views/parameter-field-source', 'views/observation-stat-source'])
 const PARAMS_PANEL = 'ui/params-panel'
+const OBS_PANEL = 'ui/obs-panel'
 
 // Every `from '...'` on an import or export line, one specifier per hit.
 function specifiersOf(source: string): string[] {
@@ -37,8 +38,8 @@ export function findViolations(files: Record<string, string>): string[] {
   const problems: string[] = []
   for (const [file, source] of Object.entries(files)) {
     const inViews = file.startsWith('views/')
-    const isParamsPanel = file === `${PARAMS_PANEL}.ts`
-    if (file === SHELL || (!inViews && !isParamsPanel)) continue
+    const isPanel = file === `${PARAMS_PANEL}.ts` || file === `${OBS_PANEL}.ts`
+    if (file === SHELL || (!inViews && !isPanel)) continue
     const self = file.replace(/\.ts$/, '')
     for (const specifier of specifiersOf(source)) {
       const target = resolveTarget(file, specifier)
@@ -47,7 +48,7 @@ export function findViolations(files: Record<string, string>): string[] {
         const allowed = inViews && DATA_MODULES.has(target) && !DATA_MODULES.has(self)
         if (!allowed) problems.push(`${file} imports ${target}`)
       }
-      if (inViews && target === PARAMS_PANEL) problems.push(`${file} imports ${target}`)
+      if (inViews && (target === PARAMS_PANEL || target === OBS_PANEL)) problems.push(`${file} imports ${target}`)
     }
   }
   return problems
@@ -76,10 +77,10 @@ describe('no view imports another view', () => {
     expect(findViolations(readSources())).toEqual([])
   })
 
-  it('the scan sees the three modules the plan names', () => {
+  it('the scan sees the modules the plan names', () => {
     const files = readSources()
     expect(Object.keys(files)).toEqual(
-      expect.arrayContaining(['views/map-view.ts', 'views/parameter-field-source.ts', 'ui/params-panel.ts']),
+      expect.arrayContaining(['views/map-view.ts', 'views/parameter-field-source.ts', 'ui/params-panel.ts', 'ui/obs-panel.ts']),
     )
   })
 
@@ -88,6 +89,23 @@ describe('no view imports another view', () => {
       'views/map-view.ts': "import { renderParamsPanel } from '../ui/params-panel'\n",
     }
     expect(findViolations(fixture)).toEqual(['views/map-view.ts imports ui/params-panel'])
+  })
+
+  it('fails when a view imports the Obs panel', () => {
+    const fixture = {
+      'views/map-view.ts': "import { renderObsPanel } from '../ui/obs-panel'\n",
+    }
+    expect(findViolations(fixture)).toEqual(['views/map-view.ts imports ui/obs-panel'])
+  })
+
+  it('fails when the Obs panel imports anything under views/', () => {
+    const fixture = { 'ui/obs-panel.ts': "import { x } from '../views/map-view'\n" }
+    expect(findViolations(fixture)).toEqual(['ui/obs-panel.ts imports views/map-view'])
+  })
+
+  it('lets a view import the observation stat source, which is a data module', () => {
+    const fixture = { 'views/map-view.ts': "import { createObservationStatSource } from './observation-stat-source'\n" }
+    expect(findViolations(fixture)).toEqual([])
   })
 
   it('fails when one view imports another, and when a type import does it', () => {
@@ -119,7 +137,7 @@ describe('no view imports another view', () => {
   it('lets the shell import every one of them', () => {
     const fixture = {
       'views/map.ts':
-        "import { mountMapView } from './map-view'\nimport { renderParamsPanel } from '../ui/params-panel'\n",
+        "import { mountMapView } from './map-view'\nimport { renderParamsPanel } from '../ui/params-panel'\nimport { renderObsPanel } from '../ui/obs-panel'\n",
     }
     expect(findViolations(fixture)).toEqual([])
   })

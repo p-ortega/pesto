@@ -11,8 +11,8 @@ import { fetchParGroups, shareGroupsRead } from '../data/par'
 import { emptySelection } from '../state/rules'
 import { createSelectionStore, type SelectionStore } from '../state/selection'
 import { renderDivider } from '../ui/divider'
-import { renderNotice } from '../ui/chrome'
 import { renderConfigPanel, type ConfigPanelHandle } from '../ui/config-panel'
+import { renderObsPanel, type ObsPanelHandle } from '../ui/obs-panel'
 import { renderParamsPanel, type ParamsPanelHandle } from '../ui/params-panel'
 import { renderTabs } from '../ui/tabs'
 import { mountMapView, openingIteration, type MapViewFields, type MapViewHandle, type RunConfig } from './map-view'
@@ -113,11 +113,12 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   const loadGroups = shareGroupsRead(() => fetchParGroups())
 
   let configHandle: ConfigPanelHandle | null = null
+  let obsHandle: ObsPanelHandle | null = null
 
   const tabs = renderTabs(rightPanelHost, {
     tabs: [
       { id: 'params', label: 'Params', onShow: () => paramsHandle?.onShow(), onHide: () => paramsHandle?.onHide() },
-      { id: 'obs', label: 'Obs' },
+      { id: 'obs', label: 'Obs', onShow: () => obsHandle?.onShow(), onHide: () => obsHandle?.onHide() },
       { id: 'config', label: 'Config', onShow: () => configHandle?.onShow(), onHide: () => configHandle?.onHide() },
     ],
     initial: currentTab,
@@ -128,13 +129,10 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     },
   })
 
-  // D-08: Obs is clickable and says what will appear there.
-  const obsHost = tabs.panel('obs')
-  obsHost.classList.add('surface')
-  renderNotice(obsHost, {
-    title: 'Observations will show here',
-    detail: 'Spaghetti plots per site with the noise band, and 1:1 and residual plots per group.',
-    tone: 'info',
+  obsHandle = renderObsPanel(tabs.panel('obs'), {
+    store,
+    capabilities: opts.state.capabilities,
+    startHidden: tabs.current() !== 'obs',
   })
 
   configHandle = renderConfigPanel(tabs.panel('config'), { config: opts.config })
