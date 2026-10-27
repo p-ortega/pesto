@@ -50,10 +50,21 @@ export function baseFactState(fact: ConfigFact | undefined): BaseFactState | nul
   const valued = cacheReadings(fact).filter((r) => r.value !== null)
   if (valued.length === 0) return null
   if (valued[0].value === false) return { state: 'not_included' }
-  const last = valued[valued.length - 1]
-  if (last.value === true) return { state: 'present' }
-  const iteration = last.extra?.iteration
+  if (valued[valued.length - 1].value === true) return { state: 'present' }
+  // Where base went: the first iteration of the run of missing iterations at the end.
+  let start = valued.length - 1
+  while (start > 0 && valued[start - 1].value === false) start -= 1
+  const iteration = valued[start].extra?.iteration
   return typeof iteration === 'number' ? { state: 'missing', iteration } : { state: 'unknown' }
+}
+
+/** What the header chips take from the facts: which disagree, and where base stands. */
+export function chipFactsFrom(facts: ConfigFact[] | undefined): { disagree: string[]; base: BaseFactState | null } {
+  const all = facts ?? []
+  return {
+    disagree: all.filter(factDisagrees).map((f) => f.key),
+    base: baseFactState(all.find((f) => f.key === 'base')),
+  }
 }
 
 /** The part of the run's configuration the Config tab reads. */

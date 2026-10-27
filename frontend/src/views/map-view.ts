@@ -6,7 +6,7 @@
 
 import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
-import type { ConfigFact } from '../data/config'
+import { chipFactsFrom, type ConfigFact } from '../data/config'
 import { pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
@@ -950,6 +950,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return blocked ? { config: null, failure: { artifact: blocked.artifact, reason: blocked.reason } } : null
     }
     if (!opts.config) return null
+    const { disagree, base } = chipFactsFrom(opts.config.facts)
     return {
       failure: null,
       config: {
@@ -960,6 +961,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         noptmax: opts.config.noptmax,
         projection: opts.config.projection,
         has_noise: opts.config.noise.has_noise,
+        disagree,
+        base,
       },
     }
   }
