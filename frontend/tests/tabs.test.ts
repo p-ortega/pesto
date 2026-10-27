@@ -371,11 +371,11 @@ describe('the map shell with tabs', () => {
     expect(store.get()).toBe(before)
   })
 
-  it('says what will appear in the Obs and Config tabs', async () => {
+  it('says what will appear in the Obs tab and why the Config tab has nothing', async () => {
     const { root } = await openShell()
 
     expect(root.querySelector('#panel-obs')?.textContent).toContain('Observations will show here')
-    expect(root.querySelector('#panel-config')?.textContent).toContain('How the run was set up will show here')
+    expect(root.querySelector('#panel-config')?.textContent).toContain('configuration could not be read')
     // Reachable by clicking, with the note shown and the table panel only hidden.
     tabEl(root, 'config').click()
     expect((root.querySelector('#panel-config') as HTMLElement).hidden).toBe(false)

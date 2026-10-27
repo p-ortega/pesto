@@ -6,6 +6,7 @@
 
 import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
+import type { ConfigFact } from '../data/config'
 import { pickPoint, pointsOnLayer, type DrawnPoints } from '../data/points'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
@@ -82,6 +83,11 @@ export interface RunConfig {
   projection: string | null
   projection_known: boolean
   noise: NoiseFact
+  /** Absent in a config from before the facts existed, and in older test fixtures. */
+  facts?: ConfigFact[]
+  facts_version?: number | null
+  facts_note?: string
+  par_iterations?: number[]
 }
 
 /** What the Params panel needs; the map view finds it out, the shell renders it. */
