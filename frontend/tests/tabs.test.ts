@@ -259,7 +259,18 @@ describe('the Params panel inside the tabs', () => {
       initial: 'params',
       onSelect: () => {},
     })
-    handle = renderParamsPanel(tabs.panel('params'), { unmapped: [], artifactNotes: [], parTable: parTable(500) })
+    const store = createSelectionStore({
+      initial: { ...emptySelection('run', 0), parGroups: new Set(['G1']) },
+      schedule: () => {},
+    })
+    // The group summary never answers here, so the list below it is the one scroll pane.
+    handle = renderParamsPanel(tabs.panel('params'), {
+      unmapped: [],
+      artifactNotes: [],
+      parTable: parTable(500),
+      store,
+      loadGroups: () => new Promise(() => {}),
+    })
     const pane = (await vi.waitFor(() => {
       const found = tabs.panel('params').querySelector('.scroll-pane')
       expect(found).not.toBeNull()
@@ -337,7 +348,7 @@ describe('the map shell with tabs', () => {
     const { mountMap } = await import('../src/views/map')
     const root = mount()
     const store = createSelectionStore({
-      initial: emptySelection('run', 0),
+      initial: { ...emptySelection('run', 0), parGroups: new Set(['G1']) },
       schedule: () => {},
     })
     mountMap(root, { config: null, state: baseState(), store })
