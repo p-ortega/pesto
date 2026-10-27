@@ -584,3 +584,209 @@ def test_the_route_stats_the_file_again_and_shows_both_when_it_changed(tmp_path)
     assert [r["extra"]["size_bytes"] for r in stats] == [1234, 4321]
     assert stats[1]["extra"]["now"] is True
     assert "changed since the ingest" in after["note"]
+
+
+# ---------------------------------------------------------------------------
+# Base per ingested iteration
+# ---------------------------------------------------------------------------
+
+
+def _set_cached_names(cache_root, iteration, names):
+    """Rewrite the realization names the cache holds for one iteration."""
+    path = Path(cache_root) / "reals" / f"par_{iteration}.reals.json"
+    payload = json.loads(path.read_text())
+    payload["names"] = names
+    path.write_text(json.dumps(payload))
+
+
+def _cached_names(cache_root, iteration):
+    path = Path(cache_root) / "reals" / f"par_{iteration}.reals.json"
+    return json.loads(path.read_text())["names"]
+
+
+def _fact(cache_root, key):
+    body = _client(cache_root).get("/api/run/config").json()
+    return next(f for f in body["facts"] if f["key"] == key)
+
+
+def _cache_rows(fact):
+    return [r["shown"] for r in fact["readings"] if r["source"] == "cache"]
+
+
+def _without_base(names):
+    return [n for n in names if n != "base"]
+
+
+def _base_run(tmp_path, *, iterations=(0, 3), options=(), **kwargs):
+    run_dir, _ = _setup(tmp_path, rec=False, options=options, iterations=iterations, **kwargs)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+    return run_dir, cache_root
+
+
+def test_base_has_one_cache_row_per_ingested_iteration_in_ascending_order(tmp_path):
+    _, cache_root = _base_run(tmp_path)
+
+    assert _cache_rows(_fact(cache_root, "base")) == ["iteration 0: base present", "iteration 3: base present"]
+
+
+def test_an_iteration_that_lost_base_after_the_first_kept_it_says_base_missing(tmp_path):
+    _, cache_root = _base_run(tmp_path)
+    _set_cached_names(cache_root, 3, _without_base(_cached_names(cache_root, 3)))
+
+    assert _cache_rows(_fact(cache_root, "base")) == ["iteration 0: base present", "iteration 3: base missing"]
+
+
+def test_a_run_that_never_had_base_says_it_was_not_included_and_never_lost(tmp_path):
+    _, cache_root = _base_run(tmp_path, options=("ies_include_base 0",))
+    for iteration in (0, 3):
+        _set_cached_names(cache_root, iteration, _without_base(_cached_names(cache_root, iteration)))
+
+    fact = _fact(cache_root, "base")
+
+    assert _cache_rows(fact) == [
+        "iteration 0: base was not included in this run",
+        "iteration 3: base was not included in this run",
+    ]
+    assert "lost" not in json.dumps(fact)
+    assert fact["agree"] is True
+
+
+def test_base_is_matched_after_trimming_and_lower_casing_with_a_note_saying_so(tmp_path):
+    _, cache_root = _base_run(tmp_path, iterations=(0, 1))
+    names = ["Base " if n == "base" else n for n in _cached_names(cache_root, 0)]
+    _set_cached_names(cache_root, 0, names)
+
+    row = next(r for r in _fact(cache_root, "base")["readings"] if r["source"] == "cache")
+
+    assert row["shown"] == "iteration 0: base present"
+    assert "only after trimming" in row["evidence"]
+
+
+def test_a_control_file_that_adds_base_while_the_cache_has_none_disagrees_and_keeps_both(tmp_path):
+    _, cache_root = _base_run(tmp_path, iterations=(0, 1), options=("ies_add_base true",))
+    for iteration in (0, 1):
+        _set_cached_names(cache_root, iteration, _without_base(_cached_names(cache_root, iteration)))
+
+    fact = _fact(cache_root, "base")
+
+    assert fact["agree"] is False
+    assert [r["source"] for r in fact["readings"]][0] == "control file"
+    assert {r["source"] for r in fact["readings"]} == {"control file", "cache"}
+
+
+def test_a_parameter_ensemble_that_failed_says_not_ingested_with_the_manifest_reason(tmp_path):
+    _, cache_root = _base_run(tmp_path)
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("par_ens/3", "the file was damaged")
+    manifest.save(layout)
+
+    rows = [r for r in _fact(cache_root, "base")["readings"] if r["source"] == "cache"]
+
+    assert [r["shown"] for r in rows] == ["iteration 0: base present", "iteration 3: not ingested"]
+    assert "the file was damaged" in rows[1]["evidence"]
+    assert rows[1]["value"] is None
+
+
+def test_a_base_par_file_in_the_run_directory_is_a_files_present_reading(tmp_path):
+    run_dir, _ = _setup(tmp_path, rec=False)
+    (run_dir / "case.0.base.par").write_text("par0 1.0 1.0 0.0\n")
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+
+    fact = _facts(cache_root)["base"]
+
+    files = [r for r in fact["readings"] if r["source"] == "files present"]
+    assert [r["shown"] for r in files] == ["case.0.base.par is present"]
+
+
+def test_the_stored_base_fact_carries_the_record_dump_and_the_control_file(tmp_path):
+    run_dir, _ = _setup(tmp_path, options=("ies_add_base true",), base_kept=True)
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+
+    readings = _facts(cache_root)["base"]["readings"]
+
+    sources = [r["source"] for r in readings]
+    assert sources[:3] == ["run record", "run record", "control file"]
+    assert [r["value"] for r in readings[:3]] == [True, True, True]
+
+
+# ---------------------------------------------------------------------------
+# Ensemble size, noptmax, reinflation
+# ---------------------------------------------------------------------------
+
+
+def test_the_ensemble_size_readings_disagree_and_are_all_kept(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    made = make_run(run_dir, iterations=(0, 1), n_real=294)
+    _add_control_options(made.pst_path, "ies_num_reals 300")
+    write_rec(run_dir / "case.rec")
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+
+    fact = _facts(cache_root)["ensemble_size"]
+
+    assert [(r["source"], r["value"]) for r in fact["readings"]] == [
+        ("run record", 300),
+        ("control file", 300),
+        ("cache", 294),
+    ]
+    assert fact["agree"] is False
+
+
+def test_the_noptmax_fact_compares_the_control_file_with_a_record_that_states_one(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    write_rec(run_dir / "case.rec", options={"noptmax": "5", "ies_num_reals": "4"})
+    cache_root = tmp_path / "cache"
+    _ingest(run_dir, cache_root)
+
+    fact = _facts(cache_root)["noptmax"]
+
+    assert [(r["source"], r["value"]) for r in fact["readings"]] == [("run record", 5), ("control file", 3)]
+    assert fact["agree"] is False
+
+
+def _reinflation_run(tmp_path, *, rec_kwargs, files=()):
+    run_dir = tmp_path / "reinflation-run"
+    run_dir.mkdir()
+    pst_path, _ = write_control_file(run_dir / "case.pst", ["par0"], ["obs0"], noptmax=5)
+    for name in files:
+        (run_dir / name).write_text("group,count\n")
+    write_rec(run_dir / "case.rec", **rec_kwargs)
+    run = discover(run_dir)
+    tables = read_control(pst_path)
+    assert not isinstance(tables, ReadFailure)
+    return run, tables, read_rec(run.rec), scan_options(pst_path)
+
+
+def test_a_pl253_shaped_run_lists_the_finding_at_4_with_each_source_that_says_so(tmp_path):
+    run, tables, rec, options = _reinflation_run(
+        tmp_path, rec_kwargs={"reinflations": (4,)}, files=("case.4.reinflate.pcs.csv",)
+    )
+
+    config = build_config(run, tables, None, None, rec=rec, options=options, par_iterations=(0, 6))
+    fact = {f.key: f for f in config.facts}["reinflation"]
+
+    assert [(r.source, r.extra["in_range"]) for r in fact.readings] == [
+        ("run record", "4"),
+        ("files present", "4"),
+    ]
+    assert fact.agree is True
+    assert "reinflation at iteration 4" in fact.readings[0].shown
+    assert "between iteration 0 and 6" in fact.note
+
+
+def test_a_run_with_no_parameter_iterations_says_unchecked_and_lists_where_it_looked(tmp_path):
+    run, tables, rec, options = _reinflation_run(tmp_path, rec_kwargs={})
+
+    config = build_config(run, tables, None, None, rec=rec, options=options, par_iterations=())
+    fact = {f.key: f for f in config.facts}["reinflation"]
+
+    assert fact.readings == ()
+    assert fact.note.startswith("unchecked")
+    assert fact.looked_for
