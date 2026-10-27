@@ -116,7 +116,8 @@ def test_the_stored_file_is_valid_json_with_every_realization_in_it(tmp_path, in
     stored = json.loads(layout.phi_check(0).read_text())
     assert stored["status"] == "checked"
     assert {r["realization"] for r in stored["rows"]} == set(run.real_names)
-    assert all(set(r) == {"realization", "recomputed", "file", "rel_diff", "match"} for r in stored["rows"])
+    keys = {"realization", "recomputed", "file", "rel_diff", "match", "rounding_bound"}
+    assert all(set(r) == keys for r in stored["rows"])
     assert np.isfinite(stored["max_rel_diff"])
 
 
@@ -303,6 +304,86 @@ def test_a_name_that_matches_only_after_trimming_and_lower_casing_is_compared_wi
     assert any("'r1' for 'R1'" in n and "lower-casing" in n for n in check.notes)
 
 
+@pytest.mark.parametrize("cell", ["inf", "-inf", "1e400"])
+def test_a_value_in_the_phi_file_that_is_not_finite_keeps_the_check_and_is_named(
+    tmp_path, in_process, cell
+):
+    def plant(run):
+        cells = _phi_row(run, 0, {})
+        cells[_columns(run).index("34")] = cell
+        _rewrite_phi(run, _columns(run), {0: cells})
+
+    _run, layout, manifest = _run_with_phi(tmp_path, plant)
+
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    stored = json.loads(layout.phi_check(0).read_text())
+    by_name = {r["realization"]: r for r in stored["rows"]}
+    assert set(by_name) == {"base", "34", "35", "176"}
+    assert by_name["34"]["file"] is None
+    assert by_name["34"]["rel_diff"] is None
+    assert by_name["34"]["match"] is False
+    for name in ("base", "35", "176"):
+        assert isinstance(by_name[name]["file"], float) and by_name[name]["match"] is True
+    assert stored["n_mismatch"] == 1
+    notes = manifest.artifacts["phi_check/0"].notes
+    assert any("'34'" in n and "not a finite number" in n for n in notes)
+
+
+def test_a_phi_row_whose_only_value_is_not_finite_is_checked_with_one_named_mismatch(
+    tmp_path, in_process
+):
+    def plant(run):
+        _rewrite_phi(run, ["34"], {0: ["inf"]})
+
+    _run, layout, manifest = _run_with_phi(tmp_path, plant)
+
+    assert manifest.artifacts["phi_check/0"].state == "ok"
+    check = load_phi_check(0, layout)
+    assert check.status == "checked"
+    assert check.n_compared == 1 and check.n_mismatch == 1
+    assert check.rows[0].realization == "34" and check.rows[0].file is None
+    assert check.max_rel_diff is None
+
+
+def test_writing_a_check_with_values_that_are_not_finite_stores_them_as_null_and_says_so(
+    tmp_path,
+):
+    from pesto.ingest.phicheck import PhiCheck, PhiRow, write_phi_check
+
+    layout = CacheLayout(root=tmp_path / "cache")
+    rows = (
+        PhiRow("a", float("inf"), 1.0, float("nan"), False),
+        PhiRow("b", 1.0, 1.0, 0.0, True),
+    )
+    check = PhiCheck(
+        iteration=0,
+        tolerance=PHI_TOLERANCE,
+        weights_source="w",
+        phi_file="p.csv",
+        status="checked",
+        reason="",
+        n_compared=2,
+        n_mismatch=1,
+        n_only_in_cache=0,
+        n_only_in_file=0,
+        max_rel_diff=float("inf"),
+        median_rel_diff=None,
+        rows=rows,
+        summary="s",
+        notes=(),
+    )
+
+    written = write_phi_check(check, 0, layout)
+
+    assert not isinstance(written, ReadFailure), written
+    stored = json.loads(layout.phi_check(0).read_text())
+    assert stored["max_rel_diff"] is None
+    assert stored["rows"][0]["recomputed"] is None and stored["rows"][0]["rel_diff"] is None
+    assert stored["rows"][1]["recomputed"] == 1.0
+    assert sum("stored as null" in n for n in stored["notes"]) == 1
+    assert "3 value(s)" in stored["notes"][-1]
+
+
 def test_greater_and_less_than_groups_count_one_sided(tmp_path, in_process):
     from .obs_fixtures import SiteSpec
 
@@ -472,6 +553,199 @@ def test_the_run_folder_is_untouched_when_phi_does_not_match(tmp_path, in_proces
     before = _tree_snapshot(run_dir)
     ingest_run(run_dir, cache_root=tmp_path / "cache")
     assert _tree_snapshot(run_dir) == before
+
+
+# ---------------------------------------------------------------------------
+# blocked weights reads, repeated cache names, the unused import
+# ---------------------------------------------------------------------------
+
+
+def _small_index(obsvals, weights=None, group="g"):
+    from pesto.ingest.obsindex import build_obs_index
+
+    from .obs_fixtures import obs_arrow
+
+    weights = weights if weights is not None else [1.0] * len(obsvals)
+    rows = [
+        {"obsnme": f"o{k:03d}", "obgnme": group, "obsval": v, "weight": w}
+        for k, (v, w) in enumerate(zip(obsvals, weights))
+    ]
+    index = build_obs_index(obs_arrow(rows))
+    assert not isinstance(index, ReadFailure), index
+    return index
+
+
+def _adjusted(weights):
+    from pathlib import Path
+
+    from pesto.ingest.obsweights import AdjustedWeights
+
+    n = weights.shape[1]
+    return AdjustedWeights(
+        weights=weights,
+        real_names=tuple(f"r{k}" for k in range(weights.shape[0])),
+        obs_names=tuple(f"o{k:03d}" for k in range(n)),
+        control_rows=np.arange(n, dtype=np.int64),
+        n_unweighted=0,
+        source=Path("w.jcb"),
+        notes=(),
+    )
+
+
+def test_weights_are_read_one_block_at_a_time(monkeypatch):
+    from pesto.ingest import phicheck
+
+    class Recording(np.ndarray):
+        shapes: list = []
+
+        def __getitem__(self, key):
+            out = super().__getitem__(key)
+            Recording.shapes.append(np.shape(out))
+            return out
+
+    rng = np.random.default_rng(3)
+    n_obs, n_real = 7, 3
+    index = _small_index(list(rng.normal(size=n_obs)))
+    values = rng.normal(size=(n_obs, n_real)).astype(np.float32)
+    plain = rng.uniform(0.5, 2.0, size=(n_real, n_obs))
+    rows = [2, 0, 1]
+    expected, _, _ = phicheck.recompute_phi(index, values, [0, 1, 2], _adjusted(plain), rows, None)
+
+    monkeypatch.setattr(phicheck, "BLOCK_ROWS", 2)
+    Recording.shapes = []
+    got, _, _ = phicheck.recompute_phi(
+        index, values, [0, 1, 2], _adjusted(plain.view(Recording)), rows, None
+    )
+
+    assert Recording.shapes, "the weights were never indexed"
+    assert all(shape[1] <= 2 for shape in Recording.shapes)
+    np.testing.assert_allclose(got, expected, rtol=1e-12)
+
+
+def test_a_name_that_appears_twice_in_the_cache_is_paired_with_nothing():
+    from pesto.ingest.phicheck import _join_names
+
+    pairs, cache_only, other_only, notes = _join_names(
+        ("r1", "r1", "r2"), ["r2", "r1"], "case.phi.actual.csv"
+    )
+
+    assert pairs == [(2, 0)]
+    assert sorted(cache_only) == [0, 1]
+    assert other_only == [1]
+    repeated = [n for n in notes if "more than once in the cache" in n]
+    assert len(repeated) == 1 and "'r1'" in repeated[0] and "not matched" in repeated[0]
+
+
+def test_a_cache_name_that_repeats_is_not_rescued_by_trimming_and_lower_casing():
+    from pesto.ingest.phicheck import _join_names
+
+    pairs, cache_only, _other_only, _notes = _join_names(("r1", "r1", "R1"), ["r1"], "p.csv")
+
+    assert pairs == []
+    assert sorted(cache_only) == [0, 1, 2]
+
+
+def test_the_module_does_not_import_the_examples_helper_it_never_uses():
+    import pesto.ingest.phicheck as phicheck
+
+    source = open(phicheck.__file__).read()
+    assert "from pesto.ingest.obsread import" not in source
+
+
+# ---------------------------------------------------------------------------
+# float32 storage and the per-realization rounding bound
+# ---------------------------------------------------------------------------
+
+
+def _large_value_case():
+    """Observations near 1,000,000, where float32 steps are 0.0625: each true
+    value sits just off a step, so storing it moves phi by about 2 percent."""
+    from pesto.ingest import phicheck
+
+    obsval = 1_000_000.0
+    offsets = np.array([3.03, -4.03, 5.03, 6.03])
+    index = _small_index([obsval] * offsets.size)
+    true_sim = obsval + offsets
+    stored = np.zeros((offsets.size, 1), dtype=np.float32)
+    for position, row in enumerate(index.order):
+        stored[position, 0] = np.float32(true_sim[row])
+    weight = np.ones(offsets.size)
+    phi, bound, _notes = phicheck.recompute_phi(index, stored, [0], None, None, weight)
+    file_phi = float(np.sum(offsets**2))
+    return float(phi[0]), float(bound[0]), file_phi
+
+
+def test_a_difference_that_float32_storage_explains_is_a_match():
+    from pesto.ingest.phicheck import compare_phi
+
+    recomputed, bound, file_phi = _large_value_case()
+
+    plain, plain_match = compare_phi(recomputed, file_phi)
+    assert plain > PHI_TOLERANCE and plain_match is False
+    relative_bound = bound / file_phi
+    assert relative_bound >= plain
+    rel, match = compare_phi(recomputed, file_phi, bound=relative_bound)
+    assert rel == plain and match is True
+
+
+def test_a_phi_one_and_a_half_times_the_true_one_is_still_a_mismatch_on_large_values():
+    from pesto.ingest.phicheck import compare_phi
+
+    recomputed, bound, file_phi = _large_value_case()
+    file_phi *= 1.5
+
+    _rel, match = compare_phi(recomputed, file_phi, bound=bound / file_phi)
+
+    assert match is False
+
+
+def test_compare_phi_without_a_bound_is_the_plain_tolerance_and_a_bound_widens_it():
+    from pesto.ingest.phicheck import compare_phi
+
+    assert compare_phi(1001.0, 1000.0)[1] is True
+    assert compare_phi(1001.5, 1000.0)[1] is False
+    assert compare_phi(1001.5, 1000.0, bound=0.0)[1] is False
+    assert compare_phi(1001.5, 1000.0, bound=0.001)[1] is True
+    assert compare_phi(1002.5, 1000.0, bound=0.001)[1] is False
+
+
+def test_a_rounding_bound_is_zero_for_a_weight_of_zero_and_for_values_that_are_not_finite():
+    from pesto.ingest.phicheck import _block_phi
+
+    index = _small_index([10.0, 10.0, 10.0])
+    values = np.array([[11.0], [np.inf], [12.0]], dtype=np.float32)
+    weight = np.array([[1.0], [1.0], [0.0]])
+
+    _phi, bound = _block_phi(index, values, np.arange(3), np.array([0]), weight)
+
+    assert bound[0] == pytest.approx((2 * 1.0 * 1.0 + 11.0 * 2.0**-24) * 11.0 * 2.0**-24)
+
+
+def test_the_stored_rows_carry_the_rounding_bound_and_the_summary_says_float32(
+    tmp_path, in_process
+):
+    run, layout, _ = _ingest(tmp_path, with_phi=True)
+
+    stored = json.loads(layout.phi_check(0).read_text())
+    assert all(isinstance(r["rounding_bound"], float) for r in stored["rows"])
+    assert all(0.0 <= r["rounding_bound"] < 1e-4 for r in stored["rows"])
+    assert "stored as float32" in stored["summary"] and "rounding bound" in stored["summary"]
+    check = load_phi_check(0, layout)
+    assert [r.rounding_bound for r in check.rows] == [r["rounding_bound"] for r in stored["rows"]]
+
+
+def test_a_stored_row_with_no_rounding_bound_reads_back_as_none(tmp_path, in_process):
+    _run, layout, _ = _ingest(tmp_path, with_phi=True)
+    path = layout.phi_check(0)
+    stored = json.loads(path.read_text())
+    for row in stored["rows"]:
+        del row["rounding_bound"]
+    path.write_text(json.dumps(stored))
+
+    check = load_phi_check(0, layout)
+
+    assert not isinstance(check, ReadFailure), check
+    assert all(r.rounding_bound is None for r in check.rows)
 
 
 # ---------------------------------------------------------------------------
