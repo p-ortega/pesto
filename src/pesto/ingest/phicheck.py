@@ -37,7 +37,6 @@ from pesto.ingest.obsindex import (
     ObsIndex,
     load_obs_index,
 )
-from pesto.ingest.obsread import _examples
 from pesto.ingest.obsweights import AdjustedWeights
 from pesto.ingest.tables import load_control_table
 
@@ -125,7 +124,12 @@ def _join_names(
     taken: set[int] = set()
     pairs: list[tuple[int, int]] = []
     left: list[int] = []
+    cache_counts = Counter(cache_names)
+    # A name the cache holds twice cannot say which column is its own.
+    repeated_in_cache = [i for i, name in enumerate(cache_names) if cache_counts[name] > 1]
     for i, name in enumerate(cache_names):
+        if cache_counts[name] > 1:
+            continue
         found = exact.get(name, [])
         if len(found) == 1:
             pairs.append((i, found[0]))
@@ -133,11 +137,11 @@ def _join_names(
         else:
             left.append(i)
     other_left = [j for j in range(len(other_names)) if j not in taken]
-    cache_keys = Counter(_clean(cache_names[i]) for i in left)
+    cache_keys = Counter(_clean(cache_names[i]) for i in [*left, *repeated_in_cache])
     other_keys = Counter(_clean(other_names[j]) for j in other_left)
     other_by_key = {_clean(other_names[j]): j for j in other_left}
     repaired: list[tuple[str, str]] = []
-    cache_only: list[int] = []
+    cache_only: list[int] = list(repeated_in_cache)
     for i in left:
         key = _clean(cache_names[i])
         if key in other_by_key and cache_keys[key] == 1 and other_keys[key] == 1:
@@ -153,6 +157,12 @@ def _join_names(
         notes.append(
             f"{len(repaired)} realization name(s) matched {other_label} only after trimming "
             f"spaces and lower-casing (e.g. {shown})"
+        )
+    repeated_names = [n for n, k in cache_counts.items() if k > 1]
+    if repeated_names:
+        notes.append(
+            f"{len(repeated_names)} realization name(s) appear more than once in the cache and "
+            f"were not matched{_examples_text(repeated_names)}"
         )
     repeated = [n for n, k in Counter(other_names).items() if k > 1]
     if repeated:
@@ -253,17 +263,15 @@ def recompute_phi(
         columns = np.flatnonzero(keep)
         columns = columns[np.argsort(pos[columns], kind="stable")]
         sorted_pos = pos[columns]
-        picked_weights = np.asarray(weights.weights[weight_rows], dtype=np.float64)
+        rows_array = np.asarray(weight_rows, dtype=np.int64)
         select_rows = np.asarray(cache_columns, dtype=np.int64)
         for start in range(0, columns.size, BLOCK_ROWS):
             block = slice(start, start + BLOCK_ROWS)
-            phi += _block_phi(
-                index,
-                values,
-                sorted_pos[block],
-                select_rows,
-                picked_weights[:, columns[block]].T,
-            )
+            # Read only this block of the weights, so a large run never holds a second copy.
+            weight = np.asarray(
+                weights.weights[np.ix_(rows_array, columns[block])], dtype=np.float64
+            ).T
+            phi += _block_phi(index, values, sorted_pos[block], select_rows, weight)
     else:
         weighted = np.flatnonzero((control_weight > 0) & has_target)
         left_out = int(((control_weight > 0) & ~has_target).sum())
