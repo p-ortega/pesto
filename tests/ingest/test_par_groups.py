@@ -321,6 +321,17 @@ def test_bytes_that_are_not_utf8_in_the_pcs_file_are_counted_in_the_note(tmp_pat
     assert "2 characters in case.1.pcs.csv were not valid UTF-8" in note
 
 
+def test_an_unreadable_pcs_file_in_a_folder_with_a_space_leaks_no_part_of_the_folder_name(tmp_path):
+    folder = tmp_path / "Jane Doe" / "runs"
+    (folder / "case.1.pcs.csv").mkdir(parents=True)
+
+    figures, note = parview._read_pcs(folder / "case.1.pcs.csv", 1)
+
+    assert figures is None
+    assert note.startswith("case.1.pcs.csv could not be read")
+    assert "Jane" not in note and "Doe" not in note and "runs/" not in note
+
+
 def test_a_csv_and_a_record_that_agree_to_the_records_rounding_show_no_disagreement(
     tmp_path, in_process  # noqa: F811
 ):
