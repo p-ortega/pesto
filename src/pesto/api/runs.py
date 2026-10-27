@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse
 from pesto.api.prefs import read_view_state, write_view_state
 from pesto.api.problem import problem, problem_from_failure
 from pesto.cache.layout import CacheLayout
-from pesto.cache.runconfig import load_config
+from pesto.cache.runconfig import fact_to_json, load_config
 from pesto.ingest.failures import ReadFailure
 
 router = APIRouter(prefix="/api/run")
@@ -66,7 +66,12 @@ async def get_run_config(request: Request) -> JSONResponse:
             "notes": list(config.noise.notes),
         },
         "notes": list(config.notes),
+        "facts_version": config.facts_version,
+        "facts": [fact_to_json(f) for f in config.facts],
+        "par_iterations": list(config.par_iterations),
     }
+    if config.facts_version is None:
+        body["facts_note"] = "written before the setup facts existed; run the ingest again"
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 

@@ -306,7 +306,9 @@ def test_the_route_serves_the_facts_and_their_version(tmp_path):
     body = _client(cache_root).get("/api/run/config").json()
 
     assert body["facts_version"] == 1
-    assert [f["key"] for f in body["facts"]][:2] == ["pestpp_version", "noptmax"]
+    keys = [f["key"] for f in body["facts"]]
+    assert keys[0] == "pestpp_version"
+    assert keys == sorted(keys, key=FACT_ORDER.index)
     assert body["par_iterations"] == [0, 1]
     assert "facts_note" not in body
     assert body["n_par"] == 6
