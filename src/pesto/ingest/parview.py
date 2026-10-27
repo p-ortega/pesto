@@ -35,7 +35,7 @@ from pesto.ingest.discover import RunLayout, discover
 from pesto.ingest.ensembles import StoredEnsemble, align_realizations, load_stored
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.parcell import load_par_cell
-from pesto.ingest.recfile import read_rec
+from pesto.ingest.recfile import RecFacts, RecGroupRow, read_rec
 from pesto.ingest.reinflate import ReinflationVerdict, assess_reinflation
 from pesto.ingest.runopts import ControlOptions, scan_options
 from pesto.ingest.tables import _write_parquet_atomic, load_control_table
@@ -661,9 +661,66 @@ def _read_pcs(path: Path | None, last: int) -> tuple[dict[str, dict] | None, str
     return out, note
 
 
+# The record prints four significant digits, so a figure may be off by half a unit of the fourth.
+_RECORD_DIGITS = 4
+_RECORD_FIGURES = (
+    ("mean_change", "mean_chg", "float"),
+    ("std_change", "std_chg", "float"),
+    ("num_at_near_lbound", "n_at_lbnd", "int"),
+    ("num_at_near_ubound", "n_at_ubnd", "int"),
+)
+
+
+def _record_table(rec: RecFacts, csv_name: str) -> dict[str, RecGroupRow] | None:
+    """The record's group table saved to ``csv_name`` by lower-cased group
+    name, or None when the record holds none for that file."""
+    for key, rows in rec.group_tables.items():
+        if key.lower() == csv_name.lower():
+            return {row.group.lower(): row for row in rows}
+    return None
+
+
+def _record_figures(table: dict[str, RecGroupRow]) -> dict[str, dict]:
+    """The record's rows named the way the pcs.csv names its columns."""
+    return {
+        group: {csv_name: getattr(row, field) for csv_name, field, _kind in _RECORD_FIGURES}
+        for group, row in table.items()
+    }
+
+
+def _record_tolerance(value: float) -> float:
+    """Half a unit in the fourth significant digit of a printed ``value``."""
+    if value == 0.0:
+        return 0.0
+    return 0.5 * 10.0 ** (int(np.floor(np.log10(abs(value)))) - (_RECORD_DIGITS - 1))
+
+
+def _disagreements(csv_row: dict, record_row: RecGroupRow) -> list[tuple[str, float | int, float | int]]:
+    """The figures where the csv and the record differ by more than the record's rounding."""
+    found = []
+    for csv_name, field, kind in _RECORD_FIGURES:
+        ours, theirs = csv_row.get(csv_name), getattr(record_row, field)
+        if ours is None or theirs is None:
+            continue
+        tolerance = 0.0 if kind == "int" else _record_tolerance(theirs)
+        if abs(ours - theirs) > tolerance * (1.0 + 1e-9):
+            found.append((csv_name, ours, theirs))
+    return found
+
+
 def _pestpp_entry(
-    group: str, pcs: dict[str, dict] | None, file_name: str | None, file_note: str | None
+    group: str,
+    pcs: dict[str, dict] | None,
+    file_name: str | None,
+    file_note: str | None,
+    *,
+    source: str | None = None,
+    record: dict[str, RecGroupRow] | None = None,
+    record_name: str | None = None,
 ) -> dict:
+    """pestpp's own figures for ``group``. ``source`` overrides the label when
+    the figures came from the run record. ``record`` is the record's table for
+    the same file as ``pcs``, compared against it when both exist."""
     entry: dict = {figure: None for figure in _PCS_FIGURES}
     entry["source"] = None
     entry["note"] = None
@@ -676,7 +733,7 @@ def _pestpp_entry(
         entry["note"] = f"not joined: {file_name} has no row for group {lowered!r}"
         return entry
     entry.update(row)
-    entry["source"] = f"pestpp, {file_name}"
+    entry["source"] = source or f"pestpp, {file_name}"
     notes = []
     if lowered != group:
         notes.append(
@@ -684,6 +741,22 @@ def _pestpp_entry(
         )
     if file_note:
         notes.append(file_note)
+    record_row = record.get(lowered) if record is not None else None
+    if record_row is not None:
+        differing = _disagreements(row, record_row)
+        if differing:
+            parts = "; ".join(
+                f"{name} is {ours:.10g} in {file_name} and {theirs:.10g} in {record_name}"
+                for name, ours, theirs in differing
+            )
+            notes.append(
+                f"{file_name} and the run record {record_name} disagree beyond the record's "
+                f"{_RECORD_DIGITS}-digit rounding: {parts}"
+            )
+            entry["record"] = {
+                "source": f"{record_name}, from the run record, {_RECORD_DIGITS} significant digits",
+                **{name: getattr(record_row, field) for name, field, _kind in _RECORD_FIGURES},
+            }
     entry["note"] = "; ".join(notes) if notes else None
     return entry
 
@@ -877,17 +950,25 @@ _NAMES_REUSED = (
 )
 
 
-def _assess_reinflation(run: RunLayout, first: int, last: int) -> tuple[ReinflationVerdict, ControlOptions | None]:
-    """Read the run record and the control-file options of ``run`` and ask
-    whether the ensemble was reinflated between ``first`` and ``last``."""
-    rec = None
-    if run.rec is not None:
-        try:
-            rec = read_rec(run.rec)
-        except Exception as exc:
-            rec = ReadFailure(
-                name="rec", path=str(run.rec), reason=f"could not read the run record: {_base_names(str(exc))}"
-            )
+def _read_record(run: RunLayout) -> RecFacts | ReadFailure | None:
+    """The run record of ``run`` read once, or None when it has none."""
+    if run.rec is None:
+        return None
+    try:
+        return read_rec(run.rec)
+    except Exception as exc:
+        return ReadFailure(
+            name="rec",
+            path=str(run.rec),
+            reason=f"could not read the run record: {_base_names(str(exc))}",
+        )
+
+
+def _assess_reinflation(
+    run: RunLayout, first: int, last: int, rec: RecFacts | ReadFailure | None
+) -> tuple[ReinflationVerdict, ControlOptions | None]:
+    """Ask whether the ensemble was reinflated between ``first`` and ``last``,
+    from the run record already read and the control-file options."""
     try:
         options = scan_options(run.pst_path)
     except Exception as exc:
@@ -1031,7 +1112,8 @@ def drill_down_offer(n_par: int, limit: int) -> dict:
 def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | ReadFailure:
     """Write ``agg/par_groups.json``: one entry per parameter group, in the
     order the control table first names them. ``run_dir`` is read only to find
-    pestpp's own group summary, the last iteration's plain ``pcs.csv``."""
+    pestpp's own group summary (the last iteration's plain ``pcs.csv``, or the
+    run record's table when that is missing) and the reinflation evidence."""
     name = "par_groups"
     path = layout.par_groups
     try:
@@ -1053,11 +1135,25 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
             run_notes.append(
                 f"the run folder could not be searched for a pcs.csv file: {_base_names(str(exc))}"
             )
+        rec = _read_record(run_layout) if run_layout is not None else None
         pcs, pcs_note = _read_pcs(pcs_path, last)
         pcs_name = pcs_path.name if pcs_path is not None else None
         if pcs is not None and pcs_note:
             run_notes.append(pcs_note)
             pcs_note = None
+        record_table = None
+        if isinstance(rec, RecFacts):
+            record_table = _record_table(rec, pcs_name or f"{run_layout.case}.{last}.pcs.csv")
+            run_notes.extend(n for n in rec.notes if n.startswith("the parameter group table"))
+        pestpp_source = None
+        if pcs is None and record_table is not None:
+            pcs, pcs_name = _record_figures(record_table), rec.name
+            pestpp_source = f"{rec.name}, from the run record, 4 significant digits"
+            pcs_note = (
+                f"{pcs_note}; the figures are from the run record's group table instead"
+                if pcs_note
+                else "the figures are from the run record's group table"
+            )
 
         control = load_control_table(layout, "par", columns=["parnme"], optional_columns=["ptype"])
         if isinstance(control, ReadFailure):
@@ -1099,7 +1195,7 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
         verdict: ReinflationVerdict | None = None
         control_options: ControlOptions | None = None
         if run_layout is not None:
-            verdict, control_options = _assess_reinflation(run_layout, first, last)
+            verdict, control_options = _assess_reinflation(run_layout, first, last, rec)
             reinflation = _reinflation_json(verdict)
         else:
             reinflation = {
@@ -1172,7 +1268,15 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
                     ),
                     "change": {
                         "pesto": pesto,
-                        "pestpp": _pestpp_entry(group, pcs, pcs_name, pcs_note),
+                        "pestpp": _pestpp_entry(
+                            group,
+                            pcs,
+                            pcs_name,
+                            pcs_note,
+                            source=pestpp_source,
+                            record=record_table if pestpp_source is None else None,
+                            record_name=rec.name if isinstance(rec, RecFacts) else None,
+                        ),
                         "reason": reason,
                     },
                     "sigma_ratio": sigma,
