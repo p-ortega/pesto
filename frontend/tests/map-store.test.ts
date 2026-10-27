@@ -86,6 +86,11 @@ const PAR_TABLE = tableToIPC(
   tableFromArrays({ parnme: ['p0', 'p1'], pargp: ['G1', 'G1'], partrans: ['none', 'none'] }),
   'stream',
 )
+// Groups a and b are drawn (a is linear, b is log); u is in the control table but never placed.
+const TWO_GROUPS_TABLE = tableToIPC(
+  tableFromArrays({ parnme: ['p0', 'p1', 'p2'], pargp: ['a', 'b', 'u'], partrans: ['none', 'log', 'none'] }),
+  'stream',
+)
 const REALS_TABLE = tableToIPC(tableFromArrays({ realization: ['base', 'r001', 'r002'] }), 'stream')
 const FIELDS: Record<string, number[]> = { base: [10, 20], r001: [11, 21], r002: [12, 22] }
 
@@ -102,7 +107,7 @@ interface Stub {
   valuesCalls: string[]
 }
 
-function stubEnvironment(): Stub {
+function stubEnvironment(parTable: Uint8Array = PAR_TABLE): Stub {
   const stub: Stub = { calls: [], valuesCalls: [] }
   vi.stubGlobal(
     'fetch',
@@ -133,7 +138,7 @@ function stubEnvironment(): Stub {
         case '/api/run/grid/parmap':
           return respond({ status: 200, bytes: bytesOf(PARMAP) })
         case '/api/run/meta':
-          return respond({ status: 200, bytes: PAR_TABLE })
+          return respond({ status: 200, bytes: parTable })
         case '/api/run/grid/cells/cell':
           return respond({ status: 200, bytes: bytesOf(CELL_ARRAY) })
         case '/api/run/grid/cells/layer':
@@ -164,8 +169,11 @@ function manualStore(): SelectionStore {
   })
 }
 
-async function mountedWith(store: SelectionStore): Promise<{ root: HTMLElement; stub: Stub }> {
-  const stub = stubEnvironment()
+async function mountedWith(
+  store: SelectionStore,
+  parTable: Uint8Array = PAR_TABLE,
+): Promise<{ root: HTMLElement; stub: Stub }> {
+  const stub = stubEnvironment(parTable)
   vi.stubGlobal(
     'requestAnimationFrame',
     vi.fn((cb: FrameRequestCallback) => {
@@ -333,5 +341,94 @@ describe('the map publishes its choices and follows other views', () => {
 
     expect((root.querySelector('[aria-label="Layer"]') as HTMLInputElement).value).toBe('0')
     expect(root.querySelector('[data-testid="map-notices"]')?.textContent).toContain('layer 7')
+  })
+})
+
+describe('the map follows a group chosen in another view', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function picker(root: HTMLElement): HTMLSelectElement {
+    return root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+  }
+
+  function scale(root: HTMLElement): HTMLSelectElement {
+    return root.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement
+  }
+
+  it('draws a drawable group chosen by the Params panel, through the picker path, and the picker shows it', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store, TWO_GROUPS_TABLE)
+    expect(picker(root).value).toBe('a')
+    expect(scale(root).value).toBe('linear')
+
+    store.set({ parGroups: new Set(['b']) }, 'params')
+    store.flush()
+
+    expect(picker(root).value).toBe('b')
+    // Group b is log-transformed, so the scale follows it exactly as a picker change would.
+    expect(scale(root).value).toBe('log10')
+  })
+
+  it('leaves the map on its group when the chosen group is not on the map', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store, TWO_GROUPS_TABLE)
+
+    store.set({ parGroups: new Set(['u']) }, 'params')
+    store.flush()
+
+    expect(picker(root).value).toBe('a')
+    expect(scale(root).value).toBe('linear')
+  })
+
+  it('does nothing for a parGroups change that only the map itself made', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store, TWO_GROUPS_TABLE)
+
+    store.set({ parGroups: new Set(['b']) }, 'map')
+    store.flush()
+
+    expect(picker(root).value).toBe('a')
+    expect(scale(root).value).toBe('linear')
+  })
+
+  it('does nothing when several groups are chosen at once', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store, TWO_GROUPS_TABLE)
+
+    store.set({ parGroups: new Set(['a', 'b']) }, 'params')
+    store.flush()
+
+    expect(picker(root).value).toBe('a')
+  })
+
+  it('does not redraw for the group it already shows', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store, TWO_GROUPS_TABLE)
+    const instance = await meshLayerInstance()
+    const before = instance.setValues.mock.calls.length
+
+    store.set({ parGroups: new Set(['a']) }, 'params')
+    store.flush()
+
+    expect(picker(root).value).toBe('a')
+    expect(instance.setValues.mock.calls.length).toBe(before)
+  })
+
+  it('does not write parGroups when its own picker changes', async () => {
+    const store = manualStore()
+    const { root } = await mountedWith(store, TWO_GROUPS_TABLE)
+
+    picker(root).value = 'b'
+    picker(root).dispatchEvent(new Event('change'))
+    store.flush()
+
+    expect(store.get().parGroups.size).toBe(0)
   })
 })

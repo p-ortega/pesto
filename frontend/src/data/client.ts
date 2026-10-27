@@ -370,6 +370,8 @@ export interface IngestState {
     noise?: Capability
     pdc?: Capability
     phiCheck?: Capability
+    // The parameter view; absent from a server that does not send it.
+    parView?: Capability
   }
   ingestSeconds: number | null
   cacheBytes: number | null
@@ -418,6 +420,7 @@ export async function ingestState(): Promise<IngestState> {
       noise?: unknown
       pdc?: unknown
       phi_check?: unknown
+      par_view?: unknown
     }
     ingest_seconds: number | null
     cache_bytes: number | null
@@ -436,6 +439,7 @@ export async function ingestState(): Promise<IngestState> {
       ...present('noise', raw.capabilities.noise),
       ...present('pdc', raw.capabilities.pdc),
       ...present('phiCheck', raw.capabilities.phi_check),
+      ...present('parView', raw.capabilities.par_view),
     },
     ingestSeconds: raw.ingest_seconds,
     cacheBytes: raw.cache_bytes,

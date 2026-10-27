@@ -121,6 +121,7 @@ const DEFAULT_ROUTES: Routes = {
   '/api/run/reals': { status: 200, bytes: REALS_TABLE },
   '/api/run/view': { status: 200, body: VIEW_STATE_BODY },
   '/api/run/grid/values': { status: 200, bytes: bytesOf(FIELD) },
+  '/api/run/grid/placement': { status: 200, body: { summary: '1 of 1 groups placed', groups: [], notes: [] } },
 }
 
 function stubEnvironment(overrides: Routes = {}): void {

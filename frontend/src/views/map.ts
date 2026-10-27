@@ -7,6 +7,7 @@
 
 import type { IngestState, PanelTab, ViewState } from '../data/client'
 import { readViewState, writeViewState } from '../data/client'
+import { fetchParGroups, type ParGroupsResult } from '../data/par'
 import { emptySelection } from '../state/rules'
 import { createSelectionStore, type SelectionStore } from '../state/selection'
 import { renderDivider } from '../ui/divider'
@@ -106,6 +107,19 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   // The Params panel can be rendered more than once; hide and show go to the
   // latest one.
   let paramsHandle: ParamsPanelHandle | null = null
+  // The group summary does not change with the iteration, so one read serves
+  // every panel drawn; a failed read is forgotten so the next show asks again.
+  let groupsRead: Promise<ParGroupsResult> | null = null
+  function loadGroups(): Promise<ParGroupsResult> {
+    if (groupsRead === null) {
+      const read = fetchParGroups()
+      groupsRead = read
+      read.catch(() => {
+        if (groupsRead === read) groupsRead = null
+      })
+    }
+    return groupsRead
+  }
 
   const tabs = renderTabs(rightPanelHost, {
     tabs: [
@@ -173,9 +187,13 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     statusBar,
     viewState: viewStatePromise,
     onPanelFacts: (facts) => {
-      paramsHandle = renderParamsPanel(tabs.panel('params'), facts)
-      // A fresh panel starts as shown; tell it if its tab is not the open one.
-      if (tabs.current() !== 'params') paramsHandle.onHide()
+      paramsHandle?.dispose()
+      paramsHandle = renderParamsPanel(tabs.panel('params'), {
+        ...facts,
+        store,
+        loadGroups,
+        startHidden: tabs.current() !== 'params',
+      })
     },
     onViewStateChange: scheduleViewWrite,
   })
