@@ -85,4 +85,16 @@ describe('ingestState observation capabilities', () => {
     expect(capabilities.phiCheck).toEqual({ available: true, blockedBy: [] })
     expect(capabilities.pdc).toBeUndefined()
   })
+
+  it('maps par_view to parView, and leaves it absent when the server sends none', async () => {
+    const blocked = [{ artifact: 'par_groups', reason: 'par_change could not be read' }]
+    stubState({ map: OK, stats: OK, chips: OK, par_view: { available: false, blocked_by: blocked } })
+    const sent = await ingestState()
+    expect(sent.capabilities.parView).toEqual({ available: false, blockedBy: blocked })
+
+    stubState({ map: OK, stats: OK, chips: OK })
+    const none = await ingestState()
+    expect(none.capabilities.parView).toBeUndefined()
+    expect(Object.keys(none.capabilities).sort()).toEqual(['chips', 'map', 'stats'])
+  })
 })
