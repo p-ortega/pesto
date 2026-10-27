@@ -138,10 +138,11 @@ describe('the Config tab in the map shell', () => {
     expect(keys).toEqual(['pestpp_version', 'regularization'])
   })
 
-  it('no longer shows the Config placeholder, and the Obs tab keeps its own', async () => {
+  it('no longer shows the Config placeholder, and the Obs tab holds its panel instead of a placeholder', async () => {
     const root = await openShell(runConfig())
     expect(root.querySelector('#panel-config')?.textContent).not.toContain('How the run was set up will show here')
-    expect(root.querySelector('#panel-obs')?.textContent).toContain('Observations will show here')
+    expect(root.querySelector('#panel-obs .obs-groups')).not.toBeNull()
+    expect(root.querySelector('#panel-obs')?.textContent).not.toContain('Observations will show here')
   })
 
   it('shows the server note once when the config was written before the facts existed', async () => {
