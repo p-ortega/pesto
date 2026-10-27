@@ -32,15 +32,30 @@ import pandas as pd
 
 from pesto.ingest.failures import ReadFailure
 from pesto.model import Geometry, GridShape, MeshBuffers, ObsCells, ParCells, fan_polygons
-from pesto.model._parcells import resolve
+from pesto.model import GroupResolution
+from pesto.model._mf6obs import observation_input_files as _observation_input_files
+from pesto.model._mf6obs import place_sites, read_observation_input
+from pesto.model._parcells import UNMAPPED, _summarize, resolve
+
+OBS_INPUT_RULE = "mf6-obs"
+NO_GROUP_LABEL = "(no obgnme)"
+
+
+def observation_input_files(run_dir: Path) -> tuple[Path, ...]:
+    """The MF6 text files a site's placement can come from: ``mfsim.nam``, the
+    model name files, the OBS6 files. Empty when the run has no ``mfsim.nam``."""
+    return _observation_input_files(Path(run_dir))
 
 
 class Mf6Adapter:
     """The spatial adapter for a MODFLOW 6 run, built from its binary grid
-    file (``.grb``)."""
+    file (``.grb``). ``model_dir`` is the run folder; when given, sites the
+    control file's columns leave unplaced are looked up in the model's own
+    observation input there. It is only ever read."""
 
-    def __init__(self, grb_path: Path) -> None:
+    def __init__(self, grb_path: Path, model_dir: Path | None = None) -> None:
         self._grb_path = Path(grb_path)
+        self._model_dir = None if model_dir is None else Path(model_dir)
         self._grid: Any = None
         self._failure: ReadFailure | None = None
 
@@ -201,15 +216,63 @@ class Mf6Adapter:
         evidence = self._layer_base_note(sites, result, shape)
         if evidence is not None:
             notes = notes + (evidence,)
+        cell, layer, groups, summary = result.cell, result.layer, result.groups, result.summary
+        if self._model_dir is not None and len(sites):
+            cell, layer, groups, summary, extra = self._place_from_observation_input(
+                sites, result, shape
+            )
+            notes = notes + extra
         return ObsCells(
-            cell=result.cell,
-            layer=result.layer,
+            cell=cell,
+            layer=layer,
             site=result.parnme,
-            groups=result.groups,
-            summary=result.summary,
+            groups=groups,
+            summary=summary,
             notes=notes,
             point_xy=result.point_xy,
         )
+
+    def _place_from_observation_input(
+        self, sites: pd.DataFrame, result: ParCells, shape: GridShape
+    ) -> tuple[np.ndarray, np.ndarray, tuple[GroupResolution, ...], str, tuple[str, ...]]:
+        """Place the still-unplaced sites by joining their ``id`` to the names
+        in the model's observation input. Placed sites are never moved."""
+        observations = read_observation_input(self._model_dir, self._grb_path.name)
+        cell, layer = result.cell.copy(), result.layer.copy()
+        unplaced = int((cell < 0).sum())
+        if not observations.found:
+            if not unplaced:
+                return cell, layer, result.groups, result.summary, ()
+            return cell, layer, result.groups, result.summary, (
+                f"{unplaced} site(s) are unplaced and the model's observation input "
+                "(mfsim.nam) was not found in the run folder",
+            )
+        if "id" in sites.columns:
+            ids = [("" if pd.isna(v) else str(v)) for v in sites["id"]]
+        else:
+            ids = [""] * len(sites)
+        placement = place_sites(list(result.parnme), ids, observations, shape, cell, layer)
+        notes = observations.notes + placement.notes
+        gained = placement.cell >= 0
+        if not gained.any():
+            return cell, layer, result.groups, result.summary, notes
+        cell[gained], layer[gained] = placement.cell[gained], placement.layer[gained]
+        labels = np.array(
+            [NO_GROUP_LABEL if pd.isna(v) else str(v) for v in sites["obgnme"]], dtype=object
+        )
+        groups = []
+        for group in result.groups:
+            more = int(gained[labels == group.group].sum())
+            if more == 0:
+                groups.append(group)
+                continue
+            rule = OBS_INPUT_RULE if group.mapped == 0 and group.rule == UNMAPPED else group.rule
+            groups.append(
+                GroupResolution(group=group.group, rule=rule, mapped=group.mapped + more, total=group.total)
+            )
+        groups_tuple = tuple(groups)
+        summary = _summarize(groups_tuple, len(sites), "observation group", "sites")
+        return cell, layer, groups_tuple, summary, notes
 
     def _layer_base_note(
         self, sites: pd.DataFrame, result: ParCells, shape: GridShape

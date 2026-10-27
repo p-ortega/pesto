@@ -327,9 +327,12 @@ def _write_obs_index_artifact(cache_root: str) -> "WrittenArtifact | ReadFailure
     return write_obs_index(index, layout)
 
 
-def _write_obs_cell_artifact(grid_path: str, cache_root: str) -> "WrittenArtifact | ReadFailure":
+def _write_obs_cell_artifact(
+    grid_path: str, cache_root: str, run_dir: str
+) -> "WrittenArtifact | ReadFailure":
     """The worker for the ``obs_cell`` artifact: places every site of the
-    cached ``obs_index`` on the grid, never from the control file, and writes
+    cached ``obs_index`` on the grid, from the control file's columns and then
+    from the model's own observation input, and writes
     ``grid/obs_cell.parquet`` and its sidecar."""
     layout = CacheLayout(root=Path(cache_root))
     index = load_obs_index(layout)
@@ -349,9 +352,13 @@ def _write_obs_cell_artifact(grid_path: str, cache_root: str) -> "WrittenArtifac
     table.index = pd.Index(sites["site"].astype(str).to_numpy(), name="obsnme")
     # Deferred import: nothing under pesto.ingest may name pesto.model at
     # module level (test_no_ingest_file_imports_anything_from_model).
-    from pesto.model.mf6 import Mf6Adapter
+    from pesto.model.mf6 import Mf6Adapter, observation_input_files
 
-    cells = Mf6Adapter(Path(grid_path)).locate_obs(table)
+    if observation_input_files(Path(run_dir)):
+        adapter = Mf6Adapter(Path(grid_path), model_dir=Path(run_dir))
+    else:
+        adapter = Mf6Adapter(Path(grid_path))
+    cells = adapter.locate_obs(table)
     if isinstance(cells, ReadFailure):
         return cells
     return write_obs_cell(cells, sites, index.order_digest, layout)
@@ -871,8 +878,13 @@ def plan_artifacts(
     )
 
     if grid_path is not None:
+        # Deferred import: nothing under pesto.ingest may name pesto.model at
+        # module level (test_no_ingest_file_imports_anything_from_model).
+        from pesto.model.mf6 import observation_input_files
+
         # Kept apart from the ensembles: a grid edit makes only this stale.
-        obs_cell_sources = _unique((*control_sources, str(grid_path)))
+        model_input = tuple(str(p) for p in observation_input_files(run.run_dir))
+        obs_cell_sources = _unique((*control_sources, str(grid_path), *model_input))
         artifacts.append(
             PlannedArtifact(
                 name="obs_cell",
@@ -1280,7 +1292,7 @@ def _dispatch(
     if artifact.kind == "obs_index":
         return _write_obs_index_artifact, (cache_root,)
     if artifact.kind == "obs_cell":
-        return _write_obs_cell_artifact, (grid_path, cache_root)
+        return _write_obs_cell_artifact, (grid_path, cache_root, run_dir)
     if artifact.kind == "pp_factors":
         return _write_pp_factors_artifact, (run_dir, grid_path, cache_root)
     if artifact.kind == "config":

@@ -26,7 +26,9 @@ from pesto.ingest.obsindex import load_obs_index
 from pesto.ingest.runner import ingest_run, plan_artifacts
 from pesto.model import GroupResolution, ObsCells
 
-from .obs_fixtures import GRID_SITES, make_obs_run
+from model.mf6_input import write_mf6_obs_input
+
+from .obs_fixtures import GRID_SITES, SiteSpec, make_obs_run
 
 # Taken at import time, before any fixture swaps the runner's isolation out.
 _REAL_RUN_ISOLATED = runner._run_isolated
@@ -444,3 +446,37 @@ def test_an_ingest_with_obs_cell_changes_nothing_in_the_run_folder(tmp_path, in_
 
     assert manifest.artifacts["obs_cell"].state == "ok"
     assert _snapshot(run_dir) == before
+
+
+# ---------------------------------------------------------------------------
+# placement from the model's own MF6 observation input
+# ---------------------------------------------------------------------------
+
+_W1 = "oname:hds_otype:lst_usecol:w-1"
+_W2 = "oname:hds_otype:lst_usecol:w-2"
+
+
+def _mf6_sites(*ids: str):
+    return tuple(
+        SiteSpec("gw_head", f"oname:hds_otype:lst_usecol:{i}", (None,), "none", extras={"id": i})
+        for i in ids
+    )
+
+
+def test_sites_named_in_the_mf6_observation_input_are_placed_by_ingest_run(tmp_path, in_process):
+    run_dir = tmp_path / "run"
+    make_obs_run(run_dir, grid=True, iterations=(0,), sites=_mf6_sites("w-1", "w-2"))
+    write_mf6_obs_input(
+        run_dir, obs_files={"coarse_0.obs": [("W-1", "HEAD", "1 1"), ("W-2", "HEAD", "1 3")]}
+    )
+
+    cache_root = tmp_path / "cache"
+    manifest = ingest_run(run_dir, cache_root=cache_root)
+
+    assert manifest.artifacts["obs_cell"].state == "ok", manifest.artifacts["obs_cell"].reason
+    table = load_obs_cell(CacheLayout(root=cache_root))
+    assert isinstance(table, ObsCellTable)
+    at = _by_site(table)
+    assert (table.cell[at[_W1]], table.layer[at[_W1]], table.rule[at[_W1]]) == (0, 0, "mf6-obs")
+    assert (table.cell[at[_W2]], table.layer[at[_W2]], table.rule[at[_W2]]) == (2, 0, "mf6-obs")
+    assert any("lower-casing" in note for note in table.notes)
