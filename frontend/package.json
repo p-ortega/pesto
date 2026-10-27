@@ -11,10 +11,12 @@
   },
   "dependencies": {
     "apache-arrow": "^21.2.0",
+    "d3-scale": "4.0.2",
     "flatbush": "^4.6.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@types/d3-scale": "4.0.9",
     "jsdom": "^30.0.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
