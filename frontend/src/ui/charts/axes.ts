@@ -1,5 +1,10 @@
+// Axes for the chart kit, built on d3-scale for its tick choice and log scale.
+
+import { scaleLinear, scaleLog } from 'd3-scale'
+
 export interface AxisTick {
   value: number
+  // Empty when a log axis would crowd this tick; the caller skips empty labels.
   label: string
   px: number
 }
@@ -9,10 +14,24 @@ export interface Axis {
   ticks: AxisTick[]
 }
 
-export function linearAxis(_domain: [number, number], _range: [number, number], _tickCount = 5): Axis {
-  return { toPx: () => 0, ticks: [] }
+export function linearAxis(domain: [number, number], range: [number, number], tickCount = 5): Axis {
+  const scale = scaleLinear().domain(domain).range(range)
+  const format = scale.tickFormat(tickCount)
+  return {
+    toPx: (value) => scale(value),
+    ticks: scale.ticks(tickCount).map((value) => ({ value, label: format(value), px: scale(value) })),
+  }
 }
 
-export function logAxis(_nativeDomain: [number, number], _range: [number, number]): Axis | null {
-  return null
+// The domain is in native units. A log scale needs it strictly positive, so
+// anything else is refused rather than bent into shape.
+export function logAxis(nativeDomain: [number, number], range: [number, number]): Axis | null {
+  const [lo, hi] = nativeDomain
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo <= 0 || hi <= lo) return null
+  const scale = scaleLog().domain(nativeDomain).range(range)
+  const format = scale.tickFormat()
+  return {
+    toPx: (value) => scale(value),
+    ticks: scale.ticks().map((value) => ({ value, label: format(value), px: scale(value) })),
+  }
 }

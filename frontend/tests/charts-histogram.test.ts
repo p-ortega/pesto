@@ -162,7 +162,7 @@ describe('drawHistogram', () => {
       xLabel: 'x',
     }
     expect(drawHistogram(ctx, spec, TOKENS, SIZE)).toBe(true)
-    expect(calls.filter((c) => c.method === 'fillText').map((c) => c.args[0])).toContain('0')
+    expect(calls.filter((c) => c.method === 'fillText').map((c) => c.args[0])).toContain('0.0')
   })
 
   it('draws nothing and returns false for an empty spec', () => {
