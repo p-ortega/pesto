@@ -5,9 +5,11 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchObs1to1,
+  fetchObsBrush,
   fetchObsFrame,
   fetchObsGroups,
   fetchObsPoints,
+  fetchObsReals,
   fetchObsResidHist,
   fetchObsSeries,
   fetchObsSite,
@@ -531,5 +533,82 @@ describe('shareRead', () => {
     await Promise.resolve()
     expect((await shared()).ok).toBe(true)
     expect(read).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('fetchObsBrush', () => {
+  function brushBody(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      group: 'heads',
+      iteration: 1,
+      lo: -0.5,
+      hi: 0.5,
+      sites: [2, 4, 9],
+      n_obs_in_range: 7,
+      left_out: { no_target: 1, sentinel: 2, no_valid_realization: 0 },
+      other: { iteration: 0, counts: [0, 3], density: [0, 0.5], n_sites: 3, n_obs: 6 },
+      ...extra,
+    }
+  }
+
+  it('sends group, iteration, lo and hi and returns the payload as sent', async () => {
+    const body = brushBody()
+    const fetchMock = stubFetch({ json: body })
+
+    const result = await fetchObsBrush('heads', 1, -0.5, 0.5)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/run/obs/brush?group=heads&iteration=1&lo=-0.5&hi=0.5')
+    expect(result).toEqual({ ok: true, payload: body })
+  })
+
+  it('takes other as null but refuses an answer without it, naming it', async () => {
+    const one = brushBody({ other: null })
+    stubFetch({ json: one })
+    expect(await fetchObsBrush('heads', 1, -0.5, 0.5)).toEqual({ ok: true, payload: one })
+
+    const short = brushBody()
+    delete short.other
+    stubFetch({ json: short })
+    expect(await fetchObsBrush('heads', 1, -0.5, 0.5)).toEqual({ ok: false, artifact: 'obs_agg', reason: 'the brush answer is missing other' })
+  })
+
+  it('asks nothing for a range that is reversed or not finite', async () => {
+    const fetchMock = stubFetch({ json: brushBody() })
+
+    expect((await fetchObsBrush('heads', 1, 1, -1)).ok).toBe(false)
+    expect((await fetchObsBrush('heads', 1, Number.NaN, 1)).ok).toBe(false)
+    expect((await fetchObsBrush('heads', 1, 0, Number.POSITIVE_INFINITY)).ok).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('turns an unknown group 404 into a refusal', async () => {
+    stubFetch(problem(404, { artifact: 'obs_index', detail: "no group 'zz'" }))
+
+    expect(await fetchObsBrush('zz', 1, 0, 1)).toEqual({ ok: false, artifact: 'obs_index', reason: "no group 'zz'" })
+  })
+})
+
+describe('fetchObsReals', () => {
+  it('returns the names in the order the server sent them, with base_index and base_note', async () => {
+    const body = { iteration: 0, names: ['r3', 'base', 'r1'], base_index: [1], base_note: null }
+    const fetchMock = stubFetch({ json: body })
+
+    const result = await fetchObsReals(0)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/run/obs/reals?iteration=0')
+    expect(result).toEqual({ ok: true, payload: body })
+    expect(result.ok && result.payload.names).toEqual(['r3', 'base', 'r1'])
+  })
+
+  it('turns a 404 naming obs_ens/0 into a refusal with that artifact', async () => {
+    stubFetch(problem(404, { artifact: 'obs_ens/0', detail: 'no observation ensemble for iteration 0' }))
+
+    expect(await fetchObsReals(0)).toEqual({ ok: false, artifact: 'obs_ens/0', reason: 'no observation ensemble for iteration 0' })
+  })
+
+  it('refuses an answer missing base_index, naming it', async () => {
+    stubFetch({ json: { iteration: 0, names: [], base_note: null } })
+
+    expect(await fetchObsReals(0)).toEqual({ ok: false, artifact: 'obs_ens/0', reason: 'the realization names answer is missing base_index' })
   })
 })
