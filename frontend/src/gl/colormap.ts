@@ -206,6 +206,30 @@ export function normalize(value: number, limits: [number, number]): number {
 }
 
 /**
+ * The n + 1 edges of n equal classes between the limits, in whatever scale
+ * the limits are already in (D-05).
+ */
+export function classEdges(limits: [number, number], n: number): number[] {
+  const [lo, hi] = limits
+  return Array.from({ length: n + 1 }, (_, k) => lo + ((hi - lo) * k) / n)
+}
+
+/**
+ * The ramp table entry each class is drawn in: the one nearest the class
+ * middle. Computed here and handed to the shader, so the GPU never has to
+ * round a half itself (n 9, class 1 lands exactly on 42.5).
+ */
+export function classTexelIndices(n: number): number[] {
+  return Array.from({ length: n }, (_, k) => Math.round(((k + 0.5) / n) * 255))
+}
+
+/** The colour class k of n is drawn in, read from the same table the shader samples. */
+export function classColour(k: number, n: number, table: Uint8Array): [number, number, number] {
+  const i = classTexelIndices(n)[k] * 4
+  return [table[i], table[i + 1], table[i + 2]]
+}
+
+/**
  * A small limits memory (D-02), keyed by whatever string the caller
  * builds: two realizations of one statistic share the limits computed for
  * it, so flicking between them is a comparison. Switching statistic, scale,

@@ -138,6 +138,7 @@ describe('renderSelectionControls', () => {
       scaleInferred: true,
       limitsMode: 'robust',
       manualLimits: null,
+      style: { classes: 0, symmetric: false, texture: false },
     })
   })
 

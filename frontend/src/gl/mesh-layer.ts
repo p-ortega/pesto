@@ -4,7 +4,8 @@
 // statistic later costs one texture upload of n_cells floats rather than a
 // geometry rebuild.
 
-import { ramp, type ColormapName } from './colormap'
+import { classTexelIndices, ramp, type ColormapName } from './colormap'
+import { CONTINUOUS, type EffectiveStyle } from './field-style'
 import { OUTLINE_MAX_CELLS, RING_EACH_MAX, outlineEdges } from './outline'
 
 const VERTEX = `#version 300 es
@@ -39,11 +40,19 @@ precision highp float;
 flat in float v_norm;
 flat in float v_missing;
 uniform sampler2D u_ramp;
+uniform float u_classes;          // 0 draws the smooth ramp
+uniform float u_classTexel[11];   // the ramp entry of each class, from classTexelIndices
 out vec4 fragColor;
 
 void main() {
   if (v_missing > 0.5) discard;   // inactive or unparameterised cells
-  fragColor = texture(u_ramp, vec2(v_norm, 0.5));
+  float t = v_norm;
+  if (u_classes > 0.5) {
+    int k = int(min(floor(v_norm * u_classes), u_classes - 1.0));
+    // The texel centre, so the LINEAR ramp gives exactly the entry the legend reads.
+    t = (u_classTexel[k] + 0.5) / 256.0;
+  }
+  fragColor = texture(u_ramp, vec2(t, 0.5));
 }`
 
 // The outline pass draws only the ring edges belonging to cells marked
@@ -253,6 +262,8 @@ export interface MeshData {
 }
 
 const TEX_WIDTH = 2048
+// The length of u_classTexel in both shaders; 11 is the most classes offered.
+const MAX_CLASSES = 11
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type)
@@ -355,6 +366,8 @@ export class MeshLayer {
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
   private colormapName: ColormapName = 'viridis'
   private colormapReverse = false
+  private style: EffectiveStyle = CONTINUOUS
+  private classTexel = new Float32Array(MAX_CLASSES)
   private lastValues: Float32Array | null = null
   private inactiveMask: Uint8Array | null = null
   private hairlineColor: [number, number, number, number] = [0, 0, 0, 1]
@@ -594,6 +607,19 @@ export class MeshLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  }
+
+  /** The effective style resolveStyle gave; read at draw time, so a context restore keeps it. */
+  setStyle(style: EffectiveStyle): void {
+    this.style = style
+    this.classTexel = new Float32Array(MAX_CLASSES)
+    if (style.classes > 0) this.classTexel.set(classTexelIndices(Math.min(style.classes, MAX_CLASSES)))
+  }
+
+  private setClassUniforms(program: WebGLProgram): void {
+    const { gl } = this
+    gl.uniform1f(gl.getUniformLocation(program, 'u_classes'), Math.min(this.style.classes, MAX_CLASSES))
+    gl.uniform1fv(gl.getUniformLocation(program, 'u_classTexel'), this.classTexel)
   }
 
   setMatrix(matrix: Float32Array): void {
@@ -979,6 +1005,7 @@ export class MeshLayer {
     gl.uniformMatrix3fv(gl.getUniformLocation(this.program, 'u_matrix'), false, this.matrix)
     gl.uniform2f(gl.getUniformLocation(this.program, 'u_texSize'), TEX_WIDTH, this.texHeight)
     gl.uniform2f(gl.getUniformLocation(this.program, 'u_limits'), this.limits[0], this.limits[1])
+    this.setClassUniforms(this.program)
 
     gl.drawElements(gl.TRIANGLES, this.mesh.indices.length, gl.UNSIGNED_INT, 0)
     gl.bindVertexArray(null)

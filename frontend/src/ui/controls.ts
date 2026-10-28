@@ -6,6 +6,7 @@
 
 import type { RealNamesResult } from '../data/reals'
 import { STOPS, type ColormapName, type LimitsMode, type ValueScale } from '../gl/colormap'
+import { CLASS_CHOICES, DEFAULT_STYLE, isClassCount, type EffectiveStyle, type FieldStyle, type StyleNotes } from '../gl/field-style'
 
 export const STATISTICS = ['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'] as const
 export type Statistic = (typeof STATISTICS)[number]
@@ -33,6 +34,7 @@ const JET_REASON = 'A ramp whose lightness reverses three times invents boundari
 const LOG_WARNING_ID = 'scale-log10-warning'
 const REAL_NAMES_LIST_ID = 'go-to-realization-names'
 const GO_TO_REFUSAL_ID = 'go-to-realization-refusal'
+const CLASSES_NOTE_ID = 'classes-note'
 
 export interface FieldChoice {
   iteration: number
@@ -47,6 +49,13 @@ export interface FieldChoice {
   scaleInferred: boolean
   limitsMode: LimitsMode
   manualLimits: [number, number] | null
+  /** What the user asked the field to be drawn as; resolveStyle decides what is drawn. */
+  style: FieldStyle
+}
+
+type ColourFields = Pick<FieldChoice, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'> & {
+  /** Absent means DEFAULT_STYLE. */
+  style?: FieldStyle
 }
 
 export interface SelectionControlsOptions {
@@ -67,7 +76,7 @@ export interface SelectionControlsOptions {
    *  `partrans`). Omitted, this control still falls back to exactly those
    *  defaults, so every existing caller keeps its old behaviour (WINDOWS.md
    *  #8: the checkbox used to never learn what the view already knew). */
-  initial?: Pick<FieldChoice, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'> & {
+  initial?: ColourFields & {
     stat?: Statistic
   }
   onSelectionChange: (selection: FieldChoice) => void
@@ -86,7 +95,7 @@ export interface SelectionControlsHandle {
    *  whenever it changes one of these fields on the control's behalf (a
    *  group change re-inferring the scale, say), so the control the user
    *  sees never disagrees with what is actually drawn (WINDOWS.md #5, #8). */
-  sync(selection: Pick<FieldChoice, 'colormap' | 'reverseColormap' | 'scale' | 'scaleInferred' | 'limitsMode' | 'manualLimits'>): void
+  sync(selection: ColourFields): void
   /** Moves the layer slider without emitting onSelectionChange. */
   setLayer(layer: number): void
   /** The iteration the emitted selections carry from now on. Emits nothing. */
@@ -99,6 +108,8 @@ export interface SelectionControlsHandle {
    * position is never reused. Emits nothing.
    */
   setRealizations(names: RealNamesResult, wanted: string | null): number | null
+  /** Shows why a style setting is not drawn as asked, next to its control. Emits nothing. */
+  showStyle(effective: EffectiveStyle, notes: StyleNotes): void
 }
 
 // The map hides these rows while it is coloured by observations (style.css, .colour-obs).
@@ -411,6 +422,35 @@ export function renderSelectionControls(
   }
   updateManualVisibility()
 
+  // Classes: continuous or 7, 9, 11 equal steps between the limits (D-04).
+  const classesLabel = parameterOnly(document.createElement('label'))
+  classesLabel.classList.add('label')
+  classesLabel.textContent = 'Classes'
+  const classesSelect = document.createElement('select')
+  classesSelect.setAttribute('aria-label', 'Colour classes')
+  for (const n of CLASS_CHOICES) {
+    const option = document.createElement('option')
+    option.setAttribute('value', String(n))
+    option.textContent = n === 0 ? 'Continuous' : String(n)
+    classesSelect.appendChild(option)
+  }
+  classesSelect.value = String(opts.initial?.style?.classes ?? DEFAULT_STYLE.classes)
+  classesLabel.appendChild(classesSelect)
+
+  const classesNote = parameterOnly(document.createElement('div'))
+  classesNote.classList.add('label')
+  classesNote.id = CLASSES_NOTE_ID
+  classesNote.style.color = 'var(--status-warning)'
+  classesNote.style.display = 'none'
+
+  // The rest of the request rides along unchanged until its own control exists.
+  let style: FieldStyle = { ...(opts.initial?.style ?? DEFAULT_STYLE) }
+
+  function currentStyle(): FieldStyle {
+    const n = Number(classesSelect.value)
+    return { ...style, classes: isClassCount(n) ? n : DEFAULT_STYLE.classes }
+  }
+
   function currentManualLimits(): [number, number] | null {
     if (limitsSelect.value !== 'manual') return null
     const lower = Number(manualLower.value)
@@ -436,6 +476,7 @@ export function renderSelectionControls(
       scaleInferred: !scaleTouchedByUser,
       limitsMode,
       manualLimits: currentManualLimits(),
+      style: currentStyle(),
     }
   }
 
@@ -521,6 +562,10 @@ export function renderSelectionControls(
     opts.onSelectionChange(currentSelection())
   })
 
+  classesSelect.addEventListener('change', () => {
+    opts.onSelectionChange(currentSelection())
+  })
+
   el.appendChild(fitButton)
   el.appendChild(layerLabel)
   el.appendChild(statLabel)
@@ -537,6 +582,8 @@ export function renderSelectionControls(
   el.appendChild(limitsLabel)
   el.appendChild(manualLower)
   el.appendChild(manualUpper)
+  el.appendChild(classesLabel)
+  el.appendChild(classesNote)
 
   return {
     setLogUsability(count: number): void {
@@ -563,6 +610,10 @@ export function renderSelectionControls(
       if (selection.manualLimits) {
         manualLower.value = String(selection.manualLimits[0])
         manualUpper.value = String(selection.manualLimits[1])
+      }
+      if (selection.style) {
+        style = { ...selection.style }
+        classesSelect.value = String(selection.style.classes)
       }
     },
     setLayer(layer): void {
@@ -614,6 +665,12 @@ export function renderSelectionControls(
       realInput.value = String(index)
       showReal()
       return index
+    },
+    showStyle(_effective, notes): void {
+      classesNote.textContent = notes.classes ?? ''
+      classesNote.style.display = notes.classes === null ? 'none' : ''
+      if (notes.classes === null) classesSelect.removeAttribute('aria-describedby')
+      else classesSelect.setAttribute('aria-describedby', CLASSES_NOTE_ID)
     },
   }
 }

@@ -107,6 +107,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     },
     uniform1i: record('uniform1i'),
     uniform1f: record('uniform1f'),
+    uniform1fv: record('uniform1fv'),
     uniform2f: record('uniform2f'),
     uniform3f: record('uniform3f'),
     uniform4f: record('uniform4f'),
