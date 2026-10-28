@@ -212,3 +212,82 @@ describe('BasemapLayer refusals', () => {
     expect(layer.hasImage()).toBe(false)
   })
 })
+
+describe('BasemapLayer context restore and clean-up', () => {
+  const extent: Extent = [999, 1199, 1901, 2001]
+  const origin: [number, number] = [1000, 2000]
+  const positions = [-1, 1, 199, 1, -1, -99, 199, -99]
+
+  it('reupload rebuilds the program and texture and uploads the same bitmap and positions, keeping saturation and matrix', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new BasemapLayer(gl)
+    const bitmap = fakeBitmap(4, 2)
+    layer.setImage(bitmap, extent, origin)
+    layer.setSaturation(1)
+    const matrix = new Float32Array([3, 0, 0, 0, 3, 0, 0, 0, 1])
+    layer.setMatrix(matrix)
+
+    const from = calls.length
+    layer.reupload()
+    const after = since(calls, from)
+    expect(after.filter((c) => c.method === 'createProgram')).toHaveLength(1)
+    expect(after.filter((c) => c.method === 'createTexture')).toHaveLength(1)
+    expect(after.find((c) => c.method === 'texImage2D')?.args[5]).toBe(bitmap)
+    expect(bufferUploads(after)).toContainEqual(positions)
+    expect(bufferUploads(after)).toContainEqual([0, 0, 1, 0, 0, 1, 1, 1])
+
+    const drawFrom = calls.length
+    layer.draw()
+    const drawn = since(calls, drawFrom)
+    expect(uniformValues(drawn, 'uniform1f', 'u_saturation')).toEqual([1])
+    expect(uniformValues(drawn, 'uniformMatrix3fv', 'u_matrix')).toEqual([matrix])
+    expect(drawCalls(drawn)).toHaveLength(1)
+  })
+
+  it('reupload with no image builds the program and uploads no texture', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new BasemapLayer(gl)
+    const from = calls.length
+    layer.reupload()
+    const after = since(calls, from)
+    expect(after.filter((c) => c.method === 'createProgram')).toHaveLength(1)
+    expect(after.some((c) => c.method === 'texImage2D')).toBe(false)
+  })
+
+  it('dispose deletes the program, the vertex array, both buffers and the texture, and later calls touch no GL', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new BasemapLayer(gl)
+    layer.setImage(fakeBitmap(4, 2), extent, origin)
+    layer.dispose()
+
+    const count = (method: string) => calls.filter((c) => c.method === method).length
+    expect(count('deleteProgram')).toBe(1)
+    expect(count('deleteVertexArray')).toBe(1)
+    expect(count('deleteTexture')).toBe(1)
+    const buffers = calls.filter((c) => c.method === 'deleteBuffer').map((c) => c.args[0])
+    expect(buffers).toHaveLength(2)
+    expect(buffers[0]).not.toBe(buffers[1])
+    expect(layer.hasImage()).toBe(false)
+
+    const from = calls.length
+    layer.draw()
+    layer.reupload()
+    expect(layer.setImage(fakeBitmap(4, 2), extent, origin)).toMatch(/removed/)
+    layer.dispose()
+    expect(since(calls, from)).toEqual([])
+  })
+
+  it('replacing one image with another deletes nothing and re-uploads the texture and positions', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new BasemapLayer(gl)
+    layer.setImage(fakeBitmap(4, 2), extent, origin)
+    const second = fakeBitmap(8, 8)
+    const from = calls.length
+    layer.setImage(second, [1000, 1010, 2000, 2010], origin)
+    const after = since(calls, from)
+
+    expect(after.some((c) => c.method.startsWith('delete'))).toBe(false)
+    expect(after.find((c) => c.method === 'texImage2D')?.args[5]).toBe(second)
+    expect(bufferUploads(after)).toContainEqual([0, 10, 10, 10, 0, 0, 10, 0])
+  })
+})
