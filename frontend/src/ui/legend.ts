@@ -142,6 +142,14 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
     el.appendChild(noteLine)
   }
 
+  // Read from the effective style only, so the legend never claims limits that are not drawn (D-11).
+  if (opts.style?.symmetric) {
+    const symmetricLine = document.createElement('div')
+    symmetricLine.classList.add('label')
+    symmetricLine.textContent = 'symmetric about 0'
+    el.appendChild(symmetricLine)
+  }
+
   // The scale in use, and whether it was inferred from partrans rather
   // than chosen explicitly -- the log default is an inference and §1
   // requires pesto to say what it inferred.

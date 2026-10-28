@@ -23,11 +23,21 @@ import {
   type PpIndex,
 } from '../data/fields'
 import { Camera, wheelZoomFactor } from '../gl/camera'
-import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
+import { applyScale, logIsUsable, scaleLimits, subsetValues, symmetricLimits, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
 import { readColorToken, readNumberToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
-import { CONTINUOUS, DEFAULT_STYLE, classLabel, resolveStyle, type EffectiveStyle } from '../gl/field-style'
+import {
+  CONTINUOUS,
+  DEFAULT_STYLE,
+  SYMMETRIC_TURNED_OFF_PREFIX,
+  classLabel,
+  followLimits,
+  isClassCount,
+  resolveStyle,
+  type EffectiveStyle,
+  type FieldStyle,
+} from '../gl/field-style'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
@@ -142,7 +152,7 @@ export interface PanelFacts {
 /** The map's own choices that the shell saves, next to the divider. */
 export type MapViewFields = Pick<
   ViewState,
-  'colormap' | 'reverse' | 'scale' | 'limitsMode' | 'group' | 'stat' | 'layer'
+  'colormap' | 'reverse' | 'scale' | 'limitsMode' | 'group' | 'stat' | 'layer' | 'classes' | 'symmetric' | 'texture'
 >
 
 export interface MapViewOptions {
@@ -307,6 +317,14 @@ function restoredStat(value: string | undefined, realNamesOk: boolean): FieldCho
 // naming why, is the honest version of "we don't actually know this."
 function restoredLimitsMode(mode: ViewState['limitsMode']): 'robust' | 'minmax' {
   return mode === 'manual' ? 'robust' : mode
+}
+
+function restoredFieldStyle(saved: ViewState): FieldStyle {
+  return {
+    classes: isClassCount(saved.classes) ? saved.classes : DEFAULT_STYLE.classes,
+    symmetric: saved.symmetric === true,
+    texture: saved.texture === true,
+  }
 }
 
 /**
@@ -866,6 +884,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       group: drawnGroup,
       stat: committed.stat,
       layer: committed.layer,
+      classes: committed.style.classes,
+      symmetric: committed.style.symmetric,
+      texture: committed.style.texture,
     }
   }
 
@@ -1566,7 +1587,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // An interpolated group has values on one layer only, so it opens there.
     const nextLayer = entry?.layer ?? dotLayerFor(group) ?? committed.layer
     // Built from the newest choice, so a realization still loading is the one asked for.
-    const next: FieldChoice = { ...latest, layer: nextLayer, scale: newScale, scaleInferred: true }
+    // D-09: a log scale the new group infers turns symmetric off, and the control says so. A held
+    // field with non-positive values will be drawn linear (deriveAndDraw), so it keeps symmetric.
+    const drawnScale: ValueScale = !fieldFollowsGroup && rawFieldNonPositiveCount > 0 ? 'linear' : newScale
+    const followed = followLimits(latest.style, drawnScale, latest.limitsMode)
+    const next: FieldChoice = { ...latest, layer: nextLayer, scale: newScale, scaleInferred: true, style: followed.style }
     if (fieldFollowsGroup) {
       pendingGroup = group
     } else {
@@ -1579,7 +1604,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // deriveAndDraw's own setLogUsability call can still override this to
     // linear, for a genuinely different reason (the new field has
     // non-positive values), so this runs first.
-    controlsHandle?.sync(next)
+    controlsHandle?.sync(next, followed.turnedOff === null ? null : SYMMETRIC_TURNED_OFF_PREFIX + followed.turnedOff)
     clearSelection()
     applyChoice(next, !fieldFollowsGroup)
     updateReadout()
@@ -1863,6 +1888,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       limits,
       valued: groupHasFiniteValue(scaled),
     })
+    // The memory keeps the raw pair, so switching symmetric off gives the earlier limits back exactly.
+    if (effective.symmetric) limits = symmetricLimits(limits)
     layer.setColormap(committed.colormap, committed.reverseColormap)
     layer.setLimits(limits)
     layer.setStyle(effective)
@@ -3184,6 +3211,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       })
     }
     const savedLayer = wasVisitedBefore ? restoredView!.layer : null
+    const initialLimitsMode = wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust'
+    // D-03: the style is trusted only on a run visited before, and a saved symmetric the scale refuses is turned off out loud.
+    const restoredStyle = followLimits(
+      wasVisitedBefore ? restoredFieldStyle(restoredView!) : DEFAULT_STYLE,
+      initialScale,
+      initialLimitsMode,
+    )
     committed = {
       iteration,
       layer: interpolatedEntry(drawnGroup)?.layer ?? (savedLayer !== null && savedLayer < mesh.nlay ? savedLayer : 0),
@@ -3193,9 +3227,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       reverseColormap: wasVisitedBefore ? restoredView!.reverse : false,
       scale: initialScale,
       scaleInferred: !wasVisitedBefore,
-      limitsMode: wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust',
+      limitsMode: initialLimitsMode,
       manualLimits: null,
-      style: DEFAULT_STYLE,
+      style: restoredStyle.style,
     }
     // A saved layer holding none of a dot group's dots gives way to the layer that does.
     committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
@@ -3226,6 +3260,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         style: committed.style,
         stat: committed.stat,
       },
+      styleNote: restoredStyle.turnedOff === null ? null : SYMMETRIC_TURNED_OFF_PREFIX + restoredStyle.turnedOff,
       onSelectionChange: handleSelectionChange,
       onFitToExtent: fitToExtent,
     })
