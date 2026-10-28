@@ -225,7 +225,7 @@ function stubFetch(): void {
         case '/api/run/obs/groups':
           return respond({ status: 200, bytes: groupsTable() })
         case '/api/run/obs/sites':
-          return respond({ status: 200, bytes: sitesTable() })
+          return respond({ status: 200, bytes: sitesTable(), headers: { 'X-Pesto-Meta': JSON.stringify({ order_digest: 'digest-a' }) } })
         case '/api/run/obs/times': {
           if (timesHold !== null) await timesHold
           const spec = GROUPS[group]
@@ -233,6 +233,7 @@ function stubFetch(): void {
             status: 200,
             body: {
               group,
+              order_digest: 'digest-a',
               time_kind: spec.kind,
               steps_by: spec.stepsBy,
               times: spec.times,
@@ -264,6 +265,7 @@ function stubFetch(): void {
               'X-Pesto-Meta': JSON.stringify({
                 dtype: '<f4',
                 group,
+                order_digest: 'digest-a',
                 iteration: Number(query.get('iteration')),
                 time,
                 stat,

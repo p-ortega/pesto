@@ -155,6 +155,19 @@ def test_a_frame_holds_the_statistic_of_each_site_at_that_exact_time(tmp_path, i
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_sites_times_and_frame_each_name_the_observation_table_they_were_cut_from(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **GRID_RUN)
+    digest = load_obs_index(_layout(client)).order_digest
+
+    _frame_rows, _notes, sites = _sites(client, "gw_head")
+    times = _times(client, "gw_head")
+    frame = _frame(client, "gw_head", 1, 9.0, "resid_mean")
+
+    assert json.loads(sites.headers["x-pesto-meta"])["order_digest"] == digest
+    assert times["order_digest"] == digest
+    assert series_meta(frame)["order_digest"] == digest
+
+
 def test_a_time_between_two_observation_times_is_a_404_and_never_the_nearest(tmp_path, in_process):
     client, _run = open_obs_run(tmp_path, **GRID_RUN)
 

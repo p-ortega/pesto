@@ -2,9 +2,10 @@
 fixed colour limits, and one frame of values per exact time.
 
 Everything is read through the memo in ``obscache``. Row ``i`` of ``/obs/sites`` and
-entry ``i`` of a ``/obs/frame`` are the same site, in ``obs_index`` order, on every
-request. A time is matched exactly, never to the nearest one, and a site is matched
-by its ``site_id`` value, never by position.
+entry ``i`` of a ``/obs/frame`` are the same site, in ``obs_index`` order. Each of the
+three answers carries the ``order_digest`` of that index so a client can refuse a frame
+cut for a different table. A time is matched exactly, never to the nearest one, and a
+site is matched by its ``site_id`` value, never by position.
 """
 
 from __future__ import annotations
@@ -390,7 +391,7 @@ async def get_obs_sites(request: Request, params: Annotated[ObsMapGroupQuery, Qu
             "note": pa.array(note, type=pa.string()),
         }
     )
-    return arrow_response(table, notes=tuple(notes))
+    return arrow_response(table, notes=tuple(notes), meta={"order_digest": index.order_digest})
 
 
 def _limits(state, cache_root, rows: GroupRows, group: str, ends: list[int]) -> dict:
@@ -442,7 +443,7 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     context = _group_context(state, cache_root, params.group)
     if isinstance(context, Response):
         return context
-    _index, rows = context
+    index, rows = context
     manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
     iterations = _iteration_status(state, cache_root, manifest)
     ends = [item["iteration"] for item in iterations if item["available"]]
@@ -465,6 +466,7 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     )
     body = {
         "group": params.group,
+        "order_digest": index.order_digest,
         "time_kind": rows.time_kind,
         "steps_by": steps_by,
         "times": [float(t) for t in rows.times],
@@ -503,7 +505,7 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
     context = _group_context(state, cache_root, params.group)
     if isinstance(context, Response):
         return context
-    _index, rows = context
+    index, rows = context
     if rows.refused is not None:
         return problem(409, "the group has no time axis", artifact="obs_index", detail=rows.refused)
 
@@ -518,6 +520,14 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
     if params.stat not in agg.stats:
         return problem(404, "that statistic is not stored", artifact=name, detail=f"{name} has no row named {params.stat!r}")
 
+    if agg.order_digest != index.order_digest:
+        return problem(
+            409,
+            "the statistics do not match the observations",
+            artifact=name,
+            detail=f"{name} was built from a different observation table; ingest the run again",
+        )
+
     built = build_frame(rows, agg.values[agg.stats.index(params.stat)], params.time)
     if built is None:
         return problem(404, "no observation at that time", artifact="obs_index", detail=NO_NEAREST_TEXT)
@@ -525,6 +535,7 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
     meta = {
         "group": params.group,
         "iteration": int(params.iteration),
+        "order_digest": index.order_digest,
         "time": float(params.time),
         "stat": params.stat,
         "n_sites": rows.n_sites,

@@ -19,6 +19,8 @@ import {
   type ObsGroupData,
 } from '../src/views/observation-stat-source'
 
+const DIGEST = 'digest-a'
+
 function row(over: Partial<ObsSiteRow> & { siteId: number }): ObsSiteRow {
   return {
     site: `site-${over.siteId}`,
@@ -37,6 +39,7 @@ function row(over: Partial<ObsSiteRow> & { siteId: number }): ObsSiteRow {
 function timesPayload(over: Partial<ObsTimesPayload> = {}): ObsTimesPayload {
   return {
     group: 'g1',
+    order_digest: DIGEST,
     time_kind: 'numeric',
     steps_by: 'time',
     times: [1, 2, 3],
@@ -63,6 +66,7 @@ const SITES: ObsSiteRow[] = [
 function groupData(rows: ObsSiteRow[] = SITES): ObsGroupData {
   return {
     group: 'g1',
+    orderDigest: DIGEST,
     rows,
     times: timesPayload(),
     xy: Float32Array.from(rows.flatMap((r) => [r.x, r.y])),
@@ -140,7 +144,7 @@ describe('dotsFor', () => {
 
 describe('loadGroup', () => {
   it('turns stubbed sites and times into group data', async () => {
-    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, notes: [] })
+    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, orderDigest: DIGEST, notes: [] })
     mocks.fetchObsTimes.mockResolvedValue({ ok: true, payload: timesPayload() })
     const source = createObservationStatSource({ runId: 'run' })
     const answer = await source.loadGroup('g1')
@@ -155,7 +159,7 @@ describe('loadGroup', () => {
   })
 
   it('does not request again when the same choice is made twice', async () => {
-    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, notes: [] })
+    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, orderDigest: DIGEST, notes: [] })
     mocks.fetchObsTimes.mockResolvedValue({ ok: true, payload: timesPayload() })
     const source = createObservationStatSource({ runId: 'run' })
     const first = await source.loadGroup('g1')
@@ -170,7 +174,7 @@ describe('loadGroup', () => {
     mocks.fetchObsSites.mockImplementation(
       (group: string) =>
         new Promise((resolve) => {
-          releases.push(() => resolve({ ok: true, rows: SITES, notes: [] }))
+          releases.push(() => resolve({ ok: true, rows: SITES, orderDigest: DIGEST, notes: [] }))
           void group
         }),
     )
@@ -211,7 +215,7 @@ describe('loadGroup', () => {
   })
 
   it('comes back failed when times are refused, and asks again next time', async () => {
-    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, notes: [] })
+    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, orderDigest: DIGEST, notes: [] })
     mocks.fetchObsTimes.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'group has no times' })
     const source = createObservationStatSource({ runId: 'run' })
     expect(await source.loadGroup('g1')).toEqual({
@@ -223,13 +227,23 @@ describe('loadGroup', () => {
   })
 
   it('refuses a times answer whose rows do not match the sites count', async () => {
-    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, notes: [] })
+    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, orderDigest: DIGEST, notes: [] })
     mocks.fetchObsTimes.mockResolvedValue({ ok: true, payload: timesPayload({ n_sites: 9 }) })
     const source = createObservationStatSource({ runId: 'run' })
     const answer = await source.loadGroup('g1')
     if (answer.stale || !('failed' in answer)) throw new Error('expected a failure')
     expect(answer.failed.reason).toContain('5')
     expect(answer.failed.reason).toContain('9')
+  })
+
+  it('refuses sites and times that were cut from different observation tables', async () => {
+    mocks.fetchObsSites.mockResolvedValue({ ok: true, rows: SITES, orderDigest: DIGEST, notes: [] })
+    mocks.fetchObsTimes.mockResolvedValue({ ok: true, payload: timesPayload({ order_digest: 'digest-b' }) })
+    const source = createObservationStatSource({ runId: 'run' })
+    const answer = await source.loadGroup('g1')
+    if (answer.stale || !('failed' in answer)) throw new Error('expected a failure')
+    expect(answer.failed.artifact).toBe('obs_index')
+    expect(answer.failed.reason).toContain('different observation tables')
   })
 })
 
@@ -252,7 +266,7 @@ function stubFrames(ignoreAbort = false): Call[] {
   mocks.fetchObsFrame.mockImplementation(
     (group: string, iteration: number, time: number, stat: string, opts?: { signal?: AbortSignal }) =>
       new Promise((resolve, reject) => {
-        const meta = { group, iteration, time, stat, nSites: 2, nAtTime: 2, nFinite: 2 }
+        const meta = { group, iteration, time, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nFinite: 2 }
         calls.push({
           group,
           iteration,
@@ -281,18 +295,18 @@ describe('FrameCache.want', () => {
   it('fetches the wanted time first, then two each side, nearest the low side first', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    void cache.want('g', 1, TEN, 4, 'resid_mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'resid_mean')
     expect(callTimes(calls)).toEqual([104, 102, 103, 105, 106])
     calls.forEach((c) => c.answer())
     await tick()
-    const key = cache.key('g', 1, 105, 'resid_mean')
+    const key = cache.key('g', 1, 105, 'resid_mean', DIGEST)
     expect(Array.from(cache.get(key) ?? [])).toEqual([105, 105])
   })
 
   it('answers the wanted frame once it lands', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    const answer = cache.want('g', 1, TEN, 0, 'mean')
+    const answer = cache.want('g', DIGEST, 1, TEN, 0, 'mean')
     expect(callTimes(calls)).toEqual([100, 101, 102])
     calls.forEach((c) => c.answer())
     const result = await answer
@@ -303,12 +317,12 @@ describe('FrameCache.want', () => {
   it('skips frames already cached or in flight and asks only for the new edge', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    void cache.want('g', 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     calls.slice(0, 2).forEach((c) => c.answer())
     await tick()
     calls.length = 0
     mocks.fetchObsFrame.mockClear()
-    void cache.want('g', 1, TEN, 5, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 5, 'mean')
     expect(callTimes(calls)).toEqual([107])
     expect(mocks.fetchObsFrame).toHaveBeenCalledTimes(1)
   })
@@ -316,8 +330,8 @@ describe('FrameCache.want', () => {
   it('does not abort a request inside the window when a newer frame is wanted', () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    void cache.want('g', 1, TEN, 4, 'mean')
-    void cache.want('g', 1, TEN, 5, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 5, 'mean')
     const byTime = new Map(calls.map((c) => [c.time, c]))
     for (const t of [103, 104, 105, 106]) expect(byTime.get(t)?.signal?.aborted).toBe(false)
     expect(byTime.get(102)?.signal?.aborted).toBe(true)
@@ -326,9 +340,9 @@ describe('FrameCache.want', () => {
   it('aborts in-flight requests outside the window and skips indices past the end', () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    void cache.want('g', 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     const before = calls.length
-    void cache.want('g', 1, TEN, 9, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 9, 'mean')
     expect(callTimes(calls.slice(before))).toEqual([109, 107, 108])
     for (const call of calls.slice(0, before)) expect(call.signal?.aborted).toBe(true)
     for (const call of calls.slice(before)) expect(call.signal?.aborted).toBe(false)
@@ -337,8 +351,8 @@ describe('FrameCache.want', () => {
   it('keeps the in-flight frames that stay inside the window', () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    void cache.want('g', 1, TEN, 6, 'mean')
-    void cache.want('g', 1, TEN, 9, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 6, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 9, 'mean')
     const byTime = new Map(calls.map((c) => [c.time, c]))
     expect(byTime.get(107)?.signal?.aborted).toBe(false)
     expect(byTime.get(108)?.signal?.aborted).toBe(false)
@@ -350,41 +364,41 @@ describe('FrameCache.want', () => {
     const cache = new FrameCache('run')
     const times = Array.from({ length: 20 }, (_, i) => i)
     for (const index of [0, 3, 6, 9, 12]) {
-      void cache.want('g', 1, times, index, 'mean')
+      void cache.want('g', DIGEST, 1, times, index, 'mean')
       calls.splice(0).forEach((c) => c.answer())
       await tick()
     }
-    const held = times.filter((t) => cache.get(cache.key('g', 1, t, 'mean')) !== undefined)
+    const held = times.filter((t) => cache.get(cache.key('g', 1, t, 'mean', DIGEST)) !== undefined)
     expect(held).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
   })
 
   it('never caches a failed frame, and the next want asks for it again', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    const first = cache.want('g', 1, TEN, 4, 'mean')
+    const first = cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     calls.find((c) => c.time === 104)?.refuse('no obs_agg for iteration 1')
     expect(await first).toEqual({ stale: false, failed: { artifact: 'obs_agg', reason: 'no obs_agg for iteration 1' } })
-    expect(cache.get(cache.key('g', 1, 104, 'mean'))).toBeUndefined()
+    expect(cache.get(cache.key('g', 1, 104, 'mean', DIGEST))).toBeUndefined()
     calls.length = 0
-    void cache.want('g', 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     expect(callTimes(calls)).toContain(104)
   })
 
   it('does not cache a prefetch that failed, and asks again later', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    void cache.want('g', 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     calls.find((c) => c.time === 105)?.fail(new Error('network down'))
     await tick()
     calls.length = 0
-    void cache.want('g', 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     expect(callTimes(calls)).toEqual([105])
   })
 
   it('throws a real failure of the wanted frame while it is still wanted', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    const answer = cache.want('g', 1, TEN, 4, 'mean')
+    const answer = cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     calls.find((c) => c.time === 104)?.fail(new Error('server fell over'))
     await expect(answer).rejects.toThrow('server fell over')
   })
@@ -392,31 +406,31 @@ describe('FrameCache.want', () => {
   it('answers stale when overtaken, but keeps the frame that lands later', async () => {
     const calls = stubFrames(true)
     const cache = new FrameCache('run')
-    const first = cache.want('g', 1, TEN, 4, 'mean')
-    void cache.want('g', 1, TEN, 8, 'mean')
+    const first = cache.want('g', DIGEST, 1, TEN, 4, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 8, 'mean')
     // The answer was already on the wire when the request was aborted.
     calls.find((c) => c.time === 104)?.answer()
     expect(await first).toEqual({ stale: true })
-    expect(cache.get(cache.key('g', 1, 104, 'mean'))).toBeDefined()
+    expect(cache.get(cache.key('g', 1, 104, 'mean', DIGEST))).toBeDefined()
   })
 
   it('answers stale and caches nothing when the abort wins', async () => {
     stubFrames()
     const cache = new FrameCache('run')
-    const first = cache.want('g', 1, TEN, 0, 'mean')
-    void cache.want('g', 1, TEN, 9, 'mean')
+    const first = cache.want('g', DIGEST, 1, TEN, 0, 'mean')
+    void cache.want('g', DIGEST, 1, TEN, 9, 'mean')
     expect(await first).toEqual({ stale: true })
-    expect(cache.get(cache.key('g', 1, 100, 'mean'))).toBeUndefined()
+    expect(cache.get(cache.key('g', 1, 100, 'mean', DIGEST))).toBeUndefined()
   })
 
   it('makes no request for a frame that is wanted again once cached', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    const first = cache.want('g', 1, TEN, 4, 'mean')
+    const first = cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     calls.splice(0).forEach((c) => c.answer())
     await first
     mocks.fetchObsFrame.mockClear()
-    const again = await cache.want('g', 1, TEN, 4, 'mean')
+    const again = await cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     expect(again.stale).toBe(false)
     expect(mocks.fetchObsFrame).not.toHaveBeenCalled()
   })
@@ -424,37 +438,55 @@ describe('FrameCache.want', () => {
   it('keys differ by group, iteration, time and statistic', () => {
     const cache = new FrameCache('run')
     const keys = [
-      cache.key('a', 1, 5, 'mean'),
-      cache.key('b', 1, 5, 'mean'),
-      cache.key('a', 2, 5, 'mean'),
-      cache.key('a', 1, 6, 'mean'),
-      cache.key('a', 1, 5, 'std'),
+      cache.key('a', 1, 5, 'mean', DIGEST),
+      cache.key('b', 1, 5, 'mean', DIGEST),
+      cache.key('a', 2, 5, 'mean', DIGEST),
+      cache.key('a', 1, 6, 'mean', DIGEST),
+      cache.key('a', 1, 5, 'std', DIGEST),
     ]
     expect(new Set(keys).size).toBe(5)
   })
 
   it('does not mix up two groups when a name holds the key separator', () => {
     const cache = new FrameCache('run')
-    expect(cache.key('a|1', 2, 5, 'mean')).not.toBe(cache.key('a', 1, 2, 'mean'))
+    expect(cache.key('a|1', 2, 5, 'mean', DIGEST)).not.toBe(cache.key('a', 1, 2, 'mean', DIGEST))
   })
 
   it('refuses a frame whose own meta names another time', async () => {
     mocks.fetchObsFrame.mockImplementation(async (group: string, iteration: number, time: number, stat: string) => ({
       ok: true,
       values: Float32Array.from([1, 2]),
-      meta: { group, iteration, time: time + 1, stat, nSites: 2, nAtTime: 2, nFinite: 2 },
+      meta: { group, iteration, time: time + 1, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nFinite: 2 },
     }))
     const cache = new FrameCache('run')
-    const result = await cache.want('g', 1, TEN, 4, 'mean')
+    const result = await cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     if (result.stale || !('failed' in result)) throw new Error('expected a failure')
     expect(result.failed.reason).toContain('time')
-    expect(cache.get(cache.key('g', 1, 104, 'mean'))).toBeUndefined()
+    expect(cache.get(cache.key('g', 1, 104, 'mean', DIGEST))).toBeUndefined()
+  })
+
+  it('refuses a frame cut for another observation table than the sites, and keeps nothing', async () => {
+    mocks.fetchObsFrame.mockImplementation(async (group: string, iteration: number, time: number, stat: string) => ({
+      ok: true,
+      values: Float32Array.from([1, 2]),
+      meta: { group, iteration, time, stat, orderDigest: 'digest-b', nSites: 2, nAtTime: 2, nFinite: 2 },
+    }))
+    const cache = new FrameCache('run')
+    const result = await cache.want('g', DIGEST, 1, TEN, 4, 'mean')
+    if (result.stale || !('failed' in result)) throw new Error('expected a failure')
+    expect(result.failed.reason).toContain('different observation table')
+    expect(cache.get(cache.key('g', 1, 104, 'mean', DIGEST))).toBeUndefined()
+  })
+
+  it('keeps frames of two observation tables apart', () => {
+    const cache = new FrameCache('run')
+    expect(cache.key('g', 1, 5, 'mean', 'digest-a')).not.toBe(cache.key('g', 1, 5, 'mean', 'digest-b'))
   })
 
   it('refuses a position that is not in the times', async () => {
     stubFrames()
     const cache = new FrameCache('run')
-    const result = await cache.want('g', 1, TEN, 10, 'mean')
+    const result = await cache.want('g', DIGEST, 1, TEN, 10, 'mean')
     expect('failed' in result).toBe(true)
     expect(mocks.fetchObsFrame).not.toHaveBeenCalled()
   })
@@ -462,12 +494,12 @@ describe('FrameCache.want', () => {
   it('clear aborts what is out and forgets what is held', async () => {
     const calls = stubFrames()
     const cache = new FrameCache('run')
-    const first = cache.want('g', 1, TEN, 4, 'mean')
+    const first = cache.want('g', DIGEST, 1, TEN, 4, 'mean')
     calls.find((c) => c.time === 105)?.answer()
     await tick()
     cache.clear()
     expect(calls.filter((c) => c.time !== 105).every((c) => c.signal?.aborted)).toBe(true)
-    expect(cache.get(cache.key('g', 1, 105, 'mean'))).toBeUndefined()
+    expect(cache.get(cache.key('g', 1, 105, 'mean', DIGEST))).toBeUndefined()
     expect(await first).toEqual({ stale: true })
   })
 })
