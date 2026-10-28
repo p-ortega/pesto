@@ -18,6 +18,7 @@ import {
 } from '../data/obs'
 import type { Capability, IngestState } from '../data/client'
 import { isDimmed } from '../data/dim'
+import { fetchPdcSites, type PdcSitesAnswer, type PdcSitesResult } from '../data/overlays'
 import { modeOf } from '../state/modifiers'
 import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
@@ -62,6 +63,10 @@ interface GridColumn<T> {
   title?(row: T): string
   /** What the column sorts on. null means no value and always sorts last. Without it the column is not sortable. */
   sortValue?(row: T): string | number | null
+  /** The heading's tooltip; read again on every refresh. */
+  headingTitle?(): string
+  /** Adds marks to a drawn cell after its text is set. */
+  decorate?(cell: HTMLElement, row: T): void
 }
 
 type SortDirection = 'ascending' | 'descending'
@@ -89,6 +94,8 @@ interface Grid<T> {
   firstSelected(): number
   /** Scrolls so the row at `index` of the shown order is at the top. */
   scrollToIndex(index: number): void
+  /** Re-sorts and redraws after a column's figures changed, and re-reads the heading titles. */
+  refresh(): void
 }
 
 function describeFailure(error: unknown, fallback: string): { artifact: string; reason: string } {
@@ -108,6 +115,7 @@ function appendCell<T>(rowEl: HTMLElement, column: GridColumn<T>, row: T): void 
   cell.textContent = column.text(row)
   const title = column.title ? column.title(row) : column.kind === 'name' ? column.text(row) : ''
   if (title !== '') cell.title = title
+  column.decorate?.(cell, row)
   rowEl.appendChild(cell)
 }
 
@@ -151,6 +159,14 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
     header.appendChild(heading)
   }
   el.appendChild(header)
+
+  function titleHeadings(): void {
+    for (const column of opts.columns) {
+      if (column.headingTitle === undefined) continue
+      headings.get(column.key)!.title = column.headingTitle()
+    }
+  }
+  titleHeadings()
 
   const pane = document.createElement('div')
   pane.classList.add('scroll-pane')
@@ -269,6 +285,11 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
       pane.scrollTop = index * ROW_HEIGHT
       if (!opts.isHidden()) renderVisible()
     },
+    refresh() {
+      titleHeadings()
+      rows = sorted()
+      if (!opts.isHidden()) renderVisible()
+    },
   }
 }
 
@@ -303,8 +324,40 @@ function placementTitle(row: ObsSiteRow): string {
   return row.note === null ? rule : `${rule}; ${row.note}`
 }
 
-const SITE_COLUMNS: GridColumn<ObsSiteRow>[] = [
-  { key: 'site', label: 'Site', kind: 'name', text: (r) => r.site },
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+// What the conflict columns show: nothing asked yet, an answer on its way, an answer, or why there is none.
+type PdcState =
+  | { kind: 'waiting'; iteration: number }
+  | { kind: 'answer'; answer: PdcSitesAnswer }
+  | { kind: 'off'; iteration: number; reason: string; refused: boolean }
+
+function pdcSourceText(answer: PdcSitesAnswer): string {
+  if (answer.source === 'file') return answer.sourceFile === null ? "from pestpp's pdc file" : `from pestpp's pdc file (${answer.sourceFile})`
+  if (answer.source === 'computed') return `computed: ${answer.rule ?? 'no rule was recorded'}`
+  return 'the source was not recorded'
+}
+
+// D-28, D-30: the source sits beside the count, and every row that matched nothing or was left out is counted.
+function pdcHeadingTitle(state: PdcState | null): string {
+  if (state === null) return 'prior-data conflict for the shown iteration'
+  if (state.kind === 'waiting') return `asking for prior-data conflict at iteration ${state.iteration}`
+  if (state.kind === 'off') return state.reason
+  const { answer } = state
+  const parts = [`prior-data conflict at iteration ${answer.iteration}, ${pdcSourceText(answer)}`]
+  if (answer.nUnmatched !== null && answer.nUnmatched > 0) {
+    parts.push(answer.nUnmatched === 1 ? '1 pdc row matches no observation' : `${answer.nUnmatched} pdc rows match no observation`)
+  }
+  if (answer.nLeftOut !== null && answer.nLeftOut > 0) {
+    parts.push(`${plural(answer.nLeftOut, 'row', 'rows')} left out: a simulated range holds a sentinel`)
+  }
+  parts.push(...answer.notes)
+  return parts.join('; ')
+}
+
+const SITE_COLUMNS_REST: GridColumn<ObsSiteRow>[] = [
   { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs) },
   { key: 'layer', label: 'Layer', kind: 'figure', text: layerText, title: (r) => (r.layer === -1 ? 'no layer could be worked out for this site' : '') },
   { key: 'placement', label: 'Placement', kind: 'text', text: placementText, title: placementTitle },
@@ -423,6 +476,82 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
 
   let showSelectedButton: HTMLButtonElement | null = null
 
+  const pdcCapability = opts.capabilities.pdc
+  const pdcOff = pdcCapability !== undefined && !pdcCapability.available ? pdcCapability : null
+  const pdcSlot = new LatestWins<PdcSitesResult>()
+  let pdc: PdcState | null = null
+  // The iteration the conflict columns were asked for; null asks again on the next show.
+  let pdcFor: number | null = null
+  let conflicted = new Map<number, number>()
+  const pdcNote = document.createElement('div')
+  pdcNote.classList.add('label', 'wrap-note')
+
+  const siteColumns: GridColumn<ObsSiteRow>[] = [
+    {
+      key: 'site',
+      label: 'Site',
+      kind: 'name',
+      text: (r) => r.site,
+      decorate: (cell, row) => {
+        const n = conflicted.get(row.siteId)
+        if (n === undefined || pdc?.kind !== 'answer') return
+        const mark = document.createElement('span')
+        mark.classList.add('conflict-mark')
+        mark.setAttribute('role', 'img')
+        mark.title = `prior-data conflict at iteration ${pdc.answer.iteration}: ${plural(n, 'observation', 'observations')}`
+        mark.setAttribute('aria-label', mark.title)
+        cell.appendChild(mark)
+      },
+    },
+    ...SITE_COLUMNS_REST,
+  ]
+
+  function setPdc(state: PdcState): void {
+    pdc = state
+    conflicted = new Map()
+    if (state.kind === 'answer') {
+      const { id, nObs } = state.answer.sites
+      // A site listed under more than one group adds up.
+      for (let i = 0; i < id.length; i++) conflicted.set(id[i], (conflicted.get(id[i]) ?? 0) + nObs[i])
+    }
+    pdcNote.textContent = state.kind === 'off' && state.refused ? state.reason : ''
+    groupsGrid?.refresh()
+    if (!hidden) sitesGrid?.redraw()
+  }
+
+  // D-23: the columns follow the shown iteration only, and say why when it has no answer.
+  function requestPdc(): void {
+    if (hidden || blocked) return
+    const iteration = opts.store.get().iteration
+    if (pdcFor === iteration) return
+    pdcFor = iteration
+    if (pdcOff !== null) {
+      setPdc({ kind: 'off', iteration, reason: blockedReason(pdcOff), refused: false })
+      return
+    }
+    setPdc({ kind: 'waiting', iteration })
+    const refuse = (reason: string): void => {
+      pdcFor = null
+      setPdc({ kind: 'off', iteration, reason: `pdc: ${reason}`, refused: true })
+    }
+    void pdcSlot.run(String(iteration), (signal) => fetchPdcSites(iteration, { signal })).then(
+      (result) => {
+        if (result.stale) return
+        const value = result.value
+        if (!value.ok) refuse(value.reason)
+        else if (value.answer.iteration !== iteration) refuse(`the answer was for iteration ${value.answer.iteration}, not ${iteration}`)
+        else if (!value.answer.available) {
+          const reason = value.answer.reason ?? `no prior-data conflict for iteration ${iteration}; no reason was given`
+          setPdc({ kind: 'off', iteration, reason, refused: false })
+        } else setPdc({ kind: 'answer', answer: value.answer })
+      },
+      (error: unknown) => {
+        const { artifact, reason } = describeFailure(error, `pdc/${iteration}`)
+        refuse(`${artifact}: ${reason}`)
+      },
+    )
+  }
+
   // D-01: the one modifier rule, so this list never does its own set arithmetic.
   function pickSiteId(siteId: number, event: MouseEvent | KeyboardEvent): void {
     const next = selectSites(opts.store.get(), [siteId], modeOf(event))
@@ -475,7 +604,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     const grid = createGrid<ObsSiteRow>({
       ariaLabel: `Sites of ${group}`,
       dataKey: 'siteId',
-      columns: SITE_COLUMNS,
+      columns: siteColumns,
       rowId: (row) => String(row.siteId),
       isSelected: (row) => opts.store.get().sites.has(row.siteId),
       isDimmed: (row) => isDimmed(opts.store.get().sites, row.siteId),
@@ -546,6 +675,27 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       return value === null ? NO_RESIDUAL : `${n} observations with a residual`
     }
     const rmseSort = (value: number | null): number | null => (statsOff !== null ? null : value)
+    const conflictCount = (row: ObsGroupRow, key: 'nObs' | 'nSites'): number | null => {
+      if (pdc?.kind !== 'answer') return null
+      const entry = pdc.answer.byGroup.find((g) => g.group === row.group)
+      return entry === undefined ? 0 : entry[key]
+    }
+    const conflictColumn = (key: 'nObs' | 'nSites', columnKey: string, label: string, noun: [string, string]): GridColumn<ObsGroupRow> => ({
+      key: columnKey,
+      label,
+      kind: 'figure',
+      text: (r) => {
+        const n = conflictCount(r, key)
+        return n === null ? NO_FIGURE : String(n)
+      },
+      title: (r) => {
+        const n = conflictCount(r, key)
+        if (n === null || pdc?.kind !== 'answer') return pdcHeadingTitle(pdc)
+        return `${plural(n, noun[0], noun[1])} in prior-data conflict at iteration ${pdc.answer.iteration}`
+      },
+      sortValue: (r) => conflictCount(r, key),
+      headingTitle: () => pdcHeadingTitle(pdc),
+    })
     return [
       { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group, sortValue: (r) => r.group },
       { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs), sortValue: (r) => r.nObs },
@@ -592,6 +742,8 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
         title: (r) => rmseTitle(r.rmseLast, r.nResidLast),
         sortValue: (r) => rmseSort(r.rmseLast),
       },
+      conflictColumn('nObs', 'pdc_obs', 'Conflict obs', ['observation', 'observations']),
+      conflictColumn('nSites', 'pdc_sites', 'Conflict sites', ['site', 'sites']),
     ]
   }
 
@@ -651,7 +803,9 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   }
 
   if (!blocked) renderSitePrompt()
+  noticesHost.appendChild(pdcNote)
   if (!hidden) requestGroups()
+  requestPdc()
 
   // A choice another view makes is followed; the panel's own echo is not.
   const unsubscribeGroups = opts.store.subscribe(
@@ -671,6 +825,10 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     () => selected.refresh(),
   )
   selected.refresh()
+  const unsubscribeIteration = opts.store.subscribe(
+    (selection) => selection.iteration,
+    () => requestPdc(),
+  )
 
   return {
     onShow() {
@@ -678,6 +836,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       spaghetti.onShow()
       fit.onShow()
       requestGroups()
+      requestPdc()
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       groupsGrid?.redraw()
@@ -696,6 +855,8 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       unsubscribeGroups()
       unsubscribeSites()
       unsubscribeSelected()
+      unsubscribeIteration()
+      pdcSlot.cancel()
       selected.dispose()
       sitesSlot.cancel()
       fit.dispose()
