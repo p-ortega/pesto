@@ -5,6 +5,7 @@
 // geometry rebuild.
 
 import { ramp, type ColormapName } from './colormap'
+import { OUTLINE_MAX_CELLS, RING_EACH_MAX, outlineEdges } from './outline'
 
 const VERTEX = `#version 300 es
 in vec2 a_pos;
@@ -331,7 +332,7 @@ export class MeshLayer {
   private contestedMask: Uint8Array | null = null
   private stripeColor: [number, number, number] = [0, 0, 0]
   private contestedFillColor: [number, number, number] = [0, 0, 0]
-  private selectedCell: number | null = null
+  private selectedCells: number[] = []
   private accentColor: [number, number, number] = [0, 0, 0]
   private haloColor: [number, number, number] = [1, 1, 1]
 
@@ -514,7 +515,7 @@ export class MeshLayer {
     if (this.inactiveMask) this.setInactive(this.inactiveMask)
     if (this.contestedMask) this.setContested(this.contestedMask)
     if (this.footprintMask) this.setFootprint(this.footprintMask)
-    if (this.selectedCell !== null) this.setSelected(this.selectedCell)
+    if (this.selectedCells.length > 0) this.setSelectedCells(this.selectedCells)
     // The mask goes up before the field, so the field stays the latest upload.
     if (this.lastHatch) this.setHatch(this.lastHatch)
     if (this.lastValues) this.setValues(this.lastValues)
@@ -690,33 +691,59 @@ export class MeshLayer {
   }
 
   /** Which cell carries the selection ring, over whatever of the four
-   *  marks that cell already has -- `null` removes it. Builds one quad
-   *  per edge of that cell's ring. */
+   *  marks that cell already has -- `null` removes it. */
   setSelected(cellId: number | null): void {
-    this.selectedCell = cellId
+    this.setSelectedCells(cellId === null ? [] : [cellId])
+  }
+
+  /** Rings each cell on its own for up to RING_EACH_MAX cells, and the outer
+   *  outline of the set beyond that. Only the first OUTLINE_MAX_CELLS ids are
+   *  drawn; the caller counts the rest from that constant. Builds one quad
+   *  per ring edge. */
+  setSelectedCells(ids: readonly number[]): void {
+    this.selectedCells = ids.slice(0, OUTLINE_MAX_CELLS)
+    const cells = this.selectedCells
+    let edges: ArrayLike<number>
+    if (cells.length <= RING_EACH_MAX) {
+      const own: number[] = []
+      for (const cell of cells) {
+        const ring = this.rings[cell]
+        if (!ring) continue
+        const [start, count] = ring
+        for (let i = 0; i < count; i++) own.push(start + i, start + ((i + 1) % count))
+      }
+      edges = own
+    } else {
+      edges = outlineEdges(this.rings, this.mesh.positions, cells).edges
+    }
+
     const { gl } = this
     const pos = this.mesh.positions
-    const verts: number[] = []
-    const indices: number[] = []
-    const ring = cellId !== null ? this.rings[cellId] : null
-    if (ring) {
-      const [start, count] = ring
-      for (let i = 0; i < count; i++) {
-        const a = start + i
-        const b = start + ((i + 1) % count)
-        const base = verts.length / 6
-        for (const [t, side] of [[0, -1], [0, 1], [1, -1], [1, 1]]) {
-          verts.push(pos[2 * a], pos[2 * a + 1], pos[2 * b], pos[2 * b + 1], t, side)
-        }
-        indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
+    const nEdges = edges.length / 2
+    const verts = new Float32Array(nEdges * 4 * 6)
+    const indices = new Uint32Array(nEdges * 6)
+    const corners = [[0, -1], [0, 1], [1, -1], [1, 1]] as const
+    for (let e = 0; e < nEdges; e++) {
+      const a = edges[2 * e]
+      const b = edges[2 * e + 1]
+      const base = e * 4
+      for (let k = 0; k < 4; k++) {
+        const o = (base + k) * 6
+        verts[o] = pos[2 * a]
+        verts[o + 1] = pos[2 * a + 1]
+        verts[o + 2] = pos[2 * b]
+        verts[o + 3] = pos[2 * b + 1]
+        verts[o + 4] = corners[k][0]
+        verts[o + 5] = corners[k][1]
       }
+      indices.set([base, base + 1, base + 2, base + 1, base + 3, base + 2], e * 6)
     }
     this.selectionCount = indices.length
     gl.bindVertexArray(this.selectionVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.selectionVerts)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW)
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indices), gl.DYNAMIC_DRAW)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.DYNAMIC_DRAW)
     gl.bindVertexArray(null)
   }
 
