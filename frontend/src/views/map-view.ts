@@ -75,7 +75,10 @@ import {
   type ObsGroupData,
   type TimePosition,
 } from './observation-stat-source'
-import type { SharedSelection } from '../state/rules'
+import { fetchLinkCell, type CellLinkResult } from '../data/link'
+import { LatestWins } from '../data/latest-wins'
+import { modeOf } from '../state/modifiers'
+import { selectCells, type SharedSelection } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 
 // MAP-08: how long a lost context is given to come back on its own before
@@ -767,14 +770,42 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     selectedPointRow = null
     layer?.setSelectedPoint(null)
-    selectedCellId = pickAtWorld(meshGeom, wx, wy)
-    layer?.setSelected(selectedCellId)
+    const cellId = pickAtWorld(meshGeom, wx, wy)
+    if (cellId === null) {
+      selectedCellId = null
+      layer?.setSelected(null)
+      redraw()
+      updateReadout()
+      linkSlot.cancel()
+      store.set({ cells: new Set(), pars: new Set() }, 'map')
+      return
+    }
+    selectedCellId = cellId
+    layer?.setSelected(cellId)
     redraw()
     updateReadout()
-    store.set({ cells: selectedCellId === null ? new Set() : new Set([selectedCellId]), pars: new Set() }, 'map')
-    if (selectedCellId !== null && currentClasses[selectedCellId]?.kind === 'interpolated') {
-      fetchContributors(selectedCellId)
-    }
+    if (currentClasses[cellId]?.kind === 'interpolated') fetchContributors(cellId)
+    const next = selectCells(store.get(), [cellId], modeOf(event))
+    askLinkCell(committed.layer, next.cells)
+  }
+
+  // The ring is already drawn; the store hears of the cells with their parameters and sites
+  // in one write, once the answer for this exact cell set lands.
+  const linkSlot = new LatestWins<CellLinkResult>()
+  function askLinkCell(layerIndex: number, cells: ReadonlySet<number>): void {
+    const sorted = [...cells].sort((a, b) => a - b)
+    void linkSlot.run(`${layerIndex}|${sorted.join(',')}`, (signal) => fetchLinkCell(layerIndex, sorted, { signal })).then((result) => {
+      if (result.stale || !result.value.ok) return
+      const { answer } = result.value
+      store.set(
+        {
+          cells: new Set(cells),
+          pars: new Set(answer.pars.map((p) => p.parnme)),
+          sites: new Set(answer.sites.map((s) => s.siteId)),
+        },
+        'map',
+      )
+    })
   }
   canvas.addEventListener('click', handleCanvasClick)
 

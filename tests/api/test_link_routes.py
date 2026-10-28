@@ -1,0 +1,216 @@
+"""GET /api/run/link/cell: what a clicked cell holds, read back through a real app from a
+cache made by ingesting a generated run on a real vertex grid (three cells, one layer)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import pesto.ingest.runner as runner
+from ingest.obs_fixtures import DEFAULT_SITES, GRID_SITES
+from pesto.cache.layout import CacheLayout
+from pesto.cache.manifest import Manifest
+from pesto.ingest.parcell import load_par_cell, write_par_cell
+from pesto.ingest.ppfactors import PpGroup, PpIndex, write_pp_index
+from pesto.model import GroupResolution, ParCells
+
+from .obs_helpers import open_obs_run, site_id
+
+GRID_RUN = {"grid": True, "sites": DEFAULT_SITES + GRID_SITES, "iterations": (0,), "n_real": 4}
+NO_PLACED_SITES = {"grid": True, "sites": DEFAULT_SITES, "iterations": (0,), "n_real": 4}
+ICPL_A = "oname:hds_otype:lst_usecol:icpl-a"
+
+
+@pytest.fixture
+def in_process(monkeypatch):
+    """Run every worker in this process, with the real adapter."""
+
+    def _call(fn, *args):
+        try:
+            return True, fn(*args)
+        except Exception as exc:
+            return False, exc
+
+    monkeypatch.setattr(runner, "_run_isolated", _call)
+
+
+def _layout(client) -> CacheLayout:
+    return CacheLayout(root=Path(client.pesto_app.state.cache_root))
+
+
+def _place_pars(client, cells: dict[str, tuple[int, int]]) -> None:
+    """Rewrite par_cell so the named parameters sit on (cell, layer); the rest stay unmapped."""
+    layout = _layout(client)
+    names = load_par_cell(layout).parnme
+    cell = np.array([cells.get(n, (-1, -1))[0] for n in names], dtype=np.int32)
+    layer = np.array([cells.get(n, (-1, -1))[1] for n in names], dtype=np.int32)
+    placed = ParCells(
+        cell=cell,
+        layer=layer,
+        parnme=names,
+        groups=(GroupResolution(group="pargp", rule="test", mapped=len(cells), total=len(names)),),
+        summary="test placement",
+        notes=(),
+    )
+    par = pd.DataFrame({"parnme": list(names), "pargp": ["pargp"] * len(names)})
+    written = write_par_cell(placed, par, layout)
+    assert not hasattr(written, "reason"), written
+
+
+def _get(client, **query):
+    return client.get("/api/run/link/cell", params=query)
+
+
+def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
+    """Every file and folder under ``root`` with its size and mtime."""
+    return {
+        str(path.relative_to(root)): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+    }
+
+
+# ---- Task 1: the clicked cell's own parameters and sites ----
+
+
+def test_a_cell_with_a_site_and_parameters_names_them_by_site_id_and_parnme(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par2": (0, 0), "par0": (0, 0), "par1": (1, 0)})
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert body["layer"] == 0
+    assert body["cells"] == [0]
+    clicked = [s for s in body["sites"] if s["in_clicked_cell"]]
+    assert [s["site_id"] for s in clicked] == [site_id(client.pesto_app.state.cache_root, ICPL_A)]
+    assert clicked[0]["site"] == ICPL_A
+    assert clicked[0]["group"] == "gw_icpl"
+    assert (clicked[0]["layer"], clicked[0]["cell"]) == (0, 0)
+    # Control order, not the order they were placed in.
+    assert [p["parnme"] for p in body["pars"]] == ["par0", "par2"]
+    assert all(p["kind"] == "cell" and p["weights"] == [] and p["cell"] == 0 for p in body["pars"])
+    assert body["pars"][0]["pargp"] == "pargp"
+    assert body["pars"][0]["rule"] == "sets this cell (par_cell)"
+    assert body["pars_total"] == 2
+    assert body["par_notes"] == []
+    assert body["reasons"]["pars"] is None
+
+
+def test_several_cells_come_back_ascending_and_without_repeats(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (0, 0), "par1": (1, 0)})
+
+    body = _get(client, layer=0, cells="1,0,1").json()
+
+    assert body["cells"] == [0, 1]
+    assert [p["parnme"] for p in body["pars"]] == ["par0", "par1"]
+
+
+def test_a_cell_no_parameter_sets_says_so(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+
+    body = _get(client, layer=0, cells="2").json()
+
+    assert body["pars"] == []
+    assert body["pars_total"] == 0
+    assert body["reasons"]["pars"] == "no parameter sets this cell on layer 0"
+
+
+def test_a_cell_with_no_site_says_so(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **NO_PLACED_SITES)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert body["sites"] == []
+    assert body["reasons"]["sites"].startswith("no observation site in this cell")
+    assert body["reasons"]["sites"].endswith("on layer 0")
+
+
+def test_a_pilot_point_parameter_is_marked_as_one(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (0, 0), "par1": (0, 0)})
+    layout = _layout(client)
+    group = PpGroup(
+        group="pargp", layer=0, factor_file="pp.fac", format="text", parnames=("par1",),
+        pp_names=("pp1",), log_space=False, n_cells=3,
+    )
+    write_pp_index(PpIndex(groups=(group,), not_interpolable=()), layout)
+    manifest = Manifest.load(layout)
+    manifest.mark_ok("pp_factors", [])
+    manifest.save(layout)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert [(p["parnme"], p["kind"]) for p in body["pars"]] == [("par0", "cell"), ("par1", "pilot_point")]
+    assert body["par_notes"] == []
+
+
+def test_an_unreadable_pp_factors_is_named_in_a_note_never_skipped(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par1": (0, 0)})
+    layout = _layout(client)
+    layout.pp_index.parent.mkdir(parents=True, exist_ok=True)
+    layout.pp_index.write_text("not json")
+    manifest = Manifest.load(layout)
+    manifest.mark_ok("pp_factors", [])
+    manifest.save(layout)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert [p["kind"] for p in body["pars"]] == ["cell"]
+    assert len(body["par_notes"]) == 1
+    note = body["par_notes"][0]
+    assert note.startswith("pp_factors could not be read: ")
+    assert note.endswith("so pilot points are listed as plain parameters")
+    assert str(tmp_path) not in note
+
+
+def test_no_run_open_is_409(tmp_path):
+    from .obs_helpers import open_cache
+
+    client = open_cache(tmp_path / "cache")
+    client.pesto_app.state.cache_root = None
+
+    assert _get(client, layer=0, cells="0").status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("query", "says"),
+    [
+        ({"layer": 0, "cells": "1,x"}, "whole numbers"),
+        ({"layer": 0, "cells": ""}, "whole numbers"),
+        ({"layer": 0, "cells": ",".join(["0"] * 51)}, "at most 50"),
+        ({"layer": 0, "cells": "3"}, "3 cells per layer"),
+        ({"layer": 0, "cells": "-1"}, "3 cells per layer"),
+        ({"layer": 1, "cells": "0"}, "1 layer"),
+    ],
+)
+def test_a_cell_list_or_layer_it_cannot_use_is_422_with_the_reason(tmp_path, in_process, query, says):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+
+    response = _get(client, **query)
+
+    assert response.status_code == 422
+    assert says in response.json()["detail"]
+
+
+def test_an_extra_query_field_is_422(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+
+    assert _get(client, layer=0, cells="0", site=1).status_code == 422
+
+
+def test_the_route_leaves_the_run_and_the_cache_untouched(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (0, 0)})
+    cache_root = Path(client.pesto_app.state.cache_root)
+    run_before = _snapshot(run.root)
+    cache_before = _snapshot(cache_root)
+
+    for cells in ("0", "1,2", "2"):
+        assert _get(client, layer=0, cells=cells).status_code == 200
+
+    assert _snapshot(run.root) == run_before
+    assert _snapshot(cache_root) == cache_before
