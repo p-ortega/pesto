@@ -105,6 +105,20 @@ describe('parameterRingCells', () => {
     ])
   })
 
+  it("says a pilot point is outlined by its own cell only when the server gave a reason for it", () => {
+    const reason = 'no run directory is open, so the factor file cannot be read'
+    const rings = parameterRingCells(parAnswer([par({ parnme: 'pp', kind: 'pilot_point', cell: 7, cells: [7], nCells: 1, reason })]), 0)
+    expect(rings.cells).toEqual([7])
+    expect(parameterLines(rings)).toEqual([`1 selected parameter has only its own cell outlined: ${reason}`])
+  })
+
+  it("does not outline a pilot point's own cell when the server listed no cell and gave a reason", () => {
+    const reason = 'no cell has a non-zero factor from this pilot point in pp.fac'
+    const rings = parameterRingCells(parAnswer([par({ parnme: 'pp', kind: 'pilot_point', cell: 7, cells: [], nCells: 0, reason })]), 0)
+    expect(rings.cells).toEqual([])
+    expect(parameterLines(rings)).toEqual([`1 selected parameter has no cell: ${reason}`])
+  })
+
   it('says so for a parameter of unknown layer', () => {
     const rings = parameterRingCells(parAnswer([par({ parnme: 'q', layer: -1 })]), 0)
     expect(parameterLines(rings)).toEqual(['1 selected parameter has an unknown layer'])
