@@ -12,6 +12,8 @@ export interface FrameStamp {
   limits?: string
   // The iteration the frame shows, so an iteration redraw can be told from others.
   iteration?: number
+  // The time index of the observation frame drawn; absent under the parameter field.
+  timeIdx?: number
 }
 
 declare global {
