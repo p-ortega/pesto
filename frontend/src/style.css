@@ -1142,3 +1142,108 @@ body {
   font: inherit;
   color: var(--ink-primary);
 }
+
+/* The basemap file picker covers the map it was opened from, never the whole page. */
+.basemap-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--page-plane) 70%, transparent);
+  pointer-events: auto;
+}
+
+.basemap-picker-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: min(32rem, 90%);
+  max-height: 70%;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  padding: var(--space-md);
+  color: var(--ink-primary);
+}
+
+.basemap-picker-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.basemap-picker-crumbs button[aria-current='location'] {
+  font-weight: 600;
+}
+
+.basemap-picker-status:empty {
+  display: none;
+}
+
+.basemap-picker-status.refused {
+  color: var(--status-warning);
+}
+
+.basemap-picker-list {
+  flex: 1 1 auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.basemap-picker-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.basemap-picker-row:disabled {
+  cursor: default;
+}
+
+.basemap-picker-row-head {
+  display: flex;
+  gap: var(--space-sm);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.basemap-picker-kind {
+  color: var(--ink-secondary);
+  flex: none;
+}
+
+.basemap-picker-note,
+.basemap-picker-reason,
+.basemap-picker-skipped {
+  display: block;
+  color: var(--ink-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.basemap-picker-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.basemap-picker-skipped:empty {
+  display: none;
+}
+
+.basemap-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
