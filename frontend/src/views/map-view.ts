@@ -27,7 +27,7 @@ import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type 
 import { readColorToken, readNumberToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
-import { CONTINUOUS, DEFAULT_STYLE, resolveStyle } from '../gl/field-style'
+import { CONTINUOUS, DEFAULT_STYLE, classLabel, resolveStyle, type EffectiveStyle } from '../gl/field-style'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
@@ -1001,6 +1001,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   // The legend last drawn for the parameter field, so a base name that lands later can relabel it.
   let shownLegend: LegendOptions | null = null
+  // The style and limits deriveAndDraw last drew with, for the readout's class line.
+  let drawnStyle: EffectiveStyle = CONTINUOUS
+  let drawnLimits: [number, number] = [0, 1]
 
   function paintLegend(legend: LegendOptions | null): void {
     shownLegend = legend
@@ -1166,7 +1169,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
             contributors: contributorsMemo.get(selectedCellId) ?? null,
           }
         : undefined
-    renderReadout(readoutEl, { pick, group, joined, field, interpolated })
+    // The class lives in the drawn scale, so it is read from the scaled field at the row the value comes from.
+    const classIndex =
+      pick.kind === 'point'
+        ? pick.row
+        : classification?.kind === 'valued'
+        ? classification.row
+        : classification?.kind === 'interpolated'
+        ? selectedCellId
+        : null
+    const classLine =
+      obsActive || classIndex === null || fullField === null
+        ? null
+        : classLabel(fullField[classIndex] ?? Number.NaN, drawnLimits, drawnStyle, scaledFieldScale ?? committed.scale)
+    renderReadout(readoutEl, { pick, group, joined, field, interpolated, classLine })
   }
 
   function fetchContributors(cellId: number): void {
@@ -1851,6 +1867,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer.setLimits(limits)
     layer.setStyle(effective)
     controlsHandle?.showStyle(effective, notes)
+    drawnStyle = effective
+    drawnLimits = limits
     const { contested, noValue } = applyLayer()
 
     paintLegend({
