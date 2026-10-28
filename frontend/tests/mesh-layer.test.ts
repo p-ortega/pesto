@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { ramp, scaleLimits, STOPS, hexToRgb } from '../src/gl/colormap'
 import { MeshLayer, type MeshData } from '../src/gl/mesh-layer'
 import { createRecordingGl } from './support/recording-gl'
+import { gridMesh } from './support/grid-mesh'
 
 describe('scaleLimits', () => {
   it('returns the 2nd and 98th percentile of the finite values, ignoring NaN', () => {
@@ -472,6 +473,106 @@ const uniformAfter = (calls: Call[], name: string, method: string) =>
       ? [c.args.slice(1)]
       : [],
   )
+
+describe('MeshLayer many rings', () => {
+  // The vertex and index uploads of the last ring build.
+  const ringUploads = (calls: Call[]) => {
+    const uploads = calls.filter((c) => c.method === 'bufferData')
+    const verts = uploads.filter((c) => c.args[0] === 'ARRAY_BUFFER').at(-1)!.args[1] as Float32Array
+    const indices = uploads.filter((c) => c.args[0] === 'ELEMENT_ARRAY_BUFFER').at(-1)!.args[1] as Uint32Array
+    return { verts: Array.from(verts), indices: Array.from(indices) }
+  }
+
+  it('setSelected(3) and setSelectedCells([3]) build the same quads, one per edge of the cell', () => {
+    const a = createRecordingGl()
+    const layerA = new MeshLayer(a.gl, gridMesh(3, 2))
+    a.calls.length = 0
+    layerA.setSelected(3)
+    const viaOne = ringUploads(a.calls)
+
+    const b = createRecordingGl()
+    const layerB = new MeshLayer(b.gl, gridMesh(3, 2))
+    b.calls.length = 0
+    layerB.setSelectedCells([3])
+    const viaMany = ringUploads(b.calls)
+
+    expect(viaMany).toEqual(viaOne)
+    // Cell 3 is the square (0,1)-(1,2): 4 edges, 4 corners each, 6 floats a corner.
+    expect(viaOne.verts.length).toBe(4 * 4 * 6)
+    expect(viaOne.indices.length).toBe(24)
+    expect(viaOne.verts.slice(0, 6)).toEqual([0, 1, 1, 1, 0, -1])
+  })
+
+  it('rings each of up to 8 cells on its own', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    calls.length = 0
+    // A plus shape: an outline would drop the 4 edges round the centre.
+    layer.setSelectedCells([1, 3, 4, 5, 7])
+    expect(ringUploads(calls).indices.length).toBe(5 * 4 * 6)
+  })
+
+  it('draws 9 or more cells as the outline of the set only', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    calls.length = 0
+    layer.setSelectedCells([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    expect(ringUploads(calls).indices.length).toBe(12 * 6)
+
+    calls.length = 0
+    layer.draw()
+    const ringDraws = calls.filter((c) => c.method === 'drawElements' && c.args[1] === 72)
+    expect(ringDraws).toHaveLength(2)
+  })
+
+  it('outlines only the first 20,000 of 25,000 cells, in the order given', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(250, 100))
+    calls.length = 0
+    layer.setSelectedCells(Array.from({ length: 25_000 }, (_, i) => i))
+    // The first 20,000 cells are rows 0-79: one 250 x 80 rectangle.
+    const { verts, indices } = ringUploads(calls)
+    expect(indices.length).toBe(2 * (250 + 80) * 6)
+    for (let i = 0; i < verts.length; i += 6) {
+      expect(verts[i + 1]).toBeLessThanOrEqual(80)
+      expect(verts[i + 3]).toBeLessThanOrEqual(80)
+    }
+  })
+
+  it('setSelected(null) and an empty list draw no ring', () => {
+    for (const clear of [(l: MeshLayer) => l.setSelected(null), (l: MeshLayer) => l.setSelectedCells([])]) {
+      const { gl, calls } = createRecordingGl()
+      const layer = new MeshLayer(gl, gridMesh(3, 3))
+      layer.setSelectedCells([0, 1, 2, 3, 4, 5, 6, 7, 8])
+      clear(layer)
+      calls.length = 0
+      layer.draw()
+      expect(calls.filter((c) => c.method === 'drawElements')).toHaveLength(1)
+    }
+  })
+
+  it('holds a copy, so a caller changing its array later does not move the ring', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    const ids = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    layer.setSelectedCells(ids)
+    ids.length = 1
+    calls.length = 0
+    layer.reupload()
+    expect(ringUploads(calls).indices.length).toBe(12 * 6)
+  })
+
+  it('rebuilds the same ring quads after a context restore', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    calls.length = 0
+    layer.setSelectedCells([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    const before = ringUploads(calls)
+    calls.length = 0
+    layer.reupload()
+    expect(ringUploads(calls)).toEqual(before)
+  })
+})
 
 describe('MeshLayer hatch pass', () => {
   const draws = allDraws
