@@ -184,3 +184,25 @@ describe('renderLegend with classes', () => {
     expect(gradient).toBeDefined()
   })
 })
+
+describe('renderLegend over a basemap', () => {
+  const BLENDED = 'blended — colours approximate'
+  const labels = (el: HTMLElement) => [...el.querySelectorAll('.label')].map((l) => l.textContent)
+
+  it('says the colours are approximate when the field is blended, below the scale and limits lines', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, blended: true })
+    const lines = labels(el)
+    expect(lines.filter((l) => l === BLENDED)).toHaveLength(1)
+    expect(lines.indexOf(BLENDED)).toBeGreaterThan(lines.indexOf('Limits: Robust 2-98%'))
+    expect(lines.indexOf(BLENDED)).toBeGreaterThan(lines.findIndex((l) => l?.startsWith('Scale:')))
+  })
+
+  it('says nothing about blending when the field is opaque or the option is absent', () => {
+    for (const options of [{ ...BASE_OPTIONS, blended: false }, BASE_OPTIONS]) {
+      const el = document.createElement('div')
+      renderLegend(el, options)
+      expect(el.textContent).not.toContain('blended')
+    }
+  })
+})

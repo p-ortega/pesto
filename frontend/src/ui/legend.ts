@@ -35,6 +35,8 @@ export interface LegendOptions {
   /** The effective style the layer draws with; absent means continuous. */
   style?: EffectiveStyle
   styleNotes?: StyleNotes
+  /** True while the field is drawn see-through over a basemap, so its colours no longer match the ramp. */
+  blended?: boolean
 }
 
 const LIMITS_LABEL: Record<LimitsMode, string> = {
@@ -182,6 +184,13 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
   limitsLine.classList.add('label')
   limitsLine.textContent = `Limits: ${LIMITS_LABEL[opts.limitsMode]}`
   el.appendChild(limitsLine)
+
+  if (opts.blended) {
+    const blendedLine = document.createElement('div')
+    blendedLine.classList.add('label')
+    blendedLine.textContent = 'blended — colours approximate'
+    el.appendChild(blendedLine)
+  }
 
   // The drawn group's name -- truncated with an ellipsis, the full name
   // carried in title, same convention as the readout and the Params
