@@ -26,6 +26,9 @@ vi.mock('../src/data/par', async () => ({
   shareGroupsRead: (await vi.importActual<typeof import('../src/data/par')>('../src/data/par')).shareGroupsRead,
 }))
 
+const overlaysApi = vi.hoisted(() => ({ fetchAtBounds: vi.fn() }))
+vi.mock('../src/data/overlays', () => overlaysApi)
+
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
     gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 },
@@ -138,6 +141,8 @@ beforeEach(() => {
     parApi[name].mockReset()
     parApi[name].mockResolvedValue({ ok: false, artifact: 'par_hist', reason: 'not stubbed' })
   }
+  overlaysApi.fetchAtBounds.mockReset()
+  overlaysApi.fetchAtBounds.mockResolvedValue({ ok: false, artifact: 'par_change', reason: 'not stubbed' })
 })
 
 describe('renderParamsPanel', () => {
@@ -1222,5 +1227,459 @@ describe('the change columns and the one-parameter drill-down', () => {
 
     await vi.waitFor(() => expect(el.textContent).toContain('This group has 12,000 parameters.'))
     expect(parApi.fetchParChange).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 11: the parameter rows read and write the shared `pars` (D-01, D-02,
+// D-03, D-08). A row click selects; another view's choice marks and dims.
+// ---------------------------------------------------------------------------
+
+describe('the parameter rows and the shared pars selection', () => {
+  const SIX = {
+    parnme: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+    pargp: ['G', 'G', 'G', 'G', 'G', 'G'],
+    parlbnd: [0, 0, 0, 0, 0, 0],
+    parubnd: [1, 1, 1, 1, 1, 1],
+    partrans: ['none', 'none', 'none', 'none', 'none', 'none'],
+  }
+
+  beforeEach(() => {
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('G')]))
+    parApi.fetchParValues.mockImplementation(async (name: string) => ({ ok: false, artifact: 'par_values', reason: `no values for ${name}` }))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  async function mountSix(columns: Record<string, unknown[]> = SIX) {
+    const store = makeStore(['G'])
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, parTable: Promise.resolve(parTableBuffer(columns)) }))
+    await vi.waitFor(() => expect(el.querySelectorAll('.params-table .param-row').length).toBeGreaterThan(0))
+    return { el, store, handle }
+  }
+
+  function row(el: HTMLElement, name: string): HTMLElement {
+    return el.querySelector(`.params-table .param-row[data-parameter="${name}"]`) as HTMLElement
+  }
+
+  function tableNames(el: HTMLElement): string[] {
+    return [...el.querySelectorAll<HTMLElement>('.params-table .param-row')].map((r) => r.dataset.parameter ?? '')
+  }
+
+  function click(target: HTMLElement, mods: { shiftKey?: boolean; altKey?: boolean } = {}): void {
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, ...mods }))
+  }
+
+  function lastValuesAsked(): string | undefined {
+    const calls = parApi.fetchParValues.mock.calls
+    return calls.length === 0 ? undefined : calls[calls.length - 1][0]
+  }
+
+  it('a plain click replaces, shift adds and alt removes, each written to pars with origin "params"', async () => {
+    const { el, store } = await mountSix()
+    const heard: { pars: string[]; origins: string[] }[] = []
+    store.subscribe(
+      (s) => s.pars,
+      (next, _prev, origins) => heard.push({ pars: [...next.pars], origins: [...origins] }),
+    )
+
+    click(row(el, 'p2'))
+    store.flush()
+    expect([...store.get().pars]).toEqual(['p2'])
+    expect(lastValuesAsked()).toBe('p2')
+
+    click(row(el, 'p3'), { shiftKey: true })
+    store.flush()
+    expect(new Set(store.get().pars)).toEqual(new Set(['p2', 'p3']))
+    expect(lastValuesAsked()).toBe('p3')
+
+    click(row(el, 'p2'), { altKey: true })
+    store.flush()
+    expect([...store.get().pars]).toEqual(['p3'])
+    expect(lastValuesAsked()).toBe('p3')
+
+    expect(heard.every((entry) => entry.origins.length === 1 && entry.origins[0] === 'params')).toBe(true)
+    expect(heard.length).toBe(3)
+  })
+
+  it('moves the detail to the last remaining selected parameter, and closes it when nothing is left', async () => {
+    const { el, store } = await mountSix()
+    click(row(el, 'p2'))
+    click(row(el, 'p4'), { shiftKey: true })
+    click(row(el, 'p5'), { shiftKey: true })
+    store.flush()
+    expect(lastValuesAsked()).toBe('p5')
+
+    click(row(el, 'p5'), { altKey: true })
+    store.flush()
+    expect(lastValuesAsked()).toBe('p4')
+
+    click(row(el, 'p4'), { altKey: true })
+    click(row(el, 'p2'), { altKey: true })
+    store.flush()
+    expect(store.get().pars.size).toBe(0)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(el.textContent).not.toContain('Loading distribution')
+    expect(el.textContent).not.toContain('no values for p2')
+  })
+
+  it('treats Enter as a plain click and shift+Enter as a shift-click', async () => {
+    const { el, store } = await mountSix()
+
+    row(el, 'p1').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    row(el, 'p6').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }))
+    store.flush()
+
+    expect(new Set(store.get().pars)).toEqual(new Set(['p1', 'p6']))
+  })
+
+  it('marks and dims rows for pars another view wrote, with no request and no detail change', async () => {
+    const { el, store } = await mountSix()
+
+    store.set({ pars: new Set(['p5']) }, 'map')
+    store.flush()
+
+    expect(row(el, 'p5').getAttribute('aria-selected')).toBe('true')
+    expect(row(el, 'p5').classList.contains('dimmed')).toBe(false)
+    for (const name of ['p1', 'p2', 'p3', 'p4', 'p6']) {
+      expect(row(el, name).getAttribute('aria-selected')).toBe('false')
+      expect(row(el, name).classList.contains('dimmed')).toBe(true)
+    }
+    expect(parApi.fetchParValues).not.toHaveBeenCalled()
+    expect(el.textContent).not.toContain('Loading distribution')
+  })
+
+  it('dims nothing when pars is empty', async () => {
+    const { el, store } = await mountSix()
+    store.set({ pars: new Set(['p5']) }, 'map')
+    store.flush()
+    store.set({ pars: new Set() }, 'map')
+    store.flush()
+
+    expect(el.querySelectorAll('.params-table .param-row.dimmed').length).toBe(0)
+    expect(el.querySelectorAll('.params-table .param-row[aria-selected="true"]').length).toBe(0)
+  })
+
+  it('keeps every row in its place whatever is selected', async () => {
+    const { el, store } = await mountSix()
+    const before = tableNames(el)
+
+    store.set({ pars: new Set(['p6', 'p1']) }, 'map')
+    store.flush()
+    expect(tableNames(el)).toEqual(before)
+
+    click(row(el, 'p3'), { shiftKey: true })
+    store.flush()
+    expect(tableNames(el)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6'])
+  })
+
+  it('"Show selected" scrolls to the first selected row in table order', async () => {
+    const n = 300
+    const columns = {
+      parnme: Array.from({ length: n }, (_, i) => `p${i}`),
+      pargp: Array.from({ length: n }, () => 'G'),
+      parlbnd: Array.from({ length: n }, () => 0),
+      parubnd: Array.from({ length: n }, () => 1),
+      partrans: Array.from({ length: n }, () => 'none'),
+    }
+    const { el, store } = await mountSix(columns)
+    const button = el.querySelector<HTMLButtonElement>('.params-table button.show-selected')!
+    expect(button.disabled).toBe(true)
+    expect(button.title).toBe('no selected parameter is in this group')
+
+    store.set({ pars: new Set(['p250', 'p180']) }, 'map')
+    store.flush()
+    expect(button.disabled).toBe(false)
+    button.click()
+
+    const pane = el.querySelector<HTMLElement>('.params-table .scroll-pane')!
+    expect(pane.scrollTop).toBe(180 * 24)
+    expect(tableNames(el)).toContain('p180')
+  })
+
+  it('disables "Show selected" when no selected parameter is in the shown group', async () => {
+    const { el, store } = await mountSix()
+    store.set({ pars: new Set(['not-in-this-group']) }, 'map')
+    store.flush()
+
+    const button = el.querySelector<HTMLButtonElement>('.params-table button.show-selected')!
+    expect(button.disabled).toBe(true)
+    expect(button.title).toBe('no selected parameter is in this group')
+  })
+
+  it('never writes parGroups from a row click, whatever the modifier', async () => {
+    const { el, store } = await mountSix()
+    const groupWrites: string[][] = []
+    store.subscribe(
+      (s) => s.parGroups,
+      (next) => groupWrites.push([...next.parGroups]),
+    )
+
+    click(row(el, 'p1'))
+    click(row(el, 'p2'), { shiftKey: true })
+    click(row(el, 'p1'), { altKey: true })
+    row(el, 'p3').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    store.flush()
+
+    expect(groupWrites).toEqual([])
+    expect([...store.get().parGroups]).toEqual(['G'])
+  })
+})
+
+describe('the Selected parameters section in the panel', () => {
+  const MIXED = {
+    parnme: ['a1', 'a2', 'b1'],
+    pargp: ['A', 'A', 'B'],
+    parlbnd: [0, 0, 0],
+    parubnd: [1, 1, 1],
+    partrans: ['none', 'none', 'none'],
+  }
+
+  beforeEach(() => {
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('A'), groupRow('B')]))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function selectedNames(el: HTMLElement): string[] {
+    return [...el.querySelectorAll<HTMLElement>('.params-selected [data-selected-parameter]')].map((r) => r.dataset.selectedParameter ?? '')
+  }
+
+  async function mountMixed(startHidden = false) {
+    const store = makeStore(['A'])
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, startHidden, parTable: Promise.resolve(parTableBuffer(MIXED)) }))
+    if (!startHidden) await vi.waitFor(() => expect(el.querySelectorAll('.params-table .param-row').length).toBe(2))
+    else await new Promise((resolve) => setTimeout(resolve, 0))
+    return { el, store, handle }
+  }
+
+  it('is hidden while pars is empty and lists another view\'s pars grouped by the table\'s pargp', async () => {
+    const { el, store } = await mountMixed()
+    const section = el.querySelector<HTMLElement>('.params-selected')!
+    expect(section.style.display).toBe('none')
+
+    store.set({ pars: new Set(['b1', 'a2']) }, 'map')
+    store.flush()
+
+    expect(section.style.display).not.toBe('none')
+    expect(selectedNames(el)).toEqual(['b1', 'a2'])
+    expect([...section.querySelectorAll<HTMLElement>('.selected-group')].map((g) => g.dataset.group)).toEqual(['B', 'A'])
+  })
+
+  it('routes a click in the section through the modifier rule into pars with origin "params", never parGroups', async () => {
+    const { el, store } = await mountMixed()
+    store.set({ pars: new Set(['a1', 'b1']) }, 'map')
+    store.flush()
+    const heard: string[][] = []
+    store.subscribe(
+      (s) => s.pars,
+      (_next, _prev, origins) => heard.push([...origins]),
+    )
+
+    const b1 = el.querySelector<HTMLElement>('.params-selected [data-selected-parameter="b1"]')!
+    b1.dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }))
+    store.flush()
+
+    expect([...store.get().pars]).toEqual(['a1'])
+    expect(heard).toEqual([['params']])
+    expect([...store.get().parGroups]).toEqual(['A'])
+    expect(selectedNames(el)).toEqual(['a1'])
+  })
+
+  it('draws a pars change made while hidden when the tab is shown, and fetches nothing for it', async () => {
+    const { el, store, handle } = await mountMixed(true)
+    store.set({ pars: new Set(['a1']) }, 'map')
+    store.flush()
+    expect(selectedNames(el)).toEqual([])
+
+    handle.onShow()
+    expect(selectedNames(el)).toEqual(['a1'])
+    expect(parApi.fetchParValues).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 11: the at-bounds column in the group table (D-25, D-26, D-27), fed by
+// /par/at_bounds for the map's shown iteration.
+// ---------------------------------------------------------------------------
+
+describe('the at-bounds column in the group table', () => {
+  const RULE = 'A parameter is at its bounds when pestpp counts it near a bound in at least one realization.'
+  const CAVEAT = 'Counts from the float32 cache can be one high against pcs.csv.'
+
+  function atBoundsAnswer(iteration: number, groups: { group: string; n: number; excluded?: Record<string, number> }[]) {
+    return {
+      ok: true,
+      answer: {
+        available: true,
+        reason: null,
+        artifact: 'par_change',
+        iteration,
+        firstIteration: 0,
+        lastIteration: 3,
+        rule: RULE,
+        caveat: CAVEAT,
+        groups: groups.map(({ group, n, excluded }) => ({
+          group,
+          nPar: 10,
+          nCounted: 10,
+          nAtBounds: n,
+          nExcluded: excluded ?? {},
+        })),
+        names: null,
+      },
+    }
+  }
+
+  function unavailable(iteration: number, reason: string) {
+    return {
+      ok: true,
+      answer: {
+        available: false,
+        reason,
+        artifact: 'par_change',
+        iteration,
+        firstIteration: 0,
+        lastIteration: 3,
+        rule: RULE,
+        caveat: CAVEAT,
+        groups: [],
+        names: null,
+      },
+    }
+  }
+
+  function storeAt(iteration: number): SelectionStore {
+    return createSelectionStore({ initial: { ...emptySelection('run', iteration) }, schedule: () => {} })
+  }
+
+  async function mountGroups(store: SelectionStore, startHidden = false) {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('rch'), groupRow('ghb')]))
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, startHidden }))
+    if (!startHidden) await vi.waitFor(() => expect(groupRows(el).length).toBe(3))
+    return { el, handle }
+  }
+
+  function heading(el: HTMLElement): HTMLElement {
+    return el.querySelector('.group-header [data-column="at_bounds"]') as HTMLElement
+  }
+
+  it('asks once for the shown iteration and puts each group\'s count in the eighth cell with the rule, caveat and exclusions as its title', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue(
+      atBoundsAnswer(3, [
+        { group: 'hk', n: 4, excluded: { fixed: 3, tied: 2 } },
+        { group: 'rch', n: 0 },
+        { group: 'ghb', n: 12 },
+      ]),
+    )
+    const { el } = await mountGroups(storeAt(3))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('4'))
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(1)
+    expect(overlaysApi.fetchAtBounds.mock.calls[0][0]).toBe(3)
+    const hk = groupRows(el)[0]
+    expect(hk.children.length).toBe(8)
+    expect(hk.children[7].getAttribute('data-column')).toBe('at_bounds')
+    expect(cell(hk, 'at_bounds').title).toBe(`${RULE} ${CAVEAT} 5 excluded: fixed 3, tied 2`)
+    expect(cell(groupRows(el)[1], 'at_bounds').textContent).toBe('0')
+    expect(cell(groupRows(el)[1], 'at_bounds').title).toBe(`${RULE} ${CAVEAT} 0 excluded`)
+    expect(heading(el).textContent).toContain('At bounds, iteration 3')
+    expect(el.querySelectorAll('.group-header [role="columnheader"]').length).toBe(8)
+  })
+
+  it('shows a dash and the reason in every row and the heading for a middle iteration', async () => {
+    const reason = 'near-bound counts exist for iterations 0 and 3 only'
+    overlaysApi.fetchAtBounds.mockResolvedValue(unavailable(2, reason))
+    const { el } = await mountGroups(storeAt(2))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').title).toBe(reason))
+    for (const row of groupRows(el)) {
+      expect(cell(row, 'at_bounds').textContent).toBe('—')
+      expect(cell(row, 'at_bounds').title).toBe(reason)
+    }
+    expect(heading(el).title).toBe(reason)
+  })
+
+  it('shows a dash with the artifact and reason for a refused answer', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue({ ok: false, artifact: 'par_change', reason: 'par_change.parquet is not in the cache' })
+    const { el } = await mountGroups(storeAt(0))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').title).toBe('par_change: par_change.parquet is not in the cache'))
+    expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('—')
+    expect(heading(el).title).toBe('par_change: par_change.parquet is not in the cache')
+  })
+
+  it('names the artifact and reason when the request throws', async () => {
+    overlaysApi.fetchAtBounds.mockRejectedValue(
+      new ApiError({ type: 'about:blank', title: 'bad read', status: 502, artifact: 'par_change', detail: 'the frame is damaged' }),
+    )
+    const { el } = await mountGroups(storeAt(0))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').title).toBe('par_change: the frame is damaged'))
+  })
+
+  it('sorts on the count with a group that has none last both ways', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue(atBoundsAnswer(3, [{ group: 'hk', n: 4 }, { group: 'ghb', n: 1 }]))
+    const { el } = await mountGroups(storeAt(3))
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('4'))
+    const button = headingButton(el, 'at_bounds')
+
+    button.click()
+    expect(shownOrder(el)).toEqual(['ghb', 'hk', 'rch'])
+    button.click()
+    expect(shownOrder(el)).toEqual(['hk', 'ghb', 'rch'])
+    expect(cell(groupRows(el)[2], 'at_bounds').textContent).toBe('—')
+  })
+
+  it('makes no request while hidden, and asks for the iteration chosen meanwhile when shown', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue(atBoundsAnswer(3, [{ group: 'hk', n: 4 }]))
+    const store = storeAt(0)
+    const { el, handle } = await mountGroups(store, true)
+
+    store.set({ iteration: 3 }, 'map')
+    store.flush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(overlaysApi.fetchAtBounds).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('4'))
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(1)
+    expect(overlaysApi.fetchAtBounds.mock.calls[0][0]).toBe(3)
+
+    handle.onHide()
+    handle.onShow()
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks again when the iteration changes while shown, and never draws the old iteration\'s late answer', async () => {
+    const old = deferred<unknown>()
+    const fresh = deferred<unknown>()
+    overlaysApi.fetchAtBounds.mockImplementation((iteration: number) => (iteration === 0 ? old.promise : fresh.promise))
+    const store = storeAt(0)
+    const { el } = await mountGroups(store)
+
+    store.set({ iteration: 3 }, 'map')
+    store.flush()
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(2)
+    expect(overlaysApi.fetchAtBounds.mock.calls[1][0]).toBe(3)
+
+    old.resolve(atBoundsAnswer(0, [{ group: 'hk', n: 99 }]))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cell(groupRows(el)[0], 'at_bounds').textContent).not.toBe('99')
+
+    fresh.resolve(atBoundsAnswer(3, [{ group: 'hk', n: 2 }]))
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('2'))
+    expect(heading(el).textContent).toContain('iteration 3')
   })
 })
