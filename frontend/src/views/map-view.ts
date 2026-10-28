@@ -1992,13 +1992,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     updateReadout()
   }
 
-  // At most once per site per page, and only for the entries the readout lists.
+  // Once per site per page unless the read failed, and only for the entries the readout lists.
   function readObservedValues(rows: number[]): void {
     const data = obsData
     if (data === null) return
     for (const row of rows.slice(0, OBS_SITE_LIST_CAP)) {
       const siteId = data.rows[row].siteId
-      if (obsSiteMemo.has(siteId)) continue
+      // A failed read stays on show until the next click, which asks again.
+      const held = obsSiteMemo.get(siteId)
+      if (held !== undefined && held.state !== 'failed') continue
       obsSiteMemo.set(siteId, { state: 'loading' })
       void fetchObsSite(siteId)
         .then(
