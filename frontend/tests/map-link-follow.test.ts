@@ -690,3 +690,186 @@ describe('the map rings and dims dots from the shared selection', () => {
     expect(layer.setDimAlpha.mock.calls.at(-1)).toEqual([0.3])
   })
 })
+
+const whereLinesOf = (root: HTMLElement): string[] =>
+  [...root.querySelectorAll('[data-testid="selection-where"] .link-reach')].map((el) => el.textContent ?? '')
+const selectedNoticeText = (root: HTMLElement): string =>
+  root.querySelector('[data-testid="iteration-selected-notice"]')?.textContent ?? ''
+
+function parRow(over: Partial<LinkParRow> & { parnme: string }): LinkParRow {
+  return { pargp: 'G1', kind: 'cell', layer: 0, cell: 0, cells: [0], n_cells: 1, cells_capped: false, reason: null, ...over }
+}
+
+describe('a parameter picked in a tab rings its cells on the map', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('asks /link/par once and rings the cells it sets on the drawn layer', async () => {
+    const store = autoStore()
+    const { stub, layer } = await mountedWith(store)
+    stub.pars.p8 = parRow({ parnme: 'p8', cell: 1, cells: [1] })
+
+    store.set({ pars: new Set(['p8']) }, 'params')
+    await vi.waitFor(() => expect(lastRing(layer)).toEqual([1]))
+    expect(stub.linkPar).toEqual([['p8']])
+  })
+
+  it('outlines a pilot point reach as one set, and says when a pilot point is on another layer', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    stub.pars.pp1 = parRow({ parnme: 'pp1', kind: 'pilot_point', cell: -1, cells: [0, 1], n_cells: 2 })
+    stub.pars.pp2 = parRow({ parnme: 'pp2', kind: 'pilot_point', layer: 2, cell: -1, cells: [0], n_cells: 1 })
+
+    store.set({ pars: new Set(['pp1']) }, 'params')
+    await vi.waitFor(() => expect(lastRing(layer)).toEqual([0, 1]))
+
+    store.set({ pars: new Set(['pp2']) }, 'params')
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected parameter is on layer 2']))
+    expect(lastRing(layer)).toEqual([])
+  })
+
+  it('counts a parameter with no cell with its reason', async () => {
+    const store = autoStore()
+    const { root, stub } = await mountedWith(store)
+    stub.pars.u1 = parRow({ parnme: 'u1', kind: 'unplaced', layer: -1, cell: -1, cells: [], n_cells: 0, reason: 'no cell is recorded for this parameter: rule unmapped' })
+
+    store.set({ pars: new Set(['u1']) }, 'params')
+    await vi.waitFor(() =>
+      expect(whereLinesOf(root)).toEqual(['1 selected parameter has no cell: no cell is recorded for this parameter: rule unmapped']),
+    )
+  })
+
+  it('drops the parameter rings and asks nothing when the map itself writes the parameters', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    stub.pars.p8 = parRow({ parnme: 'p8', cell: 1, cells: [1] })
+    store.set({ pars: new Set(['p8']) }, 'params')
+    await vi.waitFor(() => expect(lastRing(layer)).toEqual([1]))
+
+    clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 0.5, 0.5)
+    await vi.waitFor(() => expect(sorted(store.get().pars)).toEqual(['p0']))
+    await settle()
+
+    expect(lastRing(layer)).toEqual([0])
+    expect(stub.linkPar).toEqual([['p8']])
+    expect(whereLinesOf(root)).toEqual([])
+  })
+})
+
+describe('the map counts the selected sites it cannot draw, and never moves', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('counts sites on another layer, in another group, not placed and not in the index', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    stub.sites[201] = { site_id: 201, site: 'd1', group: 'deep', layer: 0, cell: 0, placed: true, has_value: true }
+    stub.sites[202] = { site_id: 202, site: 'u1', group: 'heads', layer: -1, cell: -1, placed: false, has_value: true }
+    await enterObservations(store, layer)
+
+    store.set({ sites: new Set([103, 201, 202, 999]) }, 'obs')
+    await vi.waitFor(() =>
+      expect(whereLinesOf(root)).toEqual([
+        '1 selected site is on layer 1',
+        '1 selected site is in another group (shown: heads)',
+        '1 selected site is not placed',
+        "1 selected site is not in this run's index",
+      ]),
+    )
+    expect(stub.linkSites.at(-1)).toEqual({ sites: '103,201,202,999', iteration: '0' })
+  })
+
+  it('says to turn on all layers for a site of unknown layer', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    stub.sites[105] = { site_id: 105, site: 'q', group: 'heads', layer: -1, cell: 1, placed: true, has_value: true }
+    await enterObservations(store, layer)
+    store.set({ sites: new Set([105]) }, 'obs')
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site has an unknown layer; turn on all layers to see it']))
+  })
+
+  it('says in one line that the sites are not drawn while the map is coloured by parameters', async () => {
+    const store = autoStore()
+    const { root } = await mountedWith(store)
+    store.set({ sites: new Set([101, 102, 104]) }, 'obs')
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['3 selected sites are not drawn: the map is coloured by parameters']))
+  })
+
+  it('counts a ringed dot panned off screen, and a selection from a tab never moves the camera', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+    await enterObservations(store, layer)
+    const matrices = layer.setMatrix.mock.calls.length
+
+    store.set({ sites: new Set([101, 104]) }, 'obs')
+    await vi.waitFor(() => expect(dotMarks(layer).ringed).toEqual([0, 2]))
+    await settle()
+    expect(layer.setMatrix.mock.calls.length).toBe(matrices)
+    expect(whereLinesOf(root)).toEqual([])
+
+    // s101 and s104 sit 112 px inside the left and right edges; four 40 px pans push one out.
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.focus()
+    for (let i = 0; i < 4; i++) canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    expect(whereLinesOf(root)).toEqual(['1 selected site is off screen'])
+  })
+
+  it('adds the count of sites with no valid observation to the iteration notice', async () => {
+    const store = autoStore()
+    const { root, stub } = await mountedWith(store)
+    stub.sites[101] = { ...stub.sites[101], has_value: false }
+    stub.sites[102] = { ...stub.sites[102], has_value: false }
+    const ids = [101, 102, 103, 104, 501, 502, 503, 504, 505, 506, 507, 508]
+
+    store.set({ sites: new Set(ids) }, 'obs')
+    await vi.waitFor(() =>
+      expect(selectedNoticeText(root)).toContain('2 of 12 selected sites have no valid observation in iteration 0; the selection is kept'),
+    )
+  })
+
+  it('says the selected sites cannot be checked, with the reason, when the iteration has no statistics', async () => {
+    const store = autoStore()
+    const { root, stub } = await mountedWith(store)
+    stub.valueReason = 'obs_agg/0 could not be read: the file is missing'
+
+    store.set({ sites: new Set([101]) }, 'obs')
+    await vi.waitFor(() => expect(selectedNoticeText(root)).toContain('Selected sites cannot be checked in iteration 0'))
+    expect(selectedNoticeText(root)).toContain('obs_agg/0 could not be read: the file is missing')
+  })
+
+  it('checks the first 200 of more selected sites and says how many were not', async () => {
+    const store = autoStore()
+    const { root, stub } = await mountedWith(store)
+    const ids = Array.from({ length: 205 }, (_, i) => 1000 + i)
+
+    store.set({ sites: new Set(ids) }, 'obs')
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['205 selected sites are not drawn: the map is coloured by parameters']))
+    expect(stub.linkSites.at(-1)!.sites.split(',').length).toBe(200)
+
+    await enterObservations(store, await layerDouble())
+    await vi.waitFor(() => expect(whereLinesOf(root)).toContain('5 selected sites are not checked: only the first 200 are'))
+    expect(whereLinesOf(root)).toContain("200 selected sites are not in this run's index")
+  })
+
+  it('shows a name and reason from the server as text, never as markup', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    await enterObservations(store, layer)
+    stub.pars['<b>x</b>'] = parRow({ parnme: '<b>x</b>', kind: 'unplaced', layer: -1, cell: -1, cells: [], n_cells: 0, reason: '<i>no cell</i>' })
+    store.set({ pars: new Set(['<b>x</b>']) }, 'params')
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected parameter has no cell: <i>no cell</i>']))
+    expect(root.querySelector('[data-testid="selection-where"] i')).toBeNull()
+  })
+})
