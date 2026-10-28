@@ -27,9 +27,12 @@ import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
-import { renderLegend } from '../ui/legend'
+import { renderLegend, type LegendOptions } from '../ui/legend'
 import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
-import type { RealNamesResult } from '../data/reals'
+import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
+import { renderBaseChip } from '../ui/base-chip'
+import { BASE_STYLE } from '../ui/charts/base-style'
+import { renderOverlayControls, type OverlayControlsHandle } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
 import { renderTimeSlider, type TimeSliderHandle } from '../ui/time-slider'
@@ -76,8 +79,9 @@ import {
   type TimePosition,
 } from './observation-stat-source'
 import { fetchLinkCell, type CellLinkResult } from '../data/link'
+import { createOverlaySource, type OverlayInputs } from './overlay-source'
 import { LatestWins } from '../data/latest-wins'
-import { buildPointFlags, type PointFlagRules } from '../data/hatch-mask'
+import { buildPointFlags } from '../data/hatch-mask'
 import {
   missingValueLine,
   offScreenCount,
@@ -438,10 +442,109 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     drawnPoints = { kind: values.length === 0 ? 'none' : kind, count: values.length }
   }
 
+  // The two overlays (D-21 to D-29): one source for both answers, one hatch pass, swatches in dots.
+  const overlaySource = createOverlaySource()
+  let overlayControls: OverlayControlsHandle | null = null
+  // The iteration and group last asked for, and what the last build was made from. A build runs
+  // only when one of these moves, never on a pan or zoom frame.
+  let overlayAsked: string | null = null
+  let overlayBuiltFrom: string | null = null
+  let overlayAnswers = 0
+  let overlayHatched = false
+  // Swatches for the drawn dots, good only for the dot set they were built for.
+  let overlayDots: { serial: number; key: string; atBounds: ReadonlySet<number>; conflict: ReadonlySet<number> } = {
+    serial: -1,
+    key: '',
+    atBounds: new Set(),
+    conflict: new Set(),
+  }
+
+  function overlayInputs(nCells: number): OverlayInputs {
+    const { kind, count } = drawnPoints
+    const pointRows = kind === 'par' && currentPoints.rows.length === count ? currentPoints.rows : null
+    let dotSiteIds: Int32Array | null = null
+    if (kind === 'obs' && obsDots !== null && obsData !== null && obsDots.rows.length === count) {
+      const data = obsData
+      dotSiteIds = Int32Array.from(obsDots.rows, (row) => data.rows[row].siteId)
+    }
+    return {
+      nCells,
+      layer: committed.layer,
+      // The all-layers switch is shown only while the map is coloured by observations.
+      allLayers: obsActive && obsAllLayers,
+      colourSource: obsActive ? 'obs' : 'par',
+      parGroup: drawnGroup,
+      joined,
+      cellArray,
+      layerArray,
+      pointRows,
+      obsGroup: obsActive ? obsGroupInUse : null,
+      dotSiteIds,
+    }
+  }
+
+  // Asks for the shown iteration's answers when the iteration or group moved, and rebuilds the
+  // hatch from the held answers otherwise. Says whether the hatch changed, so the caller redraws.
+  function refreshOverlays(): boolean {
+    if (!layer || !mesh || !overlayControls) return false
+    const controls = overlayControls
+    const iteration = loadingIteration ?? committed.iteration
+    const group = drawnGroup
+    const asked = `${iteration}|${group}`
+    if (asked !== overlayAsked) {
+      overlayAsked = asked
+      overlaySource.load(iteration, group).then(
+        (answer) => {
+          if (answer.stale || overlayAsked !== asked) return
+          overlayAnswers += 1
+          redrawOverlays()
+        },
+        () => {},
+      )
+    }
+    // While an iteration's tables load, the held cells are the old iteration's.
+    const loading = loadingIteration !== null
+    const from = loading
+      ? 'loading'
+      : `${overlayAnswers}|${asked}|${committed.layer}|${obsActive}|${obsAllLayers}|${obsGroupInUse}|${pointsSerial}`
+    if (from === overlayBuiltFrom) return false
+    overlayBuiltFrom = from
+    let mask: Uint8Array | null = null
+    let atDots: ReadonlySet<number> = new Set()
+    let conflictDots: ReadonlySet<number> = new Set()
+    if (loading) {
+      controls.setStatus('atBounds', { kind: 'loading' })
+      controls.setStatus('conflict', { kind: 'loading' })
+    } else {
+      const inputs = overlayInputs(mesh.nCells)
+      // Built once for the words, then again only when the user has one of the toggles off.
+      let build = overlaySource.build(inputs, { atBounds: true, conflict: true })
+      controls.setStatus('atBounds', build.atBounds)
+      controls.setStatus('conflict', build.conflict)
+      const enabled = { atBounds: controls.isOn('atBounds'), conflict: controls.isOn('conflict') }
+      if (!enabled.atBounds || !enabled.conflict) build = overlaySource.build(inputs, enabled)
+      mask = build.mask
+      atDots = build.atBoundsDots
+      conflictDots = build.conflictDots
+    }
+    overlayDots = { serial: pointsSerial, key: `${[...atDots].join(',')}/${[...conflictDots].join(',')}`, atBounds: atDots, conflict: conflictDots }
+    if (mask === null && !overlayHatched) return false
+    layer.setHatch(mask)
+    overlayHatched = mask !== null
+    return true
+  }
+
+  // An answer landed or a toggle moved: the hatch and swatches are redone, and drawn once any field is.
+  function redrawOverlays(): void {
+    const hatch = refreshOverlays()
+    const dots = refreshPointMarks()
+    if ((hatch || dots) && canvas.getAttribute('data-drawn') === 'true') redraw()
+  }
+
   // Site dots follow selection.sites and pilot-point dots follow selection.pars: the selected ones
   // are ringed and, while their kind has a selection, the rest dim (D-02). Never a hidden dot.
-  // The at-bounds and conflict swatches come in as optional rules.
-  function refreshPointMarks(overlay: Pick<PointFlagRules, 'atBounds' | 'conflict'> = {}): boolean {
+  // The at-bounds and conflict swatches sit next to the dim flag, from the last overlay build.
+  function refreshPointMarks(): boolean {
     if (!layer) return false
     const selection = store.get()
     const { kind, count } = drawnPoints
@@ -459,16 +562,25 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       selected = selectedDotIndices(currentPoints.rows, (row) => joined[row]?.parnme ?? null, selection.pars)
       dimOn = selection.pars.size > 0
     }
-    const hasOverlay = overlay.atBounds !== undefined || overlay.conflict !== undefined
-    const key = `${pointsSerial}|${dimOn}|${selected.join(',')}`
-    if (!hasOverlay && key === marksKey) return false
-    marksKey = hasOverlay ? null : key
+    const swatches = overlayDots.serial === pointsSerial ? overlayDots : null
+    const atDots = swatches !== null && swatches.atBounds.size > 0 ? swatches.atBounds : null
+    const conflictDots = swatches !== null && swatches.conflict.size > 0 ? swatches.conflict : null
+    const hasOverlay = atDots !== null || conflictDots !== null
+    const key = `${pointsSerial}|${dimOn}|${selected.join(',')}|${hasOverlay ? swatches!.key : ''}`
+    if (key === marksKey) return false
+    marksKey = key
     layer.setSelectedPoints(selected)
     if (count === 0 || (!dimOn && !hasOverlay)) {
       layer.setPointFlags(null)
     } else {
       const chosen = new Set(selected)
-      layer.setPointFlags(buildPointFlags(count, { ...overlay, dim: dimOn ? (dot) => !chosen.has(dot) : undefined }))
+      layer.setPointFlags(
+        buildPointFlags(count, {
+          atBounds: atDots !== null ? (dot) => atDots.has(dot) : undefined,
+          conflict: conflictDots !== null ? (dot) => conflictDots.has(dot) : undefined,
+          dim: dimOn ? (dot) => !chosen.has(dot) : undefined,
+        }),
+      )
     }
     return true
   }
@@ -478,8 +590,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function refreshMarks(draw = true): void {
     refreshParRings()
     const rings = refreshRings()
+    const hatch = refreshOverlays()
     const dots = refreshPointMarks()
-    if ((rings || dots) && draw) redraw()
+    if ((rings || hatch || dots) && draw) redraw()
     renderWhere()
   }
 
@@ -787,17 +900,41 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   function legendGroupLabel(): string {
     const group = drawnGroup ?? ''
-    if (interpolatedEntry(drawnGroup) === null) return group
+    // D-17: the drawn realization is named base when it is the shown iteration's base.
+    const drawnBase = committed.stat === 'value' && isBase(committed.iteration, committed.realization) ? ` · ${BASE_STYLE.label}` : ''
+    if (interpolatedEntry(drawnGroup) === null) return `${group}${drawnBase}`
     const multiplier = allIdentities.some((i) => i.pargp === group && /_pstyle:m(_|$)/.test(i.parnme))
-    return multiplier ? `${group} · interpolated multiplier field` : `${group} · interpolated`
+    return multiplier ? `${group} · interpolated multiplier field${drawnBase}` : `${group} · interpolated${drawnBase}`
   }
   // The drawn layer's own classification (D-06), recomputed by applyLayer
   // on every layer/group change and every landed fetch -- Task 2's click
   // readout reads this directly rather than reclassifying per click.
   let currentClasses: CellClass[] = []
 
+  function isBase(iteration: number, realization: string | null): boolean {
+    return realization !== null && baseNames.get(iteration) === realization
+  }
+
   function selectionLabel(selection: FieldChoice): string {
-    return selection.stat === 'value' ? (selection.realization ?? '—') : selection.stat
+    if (selection.stat !== 'value') return selection.stat
+    const name = selection.realization
+    if (name === null) return '—'
+    return isBase(selection.iteration, name) && name !== BASE_STYLE.label ? `${name} · ${BASE_STYLE.label}` : name
+  }
+
+  // The legend last drawn for the parameter field, so a base name that lands later can relabel it.
+  let shownLegend: LegendOptions | null = null
+
+  function paintLegend(legend: LegendOptions | null): void {
+    shownLegend = legend
+    renderLegend(legendEl, legend)
+  }
+
+  // The base name landed for the shown iteration: every label that names the drawn realization follows.
+  function followBaseName(): void {
+    paintStatusBar()
+    if (!obsActive && rawFullField !== null && shownLegend !== null) paintLegend({ ...shownLegend, group: legendGroupLabel() })
+    updateReadout()
   }
 
   // A hand-built status-bar field rather than a renderStatusBar entry --
@@ -900,6 +1037,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setAccentColor([ar, ag, ab], halo)
     // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
     layer?.setPointRingColor([pr, pg, pb])
+    layer?.setHatchColors([ir, ig, ib], [pr, pg, pb])
     try {
       layer?.setDimAlpha(readNumberToken('--dim-alpha'))
     } catch (error) {
@@ -1373,11 +1511,30 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
   }
 
+  // The base realization's name per iteration, as the header chip read it, so the map can name it.
+  const baseNames = new Map<number, string | null>()
+
+  function loadBase(k: number): Promise<BaseResult> {
+    return fetchBase(k).then((result) => {
+      baseNames.set(k, result.ok ? result.answer.name : null)
+      if (k === committed.iteration) followBaseName()
+      return result
+    })
+  }
+
+  // Built once, so a header repaint keeps the same chip and its state.
+  const baseChip = renderBaseChip(document.createElement('div'), {
+    store,
+    loadBase,
+    iteration: openingIteration(opts.config, opts.state).iteration,
+  })
+
   function paintHeader(): void {
     renderHeader(header, {
       title: opts.config?.case ?? 'This run',
       themeChoice: currentTheme(),
       chips: chipsInput(),
+      extras: [baseChip.el],
       onThemeChange: (choice: ThemeChoice) => {
         setTheme(choice)
         paintHeader()
@@ -1536,7 +1693,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (!rawFullField || !layer) {
-      renderLegend(legendEl, null)
+      paintLegend(null)
       return
     }
 
@@ -1593,7 +1750,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer.setLimits(limits)
     const { contested, noValue } = applyLayer()
 
-    renderLegend(legendEl, {
+    paintLegend({
       colormap: committed.colormap,
       reverse: committed.reverseColormap,
       limits,
@@ -1668,6 +1825,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         controlsHandle?.setLayer(committed.layer)
       }
       paintStatusBar()
+      // An iteration switch whose field failed still shows that iteration's overlays.
+      redrawOverlays()
       return
     }
     // Only the choice still wanted may draw. A block field holds every
@@ -1888,7 +2047,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     clearSelection()
-    renderLegend(legendEl, null)
+    paintLegend(null)
     if (layer) {
       const nCells = mesh?.nCells ?? 0
       layer.setValues(new Float32Array(nCells).fill(Number.NaN))
@@ -2014,6 +2173,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const from = loadedIteration
     loadingIteration = k
     paintStatusBar()
+    // The old iteration's hatch is taken away at once, and the new one's answers are asked for.
+    redrawOverlays()
     let answer
     try {
       answer = await source.loadIteration(k)
@@ -2021,6 +2182,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (token !== switchSerial) return
       loadingIteration = null
       paintStatusBar()
+      redrawOverlays()
       addNotice(mapNotice, {
         title: `Iteration ${k} could not be read`,
         detail: `${describeError(error)} The map keeps drawing iteration ${from}.`,
@@ -2095,6 +2257,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     groupGone = groupMissing ? target : null
     committed = { ...base, iteration: k, realization: statIsValue ? wantedRealization : null }
     reported = { ...reported, iteration: k }
+    baseChip.setIteration(k)
 
     if ((statIsValue && realizationMissing) || groupMissing) {
       drawNothing()
@@ -2217,7 +2380,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       putPoints(new Float32Array(0), new Float32Array(0))
       layer.setFootprint(null)
       layer.setInactive(drawnInactiveMask())
-      renderLegend(legendEl, null)
+      paintLegend(null)
       refreshMarks(false)
       redraw()
     }
@@ -3018,6 +3181,27 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         if (store.get().colour.source === 'obs') void drawObservations()
       },
     )
+
+    // D-22: the overlay toggles lead the map controls; they ask nothing until the first field draws.
+    const overlayEl = document.createElement('div')
+    topLeftEl.insertBefore(overlayEl, topLeftEl.firstChild)
+    overlayControls = renderOverlayControls(overlayEl, {
+      onToggle: () => {
+        overlayBuiltFrom = null
+        redrawOverlays()
+      },
+    })
+    store.subscribe(
+      (selection) => selection.runId,
+      () => {
+        overlaySource.cancel()
+        overlayAsked = null
+        overlayBuiltFrom = null
+        baseNames.clear()
+        redrawOverlays()
+      },
+    )
+    baseChip.setIteration(iteration)
 
     pending = committed
     await performFetch(committed)
