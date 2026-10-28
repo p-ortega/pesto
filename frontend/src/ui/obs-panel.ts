@@ -19,6 +19,7 @@ import {
 import type { Capability, IngestState } from '../data/client'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
+import { renderGroupFit } from './obs-fit'
 import { renderSpaghetti } from './obs-spaghetti'
 
 export interface ObsPanelOptions {
@@ -324,7 +325,7 @@ function appendNote(host: HTMLElement, note: string): void {
 /**
  * Fills `host` with the Obs panel. The panel's sections, top to bottom, are
  * `.obs-notices`, `.obs-groups`, `.obs-fit`, `.obs-sites` and `.obs-spaghetti`;
- * the fit host stays empty until its plan mounts into it.
+ * the fit host stays empty until a group is chosen.
  */
 export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPanelHandle {
   host.textContent = ''
@@ -354,6 +355,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   const fitHost = document.createElement('div')
   fitHost.classList.add('obs-fit')
   host.appendChild(fitHost)
+  const fit = renderGroupFit(fitHost, { store: opts.store, startHidden: hidden })
 
   const sitesHost = document.createElement('div')
   sitesHost.classList.add('obs-sites')
@@ -448,6 +450,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     if (wanted === undefined || !groupNames.has(wanted)) return
     chosenGroup = wanted
     groupsGrid?.markRows()
+    fit.setGroup(wanted)
     if (hidden) {
       sitesPending = true
       return
@@ -459,6 +462,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   function pickGroup(group: string): void {
     chosenGroup = group
     groupsGrid?.markRows()
+    fit.setGroup(group)
     opts.store.set({ obsGroups: new Set([group]) }, 'obs')
     if (group !== sitesFor) loadSites(group)
   }
@@ -597,6 +601,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     onShow() {
       hidden = false
       spaghetti.onShow()
+      fit.onShow()
       requestGroups()
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
@@ -607,6 +612,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     onHide() {
       hidden = true
       spaghetti.onHide()
+      fit.onHide()
       savedScroll.clear()
       for (const pane of host.querySelectorAll('.scroll-pane')) savedScroll.set(pane, pane.scrollTop)
     },
@@ -614,6 +620,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       unsubscribeGroups()
       unsubscribeSites()
       sitesSlot.cancel()
+      fit.dispose()
       spaghetti.dispose()
     },
   }
