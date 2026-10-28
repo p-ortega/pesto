@@ -25,6 +25,7 @@ from starlette.responses import Response
 from pesto.api import linkcache
 from pesto.api.app import create_app
 from pesto.api.fields import contributors
+from pesto.api.par import AT_BOUNDS_MIN_PERCENT
 from pesto.api.pp import _shape
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
@@ -308,11 +309,15 @@ def test_at_bounds_counts_agree_with_par_change_at_the_first_and_last_iteration(
 
         lower = frame[f"near_lower_{suffix}"].astype("Float64")
         upper = frame[f"near_upper_{suffix}"].astype("Float64")
-        both = (lower.notna() & upper.notna()).to_numpy(dtype=bool)
+        held = frame[f"near_n_{suffix}"].astype("Float64")
+        both = (lower.notna() & upper.notna() & held.notna() & (held > 0)).fillna(False).to_numpy(dtype=bool)
         total = (lower.fillna(0) + upper.fillna(0)).to_numpy(dtype=np.float64)
-        expected = int((both & (total >= 1)).sum())
+        share = held.fillna(0).to_numpy(dtype=np.float64) * AT_BOUNDS_MIN_PERCENT
+        # At bounds means at least 10% of realizations near a bound.
+        expected = int((both & (total * 100 >= share)).sum())
         assert sum(row["n_at_bounds"] for row in body["groups"]) == expected, (
-            f"iteration {k}: the at-bounds counts do not add up to the par_change rows near a bound"
+            f"iteration {k}: the at-bounds counts do not add up to the par_change rows with at "
+            f"least {AT_BOUNDS_MIN_PERCENT}% of realizations near a bound"
         )
 
     # The names list is unbounded by design, so its size is recorded, not asserted.

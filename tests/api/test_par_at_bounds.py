@@ -1,5 +1,6 @@
-"""/par/at_bounds: which parameters are at their bounds in the shown iteration, read from
-the near-bound counts in par_change, for the first and last iteration only."""
+"""/par/at_bounds: which parameters are at their bounds in the shown iteration (at least 10% of
+realizations near a bound), read from the near-bound counts in par_change, for the first and
+last iteration only."""
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from ingest.par_fixtures import LOG_BOUNDS, NONE_BOUNDS, make_par_view_run
 from ingest.test_control_first import in_process  # noqa: F401  (a fixture, used by name)
 from pesto.api.app import create_app
 from pesto.cache.layout import CacheLayout
-from pesto.ingest.parview import NEAR_BOUND_NOTE, load_par_change
+from pesto.ingest.parview import NEAR_BOUND_NOTE, load_par_change, par_change_outdated
 from pesto.ingest.runner import ingest_run
 
 from .test_ingest import _snapshot
@@ -55,8 +56,10 @@ def _expected(frame: pd.DataFrame, suffix: str) -> dict[str, dict]:
     for group, block in frame.groupby("pargp", sort=False):
         lower = block[f"near_lower_{suffix}"]
         upper = block[f"near_upper_{suffix}"]
-        counted = lower.notna() & upper.notna()
-        at = counted & ((lower.fillna(0) + upper.fillna(0)) >= 1)
+        held = block[f"near_n_{suffix}"]
+        counted = lower.notna() & upper.notna() & held.notna()
+        near = (lower.fillna(0) + upper.fillna(0)) * 100 >= held.fillna(0) * par_module.AT_BOUNDS_MIN_PERCENT
+        at = counted & near
         excluded: dict[str, int] = {}
         for kind in block.loc[~counted, "excluded_kind"]:
             key = kind if isinstance(kind, str) and kind else "not counted"
@@ -72,9 +75,13 @@ def _expected(frame: pd.DataFrame, suffix: str) -> dict[str, dict]:
     return out
 
 
+HELD = 10
+
+
 def _rewrite_change(cache_root, rows: list[dict], **sidecar) -> None:
     """Replace the cached par_change with ``rows`` (parnme, pargp, counts, excluded_kind),
-    every other column copied from the first stored row."""
+    every other column copied from the first stored row. A row with near counts for an
+    iteration is out of ``HELD`` realizations unless it names its own ``near_n_*``."""
     import json
 
     layout = CacheLayout(root=Path(cache_root))
@@ -85,6 +92,12 @@ def _rewrite_change(cache_root, rows: list[dict], **sidecar) -> None:
     template["included"] = [r.get("excluded_kind") is None for r in rows]
     for column in ("near_lower_first", "near_upper_first", "near_lower_last", "near_upper_last"):
         template[column] = pd.array([r.get(column) for r in rows], dtype="Int64")
+    for suffix in ("first", "last"):
+        column = f"near_n_{suffix}"
+        template[column] = pd.array(
+            [r.get(column, HELD if r.get(f"near_lower_{suffix}") is not None else None) for r in rows],
+            dtype="Int64",
+        )
     template.to_parquet(layout.par_change, index=False)
     if sidecar:
         layout.par_change_meta.write_text(json.dumps({**meta, **sidecar}, indent=2))
@@ -111,7 +124,7 @@ def test_the_first_iteration_counts_parameters_at_their_bounds_per_group(tmp_pat
         want = expected[entry["group"]]
         assert entry == {k: v for k, v in want.items() if k != "names"}
     by_group = {g["group"]: g for g in body["groups"]}
-    # The overridden parameters sit on a bound in one realization each.
+    # The overridden parameters sit on a bound in one of six realizations each, over 10%.
     assert by_group["hk_pp"]["n_at_bounds"] >= 1
     assert by_group["rch_gr"]["n_at_bounds"] >= 1
     assert by_group["fixed_gr"]["n_excluded"] == {"fixed": 2}
@@ -242,7 +255,7 @@ def test_the_answer_states_pestpps_rule_and_the_float32_caveat(tmp_path, in_proc
     body = client.get(URL, params={"iteration": 0}).json()
 
     assert NEAR_BOUND_NOTE in body["rule"]
-    assert "at least one realization" in body["rule"]
+    assert "at least 10% of realizations near a bound" in body["rule"]
     assert "float32" in body["caveat"]
     assert "one high" in body["caveat"]
     assert "pcs.csv" in body["caveat"]
@@ -283,3 +296,54 @@ def test_the_run_directory_and_cache_are_untouched(tmp_path, in_process):  # noq
     assert _snapshot(run.root) == run_before
     assert _snapshot(cache_root) == cache_before
 
+
+
+def test_exactly_ten_percent_near_a_bound_is_at_bounds_and_just_below_is_not(tmp_path, in_process):  # noqa: F811
+    _run, cache_root, client = _open(tmp_path)
+    _rewrite_change(
+        cache_root,
+        [
+            # 3 of 30 is exactly 10%, where a float 0.1 x 30 would land just above 3.
+            {"parnme": "ten", "pargp": "g", "near_lower_first": 2, "near_upper_first": 1, "near_n_first": 30},
+            {"parnme": "below", "pargp": "g", "near_lower_first": 3, "near_upper_first": 0, "near_n_first": 31},
+            {"parnme": "one_of_many", "pargp": "g", "near_lower_first": 1, "near_upper_first": 0, "near_n_first": 200},
+            {"parnme": "all", "pargp": "g", "near_lower_first": 0, "near_upper_first": 5, "near_n_first": 5},
+        ],
+    )
+
+    body = client.get(URL, params={"iteration": 0, "group": "g"}).json()
+
+    assert body["names"] == ["ten", "all"]
+    assert body["groups"][0]["n_at_bounds"] == 2
+    assert body["groups"][0]["n_counted"] == 4
+
+
+def test_ingest_writes_the_realization_counts_the_share_is_taken_out_of(tmp_path, in_process):  # noqa: F811
+    _run, cache_root, _client_ = _open(tmp_path, drop_in_last=2)
+    frame, _meta = load_par_change(CacheLayout(root=cache_root))
+    counted = frame["near_lower_first"].notna()
+
+    assert set(frame.loc[counted, "near_n_first"]) == {6}
+    assert set(frame.loc[frame["near_lower_last"].notna(), "near_n_last"]) == {5}
+    assert frame.loc[~counted, "near_n_first"].isna().all()
+
+
+def test_a_change_table_without_realization_counts_is_refused_and_rebuilt_on_the_next_ingest(
+    tmp_path, in_process  # noqa: F811
+):
+    run, cache_root, client = _open(tmp_path)
+    layout = CacheLayout(root=cache_root)
+    frame, _meta = load_par_change(layout)
+    frame.drop(columns=["near_n_first", "near_n_last"]).to_parquet(layout.par_change, index=False)
+
+    response = client.get(URL, params={"iteration": 0})
+
+    assert response.status_code == 404
+    assert "near_n_first" in response.text
+    assert "ingest the run again" in response.text
+    assert par_change_outdated(layout)
+
+    ingest_run(run.root, cache_root=cache_root)
+
+    assert not par_change_outdated(layout)
+    assert "near_n_first" in load_par_change(layout)[0].columns

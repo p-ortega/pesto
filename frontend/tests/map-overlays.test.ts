@@ -77,7 +77,7 @@ const HEADS = [
   { id: 104, name: 's104', x: 1.75, y: 0.5, layer: 0, cell: 1 },
 ]
 
-const RULE = 'a parameter is at bounds when one realization is near a bound'
+const RULE = 'a parameter is at bounds when it has at least 10% of realizations near a bound'
 const CAVEAT = 'counts from the float32 cache can be one high'
 const NO_COUNTS = 'near-bound counts exist for iterations 0 and 3 only'
 
