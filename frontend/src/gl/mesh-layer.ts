@@ -225,6 +225,8 @@ uniform vec3 u_ringColor;
 uniform float u_missingStyle;
 uniform vec3 u_ink;
 uniform float u_dimAlpha;
+uniform float u_classes;          // the same steps as the fill (D-31)
+uniform float u_classTexel[11];
 out vec4 fragColor;
 
 // One swatch line family across the dot; d is in point-coordinate units.
@@ -240,7 +242,12 @@ void main() {
   float r = length(d);
   if (r > 0.5) discard;
   if (missing && r <= 0.36) discard;
-  vec4 color = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
+  float t = v_norm;
+  if (u_classes > 0.5) {
+    int k = int(min(floor(v_norm * u_classes), u_classes - 1.0));
+    t = (u_classTexel[k] + 0.5) / 256.0;
+  }
+  vec4 color = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(t, 0.5));
   // Bits as named in data/hatch-mask.ts: 1 at-bounds swatch, 2 conflict swatch, 4 dim.
   int flags = int(v_flags + 0.5);
   if (r <= 0.36) {
@@ -935,6 +942,7 @@ export class MeshLayer {
     const ink = this.hatchInk
     gl.uniform3f(gl.getUniformLocation(program, 'u_ink'), ink[0], ink[1], ink[2])
     gl.uniform1f(gl.getUniformLocation(program, 'u_dimAlpha'), this.dimAlpha)
+    this.setClassUniforms(program)
     // Blend colour only; alpha stays 1 so a dimmed dot never makes the canvas see-through.
     const wasBlending = gl.isEnabled(gl.BLEND)
     gl.enable(gl.BLEND)

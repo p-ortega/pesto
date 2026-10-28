@@ -50,10 +50,22 @@ export const ONE_CLASS_EQUAL = 'the limits are equal, so every value falls in on
 export const ONE_CLASS_EMPTY = 'no cell has a value, so there is nothing to class'
 
 export function resolveStyle(requested: FieldStyle, ctx: StyleContext): { effective: EffectiveStyle; notes: StyleNotes } {
-  void ctx
+  let classes: number = requested.classes
+  let classesNote: string | null = null
+  if (classes > 0) {
+    const [lo, hi] = ctx.limits
+    // Limits that cannot be split draw every value in the ramp middle, the one swatch the legend shows.
+    if (!ctx.valued) {
+      classes = 1
+      classesNote = ONE_CLASS_EMPTY
+    } else if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) {
+      classes = 1
+      classesNote = ONE_CLASS_EQUAL
+    }
+  }
   return {
-    effective: { classes: requested.classes, symmetric: false, texture: false },
-    notes: { classes: null, symmetric: null, texture: null },
+    effective: { classes, symmetric: false, texture: false },
+    notes: { classes: classesNote, symmetric: null, texture: null },
   }
 }
 

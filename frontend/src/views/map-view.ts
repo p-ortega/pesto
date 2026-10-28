@@ -1845,7 +1845,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       limitsMode: committed.limitsMode,
       drawsAsPoints: drawsAsPoints(),
       limits,
-      valued: true,
+      valued: groupHasFiniteValue(scaled),
     })
     layer.setColormap(committed.colormap, committed.reverseColormap)
     layer.setLimits(limits)
@@ -1868,6 +1868,19 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       style: effective,
       styleNotes: notes,
     })
+  }
+
+  // Stops at the first finite value, so a normal field costs one look. A
+  // cached or manual pair says nothing about whether the group has a value.
+  function groupHasFiniteValue(scaled: Float32Array): boolean {
+    if (fieldKind === 'cell') {
+      for (let c = 0; c < scaled.length; c++) if (Number.isFinite(scaled[c])) return true
+      return false
+    }
+    for (let i = 0; i < joined.length; i++) {
+      if (joined[i]?.pargp === drawnGroup && Number.isFinite(scaled[i])) return true
+    }
+    return false
   }
 
   // A pilot-point field paints its value on an idomain-inactive cell too; this says how many.
