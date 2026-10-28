@@ -14,13 +14,15 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
-from fastapi import APIRouter, Request
-from starlette.responses import Response
+from fastapi import APIRouter, Query, Request
+from starlette.responses import JSONResponse, Response
 
 from pesto.api.problem import problem, problem_from_failure
+from pesto.api.query import RunQuery
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
+from pesto.ingest.basereal import find_base
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.tables import UnknownColumn, load_control_table
 
@@ -155,7 +157,18 @@ async def get_run_reals(request: Request, iteration: int) -> Response:
     if cache_root is None:
         return problem(409, "no run is open")
 
-    layout = CacheLayout(root=Path(cache_root))
+    names = _read_par_reals(CacheLayout(root=Path(cache_root)), iteration)
+    if isinstance(names, Response):
+        return names
+
+    import pyarrow as pa
+
+    table = pa.table({"realization": names})
+    return arrow_response(table)
+
+
+def _read_par_reals(layout: CacheLayout, iteration: int) -> list | Response:
+    """The names ``par_reals/K`` recorded, or the problem saying why the file cannot be believed."""
     target = layout.par_reals(iteration)
     artifact = f"par_reals/{iteration}"
 
@@ -185,8 +198,39 @@ async def get_run_reals(request: Request, iteration: int) -> Response:
     names = raw.get("names")
     if not isinstance(names, list):
         return problem(502, f"{target.name} has an unexpected shape", artifact=artifact)
+    return names
 
-    import pyarrow as pa
 
-    table = pa.table({"realization": names})
-    return arrow_response(table)
+class RealsBaseQuery(RunQuery):
+    """``iteration`` is the one accepted field."""
+
+    iteration: int
+
+
+@router.get("/reals/base")
+async def get_reals_base(request: Request, params: Annotated[RealsBaseQuery, Query()]) -> Response:
+    """The base realization of one iteration's parameter ensemble, found by ``find_base`` and
+    given in the file's own spelling, or no name with the reason there is none."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+
+    layout = CacheLayout(root=Path(cache_root))
+    names = _read_par_reals(layout, params.iteration)
+    if isinstance(names, Response):
+        return names
+    if not all(isinstance(name, str) for name in names):
+        target = layout.par_reals(params.iteration)
+        return problem(
+            502, f"{target.name} has an unexpected shape", artifact=f"par_reals/{params.iteration}"
+        )
+
+    positions, note = find_base(tuple(names))
+    found = bool(positions)
+    body = {
+        "iteration": int(params.iteration),
+        "name": names[positions[0]] if found else None,
+        "note": note,
+        "reason": None if found else f"no realization named base in iteration {params.iteration}",
+    }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})

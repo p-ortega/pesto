@@ -15,7 +15,7 @@ from typing import Annotated
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Query, Request
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from starlette.responses import JSONResponse, Response
 
 from pesto.api import obscache
@@ -265,6 +265,43 @@ async def get_obs_series(request: Request, params: Annotated[ObsSeriesQuery, Que
         "n_sentinel": n_sentinel,
     }
     return blob_response(rows, meta=meta, cache_control="no-store")
+
+
+class ObsRealsQuery(RunQuery):
+    """``iteration`` is the one accepted field."""
+
+    iteration: int
+
+
+@router.get("/obs/reals")
+async def get_obs_reals(request: Request, params: Annotated[ObsRealsQuery, Query()]) -> Response:
+    """One iteration's observation ensemble realization names, in the order the file recorded
+    them, so a realization is matched to a spaghetti column by name. Base is found by ``find_base``."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    name = f"{obscache.OBS_ENS_PREFIX}{params.iteration}"
+    reason = _recorded_reason(
+        Manifest.load(CacheLayout(root=Path(cache_root))),
+        name,
+        f"no observation ensemble was ingested for iteration {params.iteration}",
+    )
+    if reason is not None:
+        return problem(404, "no observation ensemble for that iteration", artifact=name, detail=reason)
+    stored = obscache.get_ens(state, cache_root, params.iteration)
+    if isinstance(stored, ReadFailure):
+        return problem_from_failure(404, stored)
+
+    base_index, base_note = find_base(stored.real_names)
+    body = {
+        "iteration": int(params.iteration),
+        "names": list(stored.real_names),
+        "base_index": base_index,
+        "base_note": base_note,
+    }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 _RESID_ROW = OBS_STATS.index("resid_mean")
@@ -743,6 +780,18 @@ def _build_resid_hist(state, cache_root, group: str, first: int, last: int | Non
     return body
 
 
+def _resid_hist(state, cache_root, group: str, first: int, last: int | None):
+    """The memoised residual histogram body; the brush reads this same entry."""
+    names = ("obs_index", *(f"obs_agg/{k}" for k in (first, last) if k is not None))
+    return obscache.memoised(
+        state,
+        cache_root,
+        ("resid_hist", group, first, last),
+        names,
+        lambda layout: _build_resid_hist(state, cache_root, group, first, last),
+    )
+
+
 @router.get("/obs/resid_hist")
 async def get_obs_resid_hist(request: Request, params: Annotated[ObsGroupQuery, Query()]) -> Response:
     """One group's ensemble-mean residual, simulated minus observed, at the first and last
@@ -761,14 +810,135 @@ async def get_obs_resid_hist(request: Request, params: Annotated[ObsGroupQuery, 
     if ends is None:
         return _no_ensemble()
     first, last = ends
-    names = ("obs_index", *(f"obs_agg/{k}" for k in (first, last) if k is not None))
-    body = obscache.memoised(
-        state,
-        cache_root,
-        ("resid_hist", params.group, first, last),
-        names,
-        lambda layout: _build_resid_hist(state, cache_root, params.group, first, last),
-    )
+    body = _resid_hist(state, cache_root, params.group, first, last)
     if isinstance(body, ReadFailure):
         return problem_from_failure(404, body)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+class ObsBrushQuery(RunQuery):
+    """``group``, one end ``iteration`` and the closed residual range ``lo`` to ``hi``."""
+
+    group: str
+    iteration: int
+    lo: float = Field(allow_inf_nan=False)
+    hi: float = Field(allow_inf_nan=False)
+
+
+def _row_sites(index, group: str, start: int, stop: int) -> np.ndarray | None:
+    """The site id of each stored row of the group, from the sites' own starts and counts;
+    None when those do not cover the group's rows exactly once."""
+    mine = index.sites[(index.sites["group"] == group).to_numpy()].sort_values("start")
+    starts = mine["start"].to_numpy(dtype=np.int64)
+    counts = mine["count"].to_numpy(dtype=np.int64)
+    ends = starts + counts
+    if starts.size == 0:
+        return np.empty(0, dtype=np.int64) if start == stop else None
+    if starts[0] != start or ends[-1] != stop or np.any(starts[1:] != ends[:-1]):
+        return None
+    return np.repeat(mine["site_id"].to_numpy(dtype=np.int64), counts)
+
+
+def _other_series(
+    hist: dict, slot: str, iteration: int, resid: np.ndarray, picked: np.ndarray, row_site: np.ndarray
+) -> dict:
+    """The picked residuals of the other end on the histogram's own edges. Density uses that
+    series' own n, so the outline sits on the same scale as the bars it is drawn over."""
+    edges = np.asarray(hist["edges"], dtype=np.float64)
+    values = resid[picked]
+    within = (values >= edges[0]) & (values <= edges[-1])
+    counts, _ = np.histogram(values[within], bins=edges)
+    n = int(hist[slot]["n"])
+    density = counts / (n * np.diff(edges)) if n else np.zeros(counts.size)
+    return {
+        "iteration": int(iteration),
+        "counts": [int(v) for v in counts],
+        "density": [float(v) for v in density],
+        "n_sites": int(np.unique(row_site[picked][within]).size),
+        "n_obs": int(counts.sum()),
+    }
+
+
+@router.get("/obs/brush")
+async def get_obs_brush(request: Request, params: Annotated[ObsBrushQuery, Query()]) -> Response:
+    """The sites of one group with at least one observation whose ensemble-mean residual at
+    one end of the residual histogram lies in ``lo <= r <= hi``, what was left out, and how
+    the same sites fall at the other end on the histogram's own edges."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+    if params.lo > params.hi:
+        return problem(
+            422,
+            "the residual range is reversed",
+            detail=f"lo ({params.lo!r}) is greater than hi ({params.hi!r})",
+        )
+
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return problem_from_failure(404, index)
+    span = _group_range(index, params.group)
+    if span is None:
+        return _unknown_group(params.group, "obs_index")
+    ends = obscache.obs_ends(state, cache_root, Manifest.load(CacheLayout(root=Path(cache_root))))
+    if ends is None:
+        return _no_ensemble()
+    first, last = ends
+    if params.iteration not in (first, last):
+        accepted = f"only iteration {first}" if last is None else f"iterations {first} and {last}"
+        return problem(
+            422,
+            "that iteration is not an end of the residual histogram",
+            artifact="obs_agg",
+            detail=f"the residual histogram has {accepted}; iteration {params.iteration} is neither",
+        )
+    start, stop = span
+    row_site = _row_sites(index, params.group, start, stop)
+    if row_site is None:
+        return problem(
+            404,
+            "the observation index is damaged",
+            artifact="obs_index",
+            detail=f"the sites of group {params.group!r} do not cover its observations exactly once",
+        )
+
+    agg = obscache.get_agg(state, cache_root, params.iteration)
+    if isinstance(agg, ReadFailure):
+        return problem_from_failure(404, agg)
+    target = (index.flags[start:stop] & FLAG_HAS_TARGET) != 0
+    resid = np.asarray(agg.values[_RESID_ROW, start:stop], dtype=np.float64)
+    finite = np.isfinite(resid)
+    usable = target & usable_mask(resid)
+    inside = usable & (resid >= params.lo) & (resid <= params.hi)
+    sites = np.unique(row_site[inside])
+
+    other = None
+    if last is not None:
+        hist = _resid_hist(state, cache_root, params.group, first, last)
+        if isinstance(hist, ReadFailure):
+            return problem_from_failure(404, hist)
+        if hist["edges"]:
+            other_iteration, slot = (last, "last") if params.iteration == first else (first, "first")
+            other_agg = obscache.get_agg(state, cache_root, other_iteration)
+            if isinstance(other_agg, ReadFailure):
+                return problem_from_failure(404, other_agg)
+            other_resid = np.asarray(other_agg.values[_RESID_ROW, start:stop], dtype=np.float64)
+            picked = target & usable_mask(other_resid) & np.isin(row_site, sites)
+            other = _other_series(hist, slot, other_iteration, other_resid, picked, row_site)
+
+    body = {
+        "group": params.group,
+        "iteration": int(params.iteration),
+        "lo": params.lo,
+        "hi": params.hi,
+        "sites": [int(v) for v in sites],
+        "n_obs_in_range": int(inside.sum()),
+        "left_out": {
+            "no_target": int((~target).sum()),
+            "sentinel": int((target & sentinel_mask(resid) & finite).sum()),
+            "no_valid_realization": int((target & ~finite).sum()),
+        },
+        "other": other,
+    }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
