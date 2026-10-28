@@ -505,6 +505,14 @@ describe('the narrow-panel layout', () => {
     expect(css).toMatch(/\.obs-grid-header,\s*\.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*\d+em/)
   })
 
+  it('keeps the group table wide enough for its columns and never scrolls its rows apart from the header', () => {
+    // 10em name + 4 figures + 1 text + 2 rmse + 2 conflict columns, plus nine 8px gaps.
+    const floor = 10 + 4 * 5.5 + 5.5 + 2 * 8.5 + 2 * 5.5 + (9 * 8) / 16
+    const wide = Number(/\.obs-grid-header,\s*\.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)em/.exec(css)?.[1])
+    expect(wide).toBeGreaterThanOrEqual(floor)
+    expect(rule('.obs-grid > .scroll-pane')).toMatch(/overflow-x:\s*hidden/)
+  })
+
   it('lets the lists below the table shrink while the table keeps a floor', () => {
     expect(rule('.obs-sites')).toMatch(/flex:\s*0 1 auto/)
     expect(rule('.obs-sites')).toMatch(/max-height/)
