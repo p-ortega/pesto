@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse, Response
 
 from pesto.api import obscache
 from pesto.api.linkcache import RING_RULE, cell_neighbours, pp_factor_index
-from pesto.api.obsmap import _cell_centres, _reason
+from pesto.api.obsmap import _cell_centres, _reason, _recorded_reason
 from pesto.api.pp import _shape
 from pesto.api.problem import problem, problem_from_failure
 from pesto.api.query import RunQuery
@@ -79,10 +79,13 @@ def _pilot_groups(layout: CacheLayout, manifest: Manifest) -> tuple[tuple[PpGrou
     recorded = manifest.artifacts.get("pp_factors")
     if recorded is None:
         return (), []
+    # Files left by an older ingest are not read when the last one did not record ok.
+    not_ok = _recorded_reason(manifest, "pp_factors", "pp_factors is not recorded as ok")
+    if not_ok is not None:
+        return (), [f"pp_factors could not be read: {not_ok}, so pilot points are listed as plain parameters"]
     index = load_pp_index(layout)
     if isinstance(index, ReadFailure):
-        reason = recorded.reason if recorded.state != "ok" and recorded.reason else _reason(index)
-        return (), [f"pp_factors could not be read: {reason}, so pilot points are listed as plain parameters"]
+        return (), [f"pp_factors could not be read: {_reason(index)}, so pilot points are listed as plain parameters"]
     return index.groups, []
 
 
@@ -267,8 +270,8 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
     pars: list[dict] = []
     pars_total = 0
     par_notes: list[str] = []
-    pars_reason = NO_PAR_PLACEMENT
-    if "par_cell" in manifest.artifacts:
+    pars_reason = _recorded_reason(manifest, "par_cell", NO_PAR_PLACEMENT)
+    if pars_reason is None:
         placed = load_par_cell(layout)
         if isinstance(placed, ReadFailure):
             return problem_from_failure(404, placed)
@@ -290,8 +293,8 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
     sites: list[dict] = []
     sites_total = 0
     site_counts = {"unknown_layer_included": 0, "other_layer_left_out": 0, "unplaced_in_run": 0}
-    sites_reason = NO_SITE_PLACEMENT
-    if "obs_cell" in manifest.artifacts:
+    sites_reason = _recorded_reason(manifest, "obs_cell", NO_SITE_PLACEMENT)
+    if sites_reason is None:
         table = obscache.get_cell(state, cache_root)
         if isinstance(table, ReadFailure):
             return problem_from_failure(404, table)
@@ -377,9 +380,10 @@ async def get_link_par(request: Request, params: Annotated[LinkParQuery, Query()
         return problem(422, "the parameter names could not be used", detail=str(exc))
 
     manifest = Manifest.load(layout)
-    if "par_cell" not in manifest.artifacts:
+    not_placed = _recorded_reason(manifest, "par_cell", NO_PAR_PLACEMENT)
+    if not_placed is not None:
         # Without a placement table no name can be told known or unknown, so none is guessed.
-        body = {"pars": [], "unknown": names, "reason": NO_PAR_PLACEMENT, "notes": []}
+        body = {"pars": [], "unknown": names, "reason": not_placed, "notes": []}
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
     placed = load_par_cell(layout)
     if isinstance(placed, ReadFailure):
@@ -501,9 +505,10 @@ async def get_link_sites(request: Request, params: Annotated[LinkSitesQuery, Que
     iteration = params.iteration
     manifest = Manifest.load(layout)
     body = {"iteration": iteration, "sites": [], "unknown": [], "value_rule": VALUE_RULE, "value_reason": None}
-    if "obs_cell" not in manifest.artifacts:
+    not_placed = _recorded_reason(manifest, "obs_cell", NO_SITE_PLACEMENT)
+    if not_placed is not None:
         # Without a placement table no id can be told known or unknown, so none is guessed.
-        body.update(unknown=ids, reason=NO_SITE_PLACEMENT, notes=[])
+        body.update(unknown=ids, reason=not_placed, notes=[])
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
     table = obscache.get_cell(state, cache_root)
     if isinstance(table, ReadFailure):
