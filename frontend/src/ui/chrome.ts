@@ -200,6 +200,8 @@ export interface RenderHeaderOptions {
    *  stated fact about the run or it is absent entirely, never a
    *  placeholder row (MAP-10). */
   chips?: ChipsInput | null
+  /** Controls a view puts in the header row, after the chips and before the theme control. */
+  extras?: HTMLElement[]
 }
 
 /**
@@ -231,6 +233,8 @@ export function renderHeader(el: HTMLElement, opts: RenderHeaderOptions): void {
     renderChips(chipsEl, opts.chips)
     el.appendChild(chipsEl)
   }
+
+  for (const extra of opts.extras ?? []) el.appendChild(extra)
 
   const themeLabel = document.createElement('label')
   themeLabel.textContent = 'Theme'
