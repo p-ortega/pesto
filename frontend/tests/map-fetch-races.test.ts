@@ -223,6 +223,26 @@ function stubEnvironment(stub: Stub): void {
             headers: { 'X-Pesto-Meta': JSON.stringify({ order: 'cell', group: 'pp', layer: 0, n_pp: 1 }) },
           })
         }
+        case '/api/run/link/cell': {
+          const cells = (query.get('cells') ?? '').split(',').map(Number)
+          return respond({
+            status: 200,
+            body: {
+              layer: Number(query.get('layer')),
+              cells,
+              ring: [],
+              ring_rule: 'a neighbouring cell shares at least one corner with a clicked cell',
+              pars: [],
+              pars_total: 0,
+              par_notes: [],
+              sites: [],
+              sites_total: 0,
+              sites_cap: 50,
+              site_counts: { unknown_layer_included: 0, other_layer_left_out: 0, unplaced_in_run: 0 },
+              reasons: { pars: 'no parameter sets this cell', sites: 'no observation site in this cell' },
+            },
+          })
+        }
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
       }
@@ -589,7 +609,8 @@ describe('the wait while a new iteration loads its tables', () => {
     await settle()
     expect(statusText(root)).not.toContain('loading iteration')
     clickAtWorld(canvas, 0.5, 0.5)
-    expect(Array.from(store.get().cells)).toEqual([0])
+    // The cells reach the store once /link/cell has answered.
+    await vi.waitFor(() => expect(Array.from(store.get().cells)).toEqual([0]))
   })
 })
 

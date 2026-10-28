@@ -78,7 +78,7 @@ import {
 import { fetchLinkCell, type CellLinkResult } from '../data/link'
 import { LatestWins } from '../data/latest-wins'
 import { modeOf } from '../state/modifiers'
-import { selectCells, type SharedSelection } from '../state/rules'
+import { sameSet, selectCells, type SharedSelection } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 
 // MAP-08: how long a lost context is given to come back on its own before
@@ -363,6 +363,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let camera: Camera | null = null
   let meshGeom: MeshData | null = null
   let selectedCellId: number | null = null
+  // One request at a time for what the clicked cells hold; a newer click makes an older answer stale.
+  const linkSlot = new LatestWins<CellLinkResult>()
+  // The cell set a request is out for, so a quick second shift-click adds to it, not to the store's older set.
+  let pendingCells: ReadonlySet<number> | null = null
+
+  function dropPendingLink(): void {
+    linkSlot.cancel()
+    pendingCells = null
+  }
 
   // MAP-08: true from webglcontextlost until webglcontextrestored (or the
   // unrecoverable fallback fires). Guards redraw() so nothing calls into a
@@ -534,6 +543,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     selectedPointRow = null
     layer?.setSelected(null)
     layer?.setSelectedPoint(null)
+    dropPendingLink()
     if (publish) store.set({ cells: new Set(), pars: new Set() }, 'map')
   }
 
@@ -743,21 +753,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // Dots are sized in device pixels, so the reach is 6 CSS pixels at the device's ratio.
     const reach = 6 * (window.devicePixelRatio || 1)
     const reachWorld = camera.screenToWorld(x + reach, y)[0] - wx
-    if (obsActive && obsDots !== null && obsData !== null) {
-      const hits = pickPointsWithin({ rows: obsDots.rows, xy: obsDots.xy }, wx, wy, reachWorld)
-      if (hits.length > 0) {
-        pickObservationSites(hits)
-        return
-      }
-      // A miss takes the site ring and readout away, and the sites out of the store with them.
-      if (obsPick !== null || store.get().sites.size > 0) {
-        obsPick = null
-        obsPickedRows = []
-        store.set({ sites: new Set() }, 'map')
-      }
+    const mode = modeOf(event)
+    const obsHits =
+      obsActive && obsDots !== null && obsData !== null
+        ? pickPointsWithin({ rows: obsDots.rows, xy: obsDots.xy }, wx, wy, reachWorld)
+        : []
+    if (obsHits.length > 0) {
+      pickObservationSites(obsHits)
+      return
     }
     const pointIndex = pickPoint(currentPoints, wx, wy, reachWorld)
     if (pointIndex !== null) {
+      takeAwaySitePick()
       clearSelection(false)
       selectedPointRow = currentPoints.rows[pointIndex]
       layer?.setSelectedPoint(pointIndex)
@@ -765,47 +772,98 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       updateReadout()
       // The ring and readout are already up; the store hears about it after.
       const name = joined[selectedPointRow]?.parnme
-      store.set({ cells: new Set(), pars: name === undefined ? new Set() : new Set([name]) }, 'map')
+      const pars = name === undefined ? new Set<string>() : new Set([name])
+      // A miss on the site dots still takes the sites away, as it did before cells were linked.
+      store.set(obsActive ? { cells: new Set(), pars, sites: new Set() } : { cells: new Set(), pars }, 'map')
       return
     }
-    selectedPointRow = null
-    layer?.setSelectedPoint(null)
     const cellId = pickAtWorld(meshGeom, wx, wy)
     if (cellId === null) {
-      selectedCellId = null
-      layer?.setSelected(null)
+      // D-01: a shift or alt click on empty space changes nothing.
+      if (mode !== 'replace') return
+      takeAwaySitePick()
+      clearSelection(false)
       redraw()
       updateReadout()
-      linkSlot.cancel()
-      store.set({ cells: new Set(), pars: new Set() }, 'map')
+      store.set({ cells: new Set(), sites: new Set(), pars: new Set() }, 'map')
       return
     }
-    selectedCellId = cellId
-    layer?.setSelected(cellId)
+    takeAwaySitePick()
+    selectedPointRow = null
+    layer?.setSelectedPoint(null)
+    // The map rings only the cell just clicked; a removed cell loses its ring.
+    selectedCellId = mode === 'remove' ? null : cellId
+    layer?.setSelected(selectedCellId)
     redraw()
     updateReadout()
-    if (currentClasses[cellId]?.kind === 'interpolated') fetchContributors(cellId)
-    const next = selectCells(store.get(), [cellId], modeOf(event))
-    askLinkCell(committed.layer, next.cells)
+    if (selectedCellId !== null && currentClasses[selectedCellId]?.kind === 'interpolated') {
+      fetchContributors(selectedCellId)
+    }
+    const current = store.get()
+    const base = pendingCells ?? current.cells
+    const next = selectCells({ ...current, cells: new Set(base) }, [cellId], mode).cells
+    if (sameSet(next, base)) return
+    if (next.size === 0) {
+      // Parameters and sites stay: a tab or lasso may have written them since.
+      dropPendingLink()
+      store.set({ cells: new Set() }, 'map')
+      return
+    }
+    askLinkCell(committed.layer, next)
+  }
+
+  // A miss on the site dots takes their ring and readout away; the store hears with the cell write.
+  function takeAwaySitePick(): void {
+    obsPick = null
+    obsPickedRows = []
   }
 
   // The ring is already drawn; the store hears of the cells with their parameters and sites
   // in one write, once the answer for this exact cell set lands.
-  const linkSlot = new LatestWins<CellLinkResult>()
   function askLinkCell(layerIndex: number, cells: ReadonlySet<number>): void {
     const sorted = [...cells].sort((a, b) => a - b)
-    void linkSlot.run(`${layerIndex}|${sorted.join(',')}`, (signal) => fetchLinkCell(layerIndex, sorted, { signal })).then((result) => {
-      if (result.stale || !result.value.ok) return
-      const { answer } = result.value
-      store.set(
-        {
-          cells: new Set(cells),
-          pars: new Set(answer.pars.map((p) => p.parnme)),
-          sites: new Set(answer.sites.map((s) => s.siteId)),
-        },
-        'map',
-      )
-    })
+    const storeCells = store.get().cells
+    pendingCells = cells
+    const settle = (write: () => void): void => {
+      if (pendingCells === cells) pendingCells = null
+      // Another view moved the cells while this was out, so this answer is no longer the selection's.
+      if (!sameSet(store.get().cells, storeCells)) return
+      write()
+    }
+    const failed = (artifact: string, reason: string): void => {
+      store.set({ cells: new Set(cells) }, 'map')
+      addNotice(mapNotice, {
+        title: 'What the clicked cells hold could not be read',
+        detail: `${artifact}: ${reason}. The cells are selected; the parameters and sites were left as they were.`,
+        tone: 'warning',
+      })
+    }
+    void linkSlot.run(`${layerIndex}|${sorted.join(',')}`, (signal) => fetchLinkCell(layerIndex, sorted, { signal })).then(
+      (result) => {
+        if (result.stale) return
+        const value = result.value
+        settle(() => {
+          if (!value.ok) {
+            failed(value.artifact, value.reason)
+            return
+          }
+          store.set(
+            {
+              cells: new Set(cells),
+              pars: new Set(value.answer.pars.map((p) => p.parnme)),
+              sites: new Set(value.answer.sites.map((s) => s.siteId)),
+            },
+            'map',
+          )
+        })
+      },
+      (error: unknown) => {
+        settle(() => {
+          const { artifact, reason } = problemArtifactAndReason(error)
+          failed(artifact ?? 'link/cell', reason)
+        })
+      },
+    )
   }
   canvas.addEventListener('click', handleCanvasClick)
 
@@ -2060,6 +2118,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     redraw()
     updateReadout()
     readObservedValues(rows)
+    dropPendingLink()
     store.set({ sites: new Set(rows.map((row) => data.rows[row].siteId)), cells: new Set(), pars: new Set() }, 'map')
   }
 
