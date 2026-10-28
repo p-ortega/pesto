@@ -45,6 +45,19 @@ TIME_TOKEN_PATTERN = r"_(?:datetime|time):[^_]*"
 _TOKEN_CAPTURE_PATTERN = r"_(?P<kind>datetime|time):(?P<value>[^_]*)"
 
 SENTINEL_LIMIT = 1e20
+# Raise when the rule for simulated sentinels changes; a statistics or 1:1 sidecar with a lower
+# number (or none) was built before it and is read again on the next ingest.
+SENTINEL_RULE_VERSION = 1
+
+
+def sentinel_rule_outdated(sidecar_path: Path) -> bool:
+    """Whether the sidecar at ``sidecar_path`` was written before the current sentinel rule:
+    missing, unreadable, or carrying no ``sentinel_rule_version`` of the current number."""
+    try:
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return True
+    return not isinstance(data, dict) or data.get("sentinel_rule_version") != SENTINEL_RULE_VERSION
 
 
 def sentinel_mask(values) -> np.ndarray:

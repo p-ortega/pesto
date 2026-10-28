@@ -39,6 +39,7 @@ from pesto.ingest.obsindex import (
     FLAG_HAS_TARGET,
     FLAG_LESS,
     SENTINEL_LIMIT,
+    SENTINEL_RULE_VERSION,
     ObsIndex,
     blank_sentinels,
     load_obs_index,
@@ -269,6 +270,7 @@ def write_obs_agg(
         }
         sidecar = {
             "cache_version": CACHE_VERSION,
+            "sentinel_rule_version": SENTINEL_RULE_VERSION,
             "iteration": iteration,
             "stats": list(OBS_STATS),
             "shape": [n_stats, int(n_obs)],

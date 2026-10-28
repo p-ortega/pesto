@@ -35,7 +35,13 @@ from pesto.ingest.obsagg import write_noise_agg, write_obs_agg
 from pesto.ingest.obscell import write_obs_cell
 from pesto.ingest.obs1to1 import write_obs_1to1
 from pesto.ingest.obsens import write_obs_ensemble
-from pesto.ingest.obsindex import IDENTITY_COLUMNS, build_obs_index, load_obs_index, write_obs_index
+from pesto.ingest.obsindex import (
+    IDENTITY_COLUMNS,
+    build_obs_index,
+    load_obs_index,
+    sentinel_rule_outdated,
+    write_obs_index,
+)
 from pesto.ingest.obspdc import FIRST_ITERATION, compute_pdc, read_pdc_file, write_pdc
 from pesto.ingest.obsread import read_obs_file
 from pesto.ingest.obsweights import read_adjusted_weights
@@ -672,11 +678,27 @@ def observation_iterations(
 
 def is_planned_stale(manifest: Manifest, layout: CacheLayout, artifact: PlannedArtifact) -> bool:
     """Whether ``artifact`` must be read again: stale by its sources and files,
-    or, for ``config``, written before the current facts version. The state
-    route and ``ingest_run`` both use this, so they never disagree."""
+    or, for ``config``, written before the current facts version, or, for the
+    observation statistics and the 1:1 grid, written before the current sentinel
+    rule. The state route and ``ingest_run`` both use this, so they never disagree."""
     if manifest.is_stale(artifact.name, layout, artifact.sources):
         return True
-    return artifact.kind == "config" and config_outdated(layout)
+    if artifact.kind == "config":
+        return config_outdated(layout)
+    return _sentinel_rule_outdated(manifest, layout, artifact)
+
+
+def _sentinel_rule_outdated(manifest: Manifest, layout: CacheLayout, artifact: PlannedArtifact) -> bool:
+    """True for an ``ok`` obs_agg or obs_1to1 whose sidecar predates the sentinel rule. A failed
+    one keeps the usual rule: it is read again only when its source changes."""
+    recorded = manifest.artifacts.get(artifact.name)
+    if recorded is None or recorded.state != "ok":
+        return False
+    if artifact.kind == "obs_agg":
+        return sentinel_rule_outdated(layout.obs_agg_meta(int(artifact.name.split("/", 1)[1])))
+    if artifact.kind == "obs_1to1":
+        return sentinel_rule_outdated(layout.obs_1to1_meta)
+    return False
 
 
 def _should_retry(manifest: Manifest, name: str, base: Path, sources: Sequence[str]) -> bool:
