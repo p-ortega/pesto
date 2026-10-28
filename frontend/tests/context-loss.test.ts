@@ -15,30 +15,9 @@ import type { IngestState } from '../src/data/client'
 import { CONTEXT_RECOVERY_WINDOW_MS, type RunConfig } from '../src/views/map'
 import { createContext } from '../src/gl/context'
 
-vi.mock('../src/gl/mesh-layer', () => ({
-  MeshLayer: vi.fn().mockImplementation(function MockMeshLayer(this: object) {
-    Object.assign(this, {
-      setValues: vi.fn(),
-      setLimits: vi.fn(),
-      setColormap: vi.fn(),
-      setMatrix: vi.fn(),
-      setInactive: vi.fn(),
-      setHairlineColor: vi.fn(),
-      setContested: vi.fn(),
-      setContestedColors: vi.fn(),
-      setSelected: vi.fn(),
-      setAccentColor: vi.fn(),
-      setPoints: vi.fn(),
-      setPointRingColor: vi.fn(),
-      setFootprint: vi.fn(),
-      setFootprintColor: vi.fn(),
-      setSelectedPoint: vi.fn(),
-      draw: vi.fn(),
-      reupload: vi.fn(),
-      dispose: vi.fn(),
-    })
-  }),
-}))
+vi.mock('../src/gl/mesh-layer', async (importOriginal) =>
+  (await import('./support/mesh-layer-mock')).meshLayerMockModule(await importOriginal()),
+)
 
 const FAKE_GL = { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 }
 
