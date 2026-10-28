@@ -8,6 +8,7 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
+import { POINT_FLAG_DIM } from '../src/data/hatch-mask'
 import { Camera } from '../src/gl/camera'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
@@ -500,5 +501,192 @@ describe('the map rings the cells of the shared selection', () => {
     store.flush()
 
     expect(lastRing(layer)).toEqual([])
+  })
+})
+
+function lastPointCount(layer: LayerDouble): number {
+  const call = layer.setPoints.mock.calls.at(-1) as [Float32Array, Float32Array] | undefined
+  return call === undefined ? -1 : call[1].length
+}
+
+// The marks on the dots now, read only from calls made after the last setPoints, which clears them.
+function dotMarks(layer: LayerDouble): { ringed: number[]; flags: number[] | null } {
+  const pointsAt = Math.max(0, ...layer.setPoints.mock.invocationCallOrder)
+  const ringAt = layer.setSelectedPoints.mock.invocationCallOrder.at(-1) ?? -1
+  const flagsAt = layer.setPointFlags.mock.invocationCallOrder.at(-1) ?? -1
+  expect(ringAt).toBeGreaterThan(pointsAt)
+  expect(flagsAt).toBeGreaterThan(pointsAt)
+  const flags = layer.setPointFlags.mock.calls.at(-1)![0] as Float32Array | null
+  return { ringed: [...(layer.setSelectedPoints.mock.calls.at(-1)![0] as number[])], flags: flags === null ? null : Array.from(flags) }
+}
+
+const noneDimmed = (flags: number[] | null): boolean => flags === null || flags.every((f) => f === 0)
+
+async function enterObservations(store: SelectionStore, layer: LayerDouble, dots = 3): Promise<void> {
+  store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+  await vi.waitFor(() => expect(lastPointCount(layer)).toBe(dots))
+  await settle()
+}
+
+async function chooseGroup(root: HTMLElement, layer: LayerDouble, group: string, dots: number): Promise<void> {
+  const picker = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+  picker.value = group
+  picker.dispatchEvent(new Event('change'))
+  await vi.waitFor(() => expect(lastPointCount(layer)).toBe(dots))
+  await settle()
+}
+
+const readoutText = (root: HTMLElement): string => root.querySelector('.floating-bottom-right')?.textContent ?? ''
+const sorted = <T,>(set: ReadonlySet<T>): T[] => [...set].sort()
+
+describe('the map rings and dims dots from the shared selection', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--dim-alpha')
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('rings the selected site dots and dims the rest, and an empty selection dims nothing', async () => {
+    const store = autoStore()
+    const { layer } = await mountedWith(store)
+    await enterObservations(store, layer)
+
+    // Drawn on layer 0: s101, s102 and s104, in that order.
+    store.set({ sites: new Set([101, 104]) }, 'obs')
+    await settle()
+    let marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([0, 2])
+    expect(marks.flags).toEqual([0, POINT_FLAG_DIM, 0])
+
+    store.set({ sites: new Set() }, 'obs')
+    await settle()
+    marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([])
+    expect(noneDimmed(marks.flags)).toBe(true)
+  })
+
+  it('dims every drawn dot while the selected sites are all off this layer, and hides none', async () => {
+    const store = autoStore()
+    const { layer } = await mountedWith(store)
+    await enterObservations(store, layer)
+    store.set({ sites: new Set([103]) }, 'obs')
+    await settle()
+    const marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([])
+    expect(marks.flags).toEqual([POINT_FLAG_DIM, POINT_FLAG_DIM, POINT_FLAG_DIM])
+    expect(lastPointCount(layer)).toBe(3)
+  })
+
+  it('rings the same sites again after a time-slider step and after a layer change redraw the dots', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+    await enterObservations(store, layer)
+    store.set({ sites: new Set([101, 103]) }, 'obs')
+    await settle()
+    expect(dotMarks(layer).ringed).toEqual([0])
+
+    const slider = root.querySelector('input[aria-label="Observation time of heads"]') as HTMLInputElement
+    slider.value = '1'
+    slider.dispatchEvent(new Event('input'))
+    await vi.waitFor(() => expect(store.get().timeIdx).toBe(1))
+    await vi.waitFor(() => expect(layer.setPointValues).toHaveBeenCalled())
+    await settle()
+    let marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([0])
+    expect(marks.flags).toEqual([0, POINT_FLAG_DIM, POINT_FLAG_DIM])
+
+    // Layer 1 draws s103 alone.
+    store.set({ layer: 1 }, 'other')
+    await vi.waitFor(() => expect(lastPointCount(layer)).toBe(1))
+    await settle()
+    marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([0])
+    expect(marks.flags).toEqual([0])
+  })
+
+  it('rings the selected pilot-point dots and dims the rest; no parameter dims nothing', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+    await chooseGroup(root, layer, 'k', 2)
+
+    store.set({ pars: new Set(['pb']) }, 'params')
+    await settle()
+    let marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([1])
+    expect(marks.flags).toEqual([POINT_FLAG_DIM, 0])
+
+    store.set({ pars: new Set() }, 'params')
+    await settle()
+    marks = dotMarks(layer)
+    expect(marks.ringed).toEqual([])
+    expect(noneDimmed(marks.flags)).toBe(true)
+  })
+
+  it('a site-dot click replaces, adds or removes sites, and only a plain click clears cells and parameters', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+    await enterObservations(store, layer)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+
+    clickAtWorld(canvas, 0.25, 0.6)
+    expect(sorted(store.get().sites)).toEqual([101])
+    store.set({ cells: new Set([0]), pars: new Set(['p0']) }, 'other')
+    await settle()
+
+    clickAtWorld(canvas, 1.75, 0.5, { shiftKey: true })
+    expect(sorted(store.get().sites)).toEqual([101, 104])
+    expect(sorted(store.get().cells)).toEqual([0])
+    expect(sorted(store.get().pars)).toEqual(['p0'])
+    // The readout still lists the site just clicked.
+    expect(readoutText(root)).toContain('s104')
+
+    clickAtWorld(canvas, 0.25, 0.6, { altKey: true })
+    expect(sorted(store.get().sites)).toEqual([104])
+    expect(sorted(store.get().cells)).toEqual([0])
+
+    clickAtWorld(canvas, 0.75, 0.6)
+    expect(sorted(store.get().sites)).toEqual([102])
+    expect(store.get().cells.size).toBe(0)
+    expect(store.get().pars.size).toBe(0)
+    await settle()
+    expect(dotMarks(layer).ringed).toEqual([1])
+  })
+
+  it('a pilot-point-dot click adds with shift, replaces on a plain click, and never touches the sites', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+    await chooseGroup(root, layer, 'k', 2)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    store.set({ sites: new Set([101]), cells: new Set([0]), pars: new Set(['pb']) }, 'other')
+    await settle()
+
+    clickAtWorld(canvas, 0.25, 0.5, { shiftKey: true })
+    expect(sorted(store.get().pars)).toEqual(['pa', 'pb'])
+    expect(sorted(store.get().cells)).toEqual([0])
+    expect(sorted(store.get().sites)).toEqual([101])
+
+    clickAtWorld(canvas, 1.5, 0.5)
+    expect(sorted(store.get().pars)).toEqual(['pb'])
+    expect(store.get().cells.size).toBe(0)
+    expect(sorted(store.get().sites)).toEqual([101])
+    await settle()
+    expect(dotMarks(layer).ringed).toEqual([1])
+  })
+
+  it('reads the dim strength from the theme on mount and again on a theme change', async () => {
+    document.documentElement.style.setProperty('--dim-alpha', '0.4')
+    const store = autoStore()
+    const { layer } = await mountedWith(store)
+    expect(layer.setDimAlpha).toHaveBeenCalledWith(0.4)
+
+    document.documentElement.style.setProperty('--dim-alpha', '0.3')
+    const theme = document.querySelector('select[aria-label="Theme"]') as HTMLSelectElement
+    theme.value = 'dark'
+    theme.dispatchEvent(new Event('change'))
+    expect(layer.setDimAlpha.mock.calls.at(-1)).toEqual([0.3])
   })
 })

@@ -22,7 +22,7 @@ import {
 } from '../data/fields'
 import { Camera, wheelZoomFactor } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
-import { readColorToken } from '../gl/color-token'
+import { readColorToken, readNumberToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
@@ -77,8 +77,10 @@ import {
 } from './observation-stat-source'
 import { fetchLinkCell, type CellLinkResult } from '../data/link'
 import { LatestWins } from '../data/latest-wins'
+import { buildPointFlags, type PointFlagRules } from '../data/hatch-mask'
+import { selectedDotIndices } from '../data/link-follow'
 import { modeOf } from '../state/modifiers'
-import { sameSet, selectCells, type SharedSelection } from '../state/rules'
+import { sameSet, selectCells, selectPars, selectSites, type SelectMode, type SharedSelection } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 
 // MAP-08: how long a lost context is given to come back on its own before
@@ -394,10 +396,56 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     return true
   }
 
+  // What the layer's dots are now, so dot marks are never handed to a set of another length.
+  let pointsSerial = 0
+  let drawnPoints: { kind: 'none' | 'par' | 'obs'; count: number } = { kind: 'none', count: 0 }
+  // The dot marks last handed to the layer; setPoints clears them, so a new set changes the key.
+  let marksKey: string | null = null
+
+  function putPoints(xy: Float32Array, values: Float32Array, kind: 'par' | 'obs' = 'par'): void {
+    if (!layer) return
+    layer.setPoints(xy, values)
+    pointsSerial += 1
+    drawnPoints = { kind: values.length === 0 ? 'none' : kind, count: values.length }
+  }
+
+  // Site dots follow selection.sites and pilot-point dots follow selection.pars: the selected ones
+  // are ringed and, while their kind has a selection, the rest dim (D-02). Never a hidden dot.
+  // The at-bounds and conflict swatches come in as optional rules.
+  function refreshPointMarks(overlay: Pick<PointFlagRules, 'atBounds' | 'conflict'> = {}): boolean {
+    if (!layer) return false
+    const selection = store.get()
+    const { kind, count } = drawnPoints
+    let selected: number[] = []
+    let dimOn = false
+    if (kind === 'obs' && obsDots !== null && obsData !== null && obsDots.rows.length === count) {
+      const data = obsData
+      selected = selectedDotIndices(obsDots.rows, (row) => data.rows[row].siteId, selection.sites)
+      dimOn = selection.sites.size > 0
+    } else if (kind === 'par' && currentPoints.rows.length === count) {
+      selected = selectedDotIndices(currentPoints.rows, (row) => joined[row]?.parnme ?? null, selection.pars)
+      dimOn = selection.pars.size > 0
+    }
+    const hasOverlay = overlay.atBounds !== undefined || overlay.conflict !== undefined
+    const key = `${pointsSerial}|${dimOn}|${selected.join(',')}`
+    if (!hasOverlay && key === marksKey) return false
+    marksKey = hasOverlay ? null : key
+    layer.setSelectedPoints(selected)
+    if (count === 0 || (!dimOn && !hasOverlay)) {
+      layer.setPointFlags(null)
+    } else {
+      const chosen = new Set(selected)
+      layer.setPointFlags(buildPointFlags(count, { ...overlay, dim: dimOn ? (dot) => !chosen.has(dot) : undefined }))
+    }
+    return true
+  }
+
   // Everything the map marks from the shared selection, then one redraw if any of it changed.
+  // Runs after every dot draw, layer change and time change, so a redraw never loses a mark.
   function refreshMarks(draw = true): void {
-    const changed = refreshRings()
-    if (changed && draw) redraw()
+    const rings = refreshRings()
+    const dots = refreshPointMarks()
+    if ((rings || dots) && draw) redraw()
   }
 
   // MAP-08: true from webglcontextlost until webglcontextrestored (or the
@@ -568,7 +616,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function clearSelection(publish = true): void {
     selectedCellId = null
     selectedPointRow = null
-    layer?.setSelectedPoint(null)
     dropPendingLink()
     if (!publish) return
     store.set({ cells: new Set(), pars: new Set() }, 'map')
@@ -706,6 +753,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setAccentColor([ar, ag, ab], halo)
     // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
     layer?.setPointRingColor([pr, pg, pb])
+    try {
+      layer?.setDimAlpha(readNumberToken('--dim-alpha'))
+    } catch (error) {
+      addNotice(mapNotice, {
+        title: 'The dim strength could not be read from the theme',
+        detail: `${describeError(error)} Unselected dots dim at the map's own default.`,
+        tone: 'warning',
+      })
+    }
   }
 
   // Resolves synchronously from currentClasses/rawFullField -- the client
@@ -787,22 +843,22 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         ? pickPointsWithin({ rows: obsDots.rows, xy: obsDots.xy }, wx, wy, reachWorld)
         : []
     if (obsHits.length > 0) {
-      pickObservationSites(obsHits)
+      pickObservationSites(obsHits, mode)
       return
     }
-    const pointIndex = pickPoint(currentPoints, wx, wy, reachWorld)
+    // Parameter dots are not drawn while the map is coloured by observations, so none can be hit.
+    const pointIndex = obsActive ? null : pickPoint(currentPoints, wx, wy, reachWorld)
     if (pointIndex !== null) {
       takeAwaySitePick()
       clearSelection(false)
       selectedPointRow = currentPoints.rows[pointIndex]
-      layer?.setSelectedPoint(pointIndex)
-      redraw()
       updateReadout()
-      // The ring and readout are already up; the store hears about it after.
       const name = joined[selectedPointRow]?.parnme
-      const pars = name === undefined ? new Set<string>() : new Set([name])
-      // A miss on the site dots still takes the sites away, as it did before cells were linked.
-      store.set(obsActive ? { cells: new Set(), pars, sites: new Set() } : { cells: new Set(), pars }, 'map')
+      const current = store.get()
+      const pars =
+        name !== undefined ? selectPars(current, [name], mode).pars : mode === 'replace' ? new Set<string>() : current.pars
+      // Sites stay; only a plain click clears the cells.
+      store.set(mode === 'replace' ? { cells: new Set(), pars } : { pars }, 'map')
       refreshMarks()
       return
     }
@@ -820,7 +876,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     takeAwaySitePick()
     selectedPointRow = null
-    layer?.setSelectedPoint(null)
     // The readout describes the cell just clicked; the rings follow the whole cell set.
     selectedCellId = mode === 'remove' ? null : cellId
     updateReadout()
@@ -1289,8 +1344,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (pointXy === null || !drawsAsPoints()) {
       currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
       selectedPointRow = null
-      layer.setSelectedPoint(null)
-      layer.setPoints(new Float32Array(0), new Float32Array(0))
+      putPoints(new Float32Array(0), new Float32Array(0))
+      refreshMarks(false)
       return
     }
     const onLayer = pointsOnLayer(joined, layerArray, pointXy, drawnGroup ?? '', committed.layer)
@@ -1307,10 +1362,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       values[k] = field[onLayer.rows[i]]
     })
     currentPoints = { rows: Int32Array.from(kept, (i) => onLayer.rows[i]), xy }
-    layer.setPoints(xy, values)
-    const index = selectedPointRow === null ? -1 : currentPoints.rows.indexOf(selectedPointRow)
-    if (index < 0) selectedPointRow = null
-    layer.setSelectedPoint(index < 0 ? null : index)
+    putPoints(xy, values, 'par')
+    if (selectedPointRow !== null && currentPoints.rows.indexOf(selectedPointRow) < 0) selectedPointRow = null
+    refreshMarks(false)
   }
 
   // Recomputes the drawn scale, limits and colormap from the raw held
@@ -1690,10 +1744,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (layer) {
       const nCells = mesh?.nCells ?? 0
       layer.setValues(new Float32Array(nCells).fill(Number.NaN))
-      layer.setPoints(new Float32Array(0), new Float32Array(0))
+      putPoints(new Float32Array(0), new Float32Array(0))
       layer.setContested(new Uint8Array(nCells))
       layer.setFootprint(null)
       layer.setInactive(drawnInactiveMask())
+      refreshMarks(false)
       redraw()
     }
     updateReadout()
@@ -1849,7 +1904,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     currentClasses = []
     currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
     selectedPointRow = null
-    layer?.setSelectedPoint(null)
     contributorsMemo.clear()
 
     const placement = computeGroupPlacement(data.tables.identities, joined, cellArray, ppIndex, recordedPlacement)
@@ -1953,11 +2007,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer.setContested(new Uint8Array(mesh.nCells))
     layer.setFootprint(active)
     layer.setInactive(obsInactiveMask(active))
-    layer.setPoints(new Float32Array(0), new Float32Array(0))
+    putPoints(new Float32Array(0), new Float32Array(0))
     obsDotsKey = ''
     obsDrawnIndex = null
     selectedPointRow = null
-    layer.setSelectedPoint(null)
     if (fresh) renderObsLegend(legendEl, null)
   }
 
@@ -1969,9 +2022,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsPick = null
     obsPickedRows = []
     obsDrawnIndex = null
-    layer?.setPoints(new Float32Array(0), new Float32Array(0))
-    layer?.setSelectedPoint(null)
+    putPoints(new Float32Array(0), new Float32Array(0))
     renderObsLegend(legendEl, null)
+    refreshMarks(false)
     redraw()
     updateReadout()
   }
@@ -1994,15 +2047,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     mapCanvasArea.classList.remove('colour-obs')
     if (!layer) return
     layer.setMissingStyle('discard')
-    layer.setSelectedPoint(null)
     if (rawFullField !== null) {
       deriveAndDraw()
     } else {
       layer.setValues(new Float32Array(mesh?.nCells ?? 0).fill(Number.NaN))
-      layer.setPoints(new Float32Array(0), new Float32Array(0))
+      putPoints(new Float32Array(0), new Float32Array(0))
       layer.setFootprint(null)
       layer.setInactive(drawnInactiveMask())
       renderLegend(legendEl, null)
+      refreshMarks(false)
       redraw()
     }
     updateReadout()
@@ -2092,7 +2145,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (obsPickedRows.length === 0 || dots === null || obsData === null || obsFrame === null) {
       if (obsPick !== null) {
         obsPick = null
-        layer?.setSelectedPoint(null)
         updateReadout()
       }
       return
@@ -2102,12 +2154,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsPickedRows = obsPickedRows.filter((row) => dotOf.has(row))
     if (obsPickedRows.length === 0) {
       obsPick = null
-      layer?.setSelectedPoint(null)
       updateReadout()
       return
     }
     obsPick = sitesPick(obsPickedRows)
-    layer?.setSelectedPoint(dotOf.get(obsPickedRows[0]) ?? null)
     updateReadout()
   }
 
@@ -2134,21 +2184,25 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
   }
 
-  // D-31, D-32: every site within reach is read out and written to the shared selection.
-  function pickObservationSites(hits: number[]): void {
+  // D-31, D-32: every site within reach is read out; D-01: the click replaces, adds or removes
+  // them in the shared selection, and only a plain click also clears the cells and parameters.
+  function pickObservationSites(hits: number[], mode: SelectMode): void {
     const dots = obsDots
     const data = obsData
     if (dots === null || data === null) return
     const rows = hits.map((i) => dots.rows[i])
-    selectedCellId = null
     obsPickedRows = rows
     obsPick = sitesPick(rows)
-    layer?.setSelectedPoint(hits[0])
-    redraw()
     updateReadout()
     readObservedValues(rows)
     dropPendingLink()
-    store.set({ sites: new Set(rows.map((row) => data.rows[row].siteId)), cells: new Set(), pars: new Set() }, 'map')
+    const sites = selectSites(store.get(), rows.map((row) => data.rows[row].siteId), mode).sites
+    if (mode === 'replace') {
+      selectedCellId = null
+      store.set({ sites, cells: new Set(), pars: new Set() }, 'map')
+    } else {
+      store.set({ sites }, 'map')
+    }
     refreshMarks()
   }
 
@@ -2305,13 +2359,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (key === obsDotsKey && obsDots !== null && obsDots.rows.length === dots.rows.length) {
       target.setPointValues(values)
     } else {
-      target.setPoints(dots.xy, values)
-      target.setSelectedPoint(null)
+      putPoints(dots.xy, values, 'obs')
     }
     obsDotsKey = key
     obsDots = dots
     obsFrame = frame
     obsDrawnIndex = index >= 0 ? index : null
+    refreshMarks(false)
     redraw()
 
     if (obsAllLayers) {
@@ -2769,6 +2823,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // Drawing rings writes nothing, so following every origin cannot loop.
     store.subscribe(
       (selection) => selection.cells,
+      () => refreshMarks(),
+    )
+    store.subscribe(
+      (selection) => selection.sites,
+      () => refreshMarks(),
+    )
+    store.subscribe(
+      (selection) => selection.pars,
       () => refreshMarks(),
     )
     refreshMarks()
