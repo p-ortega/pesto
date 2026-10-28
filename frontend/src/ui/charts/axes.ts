@@ -11,6 +11,8 @@ export interface AxisTick {
 
 export interface Axis {
   toPx(value: number): number
+  // Back from a pixel to a value in the axis's own units, so a drag reads as data.
+  invert(px: number): number
   ticks: AxisTick[]
 }
 
@@ -26,6 +28,7 @@ export function linearAxis(domain: [number, number], range: [number, number], ma
   if (values.some((value) => format(value).length > LONG_LABEL)) format = scale.tickFormat(count, '~g')
   return {
     toPx: (value) => scale(value),
+    invert: (px) => scale.invert(px),
     ticks: values.map((value) => ({ value, label: format(value), px: scale(value) })),
   }
 }
@@ -43,6 +46,7 @@ export function logAxis(nativeDomain: [number, number], range: [number, number])
   const format = scale.tickFormat(count, '~g')
   return {
     toPx: (value) => scale(value),
+    invert: (px) => scale.invert(px),
     ticks: scale.ticks(count).map((value) => ({ value, label: format(value), px: scale(value) })),
   }
 }
