@@ -10,6 +10,7 @@ tables, never by row position.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -315,4 +316,118 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
             "sites": None if sites else sites_reason,
         },
     }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+# ---- /link/par: the cells each named parameter sets ----
+
+MAX_LINK_PARS = 50
+# The same cap the browser's outline uses, so the answer never holds cells it would not draw.
+OUTLINE_MAX_CELLS = 20_000
+NAMES_SHAPE = "names must be a JSON list of parameter names"
+
+
+class LinkParQuery(RunQuery):
+    """``names``: one JSON list of parameter names, because a PEST name can hold a comma."""
+
+    names: str
+
+
+def _parse_names(text: str) -> list[str]:
+    try:
+        names = json.loads(text)
+    except json.JSONDecodeError:
+        raise ValueError(NAMES_SHAPE) from None
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ValueError(NAMES_SHAPE)
+    if not names:
+        raise ValueError("at least one parameter name must be asked for")
+    if len(names) > MAX_LINK_PARS:
+        raise ValueError(f"at most {MAX_LINK_PARS} parameters can be asked for at once, got {len(names)}")
+    return names
+
+
+def _point_cells(state, cache_root, run_dir, group: PpGroup, point: int, own: list[int]):
+    """A pilot point's cells with a non-zero factor, capped, or its own cell with the reason
+    its factors cannot be read: (cells, n_cells, capped, reason)."""
+    if run_dir is None:
+        return own, len(own), False, NO_RUN_DIR
+    index = pp_factor_index(state, cache_root, run_dir, group)
+    if isinstance(index, ReadFailure):
+        return own, len(own), False, _reason(index)
+    found = index.cells_of(point)
+    n = int(found.size)
+    if n == 0:
+        return [], 0, False, f"no cell has a non-zero factor from this pilot point in {group.factor_file}"
+    return found[:OUTLINE_MAX_CELLS].tolist(), n, n > OUTLINE_MAX_CELLS, None
+
+
+@router.get("/link/par")
+async def get_link_par(request: Request, params: Annotated[LinkParQuery, Query()]) -> Response:
+    state = request.app.state
+    cache_root = getattr(state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    layout = CacheLayout(root=Path(cache_root))
+    try:
+        names = _parse_names(params.names)
+    except ValueError as exc:
+        return problem(422, "the parameter names could not be used", detail=str(exc))
+
+    manifest = Manifest.load(layout)
+    if "par_cell" not in manifest.artifacts:
+        # Without a placement table no name can be told known or unknown, so none is guessed.
+        body = {"pars": [], "unknown": names, "reason": NO_PAR_PLACEMENT, "notes": []}
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+    placed = load_par_cell(layout)
+    if isinstance(placed, ReadFailure):
+        return problem_from_failure(404, placed)
+    groups, notes = _pilot_groups(layout, manifest)
+    owner = {name: (group, p) for group in groups for p, name in enumerate(group.parnames)}
+    row_of: dict[str, int] = {}
+    for i, name in enumerate(placed.parnme):
+        row_of.setdefault(name, i)
+    run_dir = getattr(state, "initial_run_dir", None)
+
+    pars: list[dict] = []
+    unknown: list[str] = []
+    for name in names:
+        i = row_of.get(name)
+        if i is None:
+            unknown.append(name)
+            continue
+        cell, layer = int(placed.cell[i]), int(placed.layer[i])
+        pargp = placed.pargp[i]
+        if name in owner:
+            group, point = owner[name]
+            if layer < 0:
+                # The factor file's cells are on the group's layer even when par_cell has none.
+                layer = group.layer
+            own = [cell] if cell >= 0 else []
+            cells, n_cells, capped, reason = _point_cells(state, cache_root, run_dir, group, point, own)
+            kind = "pilot_point"
+            if pargp is None:
+                pargp = group.group
+        elif cell >= 0:
+            kind, cells, n_cells, capped, reason = "cell", [cell], 1, False, None
+        else:
+            reason = f"no cell is recorded for this parameter: {placed.rule[i]}"
+            kind, cells, n_cells, capped = "unplaced", [], 0, False
+        if pargp is None:
+            notes.append(f"{name} has no parameter group in par_cell, so its group is sent as empty text")
+            pargp = ""
+        pars.append(
+            {
+                "parnme": name,
+                "pargp": pargp,
+                "kind": kind,
+                "layer": layer,
+                "cell": cell,
+                "cells": cells,
+                "n_cells": n_cells,
+                "cells_capped": capped,
+                "reason": reason,
+            }
+        )
+    body = {"pars": pars, "unknown": unknown, "reason": None, "notes": notes}
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
