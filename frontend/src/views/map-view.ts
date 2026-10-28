@@ -1071,7 +1071,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   function paintLegend(legend: LegendOptions | null): void {
     shownLegend = legend
-    renderLegend(legendEl, legend)
+    renderLegend(legendEl, legend === null ? null : { ...legend, blended: fieldAlpha() < 1 })
   }
 
   // The base name landed for the shown iteration: every label that names the drawn realization follows.
@@ -1185,6 +1185,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setHatchColors([ir, ig, ib], [pr, pg, pb])
     const [sr, sg, sb] = readColorToken('--surface')
     layer?.setSurfaceColor([sr, sg, sb])
+    // Half strength, so the outlines-only grid reads over a basemap without hiding it.
+    const [kr, kg, kb] = readColorToken('--ink-secondary')
+    layer?.setGridLineColor([kr, kg, kb, 0.5])
     try {
       layer?.setDimAlpha(readNumberToken('--dim-alpha'))
     } catch (error) {
@@ -3451,8 +3454,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       onSubmitNumbers: placeByNumbers,
       onCancel: cancelBasemapAdd,
       onRemove: () => void removeTheBasemap(),
-      onColourChange: () => {},
-      onOpacityChange: () => {},
+      onColourChange: setBasemapColour,
+      onOpacityChange: setFieldOpacity,
     })
     void readTheBasemap()
   }
@@ -3561,6 +3564,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         opacity: fieldOpacity,
       })
     }
+    applyFieldOpacity()
     redraw()
   }
 
@@ -3682,7 +3686,33 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     basemapLayer?.setImage(null, null, mesh?.origin ?? [0, 0])
     basemapBitmap.close()
     basemapBitmap = null
+    applyFieldOpacity()
     redraw()
+  }
+
+  function setBasemapColour(on: boolean): void {
+    basemapColour = on
+    basemapLayer?.setSaturation(on ? 1 : 0)
+    redraw()
+  }
+
+  function setFieldOpacity(alpha: number): void {
+    fieldOpacity = alpha
+    applyFieldOpacity()
+    redraw()
+  }
+
+  // The slider goes with the basemap, so its setting applies only while one is drawn.
+  function fieldAlpha(): number {
+    return basemapBitmap !== null ? fieldOpacity : 1
+  }
+
+  // At 0 the fill is gone, so every cell is outlined instead (D-25).
+  function applyFieldOpacity(): void {
+    const alpha = fieldAlpha()
+    layer?.setFieldOpacity(alpha)
+    layer?.setGridLines(alpha === 0)
+    if (!obsActive && shownLegend !== null) paintLegend(shownLegend)
   }
 
   // Built in idle time after the first draw, so the first click does not pay for it.
