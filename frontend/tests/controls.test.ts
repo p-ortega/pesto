@@ -560,6 +560,107 @@ describe('renderSelectionControls', () => {
     })
   })
 
+  describe('the Texture fill switch', () => {
+    const box = (el: HTMLElement) => el.querySelector('input[aria-label="Texture fill"]') as HTMLInputElement
+    const classesSelect = (el: HTMLElement) => el.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
+    const continuous = (el: HTMLElement) => classesSelect(el).querySelector('option[value="0"]') as HTMLOptionElement
+    const note = (el: HTMLElement) => el.querySelector('#classes-note') as HTMLElement
+    const reason = (el: HTMLElement) => el.querySelector('#texture-reason') as HTMLElement
+    const NO_NOTES = { classes: null, symmetric: null, texture: null }
+
+    function check(el: HTMLElement, on: boolean): void {
+      box(el).checked = on
+      box(el).dispatchEvent(new Event('change'))
+    }
+
+    it('is a parameter-only checkbox after the Symmetric row, with its reason line hidden', () => {
+      const { el } = mount(THREE_NAMES)
+      const input = box(el)
+      expect(input.type).toBe('checkbox')
+      expect(input.checked).toBe(false)
+      const label = input.closest('label') as HTMLElement
+      expect(label.textContent).toContain('Texture fill')
+      expect(label.getAttribute('data-colour-source')).toBe('par')
+      const symmetricLabel = (el.querySelector('input[aria-label="Symmetric about 0"]') as HTMLElement).closest('label') as HTMLElement
+      expect(symmetricLabel.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(reason(el).style.display).toBe('none')
+      expect(reason(el).getAttribute('data-colour-source')).toBe('par')
+    })
+
+    // [edge MAPX-03 continuous]
+    it('raises Continuous to 7 when checked, emits once, says so, and keeps Continuous off the list while on', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      onSelectionChange.mockClear()
+      check(el, true)
+      expect(classesSelect(el).value).toBe('7')
+      expect(onSelectionChange).toHaveBeenCalledTimes(1)
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ style: { classes: 7, symmetric: false, texture: true } }),
+      )
+      expect(note(el).textContent).toBe('texture fill uses 7 classes; pick 9 or 11 here')
+      expect(note(el).style.display).toBe('')
+      expect(continuous(el).disabled).toBe(true)
+
+      check(el, false)
+      expect(continuous(el).disabled).toBe(false)
+      expect(classesSelect(el).value).toBe('7')
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ style: { classes: 7, symmetric: false, texture: false } }),
+      )
+      expect(note(el).style.display).toBe('none')
+    })
+
+    it('keeps the 7-classes note through a redraw with no class reason, and drops it when 9 or 11 is picked', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      check(el, true)
+      handle.showStyle({ classes: 7, symmetric: false, texture: true }, NO_NOTES)
+      expect(note(el).textContent).toBe('texture fill uses 7 classes; pick 9 or 11 here')
+      classesSelect(el).value = '9'
+      classesSelect(el).dispatchEvent(new Event('change'))
+      expect(note(el).style.display).toBe('none')
+    })
+
+    it('keeps 11 classes when checked, with no note', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      classesSelect(el).value = '11'
+      classesSelect(el).dispatchEvent(new Event('change'))
+      check(el, true)
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ style: { classes: 11, symmetric: false, texture: true } }),
+      )
+      expect(note(el).style.display).toBe('none')
+    })
+
+    it('is disabled with the reason showStyle gives for a dot group, and enabled again without it', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      const dots = 'texture fill applies to cell fields; this group is drawn as dots'
+      handle.showStyle({ classes: 7, symmetric: false, texture: false }, { ...NO_NOTES, texture: dots })
+      expect(box(el).disabled).toBe(true)
+      expect(reason(el).textContent).toBe(dots)
+      expect(reason(el).style.display).toBe('')
+      expect(box(el).getAttribute('aria-describedby')).toBe('texture-reason')
+      handle.showStyle({ classes: 7, symmetric: false, texture: false }, NO_NOTES)
+      expect(box(el).disabled).toBe(false)
+      expect(reason(el).style.display).toBe('none')
+    })
+
+    it('moves with sync without emitting, and disables Continuous while texture is on', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      handle.sync({
+        colormap: 'viridis',
+        reverseColormap: false,
+        scale: 'linear',
+        scaleInferred: true,
+        limitsMode: 'robust',
+        manualLimits: null,
+        style: { classes: 9, symmetric: false, texture: true },
+      })
+      expect(box(el).checked).toBe(true)
+      expect(continuous(el).disabled).toBe(true)
+      expect(onSelectionChange).not.toHaveBeenCalled()
+    })
+  })
+
   it('caps the panel at 32rem and still wraps, so it stops spanning the whole map', () => {
     const { el } = mount(THREE_NAMES)
     expect(el.style.maxWidth).toBe('32rem')

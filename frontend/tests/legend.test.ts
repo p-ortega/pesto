@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
-import { classColour, ramp } from '../src/gl/colormap'
+import { classColour, ramp, swatchCssAngle, textureAngles } from '../src/gl/colormap'
 import { ONE_CLASS_EQUAL } from '../src/gl/field-style'
 import { renderLegend, type LegendOptions } from '../src/ui/legend'
 
@@ -146,6 +146,34 @@ describe('renderLegend with classes', () => {
     const el = document.createElement('div')
     renderLegend(el, { ...BASE_OPTIONS, limits: [0, 0], style: { classes: 0, symmetric: true, texture: false }, styleNotes: NO_NOTES })
     expect([...el.querySelectorAll('div.label')].some((d) => d.textContent === 'symmetric about 0')).toBe(true)
+  })
+
+  it('draws each class as lines at its angle over the surface, with the edges, when texture is on', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, limits: [0, 7], style: { classes: 7, symmetric: false, texture: true }, styleNotes: NO_NOTES })
+
+    const swatches = [...el.querySelectorAll('.legend-class')] as HTMLElement[]
+    expect(swatches).toHaveLength(7)
+    const angles = textureAngles(7)
+    swatches.forEach((swatch, k) => {
+      const background = swatch.style.background
+      expect(background).toContain(`repeating-linear-gradient(${swatchCssAngle(angles[k])}deg`)
+      expect(background).toContain('var(--ink-primary)')
+      expect(background).toContain('var(--surface)')
+      expect(background).not.toContain('rgb(')
+      expect(swatch.style.border).toContain('var(--hairline)')
+    })
+    expect(el.querySelectorAll('.legend-edge')).toHaveLength(8)
+    expect([...el.querySelectorAll('span')].some((s) => s.textContent === '12 cells no value')).toBe(true)
+  })
+
+  it('keeps the colour swatches when texture is off', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, style: { classes: 7, symmetric: false, texture: false }, styleNotes: NO_NOTES })
+    const first = el.querySelector('.legend-class') as HTMLElement
+    const [r, g, b] = classColour(0, 7, ramp('viridis'))
+    expect(first.style.background).toBe(`rgb(${r}, ${g}, ${b})`)
+    expect(first.style.border).toBe('')
   })
 
   it('keeps the gradient when continuous', () => {
