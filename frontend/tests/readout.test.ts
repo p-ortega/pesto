@@ -236,6 +236,8 @@ describe('renderReadout', () => {
 
     it('says no measured value, no observation at this time, and reading in muted ink', () => {
       expect(render([site({ observed: { kind: 'no_value' } })]).textContent).toContain('no measured value')
+      expect(render([site({ rowsAtTime: 2 })]).textContent).toContain('2 observations at this time; the last is shown')
+      expect(render([site({ rowsAtTime: 1 })]).textContent).not.toContain('observations at this time')
       expect(render([site({ observed: { kind: 'no_observation' } })]).textContent).toContain('no observation at this time')
       const el = render([site({ observed: { kind: 'loading' } })])
       const line = lines(el).findIndex((t) => t === 'reading the observed value…')

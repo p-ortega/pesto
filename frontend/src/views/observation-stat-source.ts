@@ -96,6 +96,8 @@ export class FrameCache {
   private wantedKey: string | null = null
   private current: { group: string; orderDigest: string; iteration: number; stat: ObsStat; times: readonly number[]; index: number } | null = null
   private generation = 0
+  // Keyed by the array itself so a held frame and its hidden-row count cannot come apart.
+  private readonly hidden = new WeakMap<Float32Array, number>()
 
   constructor(private readonly runId: string | null) {}
 
@@ -106,6 +108,11 @@ export class FrameCache {
 
   get(key: string): Float32Array | undefined {
     return this.held.get(key)?.values
+  }
+
+  /** Rows of this frame's time that lost to a later row of the same site; 0 for a frame not from this cache. */
+  rowsHiddenIn(values: Float32Array): number {
+    return this.hidden.get(values) ?? 0
   }
 
   clear(): void {
@@ -186,6 +193,7 @@ export class FrameCache {
             },
           }
         }
+        this.hidden.set(result.values, meta.nRowsHidden)
         // A frame that lands after clear() belongs to a cache that was emptied on purpose.
         if (generation === this.generation) {
           this.held.set(key, { ...spec, values: result.values })
@@ -293,10 +301,12 @@ export interface TimeCounts {
   withValue: number
   /** Sites of the whole group with an observation at this time but no finite value; n_at_time is not split by layer. */
   withObservationNoValue: number
+  /** Observations at this time that lost to a later one of the same site; the frame shows the last. */
+  rowsHidden: number
   total: number
 }
 
-export function countsAtTime(frame: Float32Array, dots: ObsDots, nAtTime: number): TimeCounts {
+export function countsAtTime(frame: Float32Array, dots: ObsDots, nAtTime: number, rowsHidden = 0): TimeCounts {
   let withValue = 0
   for (let k = 0; k < dots.rows.length; k++) {
     if (Number.isFinite(frame[dots.rows[k]])) withValue += 1
@@ -305,7 +315,7 @@ export function countsAtTime(frame: Float32Array, dots: ObsDots, nAtTime: number
   for (let i = 0; i < frame.length; i++) {
     if (Number.isFinite(frame[i])) finiteInFrame += 1
   }
-  return { withValue, withObservationNoValue: Math.max(0, nAtTime - finiteInFrame), total: dots.rows.length }
+  return { withValue, withObservationNoValue: Math.max(0, nAtTime - finiteInFrame), rowsHidden, total: dots.rows.length }
 }
 
 export interface TimePosition {

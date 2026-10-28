@@ -293,6 +293,8 @@ export interface ObsFrameMeta {
   orderDigest: string
   nSites: number
   nAtTime: number
+  /** Rows at this time that lost to a later row of the same site; the frame shows the last. */
+  nRowsHidden: number
   nFinite: number
 }
 
@@ -350,6 +352,7 @@ export async function fetchObsFrame(
         orderDigest: metaText(meta, 'order_digest'),
         nSites,
         nAtTime: metaNumber(meta, 'n_at_time'),
+        nRowsHidden: metaNumber(meta, 'n_rows_hidden'),
         nFinite: metaNumber(meta, 'n_finite'),
       },
     }

@@ -29,6 +29,8 @@ export interface SiteReadoutEntry {
     | { kind: 'no_observation' }
     | { kind: 'loading' }
     | { kind: 'unavailable'; reason: string }
+  /** Observations of this site at the shown time; more than one means the last is the one shown. */
+  rowsAtTime?: number
   stat: { label: string; value: number | null; iteration: number }
 }
 
@@ -115,6 +117,9 @@ function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
     appendLine(block, `the observed value could not be read: ${obs.reason}`, 'label', 'wrap-note')
   } else {
     appendLine(block, 'reading the observed value…', 'label').style.color = 'var(--ink-muted)'
+  }
+  if ((site.rowsAtTime ?? 0) > 1) {
+    appendLine(block, `${site.rowsAtTime} observations at this time; the last is shown`, 'label', 'wrap-note')
   }
   const { label, value, iteration } = site.stat
   const stat = value === null ? 'no value at this time' : formatValue(value)

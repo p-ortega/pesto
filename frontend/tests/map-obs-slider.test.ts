@@ -271,6 +271,7 @@ function stubFetch(): void {
                 stat,
                 n_sites: ROWS,
                 n_at_time: ROWS,
+                n_rows_hidden: 0,
                 n_finite: values.filter((v) => Number.isFinite(v)).length,
               }),
             },

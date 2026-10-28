@@ -309,6 +309,14 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
         )
       }
     }
+    if (atTime !== null && atTime.rowsHidden > 0) {
+      const n = atTime.rowsHidden
+      line(
+        el,
+        `${n} ${n === 1 ? 'observation shares its time' : 'observations share their time'} with a later one of the same site; the last is shown`,
+        'wrap-note',
+      )
+    }
     line(el, `${counts.cellCentre} at the centre of the cell's vertices, ${counts.own} at its own x and y`, 'wrap-note')
   }
   if (counts.unplaced > 0) {

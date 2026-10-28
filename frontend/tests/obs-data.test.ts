@@ -247,7 +247,7 @@ describe('fetchObsGroups', () => {
 })
 
 describe('fetchObsFrame', () => {
-  const meta = { group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', order_digest: 'digest-a', n_sites: 3, n_at_time: 2, n_finite: 2, dtype: '<f4' }
+  const meta = { group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', order_digest: 'digest-a', n_sites: 3, n_at_time: 2, n_rows_hidden: 1, n_finite: 2, dtype: '<f4' }
 
   it('builds the query with the time as written and returns the values with their meta', async () => {
     const fetchMock = stubFetch({ bytes: blobOf([1.5, Number.NaN, -2]), headers: { 'X-Pesto-Meta': JSON.stringify(meta) } })
@@ -259,7 +259,7 @@ describe('fetchObsFrame', () => {
     if (!result.ok) return
     expect(result.values[0]).toBe(1.5)
     expect(Number.isNaN(result.values[1])).toBe(true)
-    expect(result.meta).toEqual({ group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', orderDigest: 'digest-a', nSites: 3, nAtTime: 2, nFinite: 2 })
+    expect(result.meta).toEqual({ group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', orderDigest: 'digest-a', nSites: 3, nAtTime: 2, nRowsHidden: 1, nFinite: 2 })
     expect(result.meta.nSites).toBe(result.values.length)
   })
 

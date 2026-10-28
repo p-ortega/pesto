@@ -266,7 +266,7 @@ function stubFrames(ignoreAbort = false): Call[] {
   mocks.fetchObsFrame.mockImplementation(
     (group: string, iteration: number, time: number, stat: string, opts?: { signal?: AbortSignal }) =>
       new Promise((resolve, reject) => {
-        const meta = { group, iteration, time, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nFinite: 2 }
+        const meta = { group, iteration, time, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nRowsHidden: 1, nFinite: 2 }
         calls.push({
           group,
           iteration,
@@ -456,7 +456,7 @@ describe('FrameCache.want', () => {
     mocks.fetchObsFrame.mockImplementation(async (group: string, iteration: number, time: number, stat: string) => ({
       ok: true,
       values: Float32Array.from([1, 2]),
-      meta: { group, iteration, time: time + 1, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nFinite: 2 },
+      meta: { group, iteration, time: time + 1, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nRowsHidden: 1, nFinite: 2 },
     }))
     const cache = new FrameCache('run')
     const result = await cache.want('g', DIGEST, 1, TEN, 4, 'mean')
@@ -469,7 +469,7 @@ describe('FrameCache.want', () => {
     mocks.fetchObsFrame.mockImplementation(async (group: string, iteration: number, time: number, stat: string) => ({
       ok: true,
       values: Float32Array.from([1, 2]),
-      meta: { group, iteration, time, stat, orderDigest: 'digest-b', nSites: 2, nAtTime: 2, nFinite: 2 },
+      meta: { group, iteration, time, stat, orderDigest: 'digest-b', nSites: 2, nAtTime: 2, nRowsHidden: 1, nFinite: 2 },
     }))
     const cache = new FrameCache('run')
     const result = await cache.want('g', DIGEST, 1, TEN, 4, 'mean')
@@ -578,7 +578,7 @@ describe('countsAtTime', () => {
     const rows = [row({ siteId: 1 }), row({ siteId: 2 }), row({ siteId: 3 }), row({ siteId: 4 })]
     const dots = dotsFor(groupData(rows), 2, false)
     const counts = countsAtTime(Float32Array.from([1, Number.NaN, 2, Number.NaN]), dots, 3)
-    expect(counts).toEqual({ withValue: 2, withObservationNoValue: 1, total: 4 })
+    expect(counts).toEqual({ withValue: 2, withObservationNoValue: 1, rowsHidden: 0, total: 4 })
   })
 
   it('counts only the dots that are drawn', () => {
@@ -591,7 +591,25 @@ describe('countsAtTime', () => {
   it('has no site with an observation and no value when every observed site has a value', () => {
     const rows = [row({ siteId: 1 }), row({ siteId: 2 })]
     const dots = dotsFor(groupData(rows), 2, false)
-    expect(countsAtTime(Float32Array.from([1, 2]), dots, 2)).toEqual({ withValue: 2, withObservationNoValue: 0, total: 2 })
+    expect(countsAtTime(Float32Array.from([1, 2]), dots, 2)).toEqual({ withValue: 2, withObservationNoValue: 0, rowsHidden: 0, total: 2 })
+  })
+})
+
+describe('rows hidden by a later row', () => {
+  it('is counted into the time counts as given', () => {
+    const dots = dotsFor(groupData([row({ siteId: 1 }), row({ siteId: 2 })]), 2, false)
+    expect(countsAtTime(Float32Array.from([1, 2]), dots, 2, 3).rowsHidden).toBe(3)
+  })
+
+  it('travels with a held frame and reads 0 for an array the cache never held', async () => {
+    const calls = stubFrames()
+    const cache = new FrameCache('run')
+    const answer = cache.want('g', DIGEST, 1, TEN, 0, 'mean')
+    calls.forEach((c) => c.answer())
+    const result = await answer
+    if (result.stale || 'failed' in result) throw new Error('expected values')
+    expect(cache.rowsHiddenIn(result.values)).toBe(1)
+    expect(cache.rowsHiddenIn(new Float32Array(2))).toBe(0)
   })
 })
 
