@@ -75,3 +75,26 @@ export function readColorToken(name: string): [number, number, number, number] {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
   return parseColorToken(value)
 }
+
+const FRACTION_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i
+
+/**
+ * Parses a resolved token that holds a fraction, such as --dim-alpha. The
+ * empty string (an unset property, only ever in a test environment) reads
+ * as 1, meaning no dimming; anything else that is not a number from 0 to 1
+ * throws, naming the value.
+ */
+export function parseNumberToken(value: string): number {
+  const trimmed = value.trim()
+  if (trimmed === '') return 1
+  const n = FRACTION_PATTERN.test(trimmed) ? Number(trimmed) : Number.NaN
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error(`number token value is not a fraction from 0 to 1: "${value}"`)
+  }
+  return n
+}
+
+/** Reads `name` off `document.documentElement`'s resolved style as a fraction. */
+export function readNumberToken(name: string): number {
+  return parseNumberToken(getComputedStyle(document.documentElement).getPropertyValue(name))
+}
