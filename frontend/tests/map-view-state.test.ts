@@ -73,11 +73,17 @@ const RESTORED_VIEW = {
   reverse: true,
   scale: 'linear',
   limits_mode: 'robust',
-  group: 'G1',
+  group: 'G1' as string | null,
   stat: 'value',
   layer: null as number | null,
   tab: undefined as string | undefined,
+  classes: 0,
+  symmetric: false,
+  texture: false,
 }
+
+// Lets a test hold the map before it settles its choices.
+let holdMesh = false
 
 function bytesOf(view: ArrayBufferView): Uint8Array {
   return new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
@@ -108,6 +114,7 @@ function stubEnvironment(): void {
           if (init?.method === 'PUT') return respond({ status: 200, body: RESTORED_VIEW })
           return respond({ status: 200, body: RESTORED_VIEW })
         case '/api/run/grid/mesh':
+          if (holdMesh) return new Promise(() => {})
           return respond({ status: 200, body: MESH_BODY })
         case '/api/run/grid/mesh/positions':
           return respond({ status: 200, bytes: bytesOf(POSITIONS), headers: metaHeader('<f4') })
@@ -334,5 +341,138 @@ describe('the remembered right-panel tab (D-09)', () => {
     tab(root, 'config').click()
 
     await vi.waitFor(() => expect(putBodies().some((body) => body.tab === 'config')).toBe(true), { timeout: 3000 })
+  })
+})
+
+describe('the saved field style (classes, symmetric, texture)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    RESTORED_VIEW.classes = 0
+    RESTORED_VIEW.symmetric = false
+    RESTORED_VIEW.texture = false
+    RESTORED_VIEW.scale = 'linear'
+    RESTORED_VIEW.group = 'G1'
+    holdMesh = false
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function putBodies(): Array<Record<string, unknown>> {
+    return vi
+      .mocked(fetch)
+      .mock.calls.filter(([input, init]) => String(input).startsWith('/api/run/view') && init?.method === 'PUT')
+      .map(([, init]) => JSON.parse(String(init?.body)))
+  }
+
+  async function opened(): Promise<HTMLElement> {
+    stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+    await vi.waitFor(() => {
+      expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
+    })
+    return root
+  }
+
+  async function lastStyle(): Promise<{ classes: number; symmetric: boolean; texture: boolean }> {
+    const { MeshLayer } = await import('../src/gl/mesh-layer')
+    const instance = vi.mocked(MeshLayer).mock.instances[0] as unknown as { setStyle: ReturnType<typeof vi.fn> }
+    return instance.setStyle.mock.calls.at(-1)?.[0]
+  }
+
+  const classesSelect = (root: HTMLElement) => root.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
+  const symmetricBox = (root: HTMLElement) => root.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
+
+  function moveLayer(root: HTMLElement): void {
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+  }
+
+  it('opens a run visited before with its saved classes', async () => {
+    RESTORED_VIEW.classes = 9
+    const root = await opened()
+
+    expect(classesSelect(root).value).toBe('9')
+    expect((await lastStyle()).classes).toBe(9)
+  })
+
+  it('keeps a saved texture in the next saved request', async () => {
+    RESTORED_VIEW.classes = 9
+    RESTORED_VIEW.texture = true
+    const root = await opened()
+    moveLayer(root)
+
+    // Waits for this map's own write: an earlier test's debounced write can land first.
+    await vi.waitFor(() => expect(putBodies().at(-1)).toMatchObject({ classes: 9, texture: true }), { timeout: 3000 })
+  })
+
+  it('opens a saved log10 with symmetric on as symmetric off, says so, and saves it off', async () => {
+    RESTORED_VIEW.scale = 'log10'
+    RESTORED_VIEW.symmetric = true
+    const root = await opened()
+
+    expect(symmetricBox(root).checked).toBe(false)
+    expect(symmetricBox(root).disabled).toBe(true)
+    expect((root.querySelector('#symmetric-reason') as HTMLElement).textContent).toBe(
+      'symmetric was turned off: a log scale has no zero to centre on',
+    )
+    expect((await lastStyle()).symmetric).toBe(false)
+
+    moveLayer(root)
+    await vi.waitFor(() => expect(putBodies().at(-1)).toMatchObject({ scale: 'log10', symmetric: false }), { timeout: 3000 })
+  })
+
+  it('opens a run never visited continuous, symmetric off and texture off, whatever the store holds', async () => {
+    RESTORED_VIEW.group = null
+    RESTORED_VIEW.classes = 9
+    RESTORED_VIEW.symmetric = true
+    RESTORED_VIEW.texture = true
+    const root = await opened()
+
+    expect(classesSelect(root).value).toBe('0')
+    expect(symmetricBox(root).checked).toBe(false)
+    expect(await lastStyle()).toEqual({ classes: 0, symmetric: false, texture: false })
+  })
+
+  it('saves the picked classes with symmetric and texture next to the colour settings', async () => {
+    const root = await opened()
+    classesSelect(root).value = '11'
+    classesSelect(root).dispatchEvent(new Event('change'))
+
+    await vi.waitFor(
+      () =>
+        expect(putBodies().at(-1)).toMatchObject({
+          colormap: 'viridis',
+          scale: 'linear',
+          limits_mode: 'robust',
+          classes: 11,
+          symmetric: false,
+          texture: false,
+        }),
+      { timeout: 3000 },
+    )
+  })
+
+  it('writes the saved classes, symmetric and texture back unchanged until the map has settled', async () => {
+    RESTORED_VIEW.classes = 7
+    RESTORED_VIEW.symmetric = true
+    RESTORED_VIEW.texture = true
+    holdMesh = true
+    stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    mountMap(root, { config: CONFIG, state: baseState() })
+
+    ;(root.querySelector('#tab-config') as HTMLElement).click()
+
+    await vi.waitFor(
+      () => expect(putBodies().at(-1)).toMatchObject({ tab: 'config', classes: 7, symmetric: true, texture: true }),
+      { timeout: 3000 },
+    )
   })
 })
