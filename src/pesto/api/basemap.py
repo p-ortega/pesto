@@ -321,7 +321,13 @@ def register_basemap(request: Request, body: _RegisterBody) -> Response:
     if found.placement["by"] != "world_file":
         return _refuse(409, "no_world_file", "this image has no world file pesto can use", detail=found.placement["reason"])
 
-    _layout, run_dir = _open(request)
+    layout, run_dir = _open(request)
+    if store.store_inside(run_dir, layout.root):
+        return _refuse(
+            409,
+            "store_inside_run",
+            "the basemap store would sit inside the run folder or its cache, so the basemap cannot be saved",
+        )
     record = {
         "version": store.STORE_VERSION,
         "source": str(found.path),
@@ -338,8 +344,15 @@ def register_basemap(request: Request, body: _RegisterBody) -> Response:
         "notes": list(found.notes),
     }
     record["tag"] = _digest(json.dumps(record, sort_keys=True))
-    store.write_registration(run_dir, record)
+    try:
+        store.write_registration(run_dir, record)
+    except OSError as exc:
+        return _refuse(500, "store", "the basemap could not be saved", detail=str(exc))
     return JSONResponse(_state(record))
+
+
+def _unreadable_record(failure: store.StoreFailure) -> str:
+    return f"the saved basemap record could not be read: {failure.reason}"
 
 
 @router.get("")
@@ -351,6 +364,16 @@ def basemap_state(request: Request) -> Response:
     record = store.read_registration(run_dir)
     if record is None:
         return JSONResponse({"status": "none"})
+    if isinstance(record, store.StoreFailure):
+        return JSONResponse(
+            {
+                "status": "unavailable",
+                "reason": _unreadable_record(record),
+                "name": None,
+                "placed_by": None,
+                "extent": None,
+            }
+        )
     return JSONResponse(_state(record))
 
 
@@ -376,6 +399,8 @@ def basemap_image(request: Request, params: Annotated[_ImageQuery, Query()]) -> 
     record = store.read_registration(run_dir)
     if record is None:
         return _refuse(404, "none", "no basemap is registered for this run")
+    if isinstance(record, store.StoreFailure):
+        return _refuse(409, "unavailable", _unreadable_record(record))
 
     source = Path(record["source"])
     try:
