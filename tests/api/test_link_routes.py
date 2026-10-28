@@ -13,6 +13,7 @@ import pytest
 import pesto.ingest.runner as runner
 from ingest.obs_fixtures import DEFAULT_SITES, GRID_SITES, SiteSpec
 from pesto.api import link, linkcache
+from pesto.api.fields import contributors
 from pesto.ingest.mesh import load_mesh
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
@@ -21,6 +22,7 @@ from pesto.ingest.ppfactors import PpGroup, PpIndex, write_pp_index
 from pesto.model import GroupResolution, ParCells
 
 from .obs_helpers import open_obs_run, site_id
+from .test_fields_compute import FAC
 
 GRID_RUN = {"grid": True, "sites": DEFAULT_SITES + GRID_SITES, "iterations": (0,), "n_real": 4}
 NO_PLACED_SITES = {"grid": True, "sites": DEFAULT_SITES, "iterations": (0,), "n_real": 4}
@@ -44,8 +46,9 @@ def _layout(client) -> CacheLayout:
     return CacheLayout(root=Path(client.pesto_app.state.cache_root))
 
 
-def _place_pars(client, cells: dict[str, tuple[int, int]]) -> None:
-    """Rewrite par_cell so the named parameters sit on (cell, layer); the rest stay unmapped."""
+def _place_pars(client, cells: dict[str, tuple[int, int]], pargp: dict[str, str] | None = None) -> None:
+    """Rewrite par_cell so the named parameters sit on (cell, layer); the rest stay unmapped.
+    Every parameter is in group "pargp" unless ``pargp`` names another."""
     layout = _layout(client)
     names = load_par_cell(layout).parnme
     cell = np.array([cells.get(n, (-1, -1))[0] for n in names], dtype=np.int32)
@@ -58,7 +61,8 @@ def _place_pars(client, cells: dict[str, tuple[int, int]]) -> None:
         summary="test placement",
         notes=(),
     )
-    par = pd.DataFrame({"parnme": list(names), "pargp": ["pargp"] * len(names)})
+    groups = pargp or {}
+    par = pd.DataFrame({"parnme": list(names), "pargp": [groups.get(n, "pargp") for n in names]})
     written = write_par_cell(placed, par, layout)
     assert not hasattr(written, "reason"), written
 
@@ -148,7 +152,8 @@ def test_a_pilot_point_parameter_is_marked_as_one(tmp_path, in_process):
     body = _get(client, layer=0, cells="0").json()
 
     assert [(p["parnme"], p["kind"]) for p in body["pars"]] == [("par0", "cell"), ("par1", "pilot_point")]
-    assert body["par_notes"] == []
+    # No run folder is open here, so the factors behind the cell cannot be read.
+    assert body["par_notes"] == ["group pargp: the run directory is not open, so pilot-point factors cannot be read"]
 
 
 def test_an_unreadable_pp_factors_is_named_in_a_note_never_skipped(tmp_path, in_process):
@@ -337,7 +342,8 @@ def test_more_parameters_than_the_cap_are_counted_and_noted(tmp_path, in_process
     assert [p["parnme"] for p in body["pars"]] == ["par0", "par1"]
     assert body["pars_total"] == 3
     assert body["par_notes"] == [
-        "3 parameters set this cell on layer 0; the first 2 in control-file order are listed"
+        "3 parameters set this cell on layer 0; the first 2 are listed, by parameter group, "
+        "direct parameters in control-file order and then pilot points by largest factor"
     ]
 
 
@@ -377,3 +383,211 @@ def test_the_neighbour_table_is_built_once_and_again_after_the_grid_is_rewritten
     os.utime(grid_file, ns=(stamp, stamp))
     _get(client, layer=0, cells="0")
     assert len(built) == 2
+
+
+# ---- 11-09 Task 1: the pilot points behind a clicked cell ----
+
+BINARY_NOTE = "group G4: g.fac is a binary factor file, and pesto lists the points behind a cell only from text factor files"
+
+
+def _pp_group(client, run, *, fmt: str = "text", parnames=("par1", "par2"), fac: str | None = FAC) -> PpGroup:
+    """Record one pilot-point group G4 on layer 0 whose factor file g.fac sits in the run
+    folder, and open the run folder the way the launcher does."""
+    if fac is not None:
+        (run.root / "g.fac").write_text(fac)
+    layout = _layout(client)
+    group = PpGroup(
+        group="G4", layer=0, factor_file="g.fac", format=fmt, parnames=tuple(parnames),
+        pp_names=("pp0", "pp1"), log_space=False, n_cells=3,
+    )
+    write_pp_index(PpIndex(groups=(group,), not_interpolable=()), layout)
+    manifest = Manifest.load(layout)
+    manifest.mark_ok("pp_factors", [])
+    manifest.save(layout)
+    client.pesto_app.state.initial_run_dir = str(run.root)
+    return group
+
+
+def _points(body) -> list[tuple[str, list[dict]]]:
+    return [(p["parnme"], p["weights"]) for p in body["pars"] if p["rule"] == link.FACTOR_RULE]
+
+
+def test_a_cell_click_lists_the_points_contributors_names_with_their_weights(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {})
+    group = _pp_group(client, run)
+
+    body = _get(client, layer=0, cells="1").json()
+
+    expected = [(name, w) for name, w in contributors(run.root, group, 1) if w != 0]
+    assert [(n, ws[0]["weight"]) for n, ws in _points(body)] == expected
+    assert expected == [("par1", 0.75), ("par2", 0.25)]
+    assert all(p["kind"] == "pilot_point" for p in body["pars"])
+    assert all(ws == [{"cell": 1, "weight": w}] for (_, ws), (_, w) in zip(_points(body), expected))
+    assert body["par_notes"] == []
+    assert body["reasons"]["pars"] is None
+
+
+def test_a_point_reaching_two_clicked_cells_carries_two_weights_and_a_zero_weight_is_left_out(
+    tmp_path, in_process
+):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {})
+    _pp_group(client, run)
+
+    both = dict(_points(_get(client, layer=0, cells="0,1").json()))
+    alone = dict(_points(_get(client, layer=0, cells="0").json()))
+
+    assert both["par1"] == [{"cell": 0, "weight": 1.0}, {"cell": 1, "weight": 0.75}]
+    # par2's factor on cell 0 is 0.0 in the file.
+    assert both["par2"] == [{"cell": 1, "weight": 0.25}]
+    assert list(alone) == ["par1"]
+
+
+def test_a_parameter_that_is_direct_and_a_point_with_a_factor_appears_once(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par1": (1, 0)})
+    _pp_group(client, run)
+
+    body = _get(client, layer=0, cells="1").json()
+
+    rows = [p for p in body["pars"] if p["parnme"] == "par1"]
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "pilot_point"
+    assert rows[0]["rule"] == "sets this cell (par_cell); pilot-point factor on this cell"
+    assert rows[0]["weights"] == [{"cell": 1, "weight": 0.75}]
+    assert body["pars_total"] == 2
+
+
+def test_rows_are_grouped_by_pargp_direct_first_then_points_by_largest_weight(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(
+        client,
+        {"par0": (1, 0), "par3": (1, 0)},
+        pargp={"par0": "gpp", "par1": "gpp", "par2": "gpp", "par3": "other"},
+    )
+    # pp0 is par2 here, so the larger weight belongs to the later name.
+    _pp_group(client, run, parnames=("par2", "par1"))
+
+    body = _get(client, layer=0, cells="1").json()
+
+    assert [(p["parnme"], p["pargp"]) for p in body["pars"]] == [
+        ("par0", "gpp"), ("par2", "gpp"), ("par1", "gpp"), ("par3", "other"),
+    ]
+    assert body["pars_total"] == 4
+
+
+def test_the_cap_counts_point_rows_too(tmp_path, in_process, monkeypatch):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (1, 0)})
+    _pp_group(client, run)
+    monkeypatch.setattr(link, "PARS_CAP", 2)
+
+    body = _get(client, layer=0, cells="1").json()
+
+    assert [p["parnme"] for p in body["pars"]] == ["par0", "par1"]
+    assert body["pars_total"] == 3
+    assert body["par_notes"][-1].startswith("3 parameters set this cell on layer 0; the first 2 are listed")
+
+
+def test_a_binary_group_is_named_in_a_note_and_its_point_in_the_cell_is_still_listed(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par1": (1, 0)})
+    _pp_group(client, run, fmt="binary")
+
+    body = _get(client, layer=0, cells="1").json()
+
+    assert body["par_notes"] == [BINARY_NOTE]
+    assert [(p["parnme"], p["kind"], p["weights"]) for p in body["pars"]] == [("par1", "pilot_point", [])]
+
+
+def test_the_factor_file_is_scanned_once_and_again_after_it_changes(tmp_path, in_process, monkeypatch):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {})
+    _pp_group(client, run)
+    scans = []
+    original = linkcache.scan_factor_file
+
+    def counted(*args):
+        scans.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(linkcache, "scan_factor_file", counted)
+
+    _get(client, layer=0, cells="0")
+    _get(client, layer=0, cells="1")
+    assert len(scans) == 1
+
+    fac = run.root / "g.fac"
+    st = fac.stat()
+    os.utime(fac, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    _get(client, layer=0, cells="1")
+    assert len(scans) == 2
+    held = [k for k in client.pesto_app.state.obs_memo if "pp_index" in k]
+    assert len(held) == 1
+
+
+def test_an_unreadable_factor_file_is_noted_and_the_direct_rows_still_answer(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (1, 0)})
+    _pp_group(client, run, fac=None)
+
+    body = _get(client, layer=0, cells="1").json()
+
+    assert [p["parnme"] for p in body["pars"]] == ["par0"]
+    assert body["par_notes"] == ["group G4: could not read g.fac: No such file or directory"]
+
+
+def test_a_factor_file_naming_a_point_it_never_listed_is_noted(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {})
+    _pp_group(client, run, fac=FAC.replace("1 0 2 0.0 1 1.0 2 0.0", "1 0 2 0.0 1 1.0 3 0.5"))
+
+    body = _get(client, layer=0, cells="1").json()
+
+    assert body["pars"] == []
+    assert body["par_notes"] == [
+        "group G4: could not read g.fac: a cell line names a point outside the 2 points the file lists"
+    ]
+
+
+def test_without_an_open_run_folder_the_points_are_noted_not_dropped(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (1, 0)})
+    _pp_group(client, run)
+    client.pesto_app.state.initial_run_dir = None
+
+    body = _get(client, layer=0, cells="1").json()
+
+    assert [p["parnme"] for p in body["pars"]] == ["par0"]
+    assert body["par_notes"] == ["group G4: the run directory is not open, so pilot-point factors cannot be read"]
+
+
+def test_the_scan_builds_both_tables_from_a_factor_file_with_lines_that_run_on(tmp_path):
+    group = PpGroup(
+        group="G4", layer=0, factor_file="g.fac", format="text", parnames=("p8", "p9"),
+        pp_names=("pp0", "pp1"), log_space=False, n_cells=4,
+    )
+    (tmp_path / "g.fac").write_text(FAC)
+
+    index = linkcache.scan_factor_file(tmp_path / "g.fac", group)
+
+    assert [index.points_on(c)[0].tolist() for c in range(6)] == [[0], [0, 1], [0, 1], [], [1], []]
+    assert index.points_on(2)[1].tolist() == [0.5, 0.5]
+    assert index.cells_of(0).tolist() == [0, 1, 2]
+    assert index.cells_of(1).tolist() == [1, 2, 4]
+
+
+def test_a_pilot_point_click_leaves_the_run_and_the_cache_untouched(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (1, 0)})
+    _pp_group(client, run)
+    cache_root = Path(client.pesto_app.state.cache_root)
+    run_before = _snapshot(run.root)
+    cache_before = _snapshot(cache_root)
+
+    for cells in ("0", "1,2", "2"):
+        assert _get(client, layer=0, cells=cells).status_code == 200
+
+    assert _snapshot(run.root) == run_before
+    assert _snapshot(cache_root) == cache_before
