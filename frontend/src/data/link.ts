@@ -21,20 +21,31 @@ export interface CellLinkPar {
 export interface CellLinkSite {
   siteId: number
   site: string
-  group: string
+  group: string | null
   layer: number
   cell: number
   inClickedCell: boolean
 }
 
+export interface CellLinkSiteCounts {
+  unknownLayerIncluded: number
+  otherLayerLeftOut: number
+  unplacedInRun: number
+}
+
 export interface CellLinkAnswer {
   layer: number
   cells: number[]
+  /** Cells sharing at least one corner with a clicked cell, never a clicked one. */
+  ring: number[]
+  ringRule: string
   pars: CellLinkPar[]
   parsTotal: number
   parNotes: string[]
   sites: CellLinkSite[]
   sitesTotal: number
+  sitesCap: number
+  siteCounts: CellLinkSiteCounts
   reasons: { pars: string | null; sites: string | null }
 }
 
@@ -113,7 +124,7 @@ function siteOf(value: unknown): CellLinkSite {
   return {
     siteId: numberField(raw, 'site_id', what),
     site: textField(raw, 'site', what),
-    group: textField(raw, 'group', what),
+    group: textOrNullField(raw, 'group', what),
     layer: numberField(raw, 'layer', what),
     cell: numberField(raw, 'cell', what),
     inClickedCell: inClicked,
@@ -124,9 +135,13 @@ export function parseCellLink(payload: unknown): CellLinkAnswer {
   const what = 'link/cell answer'
   const raw = objectOf(payload, what)
   const reasons = objectOf(field(raw, 'reasons', what), 'reasons of the link/cell answer')
+  const countsWhat = 'site_counts of the link/cell answer'
+  const counts = objectOf(field(raw, 'site_counts', what), countsWhat)
   return {
     layer: numberField(raw, 'layer', what),
     cells: numbers(raw, 'cells', what),
+    ring: numbers(raw, 'ring', what),
+    ringRule: textField(raw, 'ring_rule', what),
     pars: listField(raw, 'pars', what).map(parOf),
     parsTotal: numberField(raw, 'pars_total', what),
     parNotes: listField(raw, 'par_notes', what).map((n) => {
@@ -135,6 +150,12 @@ export function parseCellLink(payload: unknown): CellLinkAnswer {
     }),
     sites: listField(raw, 'sites', what).map(siteOf),
     sitesTotal: numberField(raw, 'sites_total', what),
+    sitesCap: numberField(raw, 'sites_cap', what),
+    siteCounts: {
+      unknownLayerIncluded: numberField(counts, 'unknown_layer_included', countsWhat),
+      otherLayerLeftOut: numberField(counts, 'other_layer_left_out', countsWhat),
+      unplacedInRun: numberField(counts, 'unplaced_in_run', countsWhat),
+    },
     reasons: {
       pars: textOrNullField(reasons, 'pars', 'reasons of the link/cell answer'),
       sites: textOrNullField(reasons, 'sites', 'reasons of the link/cell answer'),
