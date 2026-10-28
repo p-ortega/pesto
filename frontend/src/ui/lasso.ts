@@ -53,7 +53,8 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
   const { area, canvas } = opts
 
   const wrap = document.createElement('div')
-  wrap.classList.add('lasso-control')
+  // A card, so the disabled reason reads over any colour ramp.
+  wrap.classList.add('floating', 'lasso-control')
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('lasso-button')
