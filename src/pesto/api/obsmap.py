@@ -451,9 +451,19 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     index, rows = context
     manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
     iterations = _iteration_status(state, cache_root, manifest)
-    ends = [item["iteration"] for item in iterations if item["available"]]
+    # The same ends every other observation route uses; an end without statistics is left out of the limits.
+    shared = obscache.obs_ends(state, cache_root, manifest)
+    planned = [] if shared is None else list(dict.fromkeys(k for k in shared if k is not None))
+    usable = {item["iteration"] for item in iterations if item["available"]}
+    ends = [k for k in planned if k in usable]
 
     notes: list[str] = []
+    if ends and len(ends) < len(planned):
+        left_out = [str(k) for k in planned if k not in usable]
+        notes.append(
+            f"the colour limits use iteration {ends[0]} only; iteration {', '.join(left_out)} has no "
+            "observation statistics"
+        )
     steps_by = "time"
     if rows.time_kind.startswith("ordinal"):
         steps_by = "position"

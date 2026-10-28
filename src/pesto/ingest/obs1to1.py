@@ -446,6 +446,20 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
         )
 
 
+def read_planned_ends(layout: CacheLayout) -> tuple[int, int | None] | ReadFailure:
+    """The first and last observation iteration the last ingest planned, as the 1:1
+    sidecar recorded them; the last is None when there was only one. Reads the sidecar only."""
+    sidecar = _read_json("obs_1to1", layout.obs_1to1_meta)
+    if isinstance(sidecar, ReadFailure):
+        return sidecar
+    try:
+        first, last = int(sidecar["first_iteration"]), int(sidecar["last_iteration"])
+        single = bool(sidecar["single_iteration"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return _fail("obs_1to1", layout.obs_1to1_meta, f"the sidecar names no usable ends: {exc}")
+    return first, (None if single else last)
+
+
 def load_obs_1to1(layout: CacheLayout) -> tuple[pd.DataFrame, dict] | ReadFailure:
     """Read ``obs_1to1`` back as its rows and its sidecar. The sidecar and its
     ``cache_version`` are checked before the rows are trusted."""

@@ -260,15 +260,6 @@ NO_OBS_ENS_REASON = "no observation ensemble was ingested for this run"
 NO_1TO1_REASON = "no 1:1 grid was ingested for this run"
 
 
-def _ends(manifest: Manifest) -> tuple[int, int | None] | None:
-    """The first and last observation iteration, or None when there is none. The last is
-    None when only one iteration was ingested. Never taken from a request."""
-    found = obscache.obs_iterations(manifest)
-    if not found:
-        return None
-    return found[0], (found[-1] if len(found) > 1 else None)
-
-
 def _no_ensemble() -> Response:
     return problem(404, "no observation ensemble was ingested", artifact="obs_ens", detail=NO_OBS_ENS_REASON)
 
@@ -383,7 +374,7 @@ async def get_obs_groups(request: Request, params: Annotated[RunQuery, Query()])
         return problem(409, "no run is open")
     state = request.app.state
 
-    ends = _ends(Manifest.load(CacheLayout(root=Path(cache_root))))
+    ends = obscache.obs_ends(state, cache_root, Manifest.load(CacheLayout(root=Path(cache_root))))
     if ends is None:
         return _no_ensemble()
     first, last = ends
@@ -589,7 +580,7 @@ async def get_obs_points(request: Request, params: Annotated[ObsPointsQuery, Que
         return problem_from_failure(404, index)
     if _group_range(index, params.group) is None:
         return _unknown_group(params.group, "obs_index")
-    ends = _ends(Manifest.load(CacheLayout(root=Path(cache_root))))
+    ends = obscache.obs_ends(state, cache_root, Manifest.load(CacheLayout(root=Path(cache_root))))
     if ends is None:
         return _no_ensemble()
     first, last = ends
@@ -733,7 +724,7 @@ async def get_obs_resid_hist(request: Request, params: Annotated[ObsGroupQuery, 
         return problem_from_failure(404, index)
     if _group_range(index, params.group) is None:
         return _unknown_group(params.group, "obs_index")
-    ends = _ends(Manifest.load(CacheLayout(root=Path(cache_root))))
+    ends = obscache.obs_ends(state, cache_root, Manifest.load(CacheLayout(root=Path(cache_root))))
     if ends is None:
         return _no_ensemble()
     first, last = ends

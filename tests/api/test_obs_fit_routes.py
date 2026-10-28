@@ -705,3 +705,45 @@ def test_the_histogram_is_computed_once_per_group_and_again_after_a_re_ingest(  
 
     assert len(calls) == 3
     assert after["first"]["counts"] != first["first"]["counts"] or after["edges"] != first["edges"]
+
+
+# ---------------------------------------------------------------------------
+# one meaning of "last iteration"
+# ---------------------------------------------------------------------------
+
+
+def _record_old_ensemble(client, iteration: int) -> None:
+    """An obs_ens entry an earlier ingest left in the manifest, for an iteration this ingest did not plan."""
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    manifest.mark_ok(f"obs_ens/{iteration}", sources=[])
+    manifest.save(layout)
+
+
+def test_an_older_ingests_ensemble_in_the_manifest_is_not_taken_for_the_last_iteration(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    _record_old_ensemble(client, 9)
+
+    groups = _arrow(client.get("/api/run/obs/groups")).to_pandas()
+    hist = client.get("/api/run/obs/resid_hist", params={"group": "gw_head"}).json()
+    times = client.get("/api/run/obs/times", params={"group": "gw_head"}).json()
+    one_to_one = client.get("/api/run/obs/1to1", params={"group": "gw_head"}).json()
+
+    assert set(groups["first_iteration"]) == {0} and set(groups["last_iteration"]) == {1}
+    assert (hist["first"]["iteration"], hist["last"]["iteration"]) == (0, 1)
+    assert [g["iteration"] for g in one_to_one["grids"]] == [0, 1]
+    assert times["limits_refused"] is None and all(v is not None for v in times["limits"].values())
+
+
+def test_the_ends_fall_back_to_the_manifest_only_when_the_1to1_record_is_not_ok(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    layout = _layout(client)
+    state = client.pesto_app.state
+    manifest = Manifest.load(layout)
+    assert obs_routes.obscache.obs_ends(state, _root(client), manifest) == (0, 1)
+
+    _record_old_ensemble(client, 9)
+    manifest = Manifest.load(layout)
+    assert obs_routes.obscache.obs_ends(state, _root(client), manifest) == (0, 1)
+    manifest.mark_failed("obs_1to1", "blocked")
+    assert obs_routes.obscache.obs_ends(state, _root(client), manifest) == (0, 9)
