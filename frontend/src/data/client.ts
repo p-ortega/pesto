@@ -495,6 +495,15 @@ function isPanelTab(value: unknown): value is PanelTab {
   return typeof value === 'string' && (PANEL_TABS as readonly string[]).includes(value)
 }
 
+// 0 is continuous colour; 7, 9 and 11 are the class counts the map offers.
+type ViewClassCount = 0 | 7 | 9 | 11
+
+const CLASS_CHOICES: readonly ViewClassCount[] = [0, 7, 9, 11]
+
+function isClassChoice(value: unknown): value is ViewClassCount {
+  return typeof value === 'number' && (CLASS_CHOICES as readonly number[]).includes(value)
+}
+
 export interface ViewState {
   divider: number
   colormap: string
@@ -506,6 +515,10 @@ export interface ViewState {
   layer: number | null
   /** Optional so a caller that only moves the divider still compiles; absent means Params. */
   tab?: PanelTab
+  /** Optional until the map view sends them; absent means continuous, off and off. */
+  classes?: ViewClassCount
+  symmetric?: boolean
+  texture?: boolean
 }
 
 interface ViewStateWire {
@@ -518,6 +531,9 @@ interface ViewStateWire {
   stat: string
   layer?: number | null
   tab?: string
+  classes?: number
+  symmetric?: boolean
+  texture?: boolean
 }
 
 function toViewState(raw: unknown): ViewState {
@@ -532,6 +548,9 @@ function toViewState(raw: unknown): ViewState {
     stat: wire.stat,
     layer: wire.layer ?? null,
     tab: isPanelTab(wire.tab) ? wire.tab : 'params',
+    classes: isClassChoice(wire.classes) ? wire.classes : 0,
+    symmetric: wire.symmetric === true,
+    texture: wire.texture === true,
   }
 }
 
@@ -546,6 +565,9 @@ function toViewStateWire(state: ViewState): ViewStateWire {
     stat: state.stat,
     layer: state.layer,
     tab: state.tab ?? 'params',
+    classes: state.classes ?? 0,
+    symmetric: state.symmetric ?? false,
+    texture: state.texture ?? false,
   }
 }
 
