@@ -1,5 +1,6 @@
 """The link routes: what a clicked set of cells holds, so the map can hand the Params and
-Obs tabs one answer.
+Obs tabs one answer; and, the other way, which cells a selected parameter sets and where
+each selected site is.
 
 All read the cache; the one run-directory read is a pilot-point group's text factor
 file, opened for reading only, at the path the cached pp_factors index records. Cells and
@@ -27,6 +28,7 @@ from pesto.api.query import RunQuery
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.obsindex import usable_mask
 from pesto.ingest.parcell import load_par_cell
 from pesto.ingest.ppfactors import PpGroup, load_pp_index
 
@@ -430,4 +432,116 @@ async def get_link_par(request: Request, params: Annotated[LinkParQuery, Query()
             }
         )
     body = {"pars": pars, "unknown": unknown, "reason": None, "notes": notes}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+# ---- /link/sites: where each selected site is, and whether it has a value ----
+
+MAX_LINK_SITES = 200
+VALUE_RULE = "a site has a value when at least one of its observations has a usable ensemble mean in this iteration"
+
+
+class LinkSitesQuery(RunQuery):
+    """``sites`` (comma-separated site ids) and the ``iteration`` the map shows."""
+
+    sites: str
+    iteration: int
+
+
+def _parse_sites(text: str) -> list[int]:
+    try:
+        ids = [int(part) for part in text.split(",")]
+    except ValueError:
+        raise ValueError("sites must be whole numbers separated by commas") from None
+    if len(ids) > MAX_LINK_SITES:
+        raise ValueError(f"at most {MAX_LINK_SITES} sites can be asked for at once, got {len(ids)}")
+    return ids
+
+
+def _site_means(state, cache_root, manifest: Manifest, iteration: int, table):
+    """Each site's (start, count) span in the observation index and the iteration's mean
+    row, or the reason no site can be given a value."""
+    name = f"obs_agg/{iteration}"
+    recorded = manifest.artifacts.get(name)
+    missing = f"no observation statistics for iteration {iteration}"
+    if recorded is None:
+        return None, None, missing
+    if recorded.state != "ok":
+        return None, None, f"{missing}: {recorded.reason}" if recorded.reason else missing
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return None, None, f"the observation index could not be read: {_reason(index)}"
+    agg = obscache.get_agg(state, cache_root, iteration)
+    if isinstance(agg, ReadFailure):
+        return None, None, f"the statistics for iteration {iteration} could not be read: {_reason(agg)}"
+    if agg.order_digest != index.order_digest or table.order_digest != index.order_digest:
+        return None, None, f"the statistics for iteration {iteration} were built from a different observation table; ingest the run again"
+    if "mean" not in agg.stats:
+        return None, None, f"the statistics for iteration {iteration} hold no mean"
+    sites = index.sites
+    spans = {
+        int(sid): (int(start), int(count))
+        for sid, start, count in zip(sites["site_id"], sites["start"], sites["count"])
+    }
+    return spans, agg.values[agg.stats.index("mean")], None
+
+
+@router.get("/link/sites")
+async def get_link_sites(request: Request, params: Annotated[LinkSitesQuery, Query()]) -> Response:
+    state = request.app.state
+    cache_root = getattr(state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    layout = CacheLayout(root=Path(cache_root))
+    try:
+        ids = _parse_sites(params.sites)
+    except ValueError as exc:
+        return problem(422, "the sites could not be used", detail=str(exc))
+
+    iteration = params.iteration
+    manifest = Manifest.load(layout)
+    body = {"iteration": iteration, "sites": [], "unknown": [], "value_rule": VALUE_RULE, "value_reason": None}
+    if "obs_cell" not in manifest.artifacts:
+        # Without a placement table no id can be told known or unknown, so none is guessed.
+        body.update(unknown=ids, reason=NO_SITE_PLACEMENT, notes=[])
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+    table = obscache.get_cell(state, cache_root)
+    if isinstance(table, ReadFailure):
+        return problem_from_failure(404, table)
+    row_of = {int(sid): i for i, sid in enumerate(np.asarray(table.site_id, dtype=np.int64))}
+    spans, mean, value_reason = _site_means(state, cache_root, manifest, iteration, table)
+
+    sites: list[dict] = []
+    unknown: list[int] = []
+    notes: list[str] = []
+    for sid in ids:
+        i = row_of.get(sid)
+        if i is None:
+            unknown.append(sid)
+            continue
+        cell = int(table.cell[i])
+        group = table.group[i]
+        if group is None:
+            notes.append(f"site {table.site[i]} has no observation group, so its group is sent as empty text")
+            group = ""
+        has_value = None
+        if value_reason is None:
+            span = spans.get(sid)
+            if span is None:
+                notes.append(f"site {table.site[i]} is not in the observation index, so whether it has a value is not known")
+            else:
+                start, count = span
+                has_value = bool(usable_mask(mean[start : start + count]).any())
+        sites.append(
+            {
+                "site_id": sid,
+                "site": table.site[i],
+                "group": group,
+                "layer": int(table.layer[i]),
+                "cell": cell,
+                "placed": cell >= 0,
+                "has_value": has_value,
+            }
+        )
+    body.update(sites=sites, unknown=unknown, value_reason=value_reason, reason=None, notes=notes)
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
