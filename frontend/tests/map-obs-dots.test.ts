@@ -335,6 +335,26 @@ function stubFetch(): void {
             },
           })
         }
+        case '/api/run/link/cell': {
+          const cells = (query.get('cells') ?? '').split(',').map(Number)
+          return respond({
+            status: 200,
+            body: {
+              layer: Number(query.get('layer')),
+              cells,
+              ring: [],
+              ring_rule: 'a neighbouring cell shares at least one corner with a clicked cell',
+              pars: [],
+              pars_total: 0,
+              par_notes: [],
+              sites: [],
+              sites_total: 0,
+              sites_cap: 50,
+              site_counts: { unknown_layer_included: 0, other_layer_left_out: 0, unplaced_in_run: 0 },
+              reasons: { pars: 'no parameter sets this cell', sites: 'no observation site in this cell' },
+            },
+          })
+        }
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
       }
@@ -855,7 +875,8 @@ describe('colouring the map by observations', () => {
       clickAtWorld(canvas, 1.5, 0.9)
       expect(readoutText(root)).toContain('No parameter of G1 sits on this cell.')
       expect(readoutText(root)).not.toContain('sites at this spot')
-      expect([...store.get().cells]).toEqual([1])
+      // The cells and the sites reach the store once /link/cell has answered.
+      await vi.waitFor(() => expect([...store.get().cells]).toEqual([1]))
       expect(store.get().sites.size).toBe(0)
     })
 
@@ -877,7 +898,7 @@ describe('colouring the map by observations', () => {
     it('leaves a parameter-mode click as it was: the cell, and nothing asked of /obs', async () => {
       const { root, store } = await mounted()
       clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 0.5, 0.5)
-      expect([...store.get().cells]).toEqual([0])
+      await vi.waitFor(() => expect([...store.get().cells]).toEqual([0]))
       expect(readoutText(root)).toContain('p0 (G1)')
       expect(calls).toEqual([])
     })

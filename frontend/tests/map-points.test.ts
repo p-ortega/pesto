@@ -175,6 +175,26 @@ function stubFetch(): void {
           }
           if (savedView !== null) return respond({ status: 200, body: savedView })
           throw new Error('no saved view')
+        case '/api/run/link/cell': {
+          const query = new URLSearchParams(url.split('?')[1] ?? '')
+          return respond({
+            status: 200,
+            body: {
+              layer: Number(query.get('layer')),
+              cells: (query.get('cells') ?? '').split(',').map(Number),
+              ring: [],
+              ring_rule: 'a neighbouring cell shares at least one corner with a clicked cell',
+              pars: [],
+              pars_total: 0,
+              par_notes: [],
+              sites: [],
+              sites_total: 0,
+              sites_cap: 50,
+              site_counts: { unknown_layer_included: 0, other_layer_left_out: 0, unplaced_in_run: 0 },
+              reasons: { pars: 'no parameter sets this cell', sites: 'no observation site in this cell' },
+            },
+          })
+        }
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
       }
@@ -295,7 +315,8 @@ describe('a group placed by x/y draws as dots', () => {
     const scale = 0.96 * Math.min(canvas.width, canvas.height)
     const x = canvas.width / 2 + scale * (0.75 - 0.5)
     canvas.dispatchEvent(new MouseEvent('click', { clientX: canvas.width / 2, clientY: canvas.height / 2 }))
-    expect(Array.from(store.get().cells)).toEqual([0])
+    // The cells reach the store once /link/cell has answered.
+    await vi.waitFor(() => expect(Array.from(store.get().cells)).toEqual([0]))
     canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 2, clientY: canvas.height / 2 }))
     expect(Array.from(store.get().pars)).toEqual(['pb'])
     expect(store.get().cells.size).toBe(0)
@@ -315,7 +336,8 @@ describe('a group placed by x/y draws as dots', () => {
     clickAt(dotX)
     expect(Array.from(store.get().pars)).toEqual(['pb'])
     clickAt(canvas.width / 2)
-    expect(Array.from(store.get().cells)).toEqual([0])
+    // The cells and the cell's parameters reach the store once /link/cell has answered.
+    await vi.waitFor(() => expect(Array.from(store.get().cells)).toEqual([0]))
     expect(store.get().pars.size).toBe(0)
 
     clickAt(canvas.width / 2)
