@@ -37,6 +37,7 @@ import {
   type Answer,
   type BasemapImage,
   type BasemapState,
+  type Extent,
   type InspectAnswer,
   type ReadyState,
   type RegisterRequest,
@@ -3445,11 +3446,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const basemapEl = document.createElement('div')
     topLeftEl.insertBefore(basemapEl, pickerEl)
     basemapControls = renderBasemapControls(basemapEl, {
-      onAdd: () => {},
-      onConfirm: () => {},
-      onSubmitNumbers: () => {},
-      onCancel: () => {},
-      onRemove: () => {},
+      onAdd: addBasemap,
+      onConfirm: confirmBasemap,
+      onSubmitNumbers: placeByNumbers,
+      onCancel: cancelBasemapAdd,
+      onRemove: () => void removeTheBasemap(),
       onColourChange: () => {},
       onOpacityChange: () => {},
     })
@@ -3561,6 +3562,118 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       })
     }
     redraw()
+  }
+
+  function addBasemap(): void {
+    basemapPicker?.close()
+    if (basemapAdding === null) basemapAdding = { returnTo: basemapShown, baseAtStart: basemapBase }
+    basemapPicker = openBasemapPicker(mapCanvasArea, {
+      onPick: (file) => {
+        basemapPicker = null
+        void inspectPicked(file)
+      },
+      onClose: () => {
+        basemapPicker = null
+        cancelBasemapAdd()
+      },
+    })
+  }
+
+  function endBasemapAdd(): void {
+    basemapAdding = null
+    basemapHeld = null
+    basemapInspectSlot.cancel()
+    basemapPicker?.close()
+    basemapPicker = null
+  }
+
+  function cancelBasemapAdd(): void {
+    const adding = basemapAdding
+    endBasemapAdd()
+    // The view from before Add, unless the registration changed meanwhile.
+    const back = adding !== null && adding.baseAtStart === basemapBase ? adding.returnTo : basemapBase
+    showBasemap(back.view, back.quiet)
+  }
+
+  // Add stays on screen while a file is read, so a second pick can replace a slow first one.
+  async function inspectPicked(file: { id: string; name: string }): Promise<void> {
+    basemapHeld = null
+    showBasemap({ kind: 'none' }, `reading ${file.name}`)
+    let answer: Answer<{ answer: InspectAnswer }>
+    try {
+      const result = await basemapInspectSlot.run(file.id, () => inspectBasemap(file.id))
+      if (result.stale) return
+      answer = result.value
+    } catch (error) {
+      answer = { ok: false, reason: describeError(error), code: null }
+    }
+    if (basemapAdding === null) return
+    if (!answer.ok) {
+      endBasemapAdd()
+      showBasemap({ kind: 'refused', reason: answer.reason })
+      return
+    }
+    basemapHeld = answer.answer
+    const { name, notes, modelExtent, placement } = answer.answer
+    if (placement.by === 'world_file') {
+      showBasemap({ kind: 'proposal', name, worldFile: placement.worldFile, extent: placement.extent, notes })
+    } else {
+      showBasemap({ kind: 'numbers', name, reason: placement.reason, worldFiles: placement.worldFiles, modelExtent })
+    }
+  }
+
+  function confirmBasemap(): void {
+    const held = basemapHeld
+    if (held === null || held.placement.by !== 'world_file') return
+    void placeBasemap(held, { id: held.fileId, stamp: held.stamp, by: 'world_file' })
+  }
+
+  function placeByNumbers(extent: Extent): void {
+    const held = basemapHeld
+    if (held === null) return
+    void placeBasemap(held, { id: held.fileId, stamp: held.stamp, by: 'numbers', extent })
+  }
+
+  // A refusal the four numbers can answer goes back to the form; any other ends the add.
+  const NUMBERS_CAN_ANSWER = new Set(['no_overlap', 'numbers', 'no_world_file'])
+
+  async function placeBasemap(held: InspectAnswer, request: RegisterRequest): Promise<void> {
+    // The form stays up while typed numbers are sent, so a refusal keeps what was typed.
+    if (request.by === 'world_file') showBasemap({ kind: 'busy', text: `placing ${held.name}` })
+    const result = await settleBasemapState(`register ${held.fileId}`, () => registerBasemap(request))
+    if (result === null) return
+    // A placement the server took is drawn even if the add was cancelled meanwhile.
+    if (result.ok) {
+      if (basemapHeld === held) endBasemapAdd()
+      applyBasemapState(result.state)
+      return
+    }
+    if (basemapHeld !== held) return
+    if (result.code !== null && NUMBERS_CAN_ANSWER.has(result.code)) {
+      const { name, modelExtent, placement } = held
+      const worldFiles = placement.by === 'world_file' ? [placement.worldFile] : placement.worldFiles
+      if (request.by === 'numbers') {
+        const reason = placement.by === 'numbers' ? placement.reason : result.reason
+        showBasemap({ kind: 'numbers', name, reason, worldFiles, modelExtent, error: result.reason })
+      } else {
+        showBasemap({ kind: 'numbers', name, reason: result.reason, worldFiles, modelExtent })
+      }
+      return
+    }
+    endBasemapAdd()
+    showBasemap({ kind: 'refused', reason: result.reason })
+  }
+
+  async function removeTheBasemap(): Promise<void> {
+    const before = basemapBase
+    setBasemapBase({ kind: 'busy', text: 'removing the basemap' })
+    const result = await settleBasemapState('remove', () => removeBasemap())
+    if (result === null) return
+    if (!result.ok) {
+      setBasemapBase(before.view, `the basemap could not be removed: ${result.reason}`)
+      return
+    }
+    applyBasemapState(result.state)
   }
 
   function clearBasemapImage(): void {
