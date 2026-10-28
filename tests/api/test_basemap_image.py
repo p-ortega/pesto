@@ -7,15 +7,19 @@ import pytest
 
 from pesto.basemap.imageinfo import (
     PIXEL_BUDGET,
+    SNIFF_CAP,
     TIFF_REASON,
     ImageRefusal,
     check_budget,
+    extension_note,
     format_refusal,
     image_size,
+    jpeg_orientation,
+    orientation_note,
     sniff,
 )
 
-from .basemap_images import jpeg_header_bytes, png_bytes, tiff_bytes
+from .basemap_images import exif_jpeg_header_bytes, jpeg_header_bytes, png_bytes, tiff_bytes, xmp_segment
 
 
 @pytest.mark.parametrize(
@@ -111,3 +115,80 @@ def test_the_budget_refuses_just_over_the_limit_with_both_numbers():
 def test_an_empty_image_is_refused():
     with pytest.raises(ImageRefusal):
         check_budget(0, 10)
+
+
+# ---------------------------------------------------------------------------
+# The extension note (D-17) and the EXIF orientation flag (D-36)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name, kind, note",
+    [
+        ("map.png", "png", None),
+        ("MAP.PNG", "png", None),
+        ("photo.jpg", "jpeg", None),
+        ("photo.jpeg", "jpeg", None),
+        ("scan.tif", "tiff", None),
+        ("scan.tiff", "tiff", None),
+        ("photo.jpg", "png", "named .jpg but the bytes are PNG"),
+        ("map.png", "jpeg", "named .png but the bytes are JPEG"),
+        ("scan.png", "tiff", "named .png but the bytes are TIFF"),
+        ("map", "png", "named without an extension but the bytes are PNG"),
+    ],
+)
+def test_the_extension_note_says_when_the_name_and_the_bytes_disagree(name, kind, note):
+    assert extension_note(name, kind) == note
+
+
+def test_the_sniff_cap_is_five_thousand():
+    assert SNIFF_CAP == 5000
+
+
+@pytest.mark.parametrize("order", ["II", "MM"])
+@pytest.mark.parametrize("orientation", [1, 3, 6, 8])
+def test_the_orientation_is_read_in_either_byte_order(tmp_path, order, orientation):
+    path = _file(tmp_path, exif_jpeg_header_bytes(40, 20, orientation, order))
+    assert jpeg_orientation(path) == orientation
+    assert image_size(path, "jpeg") == (40, 20)
+
+
+def test_an_xmp_segment_before_the_exif_one_is_skipped(tmp_path):
+    path = _file(tmp_path, exif_jpeg_header_bytes(40, 20, 6, before=xmp_segment()))
+    assert jpeg_orientation(path) == 6
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        jpeg_header_bytes(40, 20),
+        jpeg_header_bytes(40, 20, app1=True),
+        png_bytes(4, 4),
+        b"\xff\xd8",
+        b"",
+    ],
+)
+def test_no_exif_orientation_is_none(tmp_path, data):
+    assert jpeg_orientation(_file(tmp_path, data)) is None
+
+
+def test_a_truncated_exif_segment_is_none_not_an_error(tmp_path):
+    whole = exif_jpeg_header_bytes(40, 20, 6)
+    app1_at = whole.index(b"Exif")
+    for cut in range(app1_at - 4, app1_at + 40):
+        assert jpeg_orientation(_file(tmp_path, whole[:cut])) is None, cut
+
+
+def test_an_orientation_entry_past_the_read_limit_is_none(tmp_path):
+    padding = b"\xff\xe2" + (65533).to_bytes(2, "big") + bytes(65531)
+    path = _file(tmp_path, exif_jpeg_header_bytes(40, 20, 6, before=padding))
+    assert jpeg_orientation(path) is None
+
+
+def test_the_orientation_note_names_the_flag():
+    assert orientation_note(None) is None
+    assert orientation_note(1) is None
+    assert orientation_note(6) == (
+        "the file's rotation flag (EXIF orientation 6) is ignored; "
+        "the image is placed as stored, which is what the world file describes"
+    )

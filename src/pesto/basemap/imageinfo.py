@@ -16,6 +16,9 @@ PIXEL_BUDGET = 89_478_485
 TEXTURE_CAP = 8192
 TIFF_REASON = "TIFF and GeoTIFF basemaps are not supported yet (planned for M2)"
 SNIFF_BYTES = 16
+# Files a folder listing opens to sniff before it stops and counts the rest as not checked (D-33).
+SNIFF_CAP = 5000
+_ORIENTATION_READ = 64 * 1024
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _JPEG_SIGNATURE = b"\xff\xd8\xff"
@@ -60,11 +63,78 @@ def read_head(path: Path) -> bytes:
 
 def extension_note(name: str, kind: str) -> str | None:
     """A note when the file name's extension disagrees with its bytes (D-17)."""
-    suffix = Path(name).suffix.lower()
-    if suffix in _EXTENSIONS.get(kind, set()):
+    suffix = Path(name).suffix
+    if suffix.lower() in _EXTENSIONS.get(kind, set()):
         return None
-    shown = f"ends in {suffix}" if suffix else "has no extension"
-    return f"the name {shown} but the bytes are {_LABELS[kind]}"
+    shown = suffix or "without an extension"
+    return f"named {shown} but the bytes are {_LABELS[kind]}"
+
+
+def _exif_orientation(payload: bytes) -> int | None:
+    tiff = payload[6:]
+    if tiff[:2] == b"II":
+        end = "<"
+    elif tiff[:2] == b"MM":
+        end = ">"
+    else:
+        return None
+    if len(tiff) < 8 or struct.unpack(end + "H", tiff[2:4])[0] != 42:
+        return None
+    ifd = struct.unpack(end + "I", tiff[4:8])[0]
+    if ifd + 2 > len(tiff):
+        return None
+    count = struct.unpack(end + "H", tiff[ifd : ifd + 2])[0]
+    for i in range(count):
+        at = ifd + 2 + 12 * i
+        entry = tiff[at : at + 12]
+        if len(entry) < 12:
+            return None
+        tag, kind = struct.unpack(end + "HH", entry[:4])
+        # Orientation is a SHORT (type 3), held in the first two bytes of the value field.
+        if tag == 0x0112 and kind == 3:
+            return int(struct.unpack(end + "H", entry[8:10])[0])
+    return None
+
+
+def jpeg_orientation(path: Path) -> int | None:
+    """The EXIF orientation of a JPEG, or None when it has none or the bytes
+    run out. It only feeds a note, so it never refuses (D-36)."""
+    with open(path, "rb") as f:
+        data = f.read(_ORIENTATION_READ)
+    if not data.startswith(b"\xff\xd8"):
+        return None
+    at = 2
+    while at + 4 <= len(data):
+        if data[at] != 0xFF:
+            return None
+        marker = data[at + 1]
+        if marker == 0xFF:
+            at += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            at += 2
+            continue
+        # APP1 always comes before the frame and the scan.
+        if marker in (0xD9, 0xDA) or marker in _JPEG_SOF:
+            return None
+        length = struct.unpack(">H", data[at + 2 : at + 4])[0]
+        end = at + 2 + length
+        if length < 2 or end > len(data):
+            return None
+        payload = data[at + 4 : end]
+        if marker == 0xE1 and payload.startswith(b"Exif\x00\x00"):
+            return _exif_orientation(payload)
+        at = end
+    return None
+
+
+def orientation_note(orientation: int | None) -> str | None:
+    if orientation is None or orientation == 1:
+        return None
+    return (
+        f"the file's rotation flag (EXIF orientation {orientation}) is ignored; "
+        "the image is placed as stored, which is what the world file describes"
+    )
 
 
 def _png_size(f) -> tuple[int, int]:
