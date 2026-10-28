@@ -641,8 +641,9 @@ body {
   width: 100%;
 }
 
+/* A floor so the chosen site's spaghetti is never squeezed to a sliver. */
 .obs-spaghetti {
-  min-height: 0;
+  min-height: 10rem;
   max-height: 50%;
 }
 
