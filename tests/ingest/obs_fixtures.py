@@ -298,6 +298,7 @@ def make_obs_run(
     adjusted_weights: np.ndarray | None = None,
     with_phi: bool = False,
     nan_values: dict[int, list[tuple[str, str]]] | None = None,
+    sentinel_values: dict[int, list[tuple[str, str]]] | None = None,
 ) -> ObsRun:
     """Write a run with a real control file whose observations come from
     ``sites``, parameter ensembles for ``par_iterations`` (the same as
@@ -333,7 +334,8 @@ def make_obs_run(
     ``ObsRun.phi_values`` holds the phi per iteration and realization name.
 
     ``nan_values`` maps an iteration to ``(observation name, realization name)`` pairs whose
-    cell in that iteration's observation ensemble is written as NaN."""
+    cell in that iteration's observation ensemble is written as NaN; ``sentinel_values`` does the
+    same with MODFLOW's 1e30 dry-cell placeholder."""
     from pesto.warm import load_pyemu
     from model.fixtures import write_disv_grb
 
@@ -381,6 +383,8 @@ def make_obs_run(
         generated = sample_values(n_real, n_obs, seed=iteration + 1000)
         for obs_name, real_name in (nan_values or {}).get(iteration, ()):
             generated[real_names.index(real_name), obs_names.index(obs_name)] = np.nan
+        for obs_name, real_name in (sentinel_values or {}).get(iteration, ()):
+            generated[real_names.index(real_name), obs_names.index(obs_name)] = 1e30
         values[iteration] = generated
         names_in_file = obs_names
         file_values = generated

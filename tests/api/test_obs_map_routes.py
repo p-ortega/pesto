@@ -581,7 +581,7 @@ def test_a_failed_read_of_the_statistics_for_the_limits_is_named_not_swallowed(t
         lambda *_a, **_k: obsmap.ReadFailure(name="obs_agg/1", path="", reason="the file is short"),
     )
 
-    limits, why = obsmap._limits(state, _root(client), rows, "g_two", [0, 1])
+    limits, why, _n_sentinel = obsmap._limits(state, _root(client), rows, "g_two", [0, 1])
 
     assert all(v is None for v in limits.values())
     assert why == "the colour limits could not be made: the file is short"
@@ -668,7 +668,7 @@ def test_build_frame_takes_the_last_row_of_a_site_whatever_the_assignment_order(
     rows = next(v[1] for k, v in state.obs_memo.items() if k[1:] == ("frame_rows", "g_dup"))
     stat = np.arange(rows.stop, dtype=np.float64) * 10.0
 
-    out, n_at_time, n_hidden = obsmap.build_frame(rows, stat, 1.0)
+    out, n_at_time, n_hidden, _n_sentinel = obsmap.build_frame(rows, stat, 1.0)
 
     assert n_at_time == 1 and n_hidden == 1
     assert out[0] == np.float32(10.0 * (rows.start + 1))

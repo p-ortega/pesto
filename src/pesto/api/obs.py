@@ -35,7 +35,14 @@ from pesto.ingest.obs1to1 import (
     rms_of_mean_residual,
 )
 from pesto.ingest.obsagg import OBS_STATS, RESIDUAL_TEXT
-from pesto.ingest.obsindex import FLAG_HAS_TARGET, FLAG_WEIGHTED, SENTINEL_LIMIT
+from pesto.ingest.obsindex import (
+    FLAG_HAS_TARGET,
+    FLAG_WEIGHTED,
+    SENTINEL_LIMIT,
+    blank_sentinels,
+    sentinel_mask,
+    usable_mask,
+)
 from pesto.ingest.parhist import shared_edge_histogram
 
 router = APIRouter(prefix="/api/run")
@@ -109,8 +116,9 @@ def _unknown_site(site: int) -> Response:
 
 
 def _numbers(values: np.ndarray) -> list[float | None]:
-    """JSON-safe numbers: a finite float, or None where there is none."""
-    return [float(v) if math.isfinite(v) else None for v in np.asarray(values, dtype=np.float64)]
+    """JSON-safe numbers: a finite float, or None where there is none or it is a sentinel."""
+    array = np.asarray(values, dtype=np.float64)
+    return [float(v) if ok else None for v, ok in zip(array, usable_mask(array))]
 
 
 def _unavailable(artifact: str, reason: str) -> dict:
@@ -243,6 +251,8 @@ async def get_obs_series(request: Request, params: Annotated[ObsSeriesQuery, Que
 
     start, count = int(row["start"]), int(row["count"])
     rows = np.asarray(stored.values[start : start + count], dtype="<f4")
+    n_nan = int(np.count_nonzero(~np.isfinite(rows)))
+    rows, n_sentinel = blank_sentinels(rows)
     base_index, base_note = find_base(stored.real_names)
     meta = {
         "site_id": int(params.site),
@@ -250,7 +260,8 @@ async def get_obs_series(request: Request, params: Annotated[ObsSeriesQuery, Que
         "n_real": len(stored.real_names),
         "base_index": base_index,
         "base_note": base_note,
-        "n_nan": int(np.count_nonzero(~np.isfinite(rows))),
+        "n_nan": n_nan,
+        "n_sentinel": n_sentinel,
     }
     return blob_response(rows, meta=meta, cache_control="no-store")
 
@@ -537,6 +548,11 @@ async def get_obs_1to1(request: Request, params: Annotated[ObsGroupQuery, Query(
                 detail=f"a stored bin of group {entry['group']!r} lies outside the {n_bins} x {n_bins} grid",
             )
         body["grids"].append({**{key: int(value) for key, value in counted.items()}, "counts": counts})
+        if counted.get("n_sentinel"):
+            body["notes"].append(
+                f"iteration {counted['iteration']}: {counted['n_sentinel']} simulated value(s) are a "
+                "sentinel (a dry or no-flow placeholder) and are not drawn"
+            )
         if counted["n_outside"]:
             body["notes"].append(
                 f"iteration {counted['iteration']}: {counted['n_outside']} simulated value(s) fall "
@@ -648,12 +664,13 @@ def _build_resid_hist(state, cache_root, group: str, first: int, last: int | Non
     inequality = index.groups.loc[index.groups["group"] == group, "inequality"]
     inequality = str(inequality.iloc[0]) if len(inequality) else "none"
 
-    values, no_valid = [], {}
+    values, no_valid, n_sim_sentinel = [], {}, {}
     for slot, (_iteration, agg) in zip(("first", "last"), aggs):
         resid = np.asarray(agg.values[_RESID_ROW, start:stop], dtype=np.float64)[target]
-        finite = np.isfinite(resid)
+        finite = usable_mask(resid)
         values.append(resid[finite])
         no_valid[slot] = int((~finite).sum())
+        n_sim_sentinel[slot] = int(np.count_nonzero(sentinel_mask(resid) & np.isfinite(resid)))
     pair = {"first": no_valid["first"], "last": no_valid.get("last")}
 
     body = {
@@ -685,6 +702,11 @@ def _build_resid_hist(state, cache_root, group: str, first: int, last: int | Non
             f"({n_sentinel} sentinel, {n_no_value} without a numeric value) and are left out"
         )
     for (iteration, _agg), slot in zip(aggs, ("first", "last")):
+        if n_sim_sentinel[slot]:
+            notes.append(
+                f"iteration {iteration}: {n_sim_sentinel[slot]} observation(s) have a sentinel "
+                "residual (a dry or no-flow placeholder) and are left out"
+            )
         if no_valid[slot]:
             notes.append(
                 f"iteration {iteration}: {no_valid[slot]} observation(s) have no valid realization "

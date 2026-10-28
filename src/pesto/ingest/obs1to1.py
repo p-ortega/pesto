@@ -30,7 +30,13 @@ from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.obsagg import OBS_STATS, load_obs_agg
 from pesto.ingest.obsens import load_obs_ensemble
-from pesto.ingest.obsindex import FLAG_HAS_TARGET, FLAG_WEIGHTED, load_obs_index
+from pesto.ingest.obsindex import (
+    FLAG_HAS_TARGET,
+    FLAG_WEIGHTED,
+    load_obs_index,
+    sentinel_mask,
+    usable_mask,
+)
 from pesto.ingest.parhist import identical_values_reason
 from pesto.ingest.parview import _fail, _read_json
 from pesto.ingest.tables import _write_parquet_atomic
@@ -82,12 +88,12 @@ def one_to_one_range(
     """``(lo, hi)`` for one group, or the sentence saying why there is none.
 
     The pool is the observed values and the 5th and 95th percentile of every
-    iteration; non-finite entries are ignored. The range is the 1st to 99th
+    iteration; non-finite entries and sentinels are ignored. The range is the 1st to 99th
     percentile of the pool, widened by 5 percent of its span on each side."""
     pool = np.concatenate(
         [np.asarray(v, dtype=np.float64).ravel() for v in (obsval, q_low, q_high)]
     )
-    pool = pool[np.isfinite(pool)]
+    pool = pool[usable_mask(pool)]
     if pool.size == 0:
         return "this group holds no value to draw"
     low, high = (float(v) for v in np.percentile(pool, RANGE_PERCENTILES))
@@ -110,13 +116,14 @@ def bin_pairs(
     inner edge counts in the bin to its right and ``hi`` counts in the last bin.
     ``n_points`` is every finite pair; those off the grid are ``n_outside`` and
     are not in ``counts``. ``n_no_valid`` rows have no finite value at all, and
-    ``n_nonfinite`` counts the missing values inside the other rows."""
+    ``n_nonfinite`` counts the missing values inside the other rows. A sentinel
+    simulated value is missing here, like NaN, and does not count as a point."""
     edges = np.linspace(lo, hi, n_bins + 1)
     x = np.asarray(obsval, dtype=np.float64).ravel()
     y = np.asarray(block, dtype=np.float64)
     if y.ndim != 2 or y.shape[0] != x.shape[0]:
         raise ValueError("block must hold one row for each observed value")
-    finite = np.isfinite(y)
+    finite = usable_mask(y)
     n_points = int(finite.sum())
     n_no_valid = int((~finite.any(axis=1)).sum()) if y.shape[1] else int(y.shape[0])
     n_nonfinite = int((~finite).sum()) - n_no_valid * y.shape[1]
@@ -136,7 +143,7 @@ def rms_of_mean_residual(resid: np.ndarray) -> tuple[float | None, int]:
     """``RMSE_RULE`` over the finite entries of ``resid``, and how many there
     were; ``(None, 0)`` when there is none."""
     values = np.asarray(resid, dtype=np.float64).ravel()
-    values = values[np.isfinite(values)]
+    values = values[usable_mask(values)]
     if values.size == 0:
         return None, 0
     return float(np.sqrt(np.mean(values**2))), int(values.size)
@@ -159,7 +166,7 @@ def rank_outlying(
     if ids.size == 0 or limit <= 0:
         return []
     resid = np.asarray(resid_last, dtype=np.float64)
-    finite = np.isfinite(resid)
+    finite = usable_mask(resid)
     squares = np.append(np.where(finite, resid, 0.0) ** 2, 0.0)
     valid = np.append(finite.astype(np.float64), 0.0)
     # A pair of bounds per site; every second sum is the gap between two sites and is dropped.
@@ -206,6 +213,7 @@ def _iteration_counts(
     n_bins = OBS_1TO1_BINS
     grid = np.zeros((n_bins, n_bins), dtype=np.int64)
     totals = [0, 0, 0, 0]
+    n_sentinel = 0
     step = max(1, _CHUNK_BYTES // (4 * max(int(stored.values.shape[1]), 1)))
     for chunk in range(start, stop, step):
         end = min(chunk + step, stop)
@@ -216,7 +224,8 @@ def _iteration_counts(
         counts, *numbers = bin_pairs(obsval[picked], block, lo, hi, n_bins)
         grid += counts
         totals = [a + b for a, b in zip(totals, numbers)]
-    return grid, totals
+        n_sentinel += int(np.count_nonzero(sentinel_mask(block) & np.isfinite(block)))
+    return grid, totals, n_sentinel
 
 
 def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifact | ReadFailure:
@@ -282,6 +291,7 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
         outside_total = [0] * len(iterations)
         nonfinite_total = [0] * len(iterations)
         no_valid_total = [0] * len(iterations)
+        sentinel_total = [0] * len(iterations)
         refused_groups = 0
         for group, start, stop in bounds:
             flags = index.flags[start:stop]
@@ -325,8 +335,8 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
             entry["lo"], entry["hi"] = lo, hi
 
             for slot, (iteration, stored) in enumerate(zip(iterations, ensembles)):
-                grid, (n_points, n_outside, n_no_valid, n_nonfinite) = _iteration_counts(
-                    stored, start, stop, rows, value, lo, hi
+                grid, (n_points, n_outside, n_no_valid, n_nonfinite), n_sim_sentinel = (
+                    _iteration_counts(stored, start, stop, rows, value, lo, hi)
                 )
                 entry["iterations"].append(
                     {
@@ -335,8 +345,10 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
                         "n_outside": n_outside,
                         "n_no_valid": n_no_valid,
                         "n_nonfinite": n_nonfinite,
+                        "n_sentinel": n_sim_sentinel,
                     }
                 )
+                sentinel_total[slot] += n_sim_sentinel
                 outside_total[slot] += n_outside
                 nonfinite_total[slot] += n_nonfinite
                 no_valid_total[slot] += n_no_valid
@@ -394,6 +406,12 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
                 notes.append(
                     f"iteration {iteration}: {outside_total[slot]} simulated value(s) fall outside "
                     "the drawn range; they are counted per group and not drawn"
+                )
+            if sentinel_total[slot]:
+                notes.append(
+                    f"iteration {iteration}: {sentinel_total[slot]} simulated value(s) are a "
+                    "sentinel (a dry or no-flow placeholder); they are counted per group as "
+                    "n_sentinel, are not in any bin and do not set the range"
                 )
             if no_valid_total[slot]:
                 notes.append(

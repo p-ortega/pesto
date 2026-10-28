@@ -29,6 +29,7 @@ from pesto.api.tables import arrow_response
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.failures import ReadFailure
+from pesto.ingest.obsindex import sentinel_mask, usable_mask
 
 router = APIRouter(prefix="/api/run")
 
@@ -397,12 +398,13 @@ async def get_obs_sites(request: Request, params: Annotated[ObsMapGroupQuery, Qu
 
 def _limits(
     state, cache_root, rows: GroupRows, group: str, ends: list[int]
-) -> tuple[dict, str | None]:
-    """Colour limits per statistic, pooled over every row of the group in both ends, and the
-    reason they could not be made when they could not."""
+) -> tuple[dict, str | None, int]:
+    """Colour limits per statistic, pooled over every row of the group in both ends, the
+    reason they could not be made when they could not, and how many sentinel statistics
+    were left out of them (the most any one statistic had)."""
     unknown = {stat: None for stat in STATS}
     if not ends:
-        return unknown, NO_LIMITS_REASON
+        return unknown, NO_LIMITS_REASON, 0
     first, last = ends[0], ends[-1]
     names = tuple(dict.fromkeys(("obs_index", f"{AGG_PREFIX}{first}", f"{AGG_PREFIX}{last}")))
 
@@ -412,6 +414,7 @@ def _limits(
             if isinstance(agg, ReadFailure):
                 return agg
         out: dict = {}
+        n_sentinel = 0
         for stat in STATS:
             pooled = np.concatenate(
                 [
@@ -419,7 +422,8 @@ def _limits(
                     for agg in aggs
                 ]
             )
-            pooled = pooled[np.isfinite(pooled)]
+            n_sentinel = max(n_sentinel, int(np.count_nonzero(sentinel_mask(pooled) & np.isfinite(pooled))))
+            pooled = pooled[usable_mask(pooled)]
             if pooled.size == 0:
                 out[stat] = None
             elif stat == "resid_mean":
@@ -428,12 +432,13 @@ def _limits(
             else:
                 lo, hi = np.percentile(pooled, [2, 98])
                 out[stat] = [float(lo), float(hi)]
-        return out
+        return out, n_sentinel
 
-    limits = obscache.memoised(state, cache_root, ("limits", group, first, last), names, build)
-    if isinstance(limits, ReadFailure):
-        return unknown, f"the colour limits could not be made: {_reason(limits)}"
-    return limits, None
+    made = obscache.memoised(state, cache_root, ("limits", group, first, last), names, build)
+    if isinstance(made, ReadFailure):
+        return unknown, f"the colour limits could not be made: {_reason(made)}", 0
+    limits, n_sentinel = made
+    return limits, None, n_sentinel
 
 
 @router.get("/obs/times")
@@ -477,7 +482,12 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     if rows.refused is not None:
         limits, limits_refused = {stat: None for stat in STATS}, None
     else:
-        limits, limits_refused = _limits(state, cache_root, rows, params.group, ends)
+        limits, limits_refused, n_sentinel = _limits(state, cache_root, rows, params.group, ends)
+        if n_sentinel:
+            notes.append(
+                f"{n_sentinel} statistic value(s) of this group are a sentinel (a dry or no-flow "
+                "placeholder, not a number) and are left out of the colour limits"
+            )
     body = {
         "group": params.group,
         "order_digest": index.order_digest,
@@ -498,10 +508,11 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
 
 def build_frame(
     rows: GroupRows, stat_values: np.ndarray, time: float
-) -> tuple[np.ndarray, int, int] | None:
+) -> tuple[np.ndarray, int, int, int] | None:
     """The statistic of every site of the group at exactly ``time``, NaN where a site has
-    no observation then, how many sites have one, and how many rows lost to a later row of
-    the same site at this time. None when the group has no such time.
+    no observation then or its value is a sentinel, how many sites have one, how many rows
+    lost to a later row of the same site at this time, and how many sites show a sentinel.
+    None when the group has no such time.
 
     A site with two rows at one time shows the last of them in index order; the readout
     uses the same rule."""
@@ -516,7 +527,9 @@ def build_frame(
     last = (hi - lo - 1) - first_from_end
     out = np.full(rows.n_sites, np.nan, dtype=np.float32)
     out[site_ids] = stat_values[chosen[last]]
-    return out, int(rows.n_at_time[k]), int((hi - lo) - site_ids.size)
+    n_sentinel = int(np.count_nonzero(sentinel_mask(out) & np.isfinite(out)))
+    out[~usable_mask(out)] = np.nan
+    return out, int(rows.n_at_time[k]), int((hi - lo) - site_ids.size), n_sentinel
 
 
 @router.get("/obs/frame")
@@ -557,7 +570,7 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
     built = build_frame(rows, agg.values[agg.stats.index(params.stat)], params.time)
     if built is None:
         return problem(404, "no observation at that time", artifact="obs_index", detail=NO_NEAREST_TEXT)
-    values, n_at_time, n_rows_hidden = built
+    values, n_at_time, n_rows_hidden, n_sentinel = built
     meta = {
         "group": params.group,
         "iteration": int(params.iteration),
@@ -567,6 +580,7 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
         "n_sites": rows.n_sites,
         "n_at_time": n_at_time,
         "n_rows_hidden": n_rows_hidden,
+        "n_sentinel": n_sentinel,
         "n_finite": int(np.count_nonzero(np.isfinite(values))),
     }
     return blob_response(values, meta=meta, cache_control="no-store")
