@@ -16,15 +16,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Union
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import FileResponse, JSONResponse, Response
 
 from pesto.api.fs import _issue_id, _resolves_inside
@@ -106,6 +107,7 @@ def list_images(request: Request, directory_id: str = Query(..., alias="id")) ->
     folders: list[dict[str, object]] = []
     files: list[dict[str, object]] = []
     skipped = {"other_files": 0, "not_checked": 0, "unreadable": 0}
+    sniffed = 0
     for entry in entries:
         try:
             inside = _resolves_inside(parent, Path(entry.path))
@@ -128,6 +130,10 @@ def list_images(request: Request, directory_id: str = Query(..., alias="id")) ->
         if not is_file:
             skipped["other_files"] += 1
             continue
+        if sniffed >= imageinfo.SNIFF_CAP:
+            skipped["not_checked"] += 1
+            continue
+        sniffed += 1
         try:
             kind = imageinfo.sniff(imageinfo.read_head(Path(entry.path)))
         except OSError:
@@ -146,11 +152,50 @@ class _InspectBody(BaseModel):
     id: str
 
 
-class _RegisterBody(BaseModel):
+class _ByWorldFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     stamp: str
     by: Literal["world_file"]
+
+
+class _ByNumbers(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    stamp: str
+    by: Literal["numbers"]
+    # Loose on purpose: _check_numbers gives each bad value a plain reason.
+    extent: list[Any]
+
+
+_RegisterBody = Annotated[Union[_ByWorldFile, _ByNumbers], Field(discriminator="by")]
+
+_NUMBER_LIMIT = 1e12
+
+
+def _check_numbers(extent: list[Any]) -> tuple[float, float, float, float] | str:
+    """The four typed numbers as float64, or the reason they cannot place an image."""
+    if len(extent) != 4:
+        return f"the placement needs four numbers (x min, x max, y min, y max); {len(extent)} were sent"
+    values = []
+    for raw in extent:
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return "each placement value must be a number"
+        try:
+            value = float(raw)
+        except OverflowError:
+            return "each number must be within 1e12 of zero"
+        if not math.isfinite(value):
+            return "each number must be finite"
+        if abs(value) > _NUMBER_LIMIT:
+            return "each number must be within 1e12 of zero"
+        values.append(value)
+    xmin, xmax, ymin, ymax = values
+    if not xmin < xmax:
+        return "x min must be less than x max"
+    if not ymin < ymax:
+        return "y min must be less than y max"
+    return xmin, xmax, ymin, ymax
 
 
 @dataclass(frozen=True)
@@ -192,38 +237,42 @@ def _overlaps(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
 
 def _place(
     path: Path, kind: str, width: int, height: int, model_extent
-) -> tuple[dict, os.stat_result | None] | JSONResponse:
+) -> tuple[dict, str | None, os.stat_result | None] | JSONResponse:
     """The placement a world file gives, or the four-number form with the
-    reason. A rotated or mirrored world file refuses the image outright: it
-    says the image is not north-up, so typed numbers would ignore it."""
+    reason, plus the one world file looked at and its stat for the stamp. A
+    rotated or mirrored world file refuses the image outright: it says the
+    image is not north-up, so typed numbers would ignore it."""
     try:
         names = worldfile.find_world_files(path, kind)
     except WorldFileRefusal as refusal:
-        return _numbers(refusal.reason, []), None
+        return _numbers(refusal.reason, []), None, None
     if not names:
-        return _numbers(NO_WORLD_FILE_REASON, []), None
+        return _numbers(NO_WORLD_FILE_REASON, []), None, None
     if len(names) > 1:
         listed = ", ".join(names)
         return _numbers(
             f"{len(names)} world files were found next to the image ({listed}); pesto does not pick one",
             names,
-        ), None
+        ), None, None
 
     name = names[0]
     wf_path = path.parent / name
     try:
         wf_stat = wf_path.stat()
+    except OSError as exc:
+        return _numbers(f"the world file {name} could not be read: {exc.strerror}", [name]), name, None
+    try:
         wf = worldfile.parse_world_file(wf_path)
         extent = worldfile.corners(wf, width, height)
     except OSError as exc:
-        return _numbers(f"the world file {name} could not be read: {exc.strerror}", [name]), None
+        return _numbers(f"the world file {name} could not be read: {exc.strerror}", [name]), name, wf_stat
     except WorldFileRefusal as refusal:
         if refusal.code in ("rotated", "mirrored"):
             return _refuse(422, refusal.code, refusal.reason, detail=f"the world file is {name}")
-        return _numbers(refusal.reason, [name]), None
+        return _numbers(refusal.reason, [name]), name, wf_stat
     if not _overlaps(extent, model_extent):
-        return _numbers(NO_OVERLAP_REASON, [name]), None
-    return {"by": "world_file", "world_file": name, "extent": list(extent)}, wf_stat
+        return _numbers(NO_OVERLAP_REASON, [name]), name, wf_stat
+    return {"by": "world_file", "world_file": name, "extent": list(extent)}, name, wf_stat
 
 
 def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
@@ -259,7 +308,13 @@ def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
     except OSError as exc:
         return _refuse(403, "unreadable", "that file cannot be read", detail=str(exc))
 
-    notes = [n for n in (imageinfo.extension_note(path.name, kind),) if n]
+    notes = [imageinfo.extension_note(path.name, kind)]
+    if kind == "jpeg":
+        try:
+            notes.append(imageinfo.orientation_note(imageinfo.jpeg_orientation(path)))
+        except OSError:
+            pass  # The flag only adds a note; the size read above already proved the file opens.
+    notes = [n for n in notes if n]
 
     model_extent = load_mesh_extent(layout)
     if isinstance(model_extent, ReadFailure):
@@ -268,10 +323,11 @@ def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
     placed = _place(path, kind, width, height, model_extent)
     if isinstance(placed, JSONResponse):
         return placed
-    placement, wf_stat = placed
+    placement, wf_name, wf_stat = placed
     wf_size = wf_stat.st_size if wf_stat is not None else None
     wf_mtime = wf_stat.st_mtime_ns if wf_stat is not None else None
-    stamp = _digest(path, st.st_size, st.st_mtime_ns, placement.get("world_file"), wf_size, wf_mtime)
+    # Stamp the world file even when it did not place the image, so an edit to it after inspect is caught.
+    stamp = _digest(path, st.st_size, st.st_mtime_ns, wf_name, wf_size, wf_mtime)
     return _Inspection(
         path=path,
         size=st.st_size,
@@ -317,9 +373,25 @@ def register_basemap(request: Request, body: _RegisterBody) -> Response:
     if isinstance(found, JSONResponse):
         return found
     if found.stamp != body.stamp:
-        return _refuse(409, "changed", "the image or its world file changed since it was inspected; inspect it again")
-    if found.placement["by"] != "world_file":
-        return _refuse(409, "no_world_file", "this image has no world file pesto can use", detail=found.placement["reason"])
+        return _refuse(409, "changed", "the file changed after it was inspected; add it again")
+
+    if isinstance(body, _ByNumbers):
+        extent = _check_numbers(body.extent)
+        if isinstance(extent, str):
+            return _refuse(422, "numbers", extent)
+        if not _overlaps(extent, found.model_extent):
+            return _refuse(422, "no_overlap", NO_OVERLAP_REASON)
+        placed_by, world_file, wf_size, wf_mtime = "numbers", None, None, None
+    else:
+        # The placement is the one just re-read from disk, never one the browser holds.
+        placement = found.placement
+        if placement["by"] != "world_file":
+            if placement["reason"] == NO_OVERLAP_REASON:
+                return _refuse(422, "no_overlap", NO_OVERLAP_REASON, detail=f"the world file is {placement['world_files'][0]}")
+            return _refuse(409, "no_world_file", "this image has no world file pesto can use", detail=placement["reason"])
+        extent = tuple(placement["extent"])
+        placed_by, world_file = "world_file", placement["world_file"]
+        wf_size, wf_mtime = found.world_file_size, found.world_file_mtime_ns
 
     layout, run_dir = _open(request)
     if store.store_inside(run_dir, layout.root):
@@ -336,11 +408,11 @@ def register_basemap(request: Request, body: _RegisterBody) -> Response:
         "format": found.kind,
         "width": found.width,
         "height": found.height,
-        "extent": found.placement["extent"],
-        "placed_by": "world_file",
-        "world_file": found.placement["world_file"],
-        "world_file_size": found.world_file_size,
-        "world_file_mtime_ns": found.world_file_mtime_ns,
+        "extent": list(extent),
+        "placed_by": placed_by,
+        "world_file": world_file,
+        "world_file_size": wf_size,
+        "world_file_mtime_ns": wf_mtime,
         "notes": list(found.notes),
     }
     record["tag"] = _digest(json.dumps(record, sort_keys=True))
@@ -374,7 +446,40 @@ def basemap_state(request: Request) -> Response:
                 "extent": None,
             }
         )
+    stale = store.check_source(record)
+    if stale is not None:
+        # Reported, never re-placed: the record stays until the user removes it (D-24).
+        return JSONResponse(
+            {
+                "status": "unavailable",
+                "reason": stale,
+                "name": Path(record["source"]).name,
+                "placed_by": record["placed_by"],
+                "extent": record["extent"],
+            }
+        )
     return JSONResponse(_state(record))
+
+
+@router.post("/remove")
+def remove_basemap(request: Request) -> Response:
+    opened = _open(request)
+    if opened is None:
+        return _no_run()
+    layout, run_dir = opened
+    if store.store_inside(run_dir, layout.root):
+        return _refuse(
+            409,
+            "store_inside_run",
+            "the basemap store would sit inside the run folder or its cache, so nothing was removed",
+        )
+    try:
+        store.remove_registration(run_dir)
+    except store.StoreLinkError:
+        return _refuse(409, "store_link", "the basemap store folder is a link, so nothing was removed")
+    except OSError as exc:
+        return _refuse(500, "store", "the basemap could not be removed", detail=str(exc))
+    return JSONResponse({"status": "none"})
 
 
 class _ImageQuery(RunQuery):
@@ -401,6 +506,9 @@ def basemap_image(request: Request, params: Annotated[_ImageQuery, Query()]) -> 
         return _refuse(404, "none", "no basemap is registered for this run")
     if isinstance(record, store.StoreFailure):
         return _refuse(409, "unavailable", _unreadable_record(record))
+    stale = store.check_source(record)
+    if stale is not None:
+        return _refuse(409, "unavailable", stale)
 
     source = Path(record["source"])
     try:
