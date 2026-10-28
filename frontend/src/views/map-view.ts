@@ -32,6 +32,7 @@ import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } fro
 import type { RealNamesResult } from '../data/reals'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
+import { renderTimeSlider, type TimeSliderHandle } from '../ui/time-slider'
 import { formatTimeValue } from '../ui/charts/time-axis'
 import {
   isObsStat,
@@ -487,6 +488,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const obsSource = createObservationStatSource({ runId: opts.state.runId ?? null })
   const loadObsGroups = shareRead(() => fetchObsGroups())
   let obsControls: ObsColourControlsHandle | null = null
+  let obsSlider: TimeSliderHandle | null = null
+  // The slider may be stepped only once the group it shows has its times and dots.
+  let obsTimeReady = false
+  // The time index of the frame on screen; null while no frame is.
+  let obsDrawnIndex: number | null = null
+  let obsStepSerial = 0
+  // Legend lines that hold at every time; the carry sentences are dropped on a slider step.
+  let obsStaticNotes: string[] = []
   // True while the dots own the layer; a parameter field must not draw over them.
   let obsActive = false
   // The iteration has no statistics: the parameter colouring is back and a notice says why.
@@ -625,12 +634,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       markFrame({
         selection: selectionLabel(committed),
         layer: committed.layer,
-        group: drawnGroup,
+        group: obsActive ? obsGroupInUse : drawnGroup,
         colormap: committed.colormap,
         reverse: committed.reverseColormap,
         scale: committed.scale,
         limits: committed.limitsMode,
         iteration: committed.iteration,
+        ...(obsActive && obsDrawnIndex !== null ? { timeIdx: obsDrawnIndex } : {}),
       })
     }
   }
@@ -1826,6 +1836,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer.setInactive(obsInactiveMask(active))
     layer.setPoints(new Float32Array(0), new Float32Array(0))
     obsDotsKey = ''
+    obsDrawnIndex = null
     selectedPointRow = null
     layer.setSelectedPoint(null)
     if (fresh) renderObsLegend(legendEl, null)
@@ -1838,6 +1849,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsDotsKey = ''
     obsPick = null
     obsPickedRows = []
+    obsDrawnIndex = null
     layer?.setPoints(new Float32Array(0), new Float32Array(0))
     layer?.setSelectedPoint(null)
     renderObsLegend(legendEl, null)
@@ -1856,6 +1868,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsDotsKey = ''
     obsPick = null
     obsPickedRows = []
+    obsDrawnIndex = null
+    obsTimeReady = false
+    obsStepSerial += 1
+    obsSlider?.hide()
     mapCanvasArea.classList.remove('colour-obs')
     if (!layer) return
     layer.setMissingStyle('discard')
@@ -2048,6 +2064,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const groupChanged = group !== obsGroupInUse
     obsGroupInUse = group
     if (groupChanged) {
+      // The old group's times must not be steppable while the new group loads.
+      obsTimeReady = false
+      obsSlider?.hide()
       obsLayerMoved = null
       obsPick = null
       obsPickedRows = []
@@ -2081,37 +2100,49 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const times = data.times.times
     const kind = data.times.time_kind
     const notes: string[] = []
+    const timeNotes: string[] = []
     let index = -1
     if (data.times.refused !== null) {
       showObsNotice(`${group} has no time axis`, `obs_index: ${data.times.refused}`)
+      obsSlider?.refuse(data.times.refused)
     } else if (times.length === 0) {
       showObsNotice(`${group} has no time to show`, 'obs_index: no observation of this group has a finite time.')
+      obsSlider?.refuse('no observation of this group has a finite time')
     } else {
-      const wanted = selection.timeIdx
+      // Read now, not from the snapshot: the slider may have moved while the group loaded.
+      const wanted = store.get().timeIdx
       const wantedOk = Number.isInteger(wanted) && wanted >= 0 && wanted < times.length
       if (obsTimePos !== null && groupChanged) {
         const carried = carryTime(obsTimePos, { kind, times }, formatTimeValue)
         index = carried.index
-        if (carried.note !== null) notes.push(carried.note)
+        if (carried.note !== null) timeNotes.push(carried.note)
       } else if (wantedOk) {
         index = wanted
       } else {
         index = 0
-        notes.push(`the slider position ${wanted} is not a time of this group, so the first time is shown`)
+        timeNotes.push(`the slider position ${wanted} is not a time of this group, so the first time is shown`)
       }
       obsTimePos = { kind, times, index }
-      if (index !== selection.timeIdx) store.set({ timeIdx: index }, 'map')
+      if (index !== wanted) store.set({ timeIdx: index }, 'map')
+      obsSlider?.show(times, kind, data.times.steps_by, index, timeNotes.length > 0 ? timeNotes.join('. ') : null, group)
+      obsTimeReady = true
+      obsStepSerial += 1
     }
 
     let frame: Float32Array
     if (index >= 0) {
+      if (obsSource.frames.get(obsSource.frames.key(group, iteration, times[index], stat)) === undefined) {
+        obsSlider?.setStatus('reading this time…')
+      }
       const answer = await obsSource.frames.want(group, iteration, times, index, stat)
       if (serial !== obsSerial || answer.stale) return
       if ('failed' in answer) {
         showObsNotice(`${answer.failed.artifact} could not be read for ${group}`, answer.failed.reason)
+        obsSlider?.setStatus(`${answer.failed.artifact}: ${answer.failed.reason}`)
         clearObsDots()
         return
       }
+      obsSlider?.setStatus(null)
       frame = answer.values
     } else {
       frame = new Float32Array(data.rows.length).fill(Number.NaN)
@@ -2141,6 +2172,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsDotsKey = key
     obsDots = dots
     obsFrame = frame
+    obsDrawnIndex = index >= 0 ? index : null
     redraw()
 
     if (obsAllLayers) {
@@ -2149,19 +2181,79 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (unknown > 0) notes.push(`${sitesText(unknown)} with an unknown layer drawn because all layers is on`)
     }
     for (const note of data.times.notes) notes.push(note)
+    obsStaticNotes = notes
+    paintObsLegend(frame, index, timeNotes)
+    refreshObsPick()
+  }
+
+  // Everything but the time comes from what the last full draw left in place.
+  function paintObsLegend(frame: Float32Array, index: number, timeNotes: string[]): void {
+    const data = obsData
+    const dots = obsDots
+    if (data === null || dots === null) return
+    const times = data.times.times
     renderObsLegend(legendEl, {
-      group,
-      stat,
-      iteration,
-      limits,
+      group: data.group,
+      stat: obsStat,
+      iteration: obsIteration,
+      limits: data.times.limits[obsStat],
       limitsRule: data.times.limits_rule,
-      timeText: index >= 0 ? formatTimeValue(kind, times[index]) : 'no time to show',
+      timeText: index >= 0 ? formatTimeValue(data.times.time_kind, times[index]) : 'no time to show',
       counts: dots.counts,
       atTime: index >= 0 ? countsAtTime(frame, dots, data.times.n_at_time[index] ?? 0) : null,
       layerMoved: obsLayerMoved === committed.layer ? obsLayerMoved : null,
-      notes,
+      notes: [...timeNotes, ...obsStaticNotes],
     })
+  }
+
+  // A frame for the time the slider shows: dot positions stay, only values change.
+  function paintObsFrame(frame: Float32Array, index: number): void {
+    const data = obsData
+    const dots = obsDots
+    if (!layer || data === null || dots === null) return
+    layer.setPointValues(valuesForDots(frame, dots))
+    obsFrame = frame
+    obsTimePos = { kind: data.times.time_kind, times: data.times.times, index }
+    obsDrawnIndex = index
+    redraw()
+    obsSlider?.setStatus(null)
+    paintObsLegend(frame, index, [])
     refreshObsPick()
+  }
+
+  // D-29: a held frame draws at once with no request; the window around it is kept prefetched.
+  function stepObsTime(index: number): void {
+    const data = obsData
+    const position = obsTimePos
+    if (!obsTimeReady || !obsActive || obsParked || data === null || obsDots === null || position === null) return
+    const times = data.times.times
+    if (!Number.isInteger(index) || index < 0 || index >= times.length) return
+    store.set({ timeIdx: index }, 'time-slider')
+    const step = ++obsStepSerial
+    const iteration = obsIteration
+    const stat = obsStat
+    const frames = obsSource.frames
+    const held = frames.get(frames.key(data.group, iteration, times[index], stat))
+    const stillWanted = (): boolean => step === obsStepSerial && obsActive && obsData === data
+    if (held !== undefined) {
+      paintObsFrame(held, index)
+      void frames.want(data.group, iteration, times, index, stat).catch(() => undefined)
+      return
+    }
+    obsSlider?.setStatus('reading this time…')
+    frames.want(data.group, iteration, times, index, stat).then(
+      (answer) => {
+        if (answer.stale || !stillWanted()) return
+        if ('failed' in answer) {
+          obsSlider?.setStatus(`${answer.failed.artifact}: ${answer.failed.reason}`)
+          return
+        }
+        paintObsFrame(answer.values, index)
+      },
+      (error: unknown) => {
+        if (stillWanted()) obsSlider?.setStatus(describeError(error))
+      },
+    )
   }
 
   function followColour(next: SharedSelection): void {
@@ -2181,7 +2273,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   function followObsTime(origins: ReadonlySet<string>): void {
-    if (origins.size === 1 && origins.has('map')) return
+    // The map's own writes are already drawn; so is a slider step.
+    if ([...origins].every((origin) => origin === 'map' || origin === 'time-slider')) return
     if (store.get().colour.source === 'obs') void drawObservations()
   }
 
@@ -2487,8 +2580,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // Only a run that recorded observations offers the switch; the Obs tab says why when it did not.
     const obsCapability = opts.state.capabilities.obs
     if (obsCapability !== undefined && obsCapability.available) {
+      const sliderEl = document.createElement('div')
+      topLeftEl.insertBefore(sliderEl, pickerEl)
+      obsSlider = renderTimeSlider(sliderEl, { onChange: stepObsTime })
       const colourEl = document.createElement('div')
-      topLeftEl.insertBefore(colourEl, pickerEl)
+      topLeftEl.insertBefore(colourEl, sliderEl)
       obsControls = renderObsColourControls(colourEl, {
         store,
         loadGroups: loadObsGroups,
