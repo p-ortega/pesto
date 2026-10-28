@@ -23,6 +23,7 @@ import {
   type ParValuesResult,
 } from '../data/par'
 import { isDimmed } from '../data/dim'
+import { fetchAtBounds, type AtBoundsResult } from '../data/overlays'
 import { modeOf } from '../state/modifiers'
 import { selectPars } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
@@ -428,7 +429,56 @@ function groupCell(column: string, text: string, title: string, extraClasses: st
   return cell
 }
 
-type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp' | 'sigma'
+// The at-bounds counts for one iteration, from /par/at_bounds (D-25 to D-27).
+type AtBoundsState =
+  | { kind: 'idle' }
+  | { kind: 'loading'; iteration: number }
+  | { kind: 'ready'; iteration: number; result: AtBoundsResult }
+
+const AT_BOUNDS_IDLE = 'the at-bounds counts are not loaded'
+
+// Why the whole column has no figure, or null when the answer carries counts.
+function atBoundsWhyNot(state: AtBoundsState): string | null {
+  if (state.kind === 'idle') return AT_BOUNDS_IDLE
+  if (state.kind === 'loading') return null
+  const { result } = state
+  if (!result.ok) return `${result.artifact}: ${result.reason}`
+  if (!result.answer.available) return result.answer.reason ?? 'the at-bounds counts are not available for this iteration'
+  return null
+}
+
+function excludedText(counts: Record<string, number>): string {
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0)
+  const kinds = Object.entries(counts)
+    .filter(([, n]) => n > 0)
+    .map(([kind, n]) => `${kind.replace(/_/g, ' ')} ${n}`)
+  return kinds.length === 0 ? `${total} excluded` : `${total} excluded: ${kinds.join(', ')}`
+}
+
+function atBoundsFigure(state: AtBoundsState, group: string): FigureCell & { value: number | null } {
+  if (state.kind === 'loading') return { text: '…', title: 'Loading the at-bounds counts', value: null }
+  const why = atBoundsWhyNot(state)
+  if (why !== null || state.kind !== 'ready' || !state.result.ok) return { text: NO_FIGURE, title: why ?? '', value: null }
+  const { answer } = state.result
+  const found = answer.groups.find((entry) => entry.group === group)
+  if (found === undefined) return { text: NO_FIGURE, title: 'the at-bounds answer has no row for this group', value: null }
+  return {
+    text: String(found.nAtBounds),
+    title: `${answer.rule} ${answer.caveat} ${excludedText(found.nExcluded)}`,
+    value: found.nAtBounds,
+  }
+}
+
+function atBoundsHeading(state: AtBoundsState): { label: string; title: string } {
+  if (state.kind === 'idle') return { label: 'At bounds', title: '' }
+  const label = `At bounds, iteration ${state.iteration}`
+  if (state.kind === 'loading') return { label, title: 'Loading the at-bounds counts' }
+  const why = atBoundsWhyNot(state)
+  if (why !== null) return { label, title: why }
+  return state.result.ok ? { label, title: `${state.result.answer.rule} ${state.result.answer.caveat}` } : { label, title: '' }
+}
+
+type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp' | 'sigma' | 'at_bounds'
 type SortDirection = 'ascending' | 'descending'
 
 const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
@@ -439,12 +489,15 @@ const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
   { column: 'pesto', label: 'Mean change, pesto' },
   { column: 'pestpp', label: 'Mean change, pestpp' },
   { column: 'sigma', label: 'Sigma ratio' },
+  { column: 'at_bounds', label: 'At bounds' },
 ]
 
 // What a column sorts on. null is "no value" and always sorts last; a layer
 // given as "several" sorts after every numbered layer.
-function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
+function sortValue(row: ParGroupRow, key: SortKey, atBounds: AtBoundsState): string | number | null {
   switch (key) {
+    case 'at_bounds':
+      return atBoundsFigure(atBounds, row.group).value
     case 'group':
       return row.group
     case 'type':
@@ -466,11 +519,12 @@ function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
 function sortedGroups(
   groups: readonly ParGroupRow[],
   sort: { key: SortKey; direction: SortDirection } | null,
+  atBounds: AtBoundsState,
 ): ParGroupRow[] {
   if (sort === null) return [...groups]
   const sign = sort.direction === 'ascending' ? 1 : -1
   return groups
-    .map((row, index) => ({ row, index, value: sortValue(row, sort.key) }))
+    .map((row, index) => ({ row, index, value: sortValue(row, sort.key, atBounds) }))
     .sort((a, b) => {
       if (a.value === null || b.value === null) {
         if (a.value === b.value) return a.index - b.index
@@ -486,6 +540,7 @@ function renderGroupRow(
   row: ParGroupRow,
   chosen: boolean,
   offMap: { note: string | null } | null,
+  atBounds: FigureCell,
   pick: (group: string) => void,
 ): HTMLElement {
   const rowEl = document.createElement('div')
@@ -524,6 +579,7 @@ function renderGroupRow(
   rowEl.appendChild(groupCell('pesto', pestoText(row), pestoTitle(row), ['tabular-nums']))
   rowEl.appendChild(groupCell('pestpp', pestppText(row), pestppTitle(row), ['tabular-nums']))
   rowEl.appendChild(groupCell('sigma', sigmaText(row), sigmaTitle(row), ['tabular-nums']))
+  rowEl.appendChild(groupCell('at_bounds', atBounds.text, atBounds.title, ['tabular-nums']))
   rowEl.addEventListener('click', () => pick(row.group))
   rowEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -632,18 +688,57 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
 
   const offMap = new Map(opts.unmapped.map((entry) => [entry.group, entry.note]))
   let sort: { key: SortKey; direction: SortDirection } | null = null
+  let atBounds: AtBoundsState = { kind: 'idle' }
+  const atBoundsSlot = new LatestWins<AtBoundsResult>()
   let groupsPane: HTMLElement | null = null
 
   function fillRows(): void {
     if (groups === null || groupsPane === null) return
     groupsPane.textContent = ''
     const chosen = chosenGroups()
-    for (const row of sortedGroups(groups.groups, sort)) {
+    for (const row of sortedGroups(groups.groups, sort, atBounds)) {
       const note = offMap.get(row.group)
       groupsPane.appendChild(
-        renderGroupRow(row, chosen.has(row.group), note === undefined ? null : { note }, pick),
+        renderGroupRow(row, chosen.has(row.group), note === undefined ? null : { note }, atBoundsFigure(atBounds, row.group), pick),
       )
     }
+  }
+
+  function markAtBoundsHeading(): void {
+    const heading = groupsHost.querySelector<HTMLElement>('.group-header [data-column="at_bounds"]')
+    if (heading === null) return
+    const { label, title: why } = atBoundsHeading(atBounds)
+    const text = heading.querySelector('.sort-label')
+    if (text) text.textContent = label
+    if (why === '') heading.removeAttribute('title')
+    else heading.title = why
+  }
+
+  function drawAtBounds(): void {
+    markAtBoundsHeading()
+    fillRows()
+  }
+
+  // The column follows the map's shown iteration; a hidden tab asks nothing until it is shown.
+  function requestAtBounds(): void {
+    if (hidden) return
+    const iteration = opts.store.get().iteration
+    if (atBounds.kind !== 'idle' && atBounds.iteration === iteration) return
+    atBounds = { kind: 'loading', iteration }
+    drawAtBounds()
+    const current = () => atBounds.kind === 'loading' && atBounds.iteration === iteration
+    void atBoundsSlot.run(String(iteration), (signal) => fetchAtBounds(iteration, undefined, { signal })).then(
+      (result) => {
+        if (result.stale || !current()) return
+        atBounds = { kind: 'ready', iteration, result: result.value }
+        drawAtBounds()
+      },
+      (error: unknown) => {
+        if (!current()) return
+        atBounds = { kind: 'ready', iteration, result: { ok: false, ...describeFailure(error, 'par_change') } }
+        drawAtBounds()
+      },
+    )
   }
 
   function markHeadings(): void {
@@ -680,6 +775,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       button.type = 'button'
       button.classList.add('label', 'sort-button')
       const text = document.createElement('span')
+      text.classList.add('sort-label')
       text.textContent = label
       const mark = document.createElement('span')
       mark.classList.add('sort-mark')
@@ -698,6 +794,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     grid.appendChild(pane)
     groupsPane = pane
     groupsHost.appendChild(grid)
+    markAtBoundsHeading()
     fillRows()
   }
 
@@ -996,10 +1093,27 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
   )
 
+  // An iteration change while hidden drops the old counts, so they are never shown under the new iteration.
+  const unsubscribeIteration = opts.store.subscribe(
+    (selection) => selection.iteration,
+    () => {
+      if (hidden) {
+        atBoundsSlot.cancel()
+        atBounds = { kind: 'idle' }
+        drawAtBounds()
+        return
+      }
+      requestAtBounds()
+    },
+  )
+
   renderUnmappedSection(el, opts.unmapped)
   renderNotesSection(el, opts.artifactNotes)
 
-  if (!hidden) requestGroups()
+  if (!hidden) {
+    requestGroups()
+    requestAtBounds()
+  }
 
   return {
     onHide() {
@@ -1012,6 +1126,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     onShow() {
       hidden = false
       requestGroups()
+      requestAtBounds()
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       redrawTable?.()
@@ -1024,7 +1139,9 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     dispose() {
       unsubscribe()
       unsubscribePars()
+      unsubscribeIteration()
       selectedSection.dispose()
+      atBoundsSlot.cancel()
       histSlot.cancel()
       changeSlot.cancel()
       valuesSlot.cancel()

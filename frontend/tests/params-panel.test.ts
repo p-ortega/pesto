@@ -26,6 +26,9 @@ vi.mock('../src/data/par', async () => ({
   shareGroupsRead: (await vi.importActual<typeof import('../src/data/par')>('../src/data/par')).shareGroupsRead,
 }))
 
+const overlaysApi = vi.hoisted(() => ({ fetchAtBounds: vi.fn() }))
+vi.mock('../src/data/overlays', () => overlaysApi)
+
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
     gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 },
@@ -138,6 +141,8 @@ beforeEach(() => {
     parApi[name].mockReset()
     parApi[name].mockResolvedValue({ ok: false, artifact: 'par_hist', reason: 'not stubbed' })
   }
+  overlaysApi.fetchAtBounds.mockReset()
+  overlaysApi.fetchAtBounds.mockResolvedValue({ ok: false, artifact: 'par_change', reason: 'not stubbed' })
 })
 
 describe('renderParamsPanel', () => {
@@ -1500,5 +1505,181 @@ describe('the Selected parameters section in the panel', () => {
     handle.onShow()
     expect(selectedNames(el)).toEqual(['a1'])
     expect(parApi.fetchParValues).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 11: the at-bounds column in the group table (D-25, D-26, D-27), fed by
+// /par/at_bounds for the map's shown iteration.
+// ---------------------------------------------------------------------------
+
+describe('the at-bounds column in the group table', () => {
+  const RULE = 'A parameter is at its bounds when pestpp counts it near a bound in at least one realization.'
+  const CAVEAT = 'Counts from the float32 cache can be one high against pcs.csv.'
+
+  function atBoundsAnswer(iteration: number, groups: { group: string; n: number; excluded?: Record<string, number> }[]) {
+    return {
+      ok: true,
+      answer: {
+        available: true,
+        reason: null,
+        artifact: 'par_change',
+        iteration,
+        firstIteration: 0,
+        lastIteration: 3,
+        rule: RULE,
+        caveat: CAVEAT,
+        groups: groups.map(({ group, n, excluded }) => ({
+          group,
+          nPar: 10,
+          nCounted: 10,
+          nAtBounds: n,
+          nExcluded: excluded ?? {},
+        })),
+        names: null,
+      },
+    }
+  }
+
+  function unavailable(iteration: number, reason: string) {
+    return {
+      ok: true,
+      answer: {
+        available: false,
+        reason,
+        artifact: 'par_change',
+        iteration,
+        firstIteration: 0,
+        lastIteration: 3,
+        rule: RULE,
+        caveat: CAVEAT,
+        groups: [],
+        names: null,
+      },
+    }
+  }
+
+  function storeAt(iteration: number): SelectionStore {
+    return createSelectionStore({ initial: { ...emptySelection('run', iteration) }, schedule: () => {} })
+  }
+
+  async function mountGroups(store: SelectionStore, startHidden = false) {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('rch'), groupRow('ghb')]))
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, startHidden }))
+    if (!startHidden) await vi.waitFor(() => expect(groupRows(el).length).toBe(3))
+    return { el, handle }
+  }
+
+  function heading(el: HTMLElement): HTMLElement {
+    return el.querySelector('.group-header [data-column="at_bounds"]') as HTMLElement
+  }
+
+  it('asks once for the shown iteration and puts each group\'s count in the eighth cell with the rule, caveat and exclusions as its title', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue(
+      atBoundsAnswer(3, [
+        { group: 'hk', n: 4, excluded: { fixed: 3, tied: 2 } },
+        { group: 'rch', n: 0 },
+        { group: 'ghb', n: 12 },
+      ]),
+    )
+    const { el } = await mountGroups(storeAt(3))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('4'))
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(1)
+    expect(overlaysApi.fetchAtBounds.mock.calls[0][0]).toBe(3)
+    const hk = groupRows(el)[0]
+    expect(hk.children.length).toBe(8)
+    expect(hk.children[7].getAttribute('data-column')).toBe('at_bounds')
+    expect(cell(hk, 'at_bounds').title).toBe(`${RULE} ${CAVEAT} 5 excluded: fixed 3, tied 2`)
+    expect(cell(groupRows(el)[1], 'at_bounds').textContent).toBe('0')
+    expect(cell(groupRows(el)[1], 'at_bounds').title).toBe(`${RULE} ${CAVEAT} 0 excluded`)
+    expect(heading(el).textContent).toContain('At bounds, iteration 3')
+    expect(el.querySelectorAll('.group-header [role="columnheader"]').length).toBe(8)
+  })
+
+  it('shows a dash and the reason in every row and the heading for a middle iteration', async () => {
+    const reason = 'near-bound counts exist for iterations 0 and 3 only'
+    overlaysApi.fetchAtBounds.mockResolvedValue(unavailable(2, reason))
+    const { el } = await mountGroups(storeAt(2))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').title).toBe(reason))
+    for (const row of groupRows(el)) {
+      expect(cell(row, 'at_bounds').textContent).toBe('—')
+      expect(cell(row, 'at_bounds').title).toBe(reason)
+    }
+    expect(heading(el).title).toBe(reason)
+  })
+
+  it('shows a dash with the artifact and reason for a refused answer', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue({ ok: false, artifact: 'par_change', reason: 'par_change.parquet is not in the cache' })
+    const { el } = await mountGroups(storeAt(0))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').title).toBe('par_change: par_change.parquet is not in the cache'))
+    expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('—')
+    expect(heading(el).title).toBe('par_change: par_change.parquet is not in the cache')
+  })
+
+  it('names the artifact and reason when the request throws', async () => {
+    overlaysApi.fetchAtBounds.mockRejectedValue(
+      new ApiError({ type: 'about:blank', title: 'bad read', status: 502, artifact: 'par_change', detail: 'the frame is damaged' }),
+    )
+    const { el } = await mountGroups(storeAt(0))
+
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').title).toBe('par_change: the frame is damaged'))
+  })
+
+  it('sorts on the count with a group that has none last both ways', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue(atBoundsAnswer(3, [{ group: 'hk', n: 4 }, { group: 'ghb', n: 1 }]))
+    const { el } = await mountGroups(storeAt(3))
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('4'))
+    const button = headingButton(el, 'at_bounds')
+
+    button.click()
+    expect(shownOrder(el)).toEqual(['ghb', 'hk', 'rch'])
+    button.click()
+    expect(shownOrder(el)).toEqual(['hk', 'ghb', 'rch'])
+    expect(cell(groupRows(el)[2], 'at_bounds').textContent).toBe('—')
+  })
+
+  it('makes no request while hidden, and asks for the iteration chosen meanwhile when shown', async () => {
+    overlaysApi.fetchAtBounds.mockResolvedValue(atBoundsAnswer(3, [{ group: 'hk', n: 4 }]))
+    const store = storeAt(0)
+    const { el, handle } = await mountGroups(store, true)
+
+    store.set({ iteration: 3 }, 'map')
+    store.flush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(overlaysApi.fetchAtBounds).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('4'))
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(1)
+    expect(overlaysApi.fetchAtBounds.mock.calls[0][0]).toBe(3)
+
+    handle.onHide()
+    handle.onShow()
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks again when the iteration changes while shown, and never draws the old iteration\'s late answer', async () => {
+    const old = deferred<unknown>()
+    const fresh = deferred<unknown>()
+    overlaysApi.fetchAtBounds.mockImplementation((iteration: number) => (iteration === 0 ? old.promise : fresh.promise))
+    const store = storeAt(0)
+    const { el } = await mountGroups(store)
+
+    store.set({ iteration: 3 }, 'map')
+    store.flush()
+    expect(overlaysApi.fetchAtBounds).toHaveBeenCalledTimes(2)
+    expect(overlaysApi.fetchAtBounds.mock.calls[1][0]).toBe(3)
+
+    old.resolve(atBoundsAnswer(0, [{ group: 'hk', n: 99 }]))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cell(groupRows(el)[0], 'at_bounds').textContent).not.toBe('99')
+
+    fresh.resolve(atBoundsAnswer(3, [{ group: 'hk', n: 2 }]))
+    await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('2'))
+    expect(heading(el).textContent).toContain('iteration 3')
   })
 })
