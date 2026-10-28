@@ -102,13 +102,50 @@ function metaHeader(dtype: string): Record<string, string> {
   return { 'X-Pesto-Meta': JSON.stringify({ dtype }) }
 }
 
+interface LinkReply {
+  status: number
+  body?: unknown
+  throws?: string
+}
+
 interface Stub {
   calls: string[]
   valuesCalls: string[]
+  // The cells= of every /link/cell request, in order.
+  linkCells: string[]
+  // How /link/cell answers; by default each cell holds parameter p<cell> and site 100 + cell.
+  linkReply: (cells: number[]) => LinkReply
+  // When set, each /link/cell answer waits until a test calls its release.
+  holdLink: boolean
+  release: (() => void)[]
+}
+
+function linkBody(cells: number[]): Record<string, unknown> {
+  return {
+    layer: 0,
+    cells,
+    ring: [],
+    ring_rule: 'a neighbouring cell shares at least one corner with a clicked cell',
+    pars: cells.map((c) => ({ parnme: `p${c}`, pargp: 'G1', kind: 'cell', cell: c, weights: [], rule: 'sets this cell (par_cell)' })),
+    pars_total: cells.length,
+    par_notes: [],
+    sites: cells.map((c) => ({ site_id: 100 + c, site: `s${c}`, group: 'heads', layer: 0, cell: c, in_clicked_cell: true })),
+    sites_total: cells.length,
+    sites_cap: 50,
+    site_counts: { unknown_layer_included: 0, other_layer_left_out: 0, unplaced_in_run: 0 },
+    reasons: { pars: null, sites: null },
+  }
 }
 
 function stubEnvironment(parTable: Uint8Array = PAR_TABLE): Stub {
-  const stub: Stub = { calls: [], valuesCalls: [] }
+  const stub: Stub = {
+    calls: [],
+    valuesCalls: [],
+    linkCells: [],
+    linkReply: (cells) => ({ status: 200, body: linkBody(cells) }),
+    holdLink: false,
+    release: [],
+  }
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
@@ -152,6 +189,14 @@ function stubEnvironment(parTable: Uint8Array = PAR_TABLE): Stub {
           const name = query.get('realization') ?? 'base'
           const field = FIELDS[name] ?? FIELDS.base
           return respond({ status: 200, bytes: bytesOf(new Float32Array(field)) })
+        }
+        case '/api/run/link/cell': {
+          const text = query.get('cells') ?? ''
+          stub.linkCells.push(text)
+          if (stub.holdLink) await new Promise<void>((resolve) => stub.release.push(resolve))
+          const reply = stub.linkReply(text.split(',').map(Number))
+          if (reply.throws) throw new Error(reply.throws)
+          return respond({ status: reply.status, body: reply.body })
         }
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
@@ -202,7 +247,7 @@ async function meshLayerInstance() {
 
 // Where a world point lands on the canvas after Camera.fit, read back
 // through screenToWorld so the test does not repeat the fit arithmetic.
-function clickAtWorld(canvas: HTMLCanvasElement, wx: number, wy: number): void {
+function clickAtWorld(canvas: HTMLCanvasElement, wx: number, wy: number, keys: MouseEventInit = {}): void {
   canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
   const camera = new Camera(canvas.width, canvas.height)
   camera.fit([0, 2, 0, 1])
@@ -210,7 +255,20 @@ function clickAtWorld(canvas: HTMLCanvasElement, wx: number, wy: number): void {
   const [x1, y1] = camera.screenToWorld(1, 1)
   const clientX = (wx - x0) / (x1 - x0)
   const clientY = (wy - y0) / (y1 - y0)
-  canvas.dispatchEvent(new MouseEvent('click', { clientX, clientY }))
+  canvas.dispatchEvent(new MouseEvent('click', { ...keys, clientX, clientY }))
+}
+
+const cellsOf = (store: SelectionStore): number[] => [...store.get().cells].sort((a, b) => a - b)
+
+// Clicks and waits until the store holds `cells`, which happens once /link/cell has answered.
+async function clickAndWait(store: SelectionStore, canvas: HTMLCanvasElement, wx: number, keys: MouseEventInit, cells: number[]): Promise<void> {
+  clickAtWorld(canvas, wx, 0.5, keys)
+  await vi.waitFor(() => expect(cellsOf(store)).toEqual(cells))
+}
+
+// Lets every pending promise settle, so "nothing was written" is not read too early.
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 describe('a click on the map writes to the store', () => {
@@ -223,44 +281,201 @@ describe('a click on the map writes to the store', () => {
     vi.clearAllMocks()
   })
 
-  it('sets cells to the clicked cell before any flush, and draws the ring in the same call', async () => {
+  it('rings at once and writes cells with the answer', async () => {
     const store = manualStore()
-    const { root } = await mountedWith(store)
+    const { root, stub } = await mountedWith(store)
     const instance = await meshLayerInstance()
     instance.setSelected.mockClear()
     store.flush()
 
     clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 1.5, 0.5)
 
-    expect(Array.from(store.get().cells)).toEqual([1])
     expect(instance.setSelected).toHaveBeenCalledWith(1)
+    await vi.waitFor(() => expect(cellsOf(store)).toEqual([1]))
+    expect(stub.linkCells).toEqual(['1'])
+    expect([...store.get().pars]).toEqual(['p1'])
+    expect([...store.get().sites]).toEqual([101])
   })
 
   it('a click on the already-selected cell wakes no subscriber', async () => {
     const store = manualStore()
-    const { root } = await mountedWith(store)
+    const { root, stub } = await mountedWith(store)
     const canvas = root.querySelector('canvas') as HTMLCanvasElement
-    clickAtWorld(canvas, 0.5, 0.5)
-    expect(Array.from(store.get().cells)).toEqual([0])
+    await clickAndWait(store, canvas, 0.5, {}, [0])
     store.flush()
 
     const heard = vi.fn()
     store.subscribe((s) => s.cells, heard)
     clickAtWorld(canvas, 0.5, 0.5)
+    await settle()
     store.flush()
 
     expect(heard).not.toHaveBeenCalled()
+    expect(stub.linkCells).toEqual(['0'])
   })
 
-  it('a click on empty space writes an empty selection', async () => {
+  it('a plain click on empty space clears cells, sites and parameters in one write', async () => {
     const store = manualStore()
     const { root } = await mountedWith(store)
     const canvas = root.querySelector('canvas') as HTMLCanvasElement
-    clickAtWorld(canvas, 0.5, 0.5)
-    expect(store.get().cells.size).toBe(1)
+    await clickAndWait(store, canvas, 0.5, {}, [0])
+    store.flush()
+    const heard = vi.fn()
+    store.subscribe((s) => [s.cells, s.pars, s.sites], heard)
 
     clickAtWorld(canvas, 5, 5)
+
     expect(store.get().cells.size).toBe(0)
+    expect(store.get().pars.size).toBe(0)
+    expect(store.get().sites.size).toBe(0)
+    store.flush()
+    expect(heard).toHaveBeenCalledTimes(1)
+  })
+
+  it('a shift or alt click on empty space changes nothing', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    await clickAndWait(store, canvas, 0.5, {}, [0])
+    store.flush()
+    const heard = vi.fn()
+    store.subscribe((s) => [s.cells, s.pars, s.sites], heard)
+
+    clickAtWorld(canvas, 5, 5, { shiftKey: true })
+    clickAtWorld(canvas, 5, 5, { altKey: true })
+    await settle()
+    store.flush()
+
+    expect(heard).not.toHaveBeenCalled()
+    expect(cellsOf(store)).toEqual([0])
+    expect(stub.linkCells).toEqual(['0'])
+  })
+
+  it('shift-click adds a cell and alt-click removes one, each asking for the whole new set', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    await clickAndWait(store, canvas, 0.5, {}, [0])
+
+    await clickAndWait(store, canvas, 1.5, { shiftKey: true }, [0, 1])
+    expect(stub.linkCells.at(-1)).toBe('0,1')
+    expect([...store.get().pars].sort()).toEqual(['p0', 'p1'])
+
+    // Option on macOS sets altKey; alt wins when shift is held too.
+    await clickAndWait(store, canvas, 0.5, { altKey: true, shiftKey: true }, [1])
+    expect(stub.linkCells.at(-1)).toBe('1')
+    expect([...store.get().pars]).toEqual(['p1'])
+  })
+
+  it('a quick second shift-click adds to the set still being asked for', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    stub.holdLink = true
+
+    clickAtWorld(canvas, 0.5, 0.5)
+    clickAtWorld(canvas, 1.5, 0.5, { shiftKey: true })
+    await vi.waitFor(() => expect(stub.release.length).toBe(2))
+    stub.release.forEach((release) => release())
+
+    await vi.waitFor(() => expect(cellsOf(store)).toEqual([0, 1]))
+    expect(stub.linkCells).toEqual(['0', '0,1'])
+  })
+
+  it('alt-click on the only selected cell writes cells only and asks nothing', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    await clickAndWait(store, canvas, 0.5, {}, [0])
+    store.flush()
+    const instance = await meshLayerInstance()
+    instance.setSelected.mockClear()
+
+    clickAtWorld(canvas, 0.5, 0.5, { altKey: true })
+
+    expect(store.get().cells.size).toBe(0)
+    expect([...store.get().pars]).toEqual(['p0'])
+    expect([...store.get().sites]).toEqual([100])
+    expect(instance.setSelected).toHaveBeenCalledWith(null)
+    await settle()
+    expect(stub.linkCells).toEqual(['0'])
+  })
+
+  it('shift-click on a cell already in the set writes nothing and wakes no one', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    await clickAndWait(store, canvas, 0.5, {}, [0])
+    store.flush()
+    const heard = vi.fn()
+    store.subscribe((s) => [s.cells, s.pars, s.sites], heard)
+
+    clickAtWorld(canvas, 0.5, 0.5, { shiftKey: true })
+    await settle()
+    store.flush()
+
+    expect(heard).not.toHaveBeenCalled()
+    expect(stub.linkCells).toEqual(['0'])
+  })
+
+  it('never writes the answer for an older click once a newer one is made', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    const seenPars: string[][] = []
+    store.subscribe(
+      (s) => s.pars,
+      (next) => seenPars.push([...next.pars]),
+    )
+    stub.holdLink = true
+
+    clickAtWorld(canvas, 0.5, 0.5)
+    clickAtWorld(canvas, 1.5, 0.5)
+    await vi.waitFor(() => expect(stub.release.length).toBe(2))
+    // The newer answer first, the older one last.
+    stub.release[1]()
+    await vi.waitFor(() => expect(cellsOf(store)).toEqual([1]))
+    store.flush()
+    stub.release[0]()
+    await settle()
+    store.flush()
+
+    expect(cellsOf(store)).toEqual([1])
+    expect([...store.get().pars]).toEqual(['p1'])
+    expect(seenPars).toEqual([['p1']])
+  })
+
+  it('a 404 from /link/cell writes the cells only and the notice names the artifact and the reason', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    store.set({ pars: new Set(['kept']), sites: new Set([7]) }, 'obs')
+    stub.linkReply = () => ({
+      status: 404,
+      body: { type: 'about:blank', title: 'read failure', status: 404, artifact: 'obs_cell', detail: 'failed to read obs_cell.json' },
+    })
+
+    await clickAndWait(store, canvas, 1.5, {}, [1])
+
+    expect([...store.get().pars]).toEqual(['kept'])
+    expect([...store.get().sites]).toEqual([7])
+    const notice = root.querySelector('[data-testid="map-notices"]')?.textContent ?? ''
+    expect(notice).toContain('obs_cell')
+    expect(notice).toContain('failed to read obs_cell.json')
+  })
+
+  it('a thrown /link/cell fetch writes the cells only and shows its message', async () => {
+    const store = manualStore()
+    const { root, stub } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    store.set({ pars: new Set(['kept']), sites: new Set([7]) }, 'obs')
+    stub.linkReply = () => ({ status: 0, throws: 'the network went away' })
+
+    await clickAndWait(store, canvas, 1.5, {}, [1])
+
+    expect([...store.get().pars]).toEqual(['kept'])
+    expect([...store.get().sites]).toEqual([7])
+    expect(root.querySelector('[data-testid="map-notices"]')?.textContent ?? '').toContain('the network went away')
   })
 })
 
