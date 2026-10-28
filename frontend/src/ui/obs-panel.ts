@@ -17,6 +17,9 @@ import {
   type ObsSitesResult,
 } from '../data/obs'
 import type { Capability, IngestState } from '../data/client'
+import { isDimmed } from '../data/dim'
+import { modeOf } from '../state/modifiers'
+import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import { renderGroupFit } from './obs-fit'
@@ -68,7 +71,9 @@ interface GridOptions<T> {
   columns: GridColumn<T>[]
   rowId(row: T): string
   isSelected(row: T): boolean
-  pick(row: T): void
+  /** A drawn row that answers true is drawn faint; it stays in the list and stays clickable. */
+  isDimmed?(row: T): boolean
+  pick(row: T, event: MouseEvent | KeyboardEvent): void
   isHidden(): boolean
 }
 
@@ -77,8 +82,12 @@ interface Grid<T> {
   pane: HTMLElement
   setRows(rows: readonly T[]): void
   redraw(): void
-  /** Re-reads which rows are chosen without rebuilding them. */
+  /** Re-reads which rows are chosen and which are dimmed, without rebuilding them. */
   markRows(): void
+  /** Position in the shown order of the first chosen row, or -1. */
+  firstSelected(): number
+  /** Scrolls so the row at `index` of the shown order is at the top. */
+  scrollToIndex(index: number): void
 }
 
 function describeFailure(error: unknown, fallback: string): { artifact: string; reason: string } {
@@ -157,6 +166,11 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
   let rows: readonly T[] = []
   const rowOf = new WeakMap<HTMLElement, T>()
 
+  function markRow(rowEl: HTMLElement, row: T): void {
+    rowEl.setAttribute('aria-selected', String(opts.isSelected(row)))
+    rowEl.classList.toggle('dimmed', opts.isDimmed?.(row) === true)
+  }
+
   function renderVisible(): void {
     rowsHost.textContent = ''
     const firstIndex = Math.max(0, Math.floor(pane.scrollTop / ROW_HEIGHT) - OVERSCAN)
@@ -173,14 +187,14 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
       rowEl.style.right = '0'
       rowEl.tabIndex = 0
       rowEl.dataset[opts.dataKey] = opts.rowId(row)
-      rowEl.setAttribute('aria-selected', String(opts.isSelected(row)))
+      markRow(rowEl, row)
       for (const column of opts.columns) appendCell(rowEl, column, row)
       rowOf.set(rowEl, row)
-      rowEl.addEventListener('click', () => opts.pick(row))
+      rowEl.addEventListener('click', (event) => opts.pick(row, event))
       rowEl.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
-          opts.pick(row)
+          opts.pick(row, event)
         }
       })
       rowsHost.appendChild(rowEl)
@@ -244,8 +258,15 @@ function createGrid<T>(opts: GridOptions<T>): Grid<T> {
     markRows() {
       for (const rowEl of rowsHost.querySelectorAll<HTMLElement>('.obs-grid-row')) {
         const row = rowOf.get(rowEl)
-        if (row !== undefined) rowEl.setAttribute('aria-selected', String(opts.isSelected(row)))
+        if (row !== undefined) markRow(rowEl, row)
       }
+    },
+    firstSelected() {
+      return rows.findIndex((row) => opts.isSelected(row))
+    },
+    scrollToIndex(index) {
+      pane.scrollTop = index * ROW_HEIGHT
+      if (!opts.isHidden()) renderVisible()
     },
   }
 }
@@ -378,26 +399,60 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
 
   function renderSitePrompt(): void {
     sitesGrid = null
+    showSelectedButton = null
     renderNotice(sitesHost, { title: 'Choose a group above to list its sites', tone: 'info' })
   }
 
   function renderSitesFailure(artifact: string, reason: string): void {
     sitesGrid = null
+    showSelectedButton = null
     sitesFor = null
     renderNotice(sitesHost, { title: 'The site list could not be read', detail: `${artifact}: ${reason}`, tone: 'serious' })
   }
 
-  function pickSite(row: ObsSiteRow): void {
-    opts.store.set({ sites: new Set([row.siteId]) }, 'obs')
+  let showSelectedButton: HTMLButtonElement | null = null
+
+  // D-01: the one modifier rule, so this list never does its own set arithmetic.
+  function pickSiteId(siteId: number, event: MouseEvent | KeyboardEvent): void {
+    const next = selectSites(opts.store.get(), [siteId], modeOf(event))
+    opts.store.set({ sites: next.sites }, 'obs')
+    markSites()
+  }
+
+  function markSites(): void {
     sitesGrid?.markRows()
+    if (showSelectedButton === null || sitesGrid === null) return
+    const none = sitesGrid.firstSelected() === -1
+    showSelectedButton.disabled = none
+    showSelectedButton.title = none ? 'no selected site is in this group' : 'scroll to the first selected site in this list'
   }
 
   function renderSites(group: string, rows: readonly ObsSiteRow[], notes: readonly string[]): void {
     sitesHost.textContent = ''
+    // The count and the button share one line; the count gives way first.
     const heading = document.createElement('div')
-    heading.classList.add('label', 'obs-sites-title', 'truncate')
-    heading.textContent = `${group}: ${rows.length} ${rows.length === 1 ? 'site' : 'sites'}`
-    heading.title = heading.textContent
+    heading.classList.add('obs-sites-title')
+    heading.style.display = 'flex'
+    heading.style.alignItems = 'baseline'
+    heading.style.gap = 'var(--space-sm)'
+    const count = document.createElement('span')
+    count.classList.add('label', 'obs-sites-count', 'truncate')
+    count.style.flex = '1 1 auto'
+    count.style.minWidth = '0'
+    count.textContent = `${group}: ${rows.length} ${rows.length === 1 ? 'site' : 'sites'}`
+    count.title = count.textContent
+    heading.appendChild(count)
+    const show = document.createElement('button')
+    show.type = 'button'
+    show.classList.add('label')
+    show.style.flex = 'none'
+    show.textContent = 'Show selected'
+    show.addEventListener('click', () => {
+      const index = sitesGrid?.firstSelected() ?? -1
+      if (index >= 0) sitesGrid?.scrollToIndex(index)
+    })
+    heading.appendChild(show)
+    showSelectedButton = show
     sitesHost.appendChild(heading)
     if (notes.length > 0) {
       const noteBox = document.createElement('div')
@@ -412,18 +467,21 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       columns: SITE_COLUMNS,
       rowId: (row) => String(row.siteId),
       isSelected: (row) => opts.store.get().sites.has(row.siteId),
-      pick: pickSite,
+      isDimmed: (row) => isDimmed(opts.store.get().sites, row.siteId),
+      pick: (row, event) => pickSiteId(row.siteId, event),
       isHidden: () => hidden,
     })
     sitesGrid = grid
     sitesHost.appendChild(grid.el)
     grid.setRows(rows)
+    markSites()
   }
 
   // One group at a time: each fetch goes through the same slot, so an older answer is never drawn.
   function loadSites(group: string): void {
     sitesFor = group
     sitesGrid = null
+    showSelectedButton = null
     sitesHost.textContent = ''
     const loading = document.createElement('div')
     loading.classList.add('label')
@@ -594,7 +652,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   )
   const unsubscribeSites = opts.store.subscribe(
     (selection) => selection.sites,
-    () => sitesGrid?.markRows(),
+    () => markSites(),
   )
 
   return {
