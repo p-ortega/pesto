@@ -141,8 +141,17 @@ function prepare(
   const problems: string[] = []
   if (wanted.length === 0) problems.push('the site has no iteration with realizations')
 
-  const t0 = finiteTimes.length > 0 ? Math.min(...finiteTimes) : 0
-  const tMax = finiteTimes.length > 0 ? Math.max(...finiteTimes) : 1
+  // A loop, not Math.min(...times): spreading a very long array into arguments overflows the stack.
+  let t0 = Number.POSITIVE_INFINITY
+  let tMax = Number.NEGATIVE_INFINITY
+  for (const t of finiteTimes) {
+    if (t < t0) t0 = t
+    if (t > tMax) tMax = t
+  }
+  if (finiteTimes.length === 0) {
+    t0 = 0
+    tMax = 1
+  }
   // One time alone has no span, so it gets a little room either side.
   const xLo = t0 === tMax ? t0 - 0.5 : t0
   const xHi = t0 === tMax ? tMax + 0.5 : tMax
