@@ -20,6 +20,8 @@ export interface ObsFailure {
 
 export interface ObsGroupData {
   group: string
+  /** The observation table the sites and times were cut from; every frame must carry it too. */
+  orderDigest: string
   rows: ObsSiteRow[]
   times: ObsTimesPayload
   /** x, y of each site row; NaN, NaN where the site is unplaced. */
@@ -63,6 +65,7 @@ const MAX_FRAMES = 12
 
 interface FrameSpec {
   group: string
+  orderDigest: string
   iteration: number
   time: number
   stat: ObsStat
@@ -91,14 +94,14 @@ export class FrameCache {
   private readonly held = new Map<string, Held>()
   private readonly inFlight = new Map<string, InFlight>()
   private wantedKey: string | null = null
-  private current: { group: string; iteration: number; stat: ObsStat; times: readonly number[]; index: number } | null = null
+  private current: { group: string; orderDigest: string; iteration: number; stat: ObsStat; times: readonly number[]; index: number } | null = null
   private generation = 0
 
   constructor(private readonly runId: string | null) {}
 
-  key(group: string, iteration: number, time: number, stat: string): string {
+  key(group: string, iteration: number, time: number, stat: string, orderDigest: string): string {
     // A group name may hold the separator, so it travels encoded.
-    return fetchKey(this.runId, encodeURIComponent(group), iteration, time, stat)
+    return fetchKey(this.runId, encodeURIComponent(group), orderDigest, iteration, time, stat)
   }
 
   get(key: string): Float32Array | undefined {
@@ -118,24 +121,31 @@ export class FrameCache {
    * Fetches the frame at `times[index]` if it is not held, then the ones around it. Answers stale
    * when a newer frame was wanted meanwhile; the landed frame stays held either way.
    */
-  async want(group: string, iteration: number, times: readonly number[], index: number, stat: ObsStat): Promise<FrameAnswer> {
+  async want(
+    group: string,
+    orderDigest: string,
+    iteration: number,
+    times: readonly number[],
+    index: number,
+    stat: ObsStat,
+  ): Promise<FrameAnswer> {
     if (!Number.isInteger(index) || index < 0 || index >= times.length) {
       return { stale: false, failed: { artifact: 'obs_agg', reason: `this group has no time at position ${index} of ${times.length}` } }
     }
-    const wantedKey = this.key(group, iteration, times[index], stat)
+    const wantedKey = this.key(group, iteration, times[index], stat, orderDigest)
     this.wantedKey = wantedKey
-    this.current = { group, iteration, stat, times, index }
+    this.current = { group, orderDigest, iteration, stat, times, index }
 
     const order = [index, index - 2, index - 1, index + 1, index + 2].filter((i) => i >= 0 && i < times.length)
-    const inWindow = new Set(order.map((i) => this.key(group, iteration, times[i], stat)))
+    const inWindow = new Set(order.map((i) => this.key(group, iteration, times[i], stat, orderDigest)))
     for (const [key, entry] of this.inFlight) {
       if (inWindow.has(key)) continue
       entry.controller.abort()
       this.inFlight.delete(key)
     }
     for (const i of order) {
-      const key = this.key(group, iteration, times[i], stat)
-      if (!this.held.has(key) && !this.inFlight.has(key)) this.launch(key, { group, iteration, time: times[i], stat })
+      const key = this.key(group, iteration, times[i], stat, orderDigest)
+      if (!this.held.has(key) && !this.inFlight.has(key)) this.launch(key, { group, orderDigest, iteration, time: times[i], stat })
     }
     this.evict()
 
@@ -158,6 +168,15 @@ export class FrameCache {
         const result = await fetchObsFrame(spec.group, spec.iteration, spec.time, spec.stat, { signal: controller.signal })
         if (!result.ok) return { kind: 'failed', failed: { artifact: result.artifact, reason: result.reason } }
         const meta = result.meta
+        if (meta.orderDigest !== spec.orderDigest) {
+          return {
+            kind: 'failed',
+            failed: {
+              artifact: 'obs_index',
+              reason: 'the frame was cut for a different observation table than the sites on the map; choose the group again or reload the page',
+            },
+          }
+        }
         if (meta.group !== spec.group || meta.iteration !== spec.iteration || meta.time !== spec.time || meta.stat !== spec.stat) {
           return {
             kind: 'failed',
@@ -184,7 +203,7 @@ export class FrameCache {
   // Distance in slider steps from the wanted time; a frame of another group, iteration or statistic is farthest.
   private distance(frame: Held): number {
     const now = this.current
-    if (now === null || frame.group !== now.group || frame.iteration !== now.iteration || frame.stat !== now.stat) return Infinity
+    if (now === null || frame.group !== now.group || frame.orderDigest !== now.orderDigest || frame.iteration !== now.iteration || frame.stat !== now.stat) return Infinity
     const position = now.times.indexOf(frame.time)
     return position < 0 ? Infinity : Math.abs(position - now.index)
   }
@@ -323,7 +342,7 @@ export function carryTime(
 
 type Loaded ={ ok: true; data: ObsGroupData } | { ok: false; failed: ObsFailure }
 
-function dataOf(group: string, rows: ObsSiteRow[], times: ObsTimesPayload): ObsGroupData {
+function dataOf(group: string, orderDigest: string, rows: ObsSiteRow[], times: ObsTimesPayload): ObsGroupData {
   const xy = new Float32Array(2 * rows.length)
   const layer = new Int32Array(rows.length)
   rows.forEach((site, i) => {
@@ -332,7 +351,7 @@ function dataOf(group: string, rows: ObsSiteRow[], times: ObsTimesPayload): ObsG
     xy[2 * i + 1] = placed ? site.y : Number.NaN
     layer[i] = site.layer
   })
-  return { group, rows, times, xy, layer }
+  return { group, orderDigest, rows, times, xy, layer }
 }
 
 export function createObservationStatSource(opts: { runId: string | null }): ObservationStatSource {
@@ -352,7 +371,16 @@ export function createObservationStatSource(opts: { runId: string | null }): Obs
       const times = await fetchObsTimes(group, { signal })
       if (!times.ok) return { ok: false, failed: { artifact: times.artifact, reason: times.reason } }
       const payload = times.payload
-      // Frame entry i belongs to sites row i, so a different count would colour the wrong dots.
+      // Frame entry i belongs to sites row i, so another table or a different count would colour the wrong dots.
+      if (payload.order_digest !== sites.orderDigest) {
+        return {
+          ok: false,
+          failed: {
+            artifact: 'obs_index',
+            reason: 'the sites and the times were cut from different observation tables; choose the group again or reload the page',
+          },
+        }
+      }
       if (payload.refused === null && payload.n_sites !== sites.rows.length) {
         return {
           ok: false,
@@ -362,7 +390,7 @@ export function createObservationStatSource(opts: { runId: string | null }): Obs
           },
         }
       }
-      return { ok: true, data: dataOf(group, sites.rows, payload) }
+      return { ok: true, data: dataOf(group, sites.orderDigest, sites.rows, payload) }
     })
     if (answer.stale) return { stale: true }
     if (!answer.value.ok) return { stale: false, failed: answer.value.failed }

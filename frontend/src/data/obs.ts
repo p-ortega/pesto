@@ -88,7 +88,8 @@ export interface ObsSiteRow {
   note: string | null
 }
 
-export type ObsSitesResult = { ok: true; rows: ObsSiteRow[]; notes: string[] } | Refused
+/** orderDigest names the observation table the rows were cut from; a frame must carry the same one. */
+export type ObsSitesResult = { ok: true; rows: ObsSiteRow[]; orderDigest: string; notes: string[] } | Refused
 
 const SITE_COLUMNS = ['site_id', 'site', 'n_obs', 'x', 'y', 'xy_source', 'layer', 'cell', 'rule', 'note'] as const
 const XY_SOURCES: readonly string[] = ['own', 'cell_centre', 'none']
@@ -124,8 +125,9 @@ function readSiteRows(buffer: ArrayBuffer): ObsSiteRow[] {
 
 export async function fetchObsSites(group: string, opts?: FetchOptions): Promise<ObsSitesResult> {
   return guarded('obs_cell', async () => {
-    const { buffer, notes } = await apiGetBytes(runUrl(activeRunId(), '/api/run/obs/sites', { group }), opts)
-    return { ok: true as const, rows: readSiteRows(buffer), notes: notes ?? [] }
+    const { buffer, meta, notes } = await apiGetBytes(runUrl(activeRunId(), '/api/run/obs/sites', { group }), opts)
+    const orderDigest = metaText(requireMeta(meta), 'order_digest')
+    return { ok: true as const, rows: readSiteRows(buffer), orderDigest, notes: notes ?? [] }
   })
 }
 
@@ -260,6 +262,8 @@ export type Limits = [number, number] | null
 
 export interface ObsTimesPayload {
   group: string
+  /** The observation table these times were cut from. */
+  order_digest: string
   time_kind: string
   steps_by: 'time' | 'position'
   /** Sorted, unique, finite; empty when the answer is refused. */
@@ -275,7 +279,7 @@ export interface ObsTimesPayload {
 export type ObsTimesResult = ObsFetched<ObsTimesPayload>
 
 export async function fetchObsTimes(group: string, opts?: FetchOptions): Promise<ObsTimesResult> {
-  return fetchJson('obs_index', 'times', ['group', 'times', 'n_at_time', 'iterations', 'limits', 'refused'], '/api/run/obs/times', { group }, opts)
+  return fetchJson('obs_index', 'times', ['group', 'order_digest', 'times', 'n_at_time', 'iterations', 'limits', 'refused'], '/api/run/obs/times', { group }, opts)
 }
 
 // ---- frame: one statistic of every site at one time ----
@@ -285,6 +289,8 @@ export interface ObsFrameMeta {
   iteration: number
   time: number
   stat: ObsStat
+  /** The observation table the frame was cut for; entry i is row i of the sites with this digest. */
+  orderDigest: string
   nSites: number
   nAtTime: number
   nFinite: number
@@ -341,6 +347,7 @@ export async function fetchObsFrame(
         iteration: metaNumber(meta, 'iteration'),
         time: metaNumber(meta, 'time'),
         stat: metaText(meta, 'stat') as ObsStat,
+        orderDigest: metaText(meta, 'order_digest'),
         nSites,
         nAtTime: metaNumber(meta, 'n_at_time'),
         nFinite: metaNumber(meta, 'n_finite'),

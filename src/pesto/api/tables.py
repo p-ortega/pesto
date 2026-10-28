@@ -36,6 +36,7 @@ def arrow_response(
     notes: tuple[str, ...] = (),
     cache_control: str = "no-store",
     absent_columns: Sequence[str] = (),
+    meta: dict | None = None,
 ) -> Response:
     """Serialise ``table`` to an Arrow IPC *stream* and wrap it in a response.
 
@@ -53,6 +54,9 @@ def arrow_response(
     ``absent_columns`` are optional columns the caller asked for and the table
     does not have; they go out as ``X-Pesto-Absent-Columns``, a JSON array,
     omitted when empty.
+
+    ``meta`` goes out as the ``X-Pesto-Meta`` JSON header, the same one the raw-bytes
+    routes use, for facts about the table that are not columns.
     """
     import pyarrow as pa
 
@@ -66,6 +70,8 @@ def arrow_response(
         headers["X-Pesto-Notes"] = json.dumps(list(notes))
     if absent_columns:
         headers["X-Pesto-Absent-Columns"] = json.dumps(list(absent_columns))
+    if meta:
+        headers["X-Pesto-Meta"] = json.dumps(meta, separators=(",", ":"))
 
     return Response(
         content=sink.getvalue().to_pybytes(),

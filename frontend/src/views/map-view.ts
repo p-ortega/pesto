@@ -2131,10 +2131,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     let frame: Float32Array
     if (index >= 0) {
-      if (obsSource.frames.get(obsSource.frames.key(group, iteration, times[index], stat)) === undefined) {
+      if (obsSource.frames.get(obsSource.frames.key(group, iteration, times[index], stat, data.orderDigest)) === undefined) {
         obsSlider?.setStatus('reading this time…')
       }
-      const answer = await obsSource.frames.want(group, iteration, times, index, stat)
+      const answer = await obsSource.frames.want(group, data.orderDigest, iteration, times, index, stat)
       if (serial !== obsSerial || answer.stale) return
       if ('failed' in answer) {
         showObsNotice(`${answer.failed.artifact} could not be read for ${group}`, answer.failed.reason)
@@ -2233,15 +2233,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const iteration = obsIteration
     const stat = obsStat
     const frames = obsSource.frames
-    const held = frames.get(frames.key(data.group, iteration, times[index], stat))
+    const held = frames.get(frames.key(data.group, iteration, times[index], stat, data.orderDigest))
     const stillWanted = (): boolean => step === obsStepSerial && obsActive && obsData === data
     if (held !== undefined) {
       paintObsFrame(held, index)
-      void frames.want(data.group, iteration, times, index, stat).catch(() => undefined)
+      void frames.want(data.group, data.orderDigest, iteration, times, index, stat).catch(() => undefined)
       return
     }
     obsSlider?.setStatus('reading this time…')
-    frames.want(data.group, iteration, times, index, stat).then(
+    frames.want(data.group, data.orderDigest, iteration, times, index, stat).then(
       (answer) => {
         if (answer.stale || !stillWanted()) return
         if ('failed' in answer) {

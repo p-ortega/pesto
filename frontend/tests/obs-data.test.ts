@@ -66,9 +66,11 @@ function siteColumns(): Record<string, unknown[]> {
   }
 }
 
+const SITES_META = { 'X-Pesto-Meta': JSON.stringify({ order_digest: 'digest-a' }) }
+
 describe('fetchObsSites', () => {
   it('reads two rows by column name and builds the URL with group as a query value', async () => {
-    const fetchMock = stubFetch({ bytes: ipc(siteColumns()), headers: { 'X-Pesto-Notes': JSON.stringify(['one note']) } })
+    const fetchMock = stubFetch({ bytes: ipc(siteColumns()), headers: { ...SITES_META, 'X-Pesto-Notes': JSON.stringify(['one note']) } })
 
     const result = await fetchObsSites('heads')
 
@@ -76,6 +78,7 @@ describe('fetchObsSites', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.notes).toEqual(['one note'])
+    expect(result.orderDigest).toBe('digest-a')
     expect(result.rows).toHaveLength(2)
     expect(result.rows[0]).toEqual({
       siteId: 0,
@@ -98,7 +101,7 @@ describe('fetchObsSites', () => {
   it('reads columns by name, whatever order the table puts them in', async () => {
     const columns = siteColumns()
     const reversed = Object.fromEntries(Object.entries(columns).reverse())
-    stubFetch({ bytes: ipc(reversed) })
+    stubFetch({ bytes: ipc(reversed), headers: SITES_META })
 
     const result = await fetchObsSites('heads')
 
@@ -106,10 +109,19 @@ describe('fetchObsSites', () => {
     expect(result.ok && result.notes).toEqual([])
   })
 
+  it('refuses sites that come with no order digest', async () => {
+    stubFetch({ bytes: ipc(siteColumns()) })
+
+    const result = await fetchObsSites('heads')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toContain('X-Pesto-Meta')
+  })
+
   it('refuses a table missing xy_source, naming it', async () => {
     const columns = siteColumns()
     delete columns.xy_source
-    stubFetch({ bytes: ipc(columns) })
+    stubFetch({ bytes: ipc(columns), headers: SITES_META })
 
     const result = await fetchObsSites('heads')
 
@@ -121,7 +133,7 @@ describe('fetchObsSites', () => {
   it('refuses an xy_source it does not know instead of passing it on', async () => {
     const columns = siteColumns()
     columns.xy_source = ['own', 'guess']
-    stubFetch({ bytes: ipc(columns) })
+    stubFetch({ bytes: ipc(columns), headers: SITES_META })
 
     const result = await fetchObsSites('heads')
 
@@ -147,7 +159,7 @@ describe('fetchObsSites', () => {
   })
 
   it('sends a group name with spaces, ampersand and slash as an encoded query value, never in the path', async () => {
-    const fetchMock = stubFetch({ bytes: ipc(siteColumns()) })
+    const fetchMock = stubFetch({ bytes: ipc(siteColumns()), headers: SITES_META })
 
     await fetchObsSites('a b&c/d')
 
@@ -235,7 +247,7 @@ describe('fetchObsGroups', () => {
 })
 
 describe('fetchObsFrame', () => {
-  const meta = { group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', n_sites: 3, n_at_time: 2, n_finite: 2, dtype: '<f4' }
+  const meta = { group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', order_digest: 'digest-a', n_sites: 3, n_at_time: 2, n_finite: 2, dtype: '<f4' }
 
   it('builds the query with the time as written and returns the values with their meta', async () => {
     const fetchMock = stubFetch({ bytes: blobOf([1.5, Number.NaN, -2]), headers: { 'X-Pesto-Meta': JSON.stringify(meta) } })
@@ -247,7 +259,7 @@ describe('fetchObsFrame', () => {
     if (!result.ok) return
     expect(result.values[0]).toBe(1.5)
     expect(Number.isNaN(result.values[1])).toBe(true)
-    expect(result.meta).toEqual({ group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', nSites: 3, nAtTime: 2, nFinite: 2 })
+    expect(result.meta).toEqual({ group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', orderDigest: 'digest-a', nSites: 3, nAtTime: 2, nFinite: 2 })
     expect(result.meta.nSites).toBe(result.values.length)
   })
 
@@ -270,6 +282,17 @@ describe('fetchObsFrame', () => {
     const result = await fetchObsFrame('heads', 1, 5, 'rmse')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toContain('n_finite')
+  })
+
+  it('refuses a frame that names no order digest', async () => {
+    const short: Record<string, unknown> = { ...meta }
+    delete short.order_digest
+    stubFetch({ bytes: blobOf([1, 2, 3]), headers: { 'X-Pesto-Meta': JSON.stringify(short) } })
+
+    const result = await fetchObsFrame('heads', 1, 5, 'rmse')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toContain('order_digest')
   })
 
   it('turns a 404 into a result with the reason', async () => {
@@ -332,7 +355,7 @@ describe('fetchObsSeries', () => {
 
 describe('the JSON routes', () => {
   it('fetchObsTimes asks for the group and returns the payload as sent', async () => {
-    const body = { group: 'a b', times: [1, 2], n_at_time: [3, 3], iterations: [], limits: {}, refused: null }
+    const body = { group: 'a b', order_digest: 'digest-a', times: [1, 2], n_at_time: [3, 3], iterations: [], limits: {}, refused: null }
     const fetchMock = stubFetch({ json: body })
 
     const result = await fetchObsTimes('a b')
