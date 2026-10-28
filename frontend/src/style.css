@@ -495,10 +495,12 @@ body {
   margin-top: var(--space-sm);
 }
 
-/* A zero basis with a floor: thousands of rows must not win the shrink against the lists below. */
+/* A zero basis with a floor: the plots and lists below shrink and scroll
+   before the table drops under its floor. */
 .obs-groups {
   flex: 1 1 0;
   min-height: 10rem;
+  max-height: 40%;
 }
 
 .obs-sites {
@@ -612,12 +614,20 @@ body {
   text-align: right;
 }
 
-/* The plot hosts are empty until the plot plans mount into them, and take no room until then. */
+/* The plot hosts are empty until the plot plans mount into them, and take no
+   room until then. Once filled they shrink and scroll inside themselves, so
+   the page never scrolls. */
 .obs-fit,
 .obs-spaghetti {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   width: 100%;
   margin-top: var(--space-sm);
+  overflow-y: auto;
+}
+
+.obs-fit {
+  min-height: 8rem;
+  max-height: 45%;
 }
 
 .obs-fit:empty,
@@ -632,10 +642,8 @@ body {
 }
 
 .obs-spaghetti {
-  flex: 0 1 auto;
   min-height: 0;
   max-height: 50%;
-  overflow-y: auto;
 }
 
 .obs-spaghetti canvas {
