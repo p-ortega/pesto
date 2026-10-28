@@ -182,6 +182,19 @@ def test_a_run_with_no_parameter_placement_lists_every_name_unknown_with_the_rea
     assert body["reason"] == "no parameter placement was ingested for this run"
 
 
+def test_a_placement_the_last_ingest_failed_is_not_read_for_names(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("par_cell", "the control file could not be read")
+    manifest.save(layout)
+
+    body = _par(client, "par0").json()
+
+    assert body["pars"] == [] and body["unknown"] == ["par0"]
+    assert body["reason"] == "the control file could not be read"
+
+
 # ---- Task 3: /link/sites ----
 
 ICPL_A = "oname:hds_otype:lst_usecol:icpl-a"
@@ -283,6 +296,19 @@ def test_a_run_with_no_observation_placement_lists_every_id_unknown_with_the_rea
 
     assert body["sites"] == [] and body["unknown"] == [1]
     assert body["reason"] == "no observation placement was ingested for this run"
+
+
+def test_a_site_placement_the_last_ingest_failed_is_not_read_for_ids(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("obs_cell", "the grid could not be read")
+    manifest.save(layout)
+
+    body = _sites(client, [1]).json()
+
+    assert body["sites"] == [] and body["unknown"] == [1]
+    assert body["reason"] == "the grid could not be read"
 
 
 def test_every_link_route_leaves_the_run_and_the_cache_untouched(tmp_path, in_process):

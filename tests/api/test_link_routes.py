@@ -347,6 +347,36 @@ def test_more_parameters_than_the_cap_are_counted_and_noted(tmp_path, in_process
     ]
 
 
+def test_a_failed_placement_is_not_served_from_files_an_older_ingest_left(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (0, 0)})
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("par_cell", "the control file could not be read")
+    manifest.mark_failed("obs_cell", "the grid could not be read")
+    manifest.save(layout)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert body["pars"] == [] and body["sites"] == []
+    assert body["reasons"] == {"pars": "the control file could not be read", "sites": "the grid could not be read"}
+
+
+def test_a_failed_pp_factors_is_noted_with_its_reason_and_not_read(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par1": (0, 0)})
+    _pp_group(client, run)
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("pp_factors", "the factor file was not found")
+    manifest.save(layout)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert [p["kind"] for p in body["pars"]] == ["cell"]
+    assert "pp_factors could not be read: the factor file was not found, so pilot points are listed as plain parameters" in body["par_notes"]
+
+
 def test_a_run_with_no_observation_placement_says_so(tmp_path, in_process):
     client, _ = open_obs_run(tmp_path, **GRID_RUN)
     layout = _layout(client)
