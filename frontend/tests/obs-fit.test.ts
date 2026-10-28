@@ -5,7 +5,7 @@
 // and the canvas is a recording context.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Obs1to1Payload, ObsResidHistPayload, SitePoints } from '../src/data/obs'
+import type { Obs1to1Payload, ObsBrushPayload, ObsResidHistPayload, SitePoints } from '../src/data/obs'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import { renderGroupFit, type GroupFitHandle } from '../src/ui/obs-fit'
@@ -18,6 +18,7 @@ const obsApi = vi.hoisted(() => ({
   fetchObs1to1: vi.fn(),
   fetchObsPoints: vi.fn(),
   fetchObsResidHist: vi.fn(),
+  fetchObsBrush: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -80,6 +81,7 @@ function setTokens(): void {
   style.setProperty('--ink-primary', '#010203')
   style.setProperty('--axis', '#070809')
   style.setProperty('--gridline', '#0a0b0c')
+  style.setProperty('--dim-alpha', '0.3')
 }
 
 function makeStore(sites: number[] = []): SelectionStore {
@@ -114,6 +116,7 @@ beforeEach(() => {
   obsApi.fetchObs1to1.mockResolvedValue(answer())
   obsApi.fetchObsPoints.mockReset()
   obsApi.fetchObsResidHist.mockReset()
+  obsApi.fetchObsBrush.mockReset()
   // Refused unless a test asks for a histogram, so the 1:1 tests count only their own canvases.
   obsApi.fetchObsResidHist.mockResolvedValue({ ok: false, artifact: 'obs_agg', reason: 'no histogram in this test' })
   density.drawDensity.mockClear()
@@ -746,5 +749,396 @@ describe('the residual histogram', () => {
 
     m.handle.onShow()
     expect(histSpecs().length).toBe(1)
+  })
+})
+
+// ---- brushing the residual histogram ----
+
+// The histogram canvas is 400 by 280 here; its plot runs from 44 to 388 css px over edges -5 to 5.
+function hpx(value: number): number {
+  return 44 + ((value + 5) / 10) * 344
+}
+
+function histCanvas(host: HTMLElement): HTMLCanvasElement {
+  return host.querySelector('.obs-fit-resid canvas') as HTMLCanvasElement
+}
+
+function pointer(type: string, clientX: number, init: PointerEventInit = {}): PointerEvent {
+  return new PointerEvent(type, { clientX, clientY: 100, pointerId: 1, bubbles: true, ...init })
+}
+
+function dragPx(canvas: HTMLCanvasElement, from: number, to: number, up: PointerEventInit = {}): void {
+  canvas.dispatchEvent(pointer('pointerdown', from))
+  canvas.dispatchEvent(pointer('pointermove', to))
+  canvas.dispatchEvent(pointer('pointerup', to, up))
+}
+
+function dragHist(m: Mounted, from: number, to: number, up: PointerEventInit = {}): void {
+  dragPx(histCanvas(m.host), hpx(from), hpx(to), up)
+}
+
+function brushAnswer(over: Partial<ObsBrushPayload> = {}) {
+  const payload: ObsBrushPayload = {
+    group: 'gw_head',
+    iteration: 1,
+    lo: -1,
+    hi: 1,
+    sites: [4, 5],
+    n_obs_in_range: 3,
+    left_out: { no_target: 2, sentinel: 1, no_valid_realization: 0 },
+    other: { iteration: 0, counts: [0, 1, 1, 0, 0], density: [0, 0.025, 0.025, 0, 0], n_sites: 2, n_obs: 2 },
+    ...over,
+  }
+  return { ok: true, payload }
+}
+
+function lastHistSpec(): HistogramSpec {
+  const specs = histSpecs()
+  return specs[specs.length - 1]
+}
+
+function switchButtons(host: HTMLElement): HTMLButtonElement[] {
+  return [...host.querySelectorAll<HTMLButtonElement>('.brush-switch button')]
+}
+
+async function brushReady(m: Mounted): Promise<void> {
+  obsApi.fetchObsResidHist.mockImplementation(async (name: string) => residAnswer({ group: name }))
+  obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+  m.handle.setGroup('gw_head')
+  await vi.waitFor(() => expect(histCanvas(m.host)).not.toBeNull())
+  await vi.waitFor(() => expect(histSpecs().length).toBeGreaterThan(0))
+}
+
+describe('the brush switch', () => {
+  it('offers first and last under the histogram, last pressed', async () => {
+    const m = mount()
+    await brushReady(m)
+
+    const buttons = switchButtons(m.host)
+    expect(buttons.map((b) => b.textContent)).toEqual(['first (iteration 0)', 'last (iteration 1)'])
+    expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'true'])
+  })
+
+  it('offers only the one iteration a one-series histogram has, and says why the other is off', async () => {
+    const m = mount()
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer({ last: null }))
+    m.handle.setGroup('gw_head')
+    await vi.waitFor(() => expect(switchButtons(m.host).length).toBe(2))
+
+    const [first, last] = switchButtons(m.host)
+    expect(first.getAttribute('aria-pressed')).toBe('true')
+    expect(last.disabled).toBe(true)
+    expect(residText(m.host)).toContain('only iteration 0 has observation statistics')
+  })
+
+  it('brushes the one iteration a one-series histogram has', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer({ iteration: 0, other: null }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount()
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer({ last: null }))
+    m.handle.setGroup('gw_head')
+    await vi.waitFor(() => expect(histCanvas(m.host)).not.toBeNull())
+
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect([...m.store.get().sites]).toEqual([4, 5]))
+    expect(obsApi.fetchObsBrush.mock.calls[0][1]).toBe(0)
+    expect(lastHistSpec().overlay ?? null).toBeNull()
+  })
+})
+
+describe('brushing the residual histogram', () => {
+  it('asks for the sites of the last iteration in the dragged range and writes them with origin obs-fit', async () => {
+    const store = makeStore([9])
+    const origins: string[][] = []
+    store.subscribe(
+      (s) => s.sites,
+      (_n, _p, o) => origins.push([...o]),
+    )
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer())
+    const m = mount({ store })
+    await brushReady(m)
+
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect([...store.get().sites]).toEqual([4, 5]))
+
+    expect(obsApi.fetchObsBrush).toHaveBeenCalledTimes(1)
+    const [group, iteration, lo, hi] = obsApi.fetchObsBrush.mock.calls[0]
+    expect([group, iteration]).toEqual(['gw_head', 1])
+    expect(lo).toBeCloseTo(-1, 9)
+    expect(hi).toBeCloseTo(1, 9)
+    store.flush()
+    expect(origins).toEqual([['obs-fit']])
+  })
+
+  it('adds with shift held at release and removes with alt', async () => {
+    const store = makeStore([4, 9])
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer())
+    const m = mount({ store })
+    await brushReady(m)
+
+    dragHist(m, -1, 1, { shiftKey: true })
+    await vi.waitFor(() => expect([...store.get().sites].sort()).toEqual([4, 5, 9]))
+    dragHist(m, -1, 1, { altKey: true })
+    await vi.waitFor(() => expect([...store.get().sites]).toEqual([9]))
+  })
+
+  it('brushes the first iteration once the switch says first', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(
+      brushAnswer({ iteration: 0, other: { iteration: 1, counts: [0, 0, 1, 0, 0], density: [0, 0, 0.05, 0, 0], n_sites: 1, n_obs: 1 } }),
+    )
+    const m = mount()
+    await brushReady(m)
+
+    switchButtons(m.host)[0].click()
+    expect(switchButtons(m.host).map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect([...m.store.get().sites]).toEqual([4, 5]))
+
+    expect(obsApi.fetchObsBrush.mock.calls[0][1]).toBe(0)
+    expect(lastHistSpec().overlay).toEqual({ density: [0, 0, 0.05, 0, 0], label: 'the same sites in iteration 1', slot: 1 })
+  })
+
+  it('refuses an answer for another iteration than the switch named, and writes nothing', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer({ iteration: 0 }))
+    const m = mount({ store: makeStore([9]) })
+    await brushReady(m)
+
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect(residText(m.host)).toContain('the server answered for iteration 0, not 1'))
+    expect([...m.store.get().sites]).toEqual([9])
+    expect(lastHistSpec().band ?? null).toBeNull()
+  })
+
+  it('never writes the answer for an older drag', async () => {
+    const waiting: Array<() => void> = []
+    obsApi.fetchObsBrush
+      .mockImplementationOnce(() => new Promise((resolve) => waiting.push(() => resolve(brushAnswer({ sites: [1] })))))
+      .mockImplementationOnce(() => new Promise((resolve) => waiting.push(() => resolve(brushAnswer({ sites: [2] })))))
+    const m = mount()
+    await brushReady(m)
+
+    dragHist(m, -1, 1)
+    dragHist(m, 0, 2)
+    expect(waiting.length).toBe(2)
+    waiting[1]()
+    await vi.waitFor(() => expect([...m.store.get().sites]).toEqual([2]))
+    waiting[0]()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect([...m.store.get().sites]).toEqual([2])
+  })
+
+  it('keeps the band after release, outlines the same sites in the other iteration, and fades at the dim alpha', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer())
+    const m = mount()
+    await brushReady(m)
+
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect(lastHistSpec().overlay ?? null).not.toBeNull())
+
+    const spec = lastHistSpec()
+    expect(spec.band![0]).toBeCloseTo(-1, 9)
+    expect(spec.band![1]).toBeCloseTo(1, 9)
+    expect(spec.overlay).toEqual({ density: [0, 0.025, 0.025, 0, 0], label: 'the same sites in iteration 0', slot: 0 })
+    expect(spec.dimAlpha).toBe(0.3)
+    m.store.flush()
+    expect(lastHistSpec().band).not.toBeNull()
+  })
+
+  it('draws the band live while dragging', async () => {
+    const m = mount()
+    await brushReady(m)
+
+    const canvas = histCanvas(m.host)
+    canvas.dispatchEvent(pointer('pointerdown', hpx(-3)))
+    canvas.dispatchEvent(pointer('pointermove', hpx(3)))
+    expect(lastHistSpec().band![0]).toBeCloseTo(-3, 9)
+    expect(lastHistSpec().band![1]).toBeCloseTo(3, 9)
+  })
+
+  it('clears the band and outline when another view changes the sites', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer())
+    const m = mount()
+    await brushReady(m)
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect(lastHistSpec().overlay ?? null).not.toBeNull())
+    m.store.flush()
+
+    m.store.set({ sites: new Set([1]) }, 'map')
+    m.store.flush()
+
+    expect(lastHistSpec().band ?? null).toBeNull()
+    expect(lastHistSpec().overlay ?? null).toBeNull()
+  })
+
+  it('clears the band when the group changes', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer())
+    const m = mount()
+    await brushReady(m)
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect(lastHistSpec().overlay ?? null).not.toBeNull())
+
+    const before = histSpecs().length
+    m.handle.setGroup('river')
+    await vi.waitFor(() => expect(histSpecs().length).toBeGreaterThan(before))
+
+    expect(obsApi.fetchObsResidHist).toHaveBeenLastCalledWith('river', expect.anything())
+    expect(lastHistSpec().band ?? null).toBeNull()
+    expect(lastHistSpec().overlay ?? null).toBeNull()
+  })
+
+  it('writes nothing when the brush catches no site, and says so with the left-out counts', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer({ sites: [], n_obs_in_range: 0, other: null }))
+    const m = mount({ store: makeStore([9]) })
+    await brushReady(m)
+
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect(residText(m.host)).toContain('no site has an observation in that range; the selection is unchanged'))
+
+    expect([...m.store.get().sites]).toEqual([9])
+    expect(residText(m.host)).toContain('left out of the histogram at iteration 1: 2 with no target, 1 sentinel, 0 with no valid realization')
+  })
+
+  it('shows a refused brush with its artifact and reason and writes nothing', async () => {
+    obsApi.fetchObsBrush.mockResolvedValue({ ok: false, artifact: 'obs_agg', reason: 'the residual range is reversed' })
+    const m = mount({ store: makeStore([9]) })
+    await brushReady(m)
+
+    dragHist(m, -1, 1)
+    await vi.waitFor(() => expect(residText(m.host)).toContain('obs_agg: the residual range is reversed'))
+    expect([...m.store.get().sites]).toEqual([9])
+  })
+
+  it('treats a 2 px press as a click: no request and no change', async () => {
+    const m = mount({ store: makeStore([9]) })
+    await brushReady(m)
+
+    dragPx(histCanvas(m.host), hpx(0), hpx(0) + 2)
+    await Promise.resolve()
+
+    expect(obsApi.fetchObsBrush).not.toHaveBeenCalled()
+    expect([...m.store.get().sites]).toEqual([9])
+  })
+
+  it('fetches nothing while the tab is hidden', async () => {
+    const m = mount()
+    await brushReady(m)
+    m.handle.onHide()
+
+    dragHist(m, -1, 1)
+    await Promise.resolve()
+
+    expect(obsApi.fetchObsBrush).not.toHaveBeenCalled()
+  })
+})
+
+// ---- dimmed 1:1 points and clicking a point ----
+
+function click(canvas: HTMLCanvasElement, x: number, y: number, init: MouseEventInit = {}): void {
+  canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true, ...init }))
+}
+
+function fitCanvas(host: HTMLElement): HTMLCanvasElement {
+  return host.querySelector('.obs-fit-1to1 canvas') as HTMLCanvasElement
+}
+
+describe('dimmed 1:1 points', () => {
+  it('draws outlying points of unselected sites at the dim alpha and the selected site at full alpha, all of them drawn', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([sitePoints(1, 'well A')]))
+    const m = mount({ store: makeStore([1]) })
+    await drawn(m)
+    await vi.waitFor(() => expect(markers(lastDraw(m.calls, 1), 'arc').length).toBe(2))
+
+    const squares = markers(lastDraw(m.calls, 1), 'rect')
+    // Two outlying sites with two points each: every point is still drawn.
+    expect(squares.length).toBe(4)
+    expect(squares.map((s) => s.call.state.globalAlpha).sort()).toEqual([0.3, 0.3, 1, 1])
+    const dimmedX = squares.filter((s) => s.call.state.globalAlpha === 0.3).map((s) => s.call.args[0])
+    const fullX = squares.filter((s) => s.call.state.globalAlpha === 1).map((s) => s.call.args[0])
+    expect(dimmedX).toEqual(fullX)
+    expect(markers(lastDraw(m.calls, 1), 'arc').every((c) => c.call.state.globalAlpha === 1)).toBe(true)
+    expect(legendText(m.host)).toContain('outlying sites and their RMSE of the ensemble-mean residual: well A 2.5, well B 2.5')
+  })
+
+  it('dims nothing when no site is selected', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    const m = mount()
+    await drawn(m)
+
+    const squares = markers(lastDraw(m.calls, 1), 'rect')
+    expect(squares.length).toBe(4)
+    expect(squares.every((s) => s.call.state.globalAlpha === 1)).toBe(true)
+  })
+
+  it('redraws the dimming when another view changes the sites', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount()
+    await drawn(m)
+
+    m.store.set({ sites: new Set([2]) }, 'map')
+    m.store.flush()
+
+    await vi.waitFor(() =>
+      expect(markers(lastDraw(m.calls, 1), 'rect').map((s) => s.call.state.globalAlpha)).toEqual([0.3, 0.3, 1, 1]),
+    )
+  })
+})
+
+describe('clicking a 1:1 point', () => {
+  it('selects the site of the point under the click, with origin obs-fit', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const store = makeStore([9])
+    const origins: string[][] = []
+    store.subscribe(
+      (s) => s.sites,
+      (_n, _p, o) => origins.push([...o]),
+    )
+    const m = mount({ store })
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(2) + 3, py(3) - 2)
+
+    expect([...store.get().sites]).toEqual([1])
+    store.flush()
+    expect(origins).toEqual([['obs-fit']])
+  })
+
+  it('adds with shift and removes with alt', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount({ store: makeStore([9]) })
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(2), py(3), { shiftKey: true })
+    expect([...m.store.get().sites].sort()).toEqual([1, 9])
+    click(fitCanvas(m.host), px(2), py(3), { altKey: true })
+    expect([...m.store.get().sites]).toEqual([9])
+  })
+
+  it('selects every site with a point in reach, never one of them silently', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount()
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(2), py(3))
+
+    expect([...m.store.get().sites].sort()).toEqual([1, 2])
+  })
+
+  it('does nothing on empty plot space or beyond 6 px of a point', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount({ store: makeStore([9]) })
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(10), py(0))
+    click(fitCanvas(m.host), px(2) + 7, py(3))
+
+    expect([...m.store.get().sites]).toEqual([9])
   })
 })
