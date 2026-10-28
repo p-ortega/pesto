@@ -230,6 +230,9 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
     payload_path = layout.obs_1to1
     sidecar_path = layout.obs_1to1_meta
     written: list[Path] = []
+    # Whatever an older ingest left must not outlive a failed rewrite and be read as current.
+    for stale in (payload_path, sidecar_path):
+        stale.unlink(missing_ok=True)
     try:
         single = first == last
         iterations = [first] if single else [first, last]
@@ -273,9 +276,6 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
         site_ids = index.sites["site_id"].to_numpy(dtype=np.int64)
         if site_starts.size > 1 and (np.diff(site_starts) < 0).any():
             raise ValueError("the sites of the obs_index are not stored in row order")
-
-        # An older sidecar must not outlive a failed rewrite of its payload.
-        sidecar_path.unlink(missing_ok=True)
 
         records: list[pd.DataFrame] = []
         entries = []

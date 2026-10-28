@@ -463,6 +463,20 @@ def test_nothing_is_left_behind_when_the_cache_cannot_be_read(tmp_path):
     assert not layout.obs_1to1.exists() and not layout.obs_1to1_meta.exists()
 
 
+def test_a_failed_rewrite_removes_the_grids_an_older_ingest_left(tmp_path, in_process, monkeypatch):  # noqa: F811
+    _run, layout, _manifest = _ingest(tmp_path)
+    assert layout.obs_1to1.exists() and layout.obs_1to1_meta.exists()
+    monkeypatch.setattr(
+        "pesto.ingest.obs1to1.load_obs_index",
+        lambda _layout: ReadFailure(name="obs_index", path="", reason="the index is gone"),
+    )
+
+    result = write_obs_1to1(0, 1, layout)
+
+    assert isinstance(result, ReadFailure)
+    assert not layout.obs_1to1.exists() and not layout.obs_1to1_meta.exists()
+
+
 # ---------------------------------------------------------------------------
 # Staleness and failed upstream artifacts
 # ---------------------------------------------------------------------------

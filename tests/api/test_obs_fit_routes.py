@@ -326,6 +326,36 @@ def test_1to1_with_no_obs_1to1_cached_is_a_404_naming_it(tmp_path, in_process): 
     assert response.json()["artifact"] == "obs_1to1"
 
 
+def test_1to1_left_over_from_an_older_ingest_is_not_served_when_the_last_one_failed(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    assert client.get("/api/run/obs/1to1", params={"group": "gw_head"}).status_code == 200
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("obs_1to1", "obs_1to1 depends on obs_ens/1, which failed: the file is unreadable")
+    manifest.save(layout)
+    assert layout.obs_1to1.exists() and layout.obs_1to1_meta.exists()
+
+    response = client.get("/api/run/obs/1to1", params={"group": "gw_head"})
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["artifact"] == "obs_1to1"
+    assert "which failed: the file is unreadable" in body["detail"]
+
+
+def test_1to1_with_no_record_of_it_in_the_manifest_says_none_was_ingested(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    del manifest.artifacts["obs_1to1"]
+    manifest.save(layout)
+
+    response = client.get("/api/run/obs/1to1", params={"group": "gw_head"})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "no 1:1 grid was ingested for this run"
+
+
 def test_1to1_with_one_iteration_has_one_grid_and_says_so(tmp_path, in_process):  # noqa: F811
     client, _run = open_obs_run(tmp_path, iterations=(0,), n_real=4)
 

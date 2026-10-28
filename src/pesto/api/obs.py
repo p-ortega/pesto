@@ -257,6 +257,7 @@ async def get_obs_series(request: Request, params: Annotated[ObsSeriesQuery, Que
 
 _RESID_ROW = OBS_STATS.index("resid_mean")
 NO_OBS_ENS_REASON = "no observation ensemble was ingested for this run"
+NO_1TO1_REASON = "no 1:1 grid was ingested for this run"
 
 
 def _ends(manifest: Manifest) -> tuple[int, int | None] | None:
@@ -480,6 +481,13 @@ async def get_obs_1to1(request: Request, params: Annotated[ObsGroupQuery, Query(
     if cache_root is None:
         return problem(409, "no run is open")
     state = request.app.state
+
+    # Files left by an older ingest are not served when the last one failed or was blocked.
+    reason = _recorded_reason(
+        Manifest.load(CacheLayout(root=Path(cache_root))), "obs_1to1", NO_1TO1_REASON
+    )
+    if reason is not None:
+        return problem(404, "no 1:1 grid", artifact="obs_1to1", detail=reason)
 
     index = obscache.get_index(state, cache_root)
     if isinstance(index, ReadFailure):
