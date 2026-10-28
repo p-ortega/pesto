@@ -163,7 +163,7 @@ function sitesTable(sites: SiteSpec[]): Uint8Array {
 }
 
 function groupsTable(): Uint8Array {
-  const names = Object.keys(GROUPS)
+  const names = groupOrder ?? Object.keys(GROUPS)
   const placed = names.map((n) => GROUPS[n].sites.filter((s) => s.source !== 'none').length)
   return ipc({
     group: names,
@@ -197,11 +197,14 @@ let calls: string[] = []
 // A refused /obs/site for this site id, to see the reason shown.
 let refuseSite: number | null = null
 let limitsRefused: string | null = null
+// The order the group table lists the groups in; the map picks the first placed one itself.
+let groupOrder: string[] | null = null
 
 function stubFetch(): void {
   calls = []
   refuseSite = null
   limitsRefused = null
+  groupOrder = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
@@ -632,6 +635,16 @@ describe('colouring the map by observations', () => {
       expect(store.get().layer).toBe(1)
       expect(layerOrigins).toEqual(['map'])
       expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
+      expect(Array.from(lastPoints()[0])).toEqual(f32(1.25, 0.5, 1.75, 0.5))
+    })
+
+    it('moves to the lowest layer for the group it picked itself, as it does for a chosen one', async () => {
+      const { root, store } = await mounted()
+      groupOrder = ['conc', 'deep', 'heads', 'stack']
+      await enterObservations(root)
+      await vi.waitFor(() => expect(legendText(root)).toContain('moved to layer 1, the lowest layer with a site of this group'))
+      expect([...store.get().obsGroups]).toEqual(['deep'])
+      expect(store.get().layer).toBe(1)
       expect(Array.from(lastPoints()[0])).toEqual(f32(1.25, 0.5, 1.75, 0.5))
     })
 

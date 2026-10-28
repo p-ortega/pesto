@@ -2056,6 +2056,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const stat = statText
     obsStat = stat
 
+    // Taken before an automatic pick sets obsGroupInUse, so that pick counts as a change too.
+    const previousGroup = obsGroupInUse
     let group = [...selection.obsGroups][0] ?? null
     if (group === null) {
       const groups = await loadObsGroups()
@@ -2076,7 +2078,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       obsGroupInUse = group
       store.set({ obsGroups: new Set([group]) }, 'map')
     }
-    const groupChanged = group !== obsGroupInUse
+    const groupChanged = group !== previousGroup
     obsGroupInUse = group
     if (groupChanged) {
       // The old group's times must not be steppable while the new group loads.
