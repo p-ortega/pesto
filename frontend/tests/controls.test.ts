@@ -138,6 +138,7 @@ describe('renderSelectionControls', () => {
       scaleInferred: true,
       limitsMode: 'robust',
       manualLimits: null,
+      style: { classes: 0, symmetric: false, texture: false },
     })
   })
 
@@ -328,6 +329,79 @@ describe('renderSelectionControls', () => {
     expect((el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement).value).toBe('log10')
     expect((el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement).value).toBe('manual')
     expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  describe('the Classes select', () => {
+    const classes = (el: HTMLElement) => el.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
+
+    it('lists Continuous, 7, 9 and 11 in that order, as a parameter-only row', () => {
+      const { el } = mount(THREE_NAMES)
+      const select = classes(el)
+      expect([...select.options].map((o) => [o.value, o.textContent])).toEqual([
+        ['0', 'Continuous'],
+        ['7', '7'],
+        ['9', '9'],
+        ['11', '11'],
+      ])
+      expect(select.value).toBe('0')
+      expect(select.closest('label')?.getAttribute('data-colour-source')).toBe('par')
+    })
+
+    it('starts at the initial style and emits the picked count', () => {
+      const el = document.createElement('div')
+      const onSelectionChange = vi.fn()
+      renderSelectionControls(el, {
+        nlay: 3,
+        iteration: 0,
+        realNames: THREE_NAMES,
+        partrans: 'none',
+        initial: {
+          colormap: 'viridis',
+          reverseColormap: false,
+          scale: 'linear',
+          scaleInferred: true,
+          limitsMode: 'robust',
+          manualLimits: null,
+          style: { classes: 11, symmetric: false, texture: false },
+        },
+        onSelectionChange,
+        onFitToExtent: vi.fn(),
+      })
+      expect(classes(el).value).toBe('11')
+      classes(el).value = '7'
+      classes(el).dispatchEvent(new Event('change'))
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ style: { classes: 7, symmetric: false, texture: false } }),
+      )
+    })
+
+    it('moves with sync without emitting', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      handle.sync({
+        colormap: 'viridis',
+        reverseColormap: false,
+        scale: 'linear',
+        scaleInferred: true,
+        limitsMode: 'robust',
+        manualLimits: null,
+        style: { classes: 9, symmetric: false, texture: false },
+      })
+      expect(classes(el).value).toBe('9')
+      expect(onSelectionChange).not.toHaveBeenCalled()
+    })
+
+    it('shows the reason line only while there is one', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      const note = el.querySelector('#classes-note') as HTMLElement
+      expect(note.style.display).toBe('none')
+      handle.showStyle({ classes: 1, symmetric: false, texture: false }, { classes: 'the limits are equal', symmetric: null, texture: null })
+      expect(note.style.display).toBe('')
+      expect(note.textContent).toBe('the limits are equal')
+      expect(classes(el).getAttribute('aria-describedby')).toBe('classes-note')
+      handle.showStyle({ classes: 9, symmetric: false, texture: false }, { classes: null, symmetric: null, texture: null })
+      expect(note.style.display).toBe('none')
+      expect(classes(el).hasAttribute('aria-describedby')).toBe(false)
+    })
   })
 
   it('caps the panel at 32rem and still wraps, so it stops spanning the whole map', () => {
