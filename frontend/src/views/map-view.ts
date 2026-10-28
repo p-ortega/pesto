@@ -27,6 +27,23 @@ import { applyScale, logIsUsable, scaleLimits, subsetValues, symmetricLimits, Li
 import { readColorToken, readNumberToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
+import { BasemapLayer } from '../gl/basemap-layer'
+import {
+  inspectBasemap,
+  loadBasemapImage,
+  readBasemapState,
+  registerBasemap,
+  removeBasemap,
+  type Answer,
+  type BasemapImage,
+  type BasemapState,
+  type Extent,
+  type InspectAnswer,
+  type ReadyState,
+  type RegisterRequest,
+} from '../data/basemap'
+import { openBasemapPicker, type BasemapPickerHandle } from '../ui/basemap-picker'
+import { renderBasemapControls, type BasemapControlsHandle, type BasemapView } from '../ui/basemap-controls'
 import {
   CONTINUOUS,
   DEFAULT_STYLE,
@@ -395,6 +412,25 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   let ctx: GlContext | null = null
   let layer: MeshLayer | null = null
+  // Made on the first basemap image only, so a run without one never builds its GL objects.
+  let basemapLayer: BasemapLayer | null = null
+  // The layer keeps a reference for reupload but never closes it; this view does.
+  let basemapBitmap: ImageBitmap | null = null
+  let basemapControls: BasemapControlsHandle | null = null
+  let basemapPicker: BasemapPickerHandle | null = null
+  // What the controls show for the registration when no add is under way.
+  let basemapBase: { view: BasemapView; quiet: string | null } = { view: { kind: 'none' }, quiet: null }
+  // Set from Add until the add ends; a state or image answer landing meanwhile updates the base only.
+  let basemapAdding: { returnTo: { view: BasemapView; quiet: string | null }; baseAtStart: typeof basemapBase } | null = null
+  let basemapShown: { view: BasemapView; quiet: string | null } = basemapBase
+  let basemapHeld: InspectAnswer | null = null
+  // D-32: session only, never in viewFields.
+  let basemapColour = false
+  let fieldOpacity = 1
+  // Read, register and remove share one slot, so the newest of them decides the state.
+  const basemapStateSlot = new LatestWins<Answer<{ state: BasemapState }>>()
+  const basemapInspectSlot = new LatestWins<Answer<{ answer: InspectAnswer }>>()
+  const basemapImageSlot = new LatestWins<BasemapImage>()
   let meshBytes: number | null = null
   // Set once the mesh and camera are loaded (loadAndDraw) -- the click
   // handler is wired from mount, so both are nullable until then.
@@ -1035,7 +1071,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   function paintLegend(legend: LegendOptions | null): void {
     shownLegend = legend
-    renderLegend(legendEl, legend)
+    renderLegend(legendEl, legend === null ? null : { ...legend, blended: fieldAlpha() < 1 })
   }
 
   // The base name landed for the shown iteration: every label that names the drawn realization follows.
@@ -1107,6 +1143,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function redraw(): void {
     if (contextLost) return
     clearCanvas()
+    basemapLayer?.draw()
     layer?.draw()
     if (frameLogInstalled()) {
       // finish() makes the stamp wait for the GPU, so the delay covers the drawn frame.
@@ -1148,6 +1185,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer?.setHatchColors([ir, ig, ib], [pr, pg, pb])
     const [sr, sg, sb] = readColorToken('--surface')
     layer?.setSurfaceColor([sr, sg, sb])
+    // Half strength, so the outlines-only grid reads over a basemap without hiding it.
+    const [kr, kg, kb] = readColorToken('--ink-secondary')
+    layer?.setGridLineColor([kr, kg, kb, 0.5])
     try {
       layer?.setDimAlpha(readNumberToken('--dim-alpha'))
     } catch (error) {
@@ -1375,6 +1415,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function redrawFromCamera(): void {
     if (!camera) return
     layer?.setMatrix(camera.matrix())
+    basemapLayer?.setMatrix(camera.matrix())
     redraw()
     lasso.redraw()
     renderWhere()
@@ -1735,9 +1776,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     contextLost = false
     layer?.reupload()
+    basemapLayer?.reupload()
     layer?.setHairlineColor(readColorToken('--model-edge'))
     applyThemeColors()
-    if (camera) layer?.setMatrix(camera.matrix())
+    if (camera) {
+      layer?.setMatrix(camera.matrix())
+      basemapLayer?.setMatrix(camera.matrix())
+    }
     redraw()
     paintStatusBar()
   })
@@ -3394,8 +3439,280 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     pending = committed
     await performFetch(committed)
+    mountBasemap()
     if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
     if (store.get().colour.source === 'obs') void drawObservations()
+  }
+
+  // MAPX-04: mounted and read after the first draw, so a run without a basemap opens as fast as before.
+  function mountBasemap(): void {
+    const basemapEl = document.createElement('div')
+    topLeftEl.insertBefore(basemapEl, pickerEl)
+    basemapControls = renderBasemapControls(basemapEl, {
+      onAdd: addBasemap,
+      onConfirm: confirmBasemap,
+      onSubmitNumbers: placeByNumbers,
+      onCancel: cancelBasemapAdd,
+      onRemove: () => void removeTheBasemap(),
+      onColourChange: setBasemapColour,
+      onOpacityChange: setFieldOpacity,
+    })
+    void readTheBasemap()
+  }
+
+  // A quiet line under the view, cleared by the next show since show() empties the controls.
+  function showBasemap(view: BasemapView, quiet: string | null = null): void {
+    basemapShown = { view, quiet }
+    if (basemapControls === null) return
+    basemapControls.show(view.kind === 'ready' ? { ...view, colour: basemapColour, opacity: fieldOpacity } : view)
+    if (quiet !== null) {
+      const line = document.createElement('div')
+      line.classList.add('basemap-muted')
+      line.textContent = quiet
+      basemapControls.el.appendChild(line)
+    }
+  }
+
+  function setBasemapBase(view: BasemapView, quiet: string | null = null): void {
+    basemapBase = { view, quiet }
+    if (basemapAdding === null) showBasemap(view, quiet)
+  }
+
+  // Null when a newer read, register or remove has replaced this one.
+  async function settleBasemapState(
+    key: string,
+    work: (signal: AbortSignal) => Promise<Answer<{ state: BasemapState }>>,
+  ): Promise<Answer<{ state: BasemapState }> | null> {
+    try {
+      const result = await basemapStateSlot.run(key, work)
+      return result.stale ? null : result.value
+    } catch (error) {
+      return { ok: false, reason: describeError(error), code: null }
+    }
+  }
+
+  async function readTheBasemap(): Promise<void> {
+    const result = await settleBasemapState('read', (signal) => readBasemapState({ signal }))
+    if (result === null) return
+    if (!result.ok) {
+      setBasemapBase({ kind: 'none' }, `the basemap could not be read: ${result.reason}`)
+      return
+    }
+    applyBasemapState(result.state)
+  }
+
+  function applyBasemapState(state: BasemapState): void {
+    if (state.status === 'ready') {
+      void drawBasemap(state)
+      return
+    }
+    clearBasemapImage()
+    if (state.status === 'none') setBasemapBase({ kind: 'none' })
+    else setBasemapBase({ kind: 'unavailable', reason: state.reason })
+  }
+
+  async function drawBasemap(state: ReadyState): Promise<void> {
+    const gl = ctx?.gl
+    const origin = mesh?.origin
+    if (gl === undefined || origin === undefined) {
+      setBasemapBase({ kind: 'unavailable', reason: 'the basemap cannot be drawn before the map is' })
+      return
+    }
+    setBasemapBase({ kind: 'busy', text: `loading the basemap ${state.name}` })
+    // Kept outside the slot so an image that lands after a newer pick is still closed.
+    const landed: { image: BasemapImage | null } = { image: null }
+    let image: BasemapImage
+    try {
+      const result = await basemapImageSlot.run(state.tag, async (signal) => {
+        landed.image = await loadBasemapImage(state, BasemapLayer.maxTextureSize(gl), { signal })
+        return landed.image
+      })
+      if (result.stale) {
+        if (landed.image?.ok) landed.image.bitmap.close()
+        return
+      }
+      image = result.value
+    } catch (error) {
+      image = { ok: false, reason: describeError(error), code: null }
+    }
+    if (!image.ok) {
+      clearBasemapImage()
+      setBasemapBase({ kind: 'unavailable', reason: image.reason })
+      return
+    }
+    if (basemapLayer === null) {
+      basemapLayer = new BasemapLayer(gl)
+      basemapLayer.setSaturation(basemapColour ? 1 : 0)
+    }
+    const refusal = basemapLayer.setImage(image.bitmap, state.extent, origin)
+    if (camera) basemapLayer?.setMatrix(camera.matrix())
+    const previous = basemapBitmap
+    basemapBitmap = refusal === null ? image.bitmap : null
+    if (previous !== null && previous !== image.bitmap) previous.close()
+    if (refusal !== null) {
+      image.bitmap.close()
+      setBasemapBase({ kind: 'unavailable', reason: refusal })
+    } else {
+      setBasemapBase({
+        kind: 'ready',
+        name: state.name,
+        placedBy: state.placedBy,
+        worldFile: state.worldFile,
+        extent: state.extent,
+        notes: image.notes,
+        colour: basemapColour,
+        opacity: fieldOpacity,
+      })
+    }
+    applyFieldOpacity()
+    redraw()
+  }
+
+  function addBasemap(): void {
+    basemapPicker?.close()
+    if (basemapAdding === null) basemapAdding = { returnTo: basemapShown, baseAtStart: basemapBase }
+    basemapPicker = openBasemapPicker(mapCanvasArea, {
+      onPick: (file) => {
+        basemapPicker = null
+        void inspectPicked(file)
+      },
+      onClose: () => {
+        basemapPicker = null
+        cancelBasemapAdd()
+      },
+    })
+  }
+
+  function endBasemapAdd(): void {
+    basemapAdding = null
+    basemapHeld = null
+    basemapInspectSlot.cancel()
+    basemapPicker?.close()
+    basemapPicker = null
+  }
+
+  function cancelBasemapAdd(): void {
+    const adding = basemapAdding
+    endBasemapAdd()
+    // The view from before Add, unless the registration changed meanwhile.
+    const back = adding !== null && adding.baseAtStart === basemapBase ? adding.returnTo : basemapBase
+    showBasemap(back.view, back.quiet)
+  }
+
+  // Add stays on screen while a file is read, so a second pick can replace a slow first one.
+  async function inspectPicked(file: { id: string; name: string }): Promise<void> {
+    basemapHeld = null
+    showBasemap({ kind: 'none' }, `reading ${file.name}`)
+    let answer: Answer<{ answer: InspectAnswer }>
+    try {
+      const result = await basemapInspectSlot.run(file.id, () => inspectBasemap(file.id))
+      if (result.stale) return
+      answer = result.value
+    } catch (error) {
+      answer = { ok: false, reason: describeError(error), code: null }
+    }
+    if (basemapAdding === null) return
+    if (!answer.ok) {
+      endBasemapAdd()
+      showBasemap({ kind: 'refused', reason: answer.reason })
+      return
+    }
+    basemapHeld = answer.answer
+    const { name, notes, modelExtent, placement } = answer.answer
+    if (placement.by === 'world_file') {
+      showBasemap({ kind: 'proposal', name, worldFile: placement.worldFile, extent: placement.extent, notes })
+    } else {
+      showBasemap({ kind: 'numbers', name, reason: placement.reason, worldFiles: placement.worldFiles, modelExtent })
+    }
+  }
+
+  function confirmBasemap(): void {
+    const held = basemapHeld
+    if (held === null || held.placement.by !== 'world_file') return
+    void placeBasemap(held, { id: held.fileId, stamp: held.stamp, by: 'world_file' })
+  }
+
+  function placeByNumbers(extent: Extent): void {
+    const held = basemapHeld
+    if (held === null) return
+    void placeBasemap(held, { id: held.fileId, stamp: held.stamp, by: 'numbers', extent })
+  }
+
+  // A refusal the four numbers can answer goes back to the form; any other ends the add.
+  const NUMBERS_CAN_ANSWER = new Set(['no_overlap', 'numbers', 'no_world_file'])
+
+  async function placeBasemap(held: InspectAnswer, request: RegisterRequest): Promise<void> {
+    // The form stays up while typed numbers are sent, so a refusal keeps what was typed.
+    if (request.by === 'world_file') showBasemap({ kind: 'busy', text: `placing ${held.name}` })
+    const result = await settleBasemapState(`register ${held.fileId}`, () => registerBasemap(request))
+    if (result === null) return
+    // A placement the server took is drawn even if the add was cancelled meanwhile.
+    if (result.ok) {
+      if (basemapHeld === held) endBasemapAdd()
+      applyBasemapState(result.state)
+      return
+    }
+    if (basemapHeld !== held) return
+    if (result.code !== null && NUMBERS_CAN_ANSWER.has(result.code)) {
+      const { name, modelExtent, placement } = held
+      const worldFiles = placement.by === 'world_file' ? [placement.worldFile] : placement.worldFiles
+      if (request.by === 'numbers') {
+        const reason = placement.by === 'numbers' ? placement.reason : result.reason
+        showBasemap({ kind: 'numbers', name, reason, worldFiles, modelExtent, error: result.reason })
+      } else {
+        showBasemap({ kind: 'numbers', name, reason: result.reason, worldFiles, modelExtent })
+      }
+      return
+    }
+    endBasemapAdd()
+    showBasemap({ kind: 'refused', reason: result.reason })
+  }
+
+  async function removeTheBasemap(): Promise<void> {
+    const before = basemapBase
+    setBasemapBase({ kind: 'busy', text: 'removing the basemap' })
+    const result = await settleBasemapState('remove', () => removeBasemap())
+    if (result === null) return
+    if (!result.ok) {
+      setBasemapBase(before.view, `the basemap could not be removed: ${result.reason}`)
+      return
+    }
+    applyBasemapState(result.state)
+  }
+
+  function clearBasemapImage(): void {
+    basemapImageSlot.cancel()
+    if (basemapBitmap === null) return
+    basemapLayer?.setImage(null, null, mesh?.origin ?? [0, 0])
+    basemapBitmap.close()
+    basemapBitmap = null
+    applyFieldOpacity()
+    redraw()
+  }
+
+  function setBasemapColour(on: boolean): void {
+    basemapColour = on
+    basemapLayer?.setSaturation(on ? 1 : 0)
+    redraw()
+  }
+
+  function setFieldOpacity(alpha: number): void {
+    fieldOpacity = alpha
+    applyFieldOpacity()
+    redraw()
+  }
+
+  // The slider goes with the basemap, so its setting applies only while one is drawn.
+  function fieldAlpha(): number {
+    return basemapBitmap !== null ? fieldOpacity : 1
+  }
+
+  // At 0 the fill is gone, so every cell is outlined instead (D-25).
+  function applyFieldOpacity(): void {
+    const alpha = fieldAlpha()
+    layer?.setFieldOpacity(alpha)
+    layer?.setGridLines(alpha === 0)
+    if (!obsActive && shownLegend !== null) paintLegend(shownLegend)
   }
 
   // Built in idle time after the first draw, so the first click does not pay for it.
