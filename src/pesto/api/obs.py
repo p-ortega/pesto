@@ -429,7 +429,12 @@ def _site_points(index, aggs: list[tuple[int, object]], site_ids: list[int]) -> 
     site_index = pd.Index(index.sites["site_id"])
     out = []
     for site_id in site_ids:
-        site = index.sites.iloc[int(site_index.get_indexer([site_id])[0])]
+        if not site_index.is_unique:
+            raise ValueError("the observation index holds a site id more than once")
+        found = int(site_index.get_indexer([site_id])[0])
+        if found < 0:
+            raise ValueError(f"the observation index holds no site with id {site_id}")
+        site = index.sites.iloc[found]
         window = slice(int(site["start"]), int(site["start"]) + int(site["count"]))
         flags = index.flags[window]
         target = (flags & FLAG_HAS_TARGET) != 0
@@ -558,7 +563,15 @@ async def get_obs_1to1(request: Request, params: Annotated[ObsGroupQuery, Query(
     aggs = _load_aggs(state, cache_root, ends)
     if isinstance(aggs, ReadFailure):
         return problem_from_failure(404, aggs)
-    body["outlying"] = _site_points(index, aggs, [int(v) for v in entry["outlying"]])
+    try:
+        body["outlying"] = _site_points(index, aggs, [int(v) for v in entry["outlying"]])
+    except ValueError as exc:
+        return problem(
+            409,
+            "the 1:1 grid does not match the observations",
+            artifact="obs_1to1",
+            detail=f"{exc}; run the ingest again",
+        )
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 

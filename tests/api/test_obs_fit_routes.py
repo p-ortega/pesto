@@ -326,6 +326,21 @@ def test_1to1_with_no_obs_1to1_cached_is_a_404_naming_it(tmp_path, in_process): 
     assert response.json()["artifact"] == "obs_1to1"
 
 
+def test_1to1_whose_outlying_site_is_not_in_the_index_is_a_409_and_never_the_last_site(tmp_path, in_process):  # noqa: F811
+    client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
+    sidecar = _layout(client).obs_1to1_meta
+    stored = json.loads(sidecar.read_text())
+    next(g for g in stored["groups"] if g["group"] == "gw_head")["outlying"] = [987654]
+    sidecar.write_text(json.dumps(stored))
+
+    response = client.get("/api/run/obs/1to1", params={"group": "gw_head"})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["artifact"] == "obs_1to1"
+    assert "no site with id 987654" in body["detail"]
+
+
 def test_1to1_left_over_from_an_older_ingest_is_not_served_when_the_last_one_failed(tmp_path, in_process):  # noqa: F811
     client, _run = open_obs_run(tmp_path, iterations=(0, 1), n_real=4)
     assert client.get("/api/run/obs/1to1", params={"group": "gw_head"}).status_code == 200
