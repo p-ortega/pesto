@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ObsSitePayload } from '../src/data/obs'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
-import { renderSpaghetti, type SpaghettiHandle, type SpaghettiOptions } from '../src/ui/obs-spaghetti'
+import { BASE_STYLE } from '../src/ui/charts/base-style'
+import { MAX_BOLD_REALS, renderSpaghetti, type SpaghettiHandle, type SpaghettiOptions } from '../src/ui/obs-spaghetti'
 import { createRecording2d, type RecordedCall as Call2d } from './support/recording-2d'
 import { createRecordingGl, type RecordedCall as CallGl } from './support/recording-gl'
 import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
@@ -17,6 +18,7 @@ const obsApi = vi.hoisted(() => ({
   fetchObsSite: vi.fn(),
   fetchObsSeries: vi.fn(),
   fetchObsTimes: vi.fn(),
+  fetchObsReals: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -165,6 +167,7 @@ beforeEach(() => {
   obsApi.fetchObsSite.mockReset()
   obsApi.fetchObsSeries.mockReset()
   obsApi.fetchObsTimes.mockReset()
+  obsApi.fetchObsReals.mockReset()
   answerSite(sitePayload())
 })
 
@@ -272,14 +275,15 @@ async function drawn(m: Mounted, id = 7): Promise<void> {
 }
 
 describe('base', () => {
-  it('is one bold polyline per iteration in that iteration colour', async () => {
+  it('is one bold polyline per iteration in that iteration colour, with the one base style', async () => {
     const m = mount()
     await drawn(m)
 
     const bold = boldLines(m.front)
     expect(bold.map((b) => b.colour)).toEqual([INK_MUTED, SERIES_1])
+    expect(legendText(m.host)).toContain(BASE_STYLE.legend)
     for (const line of bold) {
-      expect(line.width).toBeGreaterThanOrEqual(2.5)
+      expect(line.width).toBe(BASE_STYLE.lineWidth)
       expect(line.moves).toBe(1)
       expect(line.lines).toBe(3)
     }
@@ -715,5 +719,205 @@ describe('a hidden tab and a lost context', () => {
     select(m.store, [7])
 
     expect(obsApi.fetchObsSite).not.toHaveBeenCalled()
+  })
+})
+
+describe('a named realization selection', () => {
+  const DIM = 0.35
+  const N = 10
+  // Iteration 0 has no r7; iteration 6 holds the same names in another order, so a match by
+  // position would land on the wrong columns.
+  const NAMES: Record<number, string[]> = {
+    0: ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r8', 'r9', 'r10'],
+    6: Array.from({ length: N }, (_, j) => `r${(j + 3) % N}`),
+  }
+
+  function answerNames(names: Record<number, string[]> = NAMES): void {
+    obsApi.fetchObsReals.mockImplementation(async (iteration: number) => ({
+      ok: true,
+      payload: { iteration, names: names[iteration], base_index: [1], base_note: null },
+    }))
+  }
+
+  function setReals(store: SelectionStore, reals: ReadonlySet<string> | 'all'): void {
+    store.set({ reals }, 'header')
+    store.flush()
+  }
+
+  interface Line {
+    colour: unknown
+    width: number
+    points: Array<[number, number]>
+  }
+
+  // Every stroked path of the last frame drawn on the front layer, in drawing order.
+  function lastFrame(calls: Call2d[]): Line[] {
+    const start = calls.map((c) => c.method).lastIndexOf('setTransform')
+    const out: Line[] = []
+    let points: Array<[number, number]> = []
+    for (const call of calls.slice(start)) {
+      if (call.method === 'beginPath') points = []
+      else if (call.method === 'moveTo' || call.method === 'lineTo') points.push(call.args as [number, number])
+      else if (call.method === 'stroke') out.push({ colour: call.state.strokeStyle, width: call.state.lineWidth, points })
+    }
+    return out
+  }
+
+  function selectedLines(calls: Call2d[], colour?: string): Line[] {
+    return lastFrame(calls).filter((l) => l.width === 1.25 && (colour === undefined || l.colour === colour))
+  }
+
+  // Values are 10 + row + 0.5 * column, so a line's column follows from its first y against
+  // base's (column 1) first two rows, which are one value unit apart.
+  function columnOf(line: Line, base: Line): number {
+    const unit = base.points[1][1] - base.points[0][1]
+    return Math.round(1 + (2 * (line.points[0][1] - base.points[0][1])) / unit)
+  }
+
+  function stripAlphas(gl: CallGl[]): number[] {
+    return gl.filter((c) => c.method === 'uniform4f').map((c) => (c.args as number[])[4])
+  }
+
+  beforeEach(() => {
+    document.documentElement.style.setProperty('--dim-alpha', String(DIM))
+    answerSite(sitePayload(), () => ({ nReal: N }))
+    answerNames()
+  })
+
+  it('asks nothing and fades nothing while every realization is selected', async () => {
+    const m = mount()
+    await drawn(m)
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(2))
+
+    expect(obsApi.fetchObsReals).not.toHaveBeenCalled()
+    stripAlphas(m.gl).forEach((a) => expect(a).toBeCloseTo(0.15, 5))
+    expect(selectedLines(m.front)).toHaveLength(0)
+  })
+
+  it('fades the strips and draws the selected ones over them, found by name in each iteration', async () => {
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2', 'r7']))
+    await vi.waitFor(() => expect(selectedLines(m.front)).toHaveLength(3))
+
+    expect(obsApi.fetchObsReals.mock.calls.map((c) => c[0]).sort()).toEqual([0, 6])
+    stripAlphas(m.gl).slice(-2).forEach((a) => expect(a).toBeCloseTo(0.15 * DIM, 5))
+
+    const frame = lastFrame(m.front)
+    const base = (colour: string) => frame.find((l) => l.width === BASE_STYLE.lineWidth && l.colour === colour)!
+    // Iteration 0 holds r2 in column 2 and no r7.
+    expect(selectedLines(m.front, INK_MUTED).map((l) => columnOf(l, base(INK_MUTED)))).toEqual([2])
+    // Iteration 6 holds r2 in column 9 and r7 in column 4.
+    expect(selectedLines(m.front, SERIES_1).map((l) => columnOf(l, base(SERIES_1))).sort()).toEqual([4, 9])
+    // Base goes on top: every selected line is stroked before the first base line.
+    const firstBase = frame.findIndex((l) => l.width === BASE_STYLE.lineWidth)
+    const lastSelected = frame.map((l) => l.width).lastIndexOf(1.25)
+    expect(lastSelected).toBeLessThan(firstBase)
+    expect(legendText(m.host)).toContain('selected realizations: drawn in the colour of their iteration over the faded rest')
+  })
+
+  it('counts the selected realizations an iteration does not hold', async () => {
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2', 'r7']))
+    await vi.waitFor(() => expect(legendText(m.host)).toContain('1 of 2 selected realizations is not in iteration 0'))
+
+    expect(legendText(m.host).some((line) => line.includes('not in iteration 6'))).toBe(false)
+  })
+
+  it('draws at most 50 over the strips and says how many more were not', async () => {
+    const names = Array.from({ length: 60 }, (_, j) => `r${j}`)
+    answerSite(sitePayload(), () => ({ nReal: 60 }))
+    answerNames({ 0: names, 6: names })
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(names))
+    await vi.waitFor(() =>
+      expect(legendText(m.host)).toContain('10 more selected realizations are not drawn bold: at most 50 are'),
+    )
+
+    expect(MAX_BOLD_REALS).toBe(50)
+    expect(selectedLines(m.front)).toHaveLength(2 * 50)
+  })
+
+  it('does not fade the strips when the names cannot be read, and says why', async () => {
+    obsApi.fetchObsReals.mockResolvedValue({ ok: false, artifact: 'obs_ens/0', reason: 'no names were recorded' })
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2']))
+    await vi.waitFor(() =>
+      expect(legendText(m.host)).toContain('the selection cannot be shown: obs_ens/0: no names were recorded'),
+    )
+
+    stripAlphas(m.gl).slice(-2).forEach((a) => expect(a).toBeCloseTo(0.15, 5))
+    expect(selectedLines(m.front)).toHaveLength(0)
+  })
+
+  it('refuses names that answer for another iteration', async () => {
+    obsApi.fetchObsReals.mockImplementation(async () => ({
+      ok: true,
+      payload: { iteration: 3, names: NAMES[0], base_index: [1], base_note: null },
+    }))
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2']))
+    await vi.waitFor(() =>
+      expect(legendText(m.host)).toContain(
+        'the selection cannot be shown: the server answered with the names of iteration 3, not 0',
+      ),
+    )
+    expect(selectedLines(m.front)).toHaveLength(0)
+  })
+
+  it('refuses names that do not match the series column for column', async () => {
+    answerNames({ 0: NAMES[0].slice(0, 9), 6: NAMES[6] })
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2']))
+    await vi.waitFor(() =>
+      expect(legendText(m.host)).toContain(
+        'the selection cannot be shown: iteration 0 has 9 realization names but its series has 10 columns',
+      ),
+    )
+    // Iteration 6 still draws its own.
+    expect(selectedLines(m.front, SERIES_1)).toHaveLength(1)
+    expect(selectedLines(m.front, INK_MUTED)).toHaveLength(0)
+  })
+
+  it('reads each iteration once, however often the selection changes, and restores the strips on all', async () => {
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2', 'r7']))
+    await vi.waitFor(() => expect(selectedLines(m.front)).toHaveLength(3))
+    setReals(m.store, new Set(['r2']))
+    await vi.waitFor(() => expect(selectedLines(m.front)).toHaveLength(2))
+    expect(obsApi.fetchObsReals).toHaveBeenCalledTimes(2)
+
+    setReals(m.store, 'all')
+    stripAlphas(m.gl).slice(-2).forEach((a) => expect(a).toBeCloseTo(0.15, 5))
+    expect(selectedLines(m.front)).toHaveLength(0)
+    expect(legendText(m.host).some((line) => line.startsWith('selected realizations'))).toBe(false)
+  })
+
+  it('asks nothing while hidden, and follows a change made while hidden once shown', async () => {
+    const m = mount()
+    await drawn(m)
+    m.handle.onHide()
+    setReals(m.store, new Set(['r2']))
+    expect(obsApi.fetchObsReals).not.toHaveBeenCalled()
+
+    m.handle.onShow()
+    await vi.waitFor(() => expect(selectedLines(m.front)).toHaveLength(2))
+    expect(obsApi.fetchObsReals).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not run its text together', async () => {
+    loadRealStylesheet()
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set(['r2', 'r7']))
+    await vi.waitFor(() => expect(legendText(m.host)).toContain('1 of 2 selected realizations is not in iteration 0'))
+
+    expectNoRunTogetherText(m.host, 'obs-spaghetti')
   })
 })

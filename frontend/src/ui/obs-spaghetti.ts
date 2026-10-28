@@ -7,10 +7,12 @@
 
 import { LatestWins } from '../data/latest-wins'
 import {
+  fetchObsReals,
   fetchObsSeries,
   fetchObsSite,
   fetchObsTimes,
   shareRead,
+  type ObsRealsResult,
   type ObsSeriesResult,
   type ObsSitePayload,
   type ObsTimesResult,
@@ -20,11 +22,12 @@ import { createContext, type GlContext } from '../gl/context'
 import { LineLayer, type LinePanel, type LineSeries } from '../gl/line-layer'
 import type { SelectionStore } from '../state/selection'
 import { linearAxis } from './charts/axes'
+import { BASE_STYLE, baseLegendFor } from './charts/base-style'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
 import type { Chart2D, ChartSize } from './charts/histogram'
 import { drawBand, drawCursor, drawMarkers, drawPolyline, type MarkerPoint } from './charts/marks'
 import { timeAxis, timeAxisTitle } from './charts/time-axis'
-import { readChartTokens, type ChartTokens } from './charts/tokens'
+import { readChartTokens, readDimAlpha, type ChartTokens } from './charts/tokens'
 
 export interface SpaghettiOptions {
   store: SelectionStore
@@ -49,13 +52,15 @@ const PANEL_HEIGHT = 200
 const MARGIN = { left: 48, right: 12, top: 8, bottom: 34 }
 const MIN_INNER_PX = 20
 const FONT = '11px system-ui, sans-serif'
-const BASE_WIDTH = 2.5
 const MARKER_RADIUS = 3
 const BAND_ALPHA = 0.2
 const STRIP_ALPHA = 0.15
 // More realizations than this are drawn fainter, so a dense ensemble stays readable.
 const ALPHA_FULL_UNTIL = 300
 const MIN_STRIP_ALPHA = 0.02
+// Selected realizations are drawn over the faded strips one polyline each, so their number is capped.
+export const MAX_BOLD_REALS = 50
+const SELECTED_WIDTH = 1.25
 
 type Role = 'first' | 'last' | 'only'
 
@@ -89,6 +94,14 @@ interface PreparedSite {
 
 type SiteEntry = { ok: true; prepared: PreparedSite } | { ok: false; reason: string }
 
+/** One iteration's realization names, in column order, or why they could not be read. */
+type RealsEntry = { ok: true; names: readonly string[] } | { ok: false; reason: string }
+
+/** What a named realization selection means for one series: the columns drawn over the faded strips, or why it cannot be shown. */
+type SeriesPick =
+  | { ok: true; columns: number[]; asked: number; missing: number; notDrawn: number }
+  | { ok: false; reason: string }
+
 interface PanelView {
   id: number
   entry: SiteEntry | undefined
@@ -119,6 +132,65 @@ function hasMarker(site: ObsSitePayload, i: number): boolean {
 
 function stripAlpha(nReal: number): number {
   return Math.max(MIN_STRIP_ALPHA, STRIP_ALPHA * Math.min(1, ALPHA_FULL_UNTIL / Math.max(1, nReal)))
+}
+
+// Names only: a selected realization is found by its name in this iteration's own list, never by position.
+function pickColumns(reals: ReadonlySet<string>, entry: RealsEntry, s: { iteration: number; nReal: number }): SeriesPick {
+  if (!entry.ok) return { ok: false, reason: entry.reason }
+  if (entry.names.length !== s.nReal) {
+    return {
+      ok: false,
+      reason: `iteration ${s.iteration} has ${entry.names.length} realization names but its series has ${s.nReal} columns`,
+    }
+  }
+  const columnOf = new Map<string, number>()
+  for (let j = 0; j < entry.names.length; j++) {
+    const name = entry.names[j]
+    if (columnOf.has(name)) {
+      return { ok: false, reason: `iteration ${s.iteration} names realization ${name} more than once` }
+    }
+    columnOf.set(name, j)
+  }
+  const found: number[] = []
+  let missing = 0
+  for (const name of reals) {
+    const column = columnOf.get(name)
+    if (column === undefined) missing += 1
+    else found.push(column)
+  }
+  const columns = found.slice(0, MAX_BOLD_REALS)
+  return { ok: true, columns, asked: reals.size, missing, notDrawn: found.length - columns.length }
+}
+
+function selectionLines(series: PreparedSeries[], pickOf: (s: PreparedSeries) => SeriesPick | null | undefined): string[] {
+  const lines: string[] = []
+  let drawnOver = false
+  for (const s of series) {
+    const pick = pickOf(s)
+    if (pick === null) continue
+    if (pick === undefined) {
+      lines.push(`reading the realization names of iteration ${s.iteration}`)
+      continue
+    }
+    if (!pick.ok) {
+      lines.push(`the selection cannot be shown: ${pick.reason}`)
+      continue
+    }
+    if (pick.columns.length > 0) drawnOver = true
+    if (pick.missing > 0) {
+      lines.push(
+        `${pick.missing} of ${plural(pick.asked, 'selected realization', 'selected realizations')} ${pick.missing === 1 ? 'is' : 'are'} not in iteration ${s.iteration}`,
+      )
+    }
+    if (pick.notDrawn > 0) {
+      lines.push(
+        `${plural(pick.notDrawn, 'more selected realization is', 'more selected realizations are')} not drawn bold: at most ${MAX_BOLD_REALS} are`,
+      )
+    }
+  }
+  if (drawnOver) lines.unshift('selected realizations: drawn in the colour of their iteration over the faded rest')
+  // Two iterations can give the same sentence; the legend says it once.
+  return [...new Set(lines)]
 }
 
 function pickIterations(iterations: number[]): Array<{ iteration: number; role: Role }> {
@@ -254,7 +326,7 @@ function markerCounts(site: ObsSitePayload): { filled: number; hollow: number; s
 const ZERO_WEIGHT_WORDS = 'zero weight: a model output, not fitted'
 
 /** Every line the legend shows for one site, in the order they are read. */
-function legendLines(prepared: PreparedSite): string[] {
+function legendLines(prepared: PreparedSite, pickOf: (s: PreparedSeries) => SeriesPick | null | undefined): string[] {
   const lines: string[] = []
   for (const s of prepared.series) {
     const count = plural(s.nReal, 'realization', 'realizations')
@@ -263,12 +335,11 @@ function legendLines(prepared: PreparedSite): string[] {
     else lines.push(`only iteration ${s.iteration} was ingested: ${count}`)
   }
   lines.push(...prepared.problems)
+  lines.push(...selectionLines(prepared.series, pickOf))
 
-  if (prepared.series.some((s) => s.baseIndex.length > 0)) {
-    lines.push("base: the bold line, in the colour of its iteration")
-  }
+  if (prepared.series.some((s) => s.baseIndex.length > 0)) lines.push(BASE_STYLE.legend)
   for (const s of prepared.series) {
-    if (s.baseIndex.length === 0) lines.push(`no base realization in iteration ${s.iteration}`)
+    if (s.baseIndex.length === 0) lines.push(baseLegendFor(s.iteration, false))
     if (s.baseNote) lines.push(s.baseNote)
   }
 
@@ -377,6 +448,77 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
   const loaded = new Map<number, SiteEntry>()
   const slot = new LatestWins<Map<number, SiteEntry>>()
 
+  // ---- the realization selection, matched by name per iteration ----
+
+  const realsOf = new Map<number, RealsEntry>()
+  const realsReads = new Map<number, () => Promise<ObsRealsResult>>()
+  const picks = new Map<string, SeriesPick>()
+  let dimProblem: string | null = null
+
+  /** null: all realizations, nothing faded. undefined: the names are still being read. */
+  function pickOf(s: PreparedSeries): SeriesPick | null | undefined {
+    const reals = store.get().reals
+    if (reals === 'all') return null
+    const cached = picks.get(s.key)
+    if (cached) return cached
+    const entry = realsOf.get(s.iteration)
+    if (!entry) return undefined
+    const pick = pickColumns(reals, entry, s)
+    picks.set(s.key, pick)
+    return pick
+  }
+
+  function dimAlpha(): number {
+    try {
+      dimProblem = null
+      return readDimAlpha(document.documentElement)
+    } catch (error) {
+      dimProblem = `The unselected realizations are not faded: ${describeError(error)}`
+      return 1
+    }
+  }
+
+  function ensureReals(): void {
+    if (hidden || store.get().reals === 'all') return
+    const iterations = new Set<number>()
+    for (const view of views) {
+      if (view.entry?.ok === true) for (const s of view.entry.prepared.series) iterations.add(s.iteration)
+    }
+    const runId = store.get().runId
+    for (const iteration of iterations) {
+      if (realsOf.has(iteration)) continue
+      let read = realsReads.get(iteration)
+      if (!read) {
+        read = shareRead(() => fetchObsReals(iteration))
+        realsReads.set(iteration, read)
+      }
+      read().then(
+        (result) => settleReals(runId, iteration, readEntry(iteration, result)),
+        (error: unknown) => settleReals(runId, iteration, { ok: false, reason: describeError(error) }),
+      )
+    }
+  }
+
+  function readEntry(iteration: number, result: ObsRealsResult): RealsEntry {
+    if (!result.ok) return { ok: false, reason: `${result.artifact}: ${result.reason}` }
+    if (result.payload.iteration !== iteration) {
+      return { ok: false, reason: `the server answered with the names of iteration ${result.payload.iteration}, not ${iteration}` }
+    }
+    return { ok: true, names: result.payload.names }
+  }
+
+  function settleReals(runId: string, iteration: number, entry: RealsEntry): void {
+    if (store.get().runId !== runId || realsOf.has(iteration)) return
+    realsOf.set(iteration, entry)
+    picks.clear()
+    if (hidden) {
+      stale = true
+      return
+    }
+    renderPanels()
+    redrawAll()
+  }
+
   const note = hostDiv(host, 'obs-spaghetti-note')
   const stage = hostDiv(host, 'obs-spaghetti-stage')
   stage.style.position = 'relative'
@@ -467,6 +609,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     gl.clear(gl.COLOR_BUFFER_BIT)
     syncLayer(lines)
 
+    const dim = dimAlpha()
     const panels: LinePanel[] = []
     for (const view of views) {
       if (view.entry?.ok !== true || view.plot === null) continue
@@ -482,7 +625,10 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
         ],
         xDomain: [prepared.xLo - prepared.t0, prepared.xHi - prepared.t0],
         yDomain: prepared.yDomain,
-        strips: prepared.series.map((s) => ({ key: s.key, rgba: roleColour(s.role, stripAlpha(s.nReal)) })),
+        strips: prepared.series.map((s) => {
+          const faded = pickOf(s)?.ok === true
+          return { key: s.key, rgba: roleColour(s.role, stripAlpha(s.nReal) * (faded ? dim : 1)) }
+        }),
       })
     }
     lines.draw(panels)
@@ -571,14 +717,17 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     ctx.clip()
 
     const xs = site.time.map((t) => (Number.isFinite(t) ? x.toPx(t) : Number.NaN))
-    for (const s of prepared.series) {
-      const colour = s.role === 'first' ? tokens.inkMuted : tokens.series1
-      for (const column of s.baseIndex) {
-        const ys: number[] = new Array(s.count)
-        for (let r = 0; r < s.count; r++) ys[r] = y.toPx(s.values[r * s.nReal + column])
-        drawPolyline(ctx, xs, ys, { colour, width: BASE_WIDTH })
-      }
+    const column = (s: PreparedSeries, j: number, width: number): void => {
+      const ys: number[] = new Array(s.count)
+      for (let r = 0; r < s.count; r++) ys[r] = y.toPx(s.values[r * s.nReal + j])
+      drawPolyline(ctx, xs, ys, { colour: s.role === 'first' ? tokens.inkMuted : tokens.series1, width })
     }
+    // Every selected line goes down before any base line, so base stays on top in both iterations.
+    for (const s of prepared.series) {
+      const pick = pickOf(s)
+      if (pick?.ok === true) for (const j of pick.columns) column(s, j, SELECTED_WIDTH)
+    }
+    for (const s of prepared.series) for (const j of s.baseIndex) column(s, j, BASE_STYLE.lineWidth)
 
     const points: MarkerPoint[] = []
     for (let i = 0; i < site.time.length; i++) {
@@ -694,6 +843,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     if (glFailure !== null) textLine(note, glFailure)
     if (loadProblem !== null) textLine(note, loadProblem)
     if (cursorProblem !== null) textLine(note, cursorProblem)
+    if (dimProblem !== null) textLine(note, dimProblem)
   }
 
   function renderPanels(): void {
@@ -720,7 +870,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
       plot.style.height = `${PANEL_HEIGHT}px`
       view.plot = plot
       const legend = hostDiv(panel, 'obs-spaghetti-legend')
-      for (const line of legendLines(prepared)) textLine(legend, line)
+      for (const line of legendLines(prepared, pickOf)) textLine(legend, line)
       const noise = prepared.site.noise
       if (noise.available) legend.title = `${noise.n_real_used} realizations used for the noise band`
     }
@@ -738,6 +888,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     renderPanels()
     redrawAll()
     ensureTimes()
+    ensureReals()
   }
 
   // ---- loading ----
@@ -794,12 +945,28 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
         loaded.clear()
         timesOf.clear()
         timesReads.clear()
+        realsOf.clear()
+        realsReads.clear()
+        picks.clear()
       }
       if (hidden) {
         stale = true
         return
       }
       sync()
+    },
+  )
+  const unsubscribeReals = store.subscribe(
+    (s) => s.reals,
+    () => {
+      picks.clear()
+      // A refused read gets another try when the selection changes.
+      for (const [iteration, entry] of [...realsOf]) if (!entry.ok) realsOf.delete(iteration)
+      if (hidden) {
+        stale = true
+        return
+      }
+      refresh()
     },
   )
   const unsubscribeCursor = store.subscribe(
@@ -838,6 +1005,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     },
     dispose() {
       unsubscribeSites()
+      unsubscribeReals()
       unsubscribeCursor()
       slot.cancel()
       observer?.disconnect()
