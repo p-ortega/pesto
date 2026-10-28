@@ -267,6 +267,43 @@ async def get_obs_series(request: Request, params: Annotated[ObsSeriesQuery, Que
     return blob_response(rows, meta=meta, cache_control="no-store")
 
 
+class ObsRealsQuery(RunQuery):
+    """``iteration`` is the one accepted field."""
+
+    iteration: int
+
+
+@router.get("/obs/reals")
+async def get_obs_reals(request: Request, params: Annotated[ObsRealsQuery, Query()]) -> Response:
+    """One iteration's observation ensemble realization names, in the order the file recorded
+    them, so a realization is matched to a spaghetti column by name. Base is found by ``find_base``."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    name = f"{obscache.OBS_ENS_PREFIX}{params.iteration}"
+    reason = _recorded_reason(
+        Manifest.load(CacheLayout(root=Path(cache_root))),
+        name,
+        f"no observation ensemble was ingested for iteration {params.iteration}",
+    )
+    if reason is not None:
+        return problem(404, "no observation ensemble for that iteration", artifact=name, detail=reason)
+    stored = obscache.get_ens(state, cache_root, params.iteration)
+    if isinstance(stored, ReadFailure):
+        return problem_from_failure(404, stored)
+
+    base_index, base_note = find_base(stored.real_names)
+    body = {
+        "iteration": int(params.iteration),
+        "names": list(stored.real_names),
+        "base_index": base_index,
+        "base_note": base_note,
+    }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
 _RESID_ROW = OBS_STATS.index("resid_mean")
 NO_OBS_ENS_REASON = "no observation ensemble was ingested for this run"
 NO_1TO1_REASON = "no 1:1 grid was ingested for this run"
