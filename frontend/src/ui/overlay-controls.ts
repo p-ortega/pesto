@@ -8,6 +8,8 @@ export type OverlayStatus =
   | { kind: 'loading' }
   | { kind: 'off'; reason: string }
   | { kind: 'shown'; label: string; title: string }
+  // Data is there but another drawing hides it; the count stays and the user's choice is kept (D-14).
+  | { kind: 'suppressed'; reason: string; label: string; title: string }
 
 export interface OverlayControlsOptions {
   /** Told only when the user clicks an enabled toggle; setStatus never calls it. */
@@ -30,7 +32,7 @@ interface Toggle {
   count: HTMLSpanElement
   reason: HTMLSpanElement
   status: OverlayStatus
-  // The user's choice, kept while data stays available and reset by a stretch with none.
+  // The user's choice, kept while data stays available or suppressed and reset by a stretch with none.
   wanted: boolean
 }
 
@@ -54,6 +56,11 @@ export function renderOverlayControls(host: HTMLElement, opts: OverlayControlsOp
       t.count.textContent = status.label
       t.reason.textContent = ''
       t.reason.hidden = true
+      t.button.title = status.title
+    } else if (status.kind === 'suppressed') {
+      t.count.textContent = status.label
+      t.reason.textContent = status.reason
+      t.reason.hidden = false
       t.button.title = status.title
     } else if (status.kind === 'off') {
       t.count.textContent = NAME[kind]
