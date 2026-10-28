@@ -210,7 +210,8 @@ function stubFetch(): void {
     vi.fn(async (input: string | URL) => {
       const url = typeof input === 'string' ? input : input.toString()
       const [path, search] = url.split('?')
-      if (path.startsWith('/api/run/obs/')) calls.push(url)
+      // The conflict overlay reads /obs/pdc whatever the map is coloured by; only the colouring's reads count here.
+      if (path.startsWith('/api/run/obs/') && path !== '/api/run/obs/pdc') calls.push(url)
       const query = new URLSearchParams(search ?? '')
       const respond = (result: { status: number; bytes?: Uint8Array; body?: unknown; headers?: Record<string, string> }) => {
         const bytes = result.bytes ?? new Uint8Array(0)

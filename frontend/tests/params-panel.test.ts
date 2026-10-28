@@ -26,7 +26,8 @@ vi.mock('../src/data/par', async () => ({
   shareGroupsRead: (await vi.importActual<typeof import('../src/data/par')>('../src/data/par')).shareGroupsRead,
 }))
 
-const overlaysApi = vi.hoisted(() => ({ fetchAtBounds: vi.fn() }))
+// The map's overlays read /obs/pdc too; the Params panel never does.
+const overlaysApi = vi.hoisted(() => ({ fetchAtBounds: vi.fn(), fetchPdcSites: vi.fn() }))
 vi.mock('../src/data/overlays', () => overlaysApi)
 
 vi.mock('../src/gl/context', () => ({
@@ -143,6 +144,8 @@ beforeEach(() => {
   }
   overlaysApi.fetchAtBounds.mockReset()
   overlaysApi.fetchAtBounds.mockResolvedValue({ ok: false, artifact: 'par_change', reason: 'not stubbed' })
+  overlaysApi.fetchPdcSites.mockReset()
+  overlaysApi.fetchPdcSites.mockResolvedValue({ ok: false, artifact: 'pdc/0', reason: 'not stubbed' })
 })
 
 describe('renderParamsPanel', () => {
