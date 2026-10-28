@@ -66,20 +66,22 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   swatch.style.background = `linear-gradient(to right, ${stops.join(', ')})`
   el.appendChild(swatch)
 
-  // The end values, fixed width so the block does not reflow as the user
-  // drags -- a value exactly at the limit is what the ramp actually shows
+  // The end values, at least 7ch so the block does not reflow as the user
+  // drags, and wider for a long label so the two never run together -- a value exactly at the limit is what the ramp actually shows
   // at that end.
   const endValues = document.createElement('div')
   endValues.classList.add('legend-figures')
   const lowEl = document.createElement('span')
   lowEl.classList.add('tabular-nums')
   lowEl.style.display = 'inline-block'
-  lowEl.style.width = '7ch'
+  lowEl.style.minWidth = '7ch'
+  lowEl.style.whiteSpace = 'nowrap'
   lowEl.textContent = formatEndValue(opts.limits[0])
   const highEl = document.createElement('span')
   highEl.classList.add('tabular-nums')
   highEl.style.display = 'inline-block'
-  highEl.style.width = '7ch'
+  highEl.style.minWidth = '7ch'
+  highEl.style.whiteSpace = 'nowrap'
   highEl.textContent = formatEndValue(opts.limits[1])
   endValues.appendChild(lowEl)
   endValues.appendChild(highEl)

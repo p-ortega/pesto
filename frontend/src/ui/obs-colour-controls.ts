@@ -274,7 +274,8 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
     const figure = document.createElement('span')
     figure.classList.add('tabular-nums')
     figure.style.display = 'inline-block'
-    figure.style.width = '7ch'
+    figure.style.minWidth = '7ch'
+    figure.style.whiteSpace = 'nowrap'
     figure.textContent = text
     ends.appendChild(figure)
   }

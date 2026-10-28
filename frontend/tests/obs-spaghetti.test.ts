@@ -66,6 +66,7 @@ interface SeriesOver {
   baseIndex?: number[]
   baseNote?: string | null
   nNaN?: number
+  nSentinel?: number
   nanAt?: number
   siteId?: number
 }
@@ -88,6 +89,7 @@ function seriesAnswer(iteration: number, over: SeriesOver = {}) {
     baseIndex: over.baseIndex ?? [1],
     baseNote: over.baseNote ?? null,
     nNaN: over.nNaN ?? 0,
+    nSentinel: over.nSentinel ?? 0,
   }
 }
 
@@ -474,6 +476,16 @@ describe('the counts and the legend', () => {
     await drawn(m)
 
     expect(legendText(m.host)).toContain('1 observation has no time, so it is not drawn')
+  })
+
+  it('counts a sentinel simulated value apart from a missing one', async () => {
+    answerSite(sitePayload(), () => ({ nSentinel: 3 }))
+    const m = mount()
+    await drawn(m)
+
+    expect(legendText(m.host)).toContain(
+      '6 simulated values are a sentinel (a dry or no-flow placeholder) and left out; their lines break there',
+    )
   })
 
   it('does not run its text together', async () => {
