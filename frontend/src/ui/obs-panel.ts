@@ -23,6 +23,7 @@ import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import { renderGroupFit } from './obs-fit'
+import { renderSelectedSites } from './obs-selected'
 import { renderSpaghetti } from './obs-spaghetti'
 
 export interface ObsPanelOptions {
@@ -345,8 +346,9 @@ function appendNote(host: HTMLElement, note: string): void {
 
 /**
  * Fills `host` with the Obs panel. The panel's sections, top to bottom, are
- * `.obs-notices`, `.obs-groups`, `.obs-fit`, `.obs-sites` and `.obs-spaghetti`;
- * the fit host stays empty until a group is chosen.
+ * `.obs-notices`, `.obs-groups`, `.obs-selected`, `.obs-fit`, `.obs-sites` and
+ * `.obs-spaghetti`; the fit host stays empty until a group is chosen, and the
+ * selected host until a site is.
  */
 export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPanelHandle {
   host.textContent = ''
@@ -372,6 +374,15 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   const groupsHost = document.createElement('div')
   groupsHost.classList.add('obs-groups')
   host.appendChild(groupsHost)
+
+  const selectedHost = document.createElement('div')
+  selectedHost.classList.add('obs-selected')
+  host.appendChild(selectedHost)
+  const selected = renderSelectedSites(selectedHost, {
+    store: opts.store,
+    isHidden: () => hidden,
+    onPick: (siteId, event) => pickSiteId(siteId, event),
+  })
 
   const fitHost = document.createElement('div')
   fitHost.classList.add('obs-fit')
@@ -654,6 +665,12 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     (selection) => selection.sites,
     () => markSites(),
   )
+  // The section lists the selection itself, so the panel's own writes refresh it too.
+  const unsubscribeSelected = opts.store.subscribe(
+    (selection) => ({ sites: selection.sites, cells: selection.cells, iteration: selection.iteration }),
+    () => selected.refresh(),
+  )
+  selected.refresh()
 
   return {
     onShow() {
@@ -665,6 +682,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       savedScroll.clear()
       groupsGrid?.redraw()
       sitesGrid?.redraw()
+      selected.onShow()
       if (sitesPending) followSelection()
     },
     onHide() {
@@ -677,6 +695,8 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     dispose() {
       unsubscribeGroups()
       unsubscribeSites()
+      unsubscribeSelected()
+      selected.dispose()
       sitesSlot.cancel()
       fit.dispose()
       spaghetti.dispose()
