@@ -5,8 +5,9 @@ The browser only ever holds opaque ids and display names; the id-to-path
 map is the directory picker's own ``app.state.fs_ids``. A world-file
 placement is always recomputed from the file on the server, never taken
 from numbers the browser sends. The user's image, its folder, the run
-folder and the run's cache root are only read; the one write goes to the
-home store through :mod:`pesto.basemap.store`.
+folder and the run's cache root are only read; the only writes go to the
+home store: the record through :mod:`pesto.basemap.store` and the shrunk
+copy of a large image through :mod:`pesto.basemap.shrink`.
 
 Every handler is a plain ``def`` because each one reads files, so it runs in
 the threadpool and the event loop stays free.
@@ -31,7 +32,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from pesto.api.fs import _issue_id, _resolves_inside
 from pesto.api.problem import problem, problem_from_failure, redact_paths
 from pesto.api.query import RunQuery
-from pesto.basemap import imageinfo, store, worldfile
+from pesto.basemap import imageinfo, shrink, store, worldfile
 from pesto.basemap.imageinfo import TEXTURE_CAP, TIFF_REASON, ImageRefusal
 from pesto.basemap.worldfile import WorldFileRefusal
 from pesto.cache.layout import CacheLayout
@@ -303,8 +304,17 @@ def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
             return _refuse(422, "format", imageinfo.format_refusal(head))
         width, height = imageinfo.image_size(path, kind)
         imageinfo.check_budget(width, height)
+        # D-22: Pillow reads the size again and must agree before the image is placed.
+        pillow_width, pillow_height = shrink.pillow_size(path, kind)
+        if (pillow_width, pillow_height) != (width, height):
+            return _refuse(
+                422,
+                "header",
+                f"pesto reads the image header as {width} × {height} pixels but Pillow reads "
+                f"{pillow_width} × {pillow_height}; pesto does not pick one",
+            )
     except ImageRefusal as refusal:
-        return _refuse(422, refusal.code, refusal.reason)
+        return _refuse(422, refusal.code, redact_paths(refusal.reason))
     except OSError as exc:
         return _refuse(403, "unreadable", "that file cannot be read", detail=str(exc))
 
@@ -486,13 +496,9 @@ class _ImageQuery(RunQuery):
     max: int = 4096
 
 
-def _resize_to(width: int, height: int, requested: int) -> tuple[int, int] | None:
-    limit = min(max(requested, _SERVE_MIN), _SERVE_MAX, TEXTURE_CAP)
-    longest = max(width, height)
-    if longest <= limit:
-        return None
-    scale = limit / longest
-    return max(1, round(width * scale)), max(1, round(height * scale))
+def _serve_limit(requested: int) -> int:
+    """The longest side the browser can take, from the size it asked for (D-34)."""
+    return min(max(requested, _SERVE_MIN), _SERVE_MAX, TEXTURE_CAP)
 
 
 @router.get("/image")
@@ -500,7 +506,7 @@ def basemap_image(request: Request, params: Annotated[_ImageQuery, Query()]) -> 
     opened = _open(request)
     if opened is None:
         return _no_run()
-    _layout, run_dir = opened
+    layout, run_dir = opened
     record = store.read_registration(run_dir)
     if record is None:
         return _refuse(404, "none", "no basemap is registered for this run")
@@ -522,19 +528,35 @@ def basemap_image(request: Request, params: Annotated[_ImageQuery, Query()]) -> 
 
     width, height = int(record["width"]), int(record["height"])
     notes = list(record["notes"])
-    resize_to = _resize_to(width, height, params.max)
-    if resize_to is not None:
+    served, served_kind, served_width, served_height = source, kind, width, height
+    limit = _serve_limit(params.max)
+    if max(width, height) > limit:
+        if store.store_inside(run_dir, layout.root):
+            return _refuse(
+                409,
+                "store_inside_run",
+                "the basemap store would sit inside the run folder or its cache, so the image cannot be shrunk",
+            )
+        try:
+            served, served_width, served_height = shrink.shrink_copy(
+                source, record, limit, store.basemap_dir(run_dir)
+            )
+        except ImageRefusal as refusal:
+            return _refuse(422, refusal.code, redact_paths(refusal.reason))
+        except OSError as exc:
+            return _refuse(500, "shrink", "pesto could not make the shrunk copy of the basemap", detail=str(exc))
+        served_kind = "png"
         notes.append(
-            f"the image is {width} × {height} pixels, more than the graphics card can hold; "
-            f"it is drawn at {resize_to[0]} × {resize_to[1]}"
+            f"pesto shrank the image from {width} × {height} to {served_width} × {served_height} "
+            "pixels to fit the graphics card"
         )
     meta = {
-        "format": kind,
+        "format": served_kind,
         "width": width,
         "height": height,
-        "served_width": width,
-        "served_height": height,
-        "resize_to": list(resize_to) if resize_to is not None else None,
+        "served_width": served_width,
+        "served_height": served_height,
+        "resize_to": None,
         "notes": notes,
         "tag": record["tag"],
     }
@@ -543,4 +565,4 @@ def basemap_image(request: Request, params: Annotated[_ImageQuery, Query()]) -> 
         "Cache-Control": "no-store",
         "X-Pesto-Meta": json.dumps(meta, separators=(",", ":")),
     }
-    return FileResponse(source, media_type=_MEDIA_TYPES[kind], headers=headers)
+    return FileResponse(served, media_type=_MEDIA_TYPES[served_kind], headers=headers)
