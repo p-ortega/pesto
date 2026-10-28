@@ -28,6 +28,18 @@ vi.mock('../src/data/obs', async () => ({
   ...obsApi,
 }))
 
+const linkTargets = vi.hoisted(() => ({ fetchLinkSites: vi.fn() }))
+vi.mock('../src/data/link-targets', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/link-targets')>('../src/data/link-targets')),
+  ...linkTargets,
+}))
+
+const linkApi = vi.hoisted(() => ({ recentCellLink: vi.fn() }))
+vi.mock('../src/data/link', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/link')>('../src/data/link')),
+  ...linkApi,
+}))
+
 function group(name: string, over: Partial<ObsGroupRow> = {}): ObsGroupRow {
   return {
     group: name,
@@ -101,6 +113,10 @@ beforeEach(() => {
   obsApi.fetchObsPoints.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no points in this test' })
   obsApi.fetchObsSites.mockResolvedValue({ ok: true, rows: [], notes: [] })
   obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('gw_head'), group('gw_date')]))
+  linkTargets.fetchLinkSites.mockReset()
+  linkTargets.fetchLinkSites.mockResolvedValue({ ok: false, artifact: 'obs_cell', reason: 'no site places in this test' })
+  linkApi.recentCellLink.mockReset()
+  linkApi.recentCellLink.mockReturnValue(null)
 })
 
 afterEach(() => {
@@ -198,11 +214,11 @@ describe('the group summary', () => {
     expect(cell(groupRows(host)[0], 'group').textContent).toBe(name)
   })
 
-  it('has the five sections in the order the later plans mount into', () => {
+  it('has the six sections in order, the selected sites between the group table and the fit', () => {
     const { host } = mount({ startHidden: true })
 
     const classes = [...host.children].map((el) => el.className).filter((c) => c.startsWith('obs-'))
-    expect(classes).toEqual(['obs-notices', 'obs-groups', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
+    expect(classes).toEqual(['obs-notices', 'obs-groups', 'obs-selected', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
   })
 })
 
@@ -806,6 +822,87 @@ describe("the site list's 'Show selected' button", () => {
     store.set({ sites: new Set([3]) }, 'map')
     store.flush()
     expect(showButton(host).disabled).toBe(false)
+  })
+})
+
+describe('the Selected sites section in the panel', () => {
+  function cellAnswer() {
+    return {
+      layer: 3,
+      cells: [1234],
+      ring: [1, 2, 3, 4, 5, 6, 7, 8],
+      ringRule: 'cells sharing a corner',
+      pars: [],
+      parsTotal: 0,
+      parNotes: [],
+      sites: [
+        { siteId: 10, site: 'well_a', group: 'gw_head', layer: 3, cell: 1234, inClickedCell: true },
+        { siteId: 11, site: 'well_b', group: 'gw_head', layer: 3, cell: 1235, inClickedCell: false },
+      ],
+      sitesTotal: 73,
+      sitesCap: 50,
+      siteCounts: { unknownLayerIncluded: 0, otherLayerLeftOut: 0, unplacedInRun: 0 },
+      reasons: { pars: null, sites: null },
+    }
+  }
+
+  function selectedRows(host: HTMLElement): HTMLElement[] {
+    return [...host.querySelectorAll<HTMLElement>('.obs-selected .obs-grid-row')]
+  }
+
+  it("states where a cell click found its sites when the map writes the click's cells and sites", async () => {
+    linkApi.recentCellLink.mockReturnValue(cellAnswer())
+    const { host, store } = await openWithGroups()
+
+    store.set({ cells: new Set([1234]), sites: new Set([10, 11]) }, 'map')
+    store.flush()
+
+    expect(host.querySelector('.obs-selected-title')?.textContent).toBe('Sites in cell 1234 and its 8 neighbouring cells on layer 3')
+    expect(host.querySelector('.obs-selected')?.textContent).toContain('2 of 73 sites shown; zoom in or lasso to pick fewer')
+    expect(selectedRows(host).length).toBe(2)
+    expect(linkTargets.fetchLinkSites).not.toHaveBeenCalled()
+  })
+
+  it('turns a shift-click in the section into an added site with the origin obs', async () => {
+    linkTargets.fetchLinkSites.mockResolvedValue({
+      ok: true,
+      iteration: 0,
+      sites: [{ siteId: 5, site: 's5', group: 'gw_head', layer: 1, cell: 9, placed: true, hasValue: true }],
+      unknown: [],
+      valueRule: 'rule',
+      valueReason: null,
+      notAsked: 0,
+    })
+    const store = makeStore()
+    const { host } = await openWithGroups({ store })
+    store.set({ sites: new Set([5]) }, 'map')
+    store.flush()
+    await vi.waitFor(() => expect(selectedRows(host).length).toBe(1))
+    const heard: string[][] = []
+    store.subscribe(
+      (s) => s.sites,
+      (_next, _prev, origins) => heard.push([...origins]),
+    )
+
+    selectedRows(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }))
+    store.flush()
+
+    expect([...store.get().sites]).toEqual([])
+    expect(heard).toEqual([['obs']])
+    expect(host.querySelector('.obs-selected')?.textContent).toBe('')
+  })
+
+  it('asks where the sites are only once the tab is shown', async () => {
+    const { store, handle } = mount({ startHidden: true })
+    store.set({ sites: new Set([5]) }, 'map')
+    store.flush()
+    await Promise.resolve()
+    expect(linkTargets.fetchLinkSites).not.toHaveBeenCalled()
+
+    handle.onShow()
+
+    await vi.waitFor(() => expect(linkTargets.fetchLinkSites).toHaveBeenCalledTimes(1))
+    expect(linkTargets.fetchLinkSites).toHaveBeenCalledWith([5], 0, expect.anything())
   })
 })
 
