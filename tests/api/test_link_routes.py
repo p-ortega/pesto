@@ -3,6 +3,7 @@ cache made by ingesting a generated run on a real vertex grid (three cells, one 
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,9 @@ import pandas as pd
 import pytest
 
 import pesto.ingest.runner as runner
-from ingest.obs_fixtures import DEFAULT_SITES, GRID_SITES
+from ingest.obs_fixtures import DEFAULT_SITES, GRID_SITES, SiteSpec
+from pesto.api import link, linkcache
+from pesto.ingest.mesh import load_mesh
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.parcell import load_par_cell, write_par_cell
@@ -124,8 +127,9 @@ def test_a_cell_with_no_site_says_so(tmp_path, in_process):
     body = _get(client, layer=0, cells="0").json()
 
     assert body["sites"] == []
-    assert body["reasons"]["sites"].startswith("no observation site in this cell")
-    assert body["reasons"]["sites"].endswith("on layer 0")
+    assert body["sites_total"] == 0
+    assert body["reasons"]["sites"] == "no observation site in this cell or its neighbours on layer 0"
+    assert body["site_counts"]["unplaced_in_run"] == 3
 
 
 def test_a_pilot_point_parameter_is_marked_as_one(tmp_path, in_process):
@@ -214,3 +218,162 @@ def test_the_route_leaves_the_run_and_the_cache_untouched(tmp_path, in_process):
 
     assert _snapshot(run.root) == run_before
     assert _snapshot(cache_root) == cache_before
+
+
+# ---- Task 2: the first ring, the order, the cap and the counts ----
+
+ICPL_B = "oname:hds_otype:lst_usecol:icpl-b"
+XY_C = "oname:hds_otype:lst_usecol:xy-c"
+
+
+def _ids(client, *names: str) -> list[int]:
+    return [site_id(client.pesto_app.state.cache_root, n) for n in names]
+
+
+def test_the_ring_on_a_three_by_three_grid_holds_edge_and_corner_neighbours():
+    # Nine unit squares, each with its own four corners, as the mesh stores them.
+    positions, cell_index = [], []
+    for row in range(3):
+        for col in range(3):
+            positions += [(col, row), (col + 1, row), (col + 1, row + 1), (col, row + 1)]
+            cell_index += [row * 3 + col] * 4
+    table = linkcache.build_neighbours(np.array(positions, dtype=np.float32), np.array(cell_index), 9)
+
+    assert table.ring([0]).tolist() == [1, 3, 4]
+    assert table.ring([4]).tolist() == [0, 1, 2, 3, 5, 6, 7, 8]
+    assert table.ring([0, 8]).tolist() == [1, 3, 4, 5, 7]
+
+
+def test_the_ring_on_the_fixture_grid_is_symmetric_and_never_holds_the_cell(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    state = client.pesto_app.state
+    table = linkcache.cell_neighbours(state, state.cache_root)
+    n = load_mesh(_layout(client)).n_cells
+
+    rings = {c: set(table.ring([c]).tolist()) for c in range(n)}
+
+    # Cell 0 is the corner square: it touches cell 1 only.
+    assert rings[0] == {1}
+    assert rings[1] == {0, 2}
+    for a in range(n):
+        assert a not in rings[a]
+        for b in range(n):
+            assert (b in rings[a]) == (a in rings[b])
+
+
+def test_two_clicked_cells_give_their_ring_as_one_union_without_either(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+
+    body = _get(client, layer=0, cells="2,0").json()
+
+    assert body["cells"] == [0, 2]
+    assert body["ring"] == [1]
+    assert body["ring_rule"] == "a neighbouring cell shares at least one corner with a clicked cell"
+
+
+def test_sites_come_clicked_cell_first_then_nearest_first_and_the_same_every_time(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+
+    first = _get(client, layer=0, cells="1").json()
+    second = _get(client, layer=0, cells="1").json()
+
+    # xy-c sits in cell 1; cell 0's centre is nearer cell 1's centre than cell 2's is.
+    assert [s["site_id"] for s in first["sites"]] == _ids(client, XY_C, ICPL_A, ICPL_B)
+    assert [s["in_clicked_cell"] for s in first["sites"]] == [True, False, False]
+    assert first["sites"] == second["sites"]
+    assert first["sites_total"] == 3
+    assert first["sites_cap"] == 50
+
+
+def test_a_site_of_unknown_layer_in_reach_is_included_and_counted(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+
+    body = _get(client, layer=0, cells="2").json()
+
+    assert body["sites"][0]["site_id"] == _ids(client, ICPL_B)[0]
+    assert body["sites"][0]["layer"] == -1
+    assert body["site_counts"] == {"unknown_layer_included": 1, "other_layer_left_out": 0, "unplaced_in_run": 3}
+
+
+def test_a_site_on_another_layer_in_the_same_cell_is_left_out_and_counted(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    path = _layout(client).grid / "obs_cell.parquet"
+    frame = pd.read_parquet(path)
+    frame.loc[frame["site"] == ICPL_A, "layer"] = 1
+    frame.to_parquet(path)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert _ids(client, ICPL_A)[0] not in [s["site_id"] for s in body["sites"]]
+    assert body["site_counts"]["other_layer_left_out"] == 1
+
+
+def test_sixty_sites_in_reach_return_fifty_and_say_sixty(tmp_path, in_process):
+    many = tuple(
+        SiteSpec(
+            "gw_many", f"oname:hds_otype:lst_usecol:many-{i:02d}", (None,), "none",
+            extras={"icpl": "0", "layer": "0"},
+        )
+        for i in range(60)
+    )
+    client, _ = open_obs_run(tmp_path, grid=True, sites=many, iterations=(0,), n_real=4)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert len(body["sites"]) == 50
+    assert body["sites_total"] == 60
+    assert body["sites_cap"] == 50
+    ids = [s["site_id"] for s in body["sites"]]
+    assert ids == sorted(ids)
+
+
+def test_more_parameters_than_the_cap_are_counted_and_noted(tmp_path, in_process, monkeypatch):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    _place_pars(client, {"par0": (0, 0), "par1": (0, 0), "par2": (0, 0)})
+    monkeypatch.setattr(link, "PARS_CAP", 2)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert [p["parnme"] for p in body["pars"]] == ["par0", "par1"]
+    assert body["pars_total"] == 3
+    assert body["par_notes"] == [
+        "3 parameters set this cell on layer 0; the first 2 in control-file order are listed"
+    ]
+
+
+def test_a_run_with_no_observation_placement_says_so(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    layout = _layout(client)
+    manifest = Manifest.load(layout)
+    del manifest.artifacts["obs_cell"]
+    manifest.save(layout)
+
+    body = _get(client, layer=0, cells="0").json()
+
+    assert body["sites"] == []
+    assert body["reasons"]["sites"] == "no observation placement was ingested for this run"
+
+
+def test_the_neighbour_table_is_built_once_and_again_after_the_grid_is_rewritten(
+    tmp_path, in_process, monkeypatch
+):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    built = []
+    original = linkcache.build_neighbours
+
+    def counted(*args):
+        built.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(linkcache, "build_neighbours", counted)
+
+    _get(client, layer=0, cells="0")
+    _get(client, layer=0, cells="1")
+    assert len(built) == 1
+
+    layout = _layout(client)
+    grid_file = layout.root / Manifest.load(layout).artifacts["grid"].files[0].path
+    stamp = grid_file.stat().st_mtime_ns + 1_000_000_000
+    os.utime(grid_file, ns=(stamp, stamp))
+    _get(client, layer=0, cells="0")
+    assert len(built) == 2

@@ -16,7 +16,8 @@ from fastapi import APIRouter, Query, Request
 from starlette.responses import JSONResponse, Response
 
 from pesto.api import obscache
-from pesto.api.obsmap import _reason
+from pesto.api.linkcache import RING_RULE, cell_neighbours
+from pesto.api.obsmap import _cell_centres, _reason
 from pesto.api.pp import _shape
 from pesto.api.problem import problem, problem_from_failure
 from pesto.api.query import RunQuery
@@ -29,6 +30,7 @@ from pesto.ingest.ppfactors import load_pp_index
 router = APIRouter(prefix="/api/run")
 
 MAX_LINK_CELLS = 50
+# Orchestrator decision D-06, which the user can overturn: the first ring and at most 50 sites.
 SITES_CAP = 50
 PARS_CAP = 500
 
@@ -95,21 +97,64 @@ def _direct_pars(placed, layer: int, cells: list[int], pilot: set[str]) -> list[
     return rows
 
 
-def _sites(table, layer: int, cells: list[int]) -> list[dict]:
-    hit = (table.layer == layer) & np.isin(table.cell, np.asarray(cells, dtype=np.int32))
-    rows = [
+def _site_points(table, centres) -> tuple[np.ndarray, np.ndarray]:
+    """Origin-relative position of each site: its own x and y when it has them, else its
+    cell's centre."""
+    ox, oy = centres.origin
+    x = np.asarray(table.x, dtype=np.float64) - ox
+    y = np.asarray(table.y, dtype=np.float64) - oy
+    cell = np.asarray(table.cell, dtype=np.int64)
+    placed = (cell >= 0) & (cell < centres.x.size)
+    own = np.isfinite(x) & np.isfinite(y)
+    use_centre = placed & ~own
+    x[use_centre] = centres.x[cell[use_centre]]
+    y[use_centre] = centres.y[cell[use_centre]]
+    return x, y
+
+
+def _sites(table, centres, layer: int, cells: list[int], ring: np.ndarray) -> tuple[list[dict], int, dict]:
+    """The sites in reach, clicked cells first, then the ring; within each, nearest to a
+    clicked cell's centre first, then by site_id. Capped at ``SITES_CAP``, with the full count."""
+    cell = np.asarray(table.cell, dtype=np.int64)
+    site_layer = np.asarray(table.layer, dtype=np.int64)
+    clicked = np.isin(cell, np.asarray(cells, dtype=np.int64))
+    in_reach = clicked | np.isin(cell, ring.astype(np.int64))
+    same_layer = site_layer == layer
+    unknown_layer = site_layer == -1
+    taken = in_reach & (same_layer | unknown_layer)
+    counts = {
+        "unknown_layer_included": int(np.count_nonzero(in_reach & unknown_layer)),
+        "other_layer_left_out": int(np.count_nonzero(in_reach & ~same_layer & ~unknown_layer)),
+        "unplaced_in_run": int(np.count_nonzero(cell < 0)),
+    }
+
+    rows = np.flatnonzero(taken)
+    x, y = _site_points(table, centres)
+    cx = centres.x[np.asarray(cells, dtype=np.int64)].astype(np.float64)
+    cy = centres.y[np.asarray(cells, dtype=np.int64)].astype(np.float64)
+    dist = np.hypot(x[rows, None] - cx[None, :], y[rows, None] - cy[None, :]).min(axis=1)
+    # A site with no position sorts after every placed one, never in front of them.
+    dist = np.where(np.isfinite(dist), dist, np.inf)
+    site_id = np.asarray(table.site_id, dtype=np.int64)
+    order = np.lexsort((site_id[rows], dist, ~clicked[rows]))
+    chosen = rows[order][:SITES_CAP]
+    out = [
         {
-            "site_id": int(table.site_id[i]),
+            "site_id": int(site_id[i]),
             "site": table.site[i],
             "group": table.group[i],
-            "layer": int(table.layer[i]),
-            "cell": int(table.cell[i]),
-            "in_clicked_cell": True,
+            "layer": int(site_layer[i]),
+            "cell": int(cell[i]),
+            "in_clicked_cell": bool(clicked[i]),
         }
-        for i in np.flatnonzero(hit)
+        for i in chosen
     ]
-    rows.sort(key=lambda row: row["site_id"])
-    return rows
+    return out, int(rows.size), counts
+
+
+def _sites_reason(these: str, layer: int) -> str:
+    whose = "its" if these == "this cell" else "their"
+    return f"no observation site in {these} or {whose} neighbours on layer {layer}"
 
 
 @router.get("/link/cell")
@@ -136,11 +181,17 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
     except ValueError as exc:
         return problem(422, "the cells could not be used", detail=str(exc))
 
+    neighbours = cell_neighbours(state, cache_root)
+    if isinstance(neighbours, ReadFailure):
+        return problem_from_failure(404, neighbours)
+    ring = neighbours.ring(cells)
+
     manifest = Manifest.load(layout)
     these = _these(cells)
     # An artifact the ingest never recorded is a designed state with a reason; one recorded
     # but unreadable is a failure.
     pars: list[dict] = []
+    pars_total = 0
     par_notes: list[str] = []
     pars_reason = NO_PAR_PLACEMENT
     if "par_cell" in manifest.artifacts:
@@ -149,25 +200,41 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
             return problem_from_failure(404, placed)
         pilot, par_notes = _pilot_point_names(layout, manifest)
         pars = _direct_pars(placed, layer, cells, pilot)
+        pars_total = len(pars)
+        if pars_total > PARS_CAP:
+            par_notes.append(
+                f"{pars_total} parameters set {these} on layer {layer}; the first {PARS_CAP} "
+                "in control-file order are listed"
+            )
+            pars = pars[:PARS_CAP]
         pars_reason = f"no parameter sets {these} on layer {layer}"
 
     sites: list[dict] = []
+    sites_total = 0
+    site_counts = {"unknown_layer_included": 0, "other_layer_left_out": 0, "unplaced_in_run": 0}
     sites_reason = NO_SITE_PLACEMENT
     if "obs_cell" in manifest.artifacts:
         table = obscache.get_cell(state, cache_root)
         if isinstance(table, ReadFailure):
             return problem_from_failure(404, table)
-        sites = _sites(table, layer, cells)
-        sites_reason = f"no observation site in {these} on layer {layer}"
+        centres = _cell_centres(state, cache_root)
+        if isinstance(centres, ReadFailure):
+            return problem_from_failure(404, centres)
+        sites, sites_total, site_counts = _sites(table, centres, layer, cells, ring)
+        sites_reason = _sites_reason(these, layer)
 
     body = {
         "layer": layer,
         "cells": cells,
+        "ring": [int(c) for c in ring],
+        "ring_rule": RING_RULE,
         "pars": pars,
-        "pars_total": len(pars),
+        "pars_total": pars_total,
         "par_notes": par_notes,
         "sites": sites,
-        "sites_total": len(sites),
+        "sites_total": sites_total,
+        "sites_cap": SITES_CAP,
+        "site_counts": site_counts,
         "reasons": {
             "pars": None if pars else pars_reason,
             "sites": None if sites else sites_reason,
