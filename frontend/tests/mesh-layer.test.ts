@@ -1181,3 +1181,177 @@ describe('MeshLayer texture fill', () => {
     expect(calls.filter((c) => c.method === 'deleteTexture').map((c) => c.args[0])).toContain(tex.cls)
   })
 })
+
+describe('MeshLayer field opacity', () => {
+  const blendSeparate = ['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ONE', 'ONE_MINUS_SRC_ALPHA']
+
+  function valuedLayer() {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    return { calls, layer }
+  }
+
+  // The fill's draw call: the first drawElements after the fill program's u_values lookup.
+  const fillDrawAt = (calls: Call[]) => {
+    const lookup = calls.findIndex((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_values')
+    if (lookup < 0) return -1
+    return calls.findIndex((c, i) => i > lookup && c.method === 'drawElements')
+  }
+
+  it('sends alpha 1 and blends nothing when the opacity was never set', () => {
+    const { calls, layer } = valuedLayer()
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    const fill = sources.find((s) => s.includes('flat in float v_norm') && !s.includes('v_flags') && s.includes('fragColor'))!
+    expect(fill).toContain('uniform float u_alpha;')
+    calls.length = 0
+    layer.draw()
+    expect(uniformOn(calls, programOf(calls, 'u_values'), 'u_alpha')).toEqual([[1]])
+    expect(calls.some((c) => c.method === 'enable' && c.args[0] === 'BLEND')).toBe(false)
+  })
+
+  it('blends the fill below 1 so the canvas alpha stays 1, and restores the blend state', () => {
+    const { calls, layer } = valuedLayer()
+    layer.setFieldOpacity(0.4)
+    calls.length = 0
+    layer.draw()
+    const fill = programOf(calls, 'u_values')
+    expect(uniformOn(calls, fill, 'u_alpha')).toEqual([[0.4]])
+    const draw = fillDrawAt(calls)
+    const enable = calls.findIndex((c) => c.method === 'enable' && c.args[0] === 'BLEND')
+    const separate = calls.findIndex((c) => c.method === 'blendFuncSeparate')
+    const disable = calls.findIndex((c) => c.method === 'disable' && c.args[0] === 'BLEND')
+    expect(enable).toBeGreaterThanOrEqual(0)
+    expect(enable).toBeLessThan(draw)
+    expect(calls[separate].args).toEqual(blendSeparate)
+    expect(separate).toBeLessThan(draw)
+    expect(disable).toBeGreaterThan(draw)
+  })
+
+  it('draws the footprint at the same alpha under the same blend', () => {
+    const { calls, layer } = valuedLayer()
+    layer.setFootprint(new Uint8Array([1, 1, 1]))
+    layer.setFootprintColor([0.5, 0.6, 0.7])
+    layer.setFieldOpacity(0.4)
+    calls.length = 0
+    layer.draw()
+    const footprintDraw = allDraws(calls)[0]
+    const at = calls.indexOf(footprintDraw)
+    const colour = calls.slice(0, at).filter((c) => c.method === 'uniform4f').pop()!
+    expect(colour.args.slice(1)).toEqual([0.5, 0.6, 0.7, 0.4])
+    const before = calls.slice(0, at)
+    expect(before.some((c) => c.method === 'enable' && c.args[0] === 'BLEND')).toBe(true)
+    expect(before.filter((c) => c.method === 'blendFuncSeparate').pop()!.args).toEqual(blendSeparate)
+  })
+
+  it('skips the fill at opacity 0', () => {
+    const { calls, layer } = valuedLayer()
+    layer.setFieldOpacity(0)
+    calls.length = 0
+    layer.draw()
+    expect(fillDrawAt(calls)).toBe(-1)
+    expect(allDraws(calls)).toHaveLength(0)
+  })
+
+  it('clamps the opacity to 0 to 1 and refuses a value that is not a number', () => {
+    const { calls, layer } = valuedLayer()
+    layer.setFieldOpacity(1.5)
+    calls.length = 0
+    layer.draw()
+    expect(uniformOn(calls, programOf(calls, 'u_values'), 'u_alpha')).toEqual([[1]])
+    expect(calls.some((c) => c.method === 'enable' && c.args[0] === 'BLEND')).toBe(false)
+
+    layer.setFieldOpacity(-0.2)
+    calls.length = 0
+    layer.draw()
+    expect(allDraws(calls)).toHaveLength(0)
+
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => layer.setFieldOpacity(bad)).toThrow('field opacity must be a number from 0 to 1')
+    }
+  })
+})
+
+describe('MeshLayer grid lines', () => {
+  // Every side of every ring of threeCellMesh, as LINES index pairs.
+  const allEdges = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 8, 9, 9, 10, 10, 11, 11, 8]
+  const edgeUploads = (calls: Call[]) =>
+    calls.filter(
+      (c) =>
+        c.method === 'bufferData' &&
+        c.args[0] === 'ELEMENT_ARRAY_BUFFER' &&
+        c.args[1] instanceof Uint32Array &&
+        Array.from(c.args[1] as Uint32Array).join() === allEdges.join(),
+    )
+  const lineDraws = (calls: Call[]) => allDraws(calls).filter((c) => c.args[0] === 'LINES')
+
+  it('builds one edge per ring side of every cell, once', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    calls.length = 0
+    layer.setGridLines(true)
+    expect(edgeUploads(calls)).toHaveLength(1)
+    layer.setGridLines(false)
+    layer.setGridLines(true)
+    layer.draw()
+    expect(edgeUploads(calls)).toHaveLength(1)
+  })
+
+  it('draws them in the grid line colour, blended, after the fill and before the hatch', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    layer.setHatch(new Uint8Array([1, 0, 0]))
+    layer.setGridLines(true)
+    layer.setGridLineColor([0.1, 0.2, 0.3, 0.5])
+    calls.length = 0
+    layer.draw()
+    const order = allDraws(calls).map((c) => [c.method, c.args[0], c.args[1]])
+    expect(order).toEqual([
+      ['drawElements', 'TRIANGLES', 18],
+      ['drawElements', 'LINES', 24],
+      ['drawElements', 'TRIANGLES', 18],
+    ])
+    const lines = calls.indexOf(lineDraws(calls)[0])
+    const colour = calls.slice(0, lines).filter((c) => c.method === 'uniform4f').pop()!
+    expect(colour.args.slice(1)).toEqual([0.1, 0.2, 0.3, 0.5])
+    const before = calls.slice(0, lines)
+    const enable = before.map((c) => c.method === 'enable' && c.args[0] === 'BLEND').lastIndexOf(true)
+    const blend = before.map((c) => c.method === 'blendFunc').lastIndexOf(true)
+    expect(enable).toBeGreaterThan(calls.indexOf(allDraws(calls)[0]))
+    expect(before[blend].args).toEqual(['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA'])
+    expect(calls.slice(lines).some((c) => c.method === 'disable' && c.args[0] === 'BLEND')).toBe(true)
+  })
+
+  it('draws them even when the field opacity is 0, the outlines-only look', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setGridLines(true)
+    layer.setFieldOpacity(0)
+    calls.length = 0
+    layer.draw()
+    expect(allDraws(calls).map((c) => c.args[0])).toEqual(['LINES'])
+  })
+
+  it('draws nothing more once turned off', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setGridLines(true)
+    layer.setGridLines(false)
+    calls.length = 0
+    layer.draw()
+    expect(lineDraws(calls)).toHaveLength(0)
+  })
+
+  it('rebuilds their buffer after a context restore while on', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setGridLines(true)
+    calls.length = 0
+    layer.reupload()
+    expect(edgeUploads(calls)).toHaveLength(1)
+    calls.length = 0
+    layer.draw()
+    expect(lineDraws(calls).map((c) => c.args[1])).toEqual([24])
+  })
+})

@@ -44,12 +44,13 @@ uniform float u_classes;          // 0 draws the smooth ramp
 uniform float u_classTexel[11];   // the ramp entry of each class, from classTexelIndices
 uniform float u_flat;             // 1 in texture mode: the hatch pass carries the classes
 uniform vec3 u_surface;
+uniform float u_alpha;            // the field opacity (D-25); 1 draws opaque with no blend
 out vec4 fragColor;
 
 void main() {
   if (v_missing > 0.5) discard;   // inactive or unparameterised cells
   if (u_flat > 0.5) {
-    fragColor = vec4(u_surface, 1.0);
+    fragColor = vec4(u_surface, u_alpha);
     return;
   }
   float t = v_norm;
@@ -58,7 +59,7 @@ void main() {
     // The texel centre, so the LINEAR ramp gives exactly the entry the legend reads.
     t = (u_classTexel[k] + 0.5) / 256.0;
   }
-  fragColor = texture(u_ramp, vec2(t, 0.5));
+  fragColor = vec4(texture(u_ramp, vec2(t, 0.5)).rgb, u_alpha);
 }`
 
 // The outline pass draws only the ring edges belonging to cells marked
@@ -354,6 +355,14 @@ export class MeshLayer {
   private footprintMask: Uint8Array | null = null
   private footprintColor: [number, number, number] = [0, 0, 0]
 
+  private gridVao!: WebGLVertexArrayObject
+  private gridElements!: WebGLBuffer
+  private gridCount = 0
+  private gridBuilt = false
+  private gridLines = false
+  private gridLineColor: [number, number, number, number] = [0, 0, 0, 1]
+  private fieldOpacity = 1
+
   private hatchProgram!: WebGLProgram
   private hatchVao!: WebGLVertexArrayObject
   private hatchTex!: WebGLTexture
@@ -497,6 +506,18 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.footprintElements)
     gl.bindVertexArray(null)
 
+    // Every cell's outline, for the outlines-only look; also drawn by the outline program.
+    this.gridVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.gridVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
+    const gridPosLoc = gl.getAttribLocation(this.outlineProgram, 'a_pos')
+    gl.enableVertexAttribArray(gridPosLoc)
+    gl.vertexAttribPointer(gridPosLoc, 2, gl.FLOAT, false, 0, 0)
+    this.gridElements = gl.createBuffer()!
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.gridElements)
+    gl.bindVertexArray(null)
+    this.gridBuilt = false
+
     this.hatchProgram = gl.createProgram()!
     gl.attachShader(this.hatchProgram, compile(gl, gl.VERTEX_SHADER, HATCH_VERTEX))
     gl.attachShader(this.hatchProgram, compile(gl, gl.FRAGMENT_SHADER, HATCH_FRAGMENT))
@@ -599,6 +620,7 @@ export class MeshLayer {
     if (this.inactiveMask) this.setInactive(this.inactiveMask)
     if (this.contestedMask) this.setContested(this.contestedMask)
     if (this.footprintMask) this.setFootprint(this.footprintMask)
+    if (this.gridLines) this.buildGridLines()
     if (this.selectedCells.length > 0) this.setSelectedCells(this.selectedCells)
     // The mask goes up before the field, so the field stays the latest upload.
     if (this.lastHatch) this.setHatch(this.lastHatch)
@@ -766,6 +788,37 @@ export class MeshLayer {
 
   setFootprintColor(rgb: [number, number, number]): void {
     this.footprintColor = rgb
+  }
+
+  /** How opaque the field fill and the footprint draw, 0 to 1 (D-25). 0 skips the fill. */
+  setFieldOpacity(alpha: number): void {
+    if (!Number.isFinite(alpha)) throw new Error('field opacity must be a number from 0 to 1')
+    this.fieldOpacity = Math.min(Math.max(alpha, 0), 1)
+  }
+
+  /** An outline round every cell, for the outlines-only look; the edge list is built on first use and kept. */
+  setGridLines(on: boolean): void {
+    this.gridLines = on
+    if (on && !this.gridBuilt) this.buildGridLines()
+  }
+
+  /** Carries alpha, so the caller can draw the grid at a moderate ink rather than the 10% hairline. */
+  setGridLineColor(rgba: [number, number, number, number]): void {
+    this.gridLineColor = rgba
+  }
+
+  private buildGridLines(): void {
+    const edges: number[] = []
+    for (const ring of this.rings) {
+      if (!ring) continue
+      const [start, count] = ring
+      for (let i = 0; i < count; i++) edges.push(start + i, start + ((i + 1) % count))
+    }
+    this.gridCount = edges.length
+    const { gl } = this
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.gridElements)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(edges), gl.STATIC_DRAW)
+    this.gridBuilt = true
   }
 
   /** The stripe colour (`--ink-primary`) and the neutral fill it sits
@@ -1042,18 +1095,49 @@ export class MeshLayer {
   }
 
   private drawFootprint(): void {
-    if (this.footprintCount === 0) return
+    if (this.footprintCount === 0 || this.fieldOpacity === 0) return
     const { gl } = this
     gl.useProgram(this.outlineProgram)
     gl.bindVertexArray(this.footprintVao)
     gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
     const c = this.footprintColor
-    gl.uniform4f(gl.getUniformLocation(this.outlineProgram, 'u_color'), c[0], c[1], c[2], 1)
-    gl.drawElements(gl.TRIANGLES, this.footprintCount, gl.UNSIGNED_INT, 0)
+    gl.uniform4f(gl.getUniformLocation(this.outlineProgram, 'u_color'), c[0], c[1], c[2], this.fieldOpacity)
+    this.blendedBelowOne(() => gl.drawElements(gl.TRIANGLES, this.footprintCount, gl.UNSIGNED_INT, 0))
+    gl.bindVertexArray(null)
+  }
+
+  // Below full opacity, blend colour only, so the canvas alpha stays 1 over a basemap.
+  private blendedBelowOne(drawCall: () => void): void {
+    if (this.fieldOpacity >= 1) {
+      drawCall()
+      return
+    }
+    const { gl } = this
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    drawCall()
+    if (!wasBlending) gl.disable(gl.BLEND)
+  }
+
+  private drawGridLines(): void {
+    if (!this.gridLines || this.gridCount === 0) return
+    const { gl } = this
+    gl.useProgram(this.outlineProgram)
+    gl.bindVertexArray(this.gridVao)
+    gl.uniformMatrix3fv(gl.getUniformLocation(this.outlineProgram, 'u_matrix'), false, this.matrix)
+    const c = this.gridLineColor
+    gl.uniform4f(gl.getUniformLocation(this.outlineProgram, 'u_color'), c[0], c[1], c[2], c[3])
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    gl.drawElements(gl.LINES, this.gridCount, gl.UNSIGNED_INT, 0)
+    if (!wasBlending) gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
   }
 
   private drawFill(): void {
+    if (this.fieldOpacity === 0) return
     const { gl } = this
     gl.useProgram(this.program)
     gl.bindVertexArray(this.vao)
@@ -1072,8 +1156,9 @@ export class MeshLayer {
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_flat'), this.textured() ? 1 : 0)
     const s = this.surfaceColor
     gl.uniform3f(gl.getUniformLocation(this.program, 'u_surface'), s[0], s[1], s[2])
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_alpha'), this.fieldOpacity)
 
-    gl.drawElements(gl.TRIANGLES, this.mesh.indices.length, gl.UNSIGNED_INT, 0)
+    this.blendedBelowOne(() => gl.drawElements(gl.TRIANGLES, this.mesh.indices.length, gl.UNSIGNED_INT, 0))
     gl.bindVertexArray(null)
   }
 
@@ -1168,13 +1253,15 @@ export class MeshLayer {
    *  carries. The hatch goes over the fill and under the points, so it
    *  never covers a dot. Points go after the fill and before the ring. The
    *  footprint goes under everything, so the hairline still reads at its
-   *  edge. */
+   *  edge. The grid lines of the outlines-only look go just over the fill
+   *  and under the hatch. */
   draw(): void {
     if (this.textured() && this.classMaskDirty) this.uploadClassMask()
     this.drawFootprint()
     this.drawOutline()
     this.drawContested()
     this.drawFill()
+    this.drawGridLines()
     this.drawHatch()
     this.drawPoints()
     this.drawSelection()
@@ -1203,6 +1290,7 @@ export class MeshLayer {
     gl.deleteVertexArray(this.contestedVao)
     gl.deleteVertexArray(this.selectionVao)
     gl.deleteVertexArray(this.footprintVao)
+    gl.deleteVertexArray(this.gridVao)
     gl.deleteVertexArray(this.pointsVao)
     gl.deleteBuffer(this.positionsBuffer)
     gl.deleteBuffer(this.cellBuffer)
@@ -1212,6 +1300,7 @@ export class MeshLayer {
     gl.deleteBuffer(this.selectionVerts)
     gl.deleteBuffer(this.selectionElements)
     gl.deleteBuffer(this.footprintElements)
+    gl.deleteBuffer(this.gridElements)
     gl.deleteBuffer(this.pointsPosBuffer)
     gl.deleteBuffer(this.pointsValueBuffer)
     gl.deleteBuffer(this.pointsFlagBuffer)
