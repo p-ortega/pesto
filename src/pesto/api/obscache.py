@@ -128,6 +128,30 @@ def obs_iterations(manifest: Manifest) -> list[int]:
     return sorted(found)
 
 
+def obs_ends(state, cache_root: Path | str, manifest: Manifest) -> tuple[int, int | None] | None:
+    """The first and last observation iteration every observation route uses, or None when
+    there is none. The last is None when only one iteration was ingested.
+
+    They are the ends the last ingest planned, as ``obs_1to1`` recorded them, so an
+    ``obs_ens/K`` left in the manifest by an older ingest is never taken for the last. When
+    ``obs_1to1`` is not recorded ok that record is not trusted and the ends fall back to
+    every ``obs_ens/K`` recorded ok; ``/obs/1to1`` is refused in that case, so the two never
+    show different ends side by side."""
+    recorded = manifest.artifacts.get("obs_1to1")
+    if recorded is not None and recorded.state == "ok":
+        from pesto.ingest import obs1to1
+
+        planned = memoised(
+            state, cache_root, ("ends",), ("obs_1to1",), lambda layout: obs1to1.read_planned_ends(layout)
+        )
+        if not isinstance(planned, ReadFailure):
+            return planned
+    found = obs_iterations(manifest)
+    if not found:
+        return None
+    return found[0], (found[-1] if len(found) > 1 else None)
+
+
 def invalidate(state, cache_root: Path | str) -> None:
     """Drop every entry for ``cache_root``; the ingest routes call this when an ingest ends."""
     memo = getattr(state, "obs_memo", None)
