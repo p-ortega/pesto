@@ -5,6 +5,7 @@
 
 import { linearAxis, logAxis, type Axis } from './axes'
 import { barRects } from './bars'
+import { drawBrushBand } from './brush'
 import type { ChartTokens } from './tokens'
 
 export type Chart2D = Pick<
@@ -41,11 +42,36 @@ export interface HistogramSeries {
   density: number[]
 }
 
+// Outline-only bars on the same edges, such as a brushed subset at the other iteration.
+export interface HistogramOverlay {
+  density: number[]
+  label: string
+  /** Which colour slot to outline in: 0 for series 1, 1 for series 2. */
+  slot: 0 | 1
+}
+
 export interface HistogramSpec {
   space: 'log10' | 'native'
   edges: number[]
   series: HistogramSeries[]
   xLabel: string
+  /** A held brush range, in the same space as the edges (log10 when space is 'log10'). */
+  band?: [number, number] | null
+  overlay?: HistogramOverlay | null
+  /** Alpha for what is faded: bars outside the band and the overlay. 1 when not given. */
+  dimAlpha?: number
+}
+
+export interface HistogramLayout {
+  left: number
+  right: number
+  top: number
+  bottom: number
+  /** The drawn x axis; on a log10 histogram it works in native units. */
+  xAxis: Axis
+  /** A css px back to a value in the edges' own space. */
+  edgeAt(px: number): number
+  edgeToPx(value: number): number
 }
 
 export interface ChartSize {
@@ -59,15 +85,26 @@ const FILL_ALPHA = 0.4
 const SWATCH = 10
 const Y_TICKS = 4
 
+function usableDensity(density: number[], bins: number): boolean {
+  return density.length === bins && density.every((d) => Number.isFinite(d) && d >= 0)
+}
+
 function isValid(spec: HistogramSpec): boolean {
-  const { edges, series } = spec
+  const { edges, series, band, overlay, dimAlpha } = spec
   if (edges.length < 2 || series.length < 1 || series.length > 2) return false
   if (!edges.every(Number.isFinite)) return false
   for (let i = 1; i < edges.length; i++) if (edges[i] <= edges[i - 1]) return false
-  return series.every(
-    (s) =>
-      s.density.length === edges.length - 1 && s.density.every((d) => Number.isFinite(d) && d >= 0),
-  )
+  if (!series.every((s) => usableDensity(s.density, edges.length - 1))) return false
+  if (band != null && !(Number.isFinite(band[0]) && Number.isFinite(band[1]) && band[0] <= band[1])) return false
+  if (overlay != null && !usableDensity(overlay.density, edges.length - 1)) return false
+  return dimAlpha === undefined || (Number.isFinite(dimAlpha) && dimAlpha >= 0 && dimAlpha <= 1)
+}
+
+// Bins are half open except the last, so a bin ending exactly at lo holds nothing in the band.
+function outsideBand(edges: number[], i: number, band: [number, number]): boolean {
+  const last = i === edges.length - 2
+  const endsBefore = last ? edges[i + 1] < band[0] : edges[i + 1] <= band[0]
+  return endsBefore || edges[i] > band[1]
 }
 
 function buildXAxis(spec: HistogramSpec, range: [number, number]): Axis | null {
@@ -77,6 +114,28 @@ function buildXAxis(spec: HistogramSpec, range: [number, number]): Axis | null {
   return logAxis([10 ** first, 10 ** last], range)
 }
 
+// The plot area and x axis drawHistogram uses, so a brush reads the same pixels; null when it would refuse.
+export function histogramLayout(spec: HistogramSpec, size: ChartSize): HistogramLayout | null {
+  if (!isValid(spec)) return null
+  const left = MARGIN.left
+  const right = size.width - MARGIN.right
+  const top = MARGIN.top
+  const bottom = size.height - MARGIN.bottom
+  if (right <= left || bottom <= top) return null
+  const xAxis = buildXAxis(spec, [left, right])
+  if (xAxis === null) return null
+  const log = spec.space === 'log10'
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    xAxis,
+    edgeAt: (px) => (log ? Math.log10(xAxis.invert(px)) : xAxis.invert(px)),
+    edgeToPx: (value) => xAxis.toPx(log ? 10 ** value : value),
+  }
+}
+
 // Returns false, and draws nothing, when the spec cannot be drawn honestly.
 export function drawHistogram(
   ctx: Chart2D,
@@ -84,16 +143,13 @@ export function drawHistogram(
   tokens: ChartTokens,
   size: ChartSize,
 ): boolean {
-  if (!isValid(spec)) return false
-  const left = MARGIN.left
-  const right = size.width - MARGIN.right
-  const top = MARGIN.top
-  const bottom = size.height - MARGIN.bottom
-  if (right <= left || bottom <= top) return false
-
-  const xAxis = buildXAxis(spec, [left, right])
-  if (xAxis === null) return false
-  const yMax = Math.max(...spec.series.flatMap((s) => s.density))
+  const layout = histogramLayout(spec, size)
+  if (layout === null) return false
+  const { left, right, top, bottom, xAxis } = layout
+  const band = spec.band ?? null
+  const overlay = spec.overlay ?? null
+  const dimAlpha = spec.dimAlpha ?? 1
+  const yMax = Math.max(...spec.series.flatMap((s) => s.density), ...(overlay?.density ?? []))
   const yAxis = linearAxis([0, yMax > 0 ? yMax : 1], [bottom, top], Y_TICKS)
   const slots = [tokens.series1, tokens.series2]
 
@@ -115,18 +171,34 @@ export function drawHistogram(
   }
   ctx.stroke()
 
+  const faded = spec.edges.slice(1).map((_, i) => band !== null && outsideBand(spec.edges, i, band))
   spec.series.forEach((series, index) => {
     const bars = barRects(spec.edges, series.density, xAxis, yAxis, spec.space)
-    ctx.globalAlpha = FILL_ALPHA
     ctx.fillStyle = slots[index]
-    for (const bar of bars) ctx.fillRect(bar.x, bar.y, bar.w, bar.h)
-    ctx.globalAlpha = 1
+    bars.forEach((bar, i) => {
+      ctx.globalAlpha = faded[i] ? FILL_ALPHA * dimAlpha : FILL_ALPHA
+      ctx.fillRect(bar.x, bar.y, bar.w, bar.h)
+    })
     ctx.strokeStyle = slots[index]
     ctx.lineWidth = 1
     ctx.setLineDash(spec.series.length === 2 && index === 0 ? [4, 3] : [])
-    for (const bar of bars) ctx.strokeRect(bar.x, bar.y, bar.w, bar.h)
+    bars.forEach((bar, i) => {
+      ctx.globalAlpha = faded[i] ? dimAlpha : 1
+      ctx.strokeRect(bar.x, bar.y, bar.w, bar.h)
+    })
+    ctx.globalAlpha = 1
     ctx.setLineDash([])
   })
+
+  if (overlay !== null) {
+    ctx.globalAlpha = dimAlpha
+    ctx.strokeStyle = slots[overlay.slot]
+    ctx.lineWidth = 1
+    for (const bar of barRects(spec.edges, overlay.density, xAxis, yAxis, spec.space)) ctx.strokeRect(bar.x, bar.y, bar.w, bar.h)
+    ctx.globalAlpha = 1
+  }
+
+  if (band !== null) drawBrushBand(ctx, { top, bottom }, band, layout.edgeToPx, tokens)
 
   ctx.strokeStyle = tokens.axis
   ctx.beginPath()
@@ -161,6 +233,14 @@ export function drawHistogram(
     ctx.fillText(series.label, legendX + SWATCH + 6, legendY - 1)
     legendX += SWATCH + 6 + ctx.measureText(series.label).width + 16
   })
+  if (overlay !== null) {
+    ctx.globalAlpha = dimAlpha
+    ctx.strokeStyle = slots[overlay.slot]
+    ctx.strokeRect(legendX, legendY, SWATCH, SWATCH)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = tokens.inkPrimary
+    ctx.fillText(overlay.label, legendX + SWATCH + 6, legendY - 1)
+  }
 
   ctx.restore()
   return true
