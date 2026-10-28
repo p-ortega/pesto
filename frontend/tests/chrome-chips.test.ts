@@ -122,6 +122,39 @@ describe('renderChips', () => {
     expect(el.textContent).toContain('1234 par')
   })
 
+  it('renderHeader puts extra elements after the chips and before the theme control', () => {
+    const el = mount()
+    const extra = document.createElement('button')
+    extra.textContent = 'base'
+    renderHeader(el, {
+      title: 'a run',
+      themeChoice: 'dark',
+      onThemeChange: vi.fn(),
+      chips: { config: FULL_CONFIG, failure: null },
+      extras: [extra],
+    })
+
+    const children = Array.from(el.children)
+    expect(children).toHaveLength(4)
+    expect(children[1].textContent).toContain('1234 par')
+    expect(children[2]).toBe(extra)
+    expect(children[3].tagName).toBe('LABEL')
+  })
+
+  it('renderHeader without extras keeps the title, chips and theme control only', () => {
+    const el = mount()
+    renderHeader(el, {
+      title: 'a run',
+      themeChoice: 'dark',
+      onThemeChange: vi.fn(),
+      chips: { config: FULL_CONFIG, failure: null },
+    })
+
+    const children = Array.from(el.children)
+    expect(children).toHaveLength(3)
+    expect(children[2].tagName).toBe('LABEL')
+  })
+
   it('every numeric chip span carries tabular-nums', () => {
     const el = mount()
     renderChips(el, { config: FULL_CONFIG, failure: null })
