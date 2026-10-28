@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CellLinkAnswer, CellLinkSite } from '../src/data/link'
-import type { SitesWhereResult, SiteWhere } from '../src/data/link-targets'
+import type { fetchLinkSites, SitesWhereResult, SiteWhere } from '../src/data/link-targets'
 import { emptySelection, type SharedSelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import { renderSelectedSites, type SelectedSitesOptions } from '../src/ui/obs-selected'
@@ -277,6 +277,30 @@ describe('sites chosen another way', () => {
     pane.scrollTop = 180 * 24
     pane.dispatchEvent(new Event('scroll'))
     expect(rows(host).map((r) => r.dataset.siteId)).toContain('190')
+  })
+})
+
+describe('a changed site set', () => {
+  it('keeps the old list on screen and its scroll offset until the new answer lands', async () => {
+    const ids = Array.from({ length: 200 }, (_, i) => i)
+    const store = makeStore({ sites: new Set(ids) })
+    const second = deferred<SitesWhereResult>()
+    const loadWhere = vi
+      .fn<typeof fetchLinkSites>()
+      .mockResolvedValueOnce(whereAnswer(ids.map((i) => where(i))))
+      .mockReturnValueOnce(second.promise)
+    const { host, handle } = mount({ store, loadWhere })
+    handle.refresh()
+    await vi.waitFor(() => expect(rows(host).length).toBeGreaterThan(0))
+    host.querySelector<HTMLElement>('.scroll-pane')!.scrollTop = 150 * 24
+
+    store.set({ sites: new Set(ids.slice(0, 199)) }, 'obs')
+    handle.refresh()
+
+    expect(host.textContent).not.toContain('Looking up where they are')
+    expect(host.querySelector('.scroll-pane')).not.toBeNull()
+    second.resolve(whereAnswer(ids.slice(0, 199).map((i) => where(i))))
+    await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.scroll-pane')!.scrollTop).toBe(150 * 24))
   })
 })
 
