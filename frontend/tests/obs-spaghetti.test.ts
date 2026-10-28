@@ -794,6 +794,17 @@ describe('a named realization selection', () => {
     expect(selectedLines(m.front)).toHaveLength(0)
   })
 
+  it('asks nothing and fades nothing for an empty selection, as for all of them', async () => {
+    const m = mount()
+    await drawn(m)
+    setReals(m.store, new Set())
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBeGreaterThanOrEqual(2))
+
+    expect(obsApi.fetchObsReals).not.toHaveBeenCalled()
+    stripAlphas(m.gl).forEach((a) => expect(a).toBeCloseTo(0.15, 5))
+    expect(selectedLines(m.front)).toHaveLength(0)
+  })
+
   it('fades the strips and draws the selected ones over them, found by name in each iteration', async () => {
     const m = mount()
     await drawn(m)

@@ -458,7 +458,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
   /** null: all realizations, nothing faded. undefined: the names are still being read. */
   function pickOf(s: PreparedSeries): SeriesPick | null | undefined {
     const reals = store.get().reals
-    if (reals === 'all') return null
+    if (reals === 'all' || reals.size === 0) return null
     const cached = picks.get(s.key)
     if (cached) return cached
     const entry = realsOf.get(s.iteration)
@@ -479,7 +479,8 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
   }
 
   function ensureReals(): void {
-    if (hidden || store.get().reals === 'all') return
+    const reals = store.get().reals
+    if (hidden || reals === 'all' || reals.size === 0) return
     const iterations = new Set<number>()
     for (const view of views) {
       if (view.entry?.ok === true) for (const s of view.entry.prepared.series) iterations.add(s.iteration)
