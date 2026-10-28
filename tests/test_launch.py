@@ -110,7 +110,7 @@ def test_importing_pesto_does_not_import_the_science_stack():
     code = (
         "import sys\n"
         "import pesto, pesto.launch, pesto.api.app, pesto.cli\n"
-        "print([m for m in ('pyemu', 'flopy', 'matplotlib') if m in sys.modules])\n"
+        "print([m for m in ('pyemu', 'flopy', 'matplotlib', 'PIL') if m in sys.modules])\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
