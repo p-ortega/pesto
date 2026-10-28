@@ -53,6 +53,12 @@ export const SYMMETRIC_LOG_REASON = 'a log scale has no zero to centre on'
 export const SYMMETRIC_MANUAL_REASON = 'manual limits are used as typed'
 export const SYMMETRIC_TURNED_OFF_PREFIX = 'symmetric was turned off: '
 
+export const TEXTURE_CLASSES_NOTE = 'texture fill uses 7 classes; pick 9 or 11 here'
+export const TEXTURE_DOTS_REASON = 'texture fill applies to cell fields; this group is drawn as dots'
+export const OVERLAY_SUPPRESSED_REASON = 'off while texture fill is on: its lines would look like the fill'
+/** The classes texture fill takes when the request is continuous (D-13). */
+export const TEXTURE_DEFAULT_CLASSES = 7
+
 /** Why the symmetric switch cannot apply under this scale and limits mode, or null when it can (D-09, D-10). */
 export function symmetricRefusal(scale: ValueScale, limitsMode: LimitsMode): string | null {
   if (scale === 'log10') return SYMMETRIC_LOG_REASON
@@ -77,7 +83,10 @@ export function followLimits(
 export function resolveStyle(requested: FieldStyle, ctx: StyleContext): { effective: EffectiveStyle; notes: StyleNotes } {
   const symmetricNote = symmetricRefusal(ctx.scale, ctx.limitsMode)
   const symmetric = requested.symmetric && symmetricNote === null
-  let classes: number = requested.classes
+  // A dot group has no cell fill to texture; the reason is given even unasked so the switch can say why it is grey (D-31).
+  const textureNote = ctx.drawsAsPoints ? TEXTURE_DOTS_REASON : requested.texture && requested.classes === 0 ? TEXTURE_CLASSES_NOTE : null
+  const texture = requested.texture && !ctx.drawsAsPoints
+  let classes: number = texture && requested.classes === 0 ? TEXTURE_DEFAULT_CLASSES : requested.classes
   let classesNote: string | null = null
   if (classes > 0) {
     // Classes split the limits that are drawn, so a symmetric [3, 3] still steps across -3..3.
@@ -92,8 +101,8 @@ export function resolveStyle(requested: FieldStyle, ctx: StyleContext): { effect
     }
   }
   return {
-    effective: { classes, symmetric, texture: false },
-    notes: { classes: classesNote, symmetric: symmetricNote, texture: null },
+    effective: { classes, symmetric, texture },
+    notes: { classes: classesNote, symmetric: symmetricNote, texture: textureNote },
   }
 }
 

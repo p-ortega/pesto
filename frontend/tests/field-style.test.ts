@@ -3,7 +3,7 @@
 // Test values sit at class middles, never on an edge (research Pitfall 3).
 
 import { describe, expect, it } from 'vitest'
-import { classColour, classEdges, classOf, classTexelIndices, ramp, symmetricLimits } from '../src/gl/colormap'
+import { classColour, classEdges, classOf, classTexelIndices, ramp, swatchCssAngle, symmetricLimits, textureAngles } from '../src/gl/colormap'
 import {
   DEFAULT_STYLE,
   ONE_CLASS_EMPTY,
@@ -11,6 +11,8 @@ import {
   SYMMETRIC_LOG_REASON,
   SYMMETRIC_MANUAL_REASON,
   SYMMETRIC_TURNED_OFF_PREFIX,
+  TEXTURE_CLASSES_NOTE,
+  TEXTURE_DOTS_REASON,
   classLabel,
   followLimits,
   isClassCount,
@@ -258,5 +260,62 @@ describe('followLimits', () => {
 
   it('has a prefix that reads as a full line with the reason', () => {
     expect(SYMMETRIC_TURNED_OFF_PREFIX + SYMMETRIC_LOG_REASON).toBe('symmetric was turned off: a log scale has no zero to centre on')
+  })
+})
+
+describe('textureAngles and swatchCssAngle', () => {
+  it('spaces N angles evenly over 0 to 180 degrees, lowest class first', () => {
+    expect(textureAngles(7)).toEqual([0, 1, 2, 3, 4, 5, 6].map((k) => (k * 180) / 7))
+    expect(textureAngles(9)[8]).toBe(160)
+    expect(textureAngles(1)).toEqual([0])
+  })
+
+  it('turns a shader angle into the CSS gradient angle that draws the same lines', () => {
+    expect(swatchCssAngle(45)).toBe(315)
+    expect(swatchCssAngle(0)).toBe(0)
+    expect(swatchCssAngle(160)).toBe(200)
+  })
+})
+
+describe('resolveStyle with texture', () => {
+  const ctx: StyleContext = { scale: 'linear', limitsMode: 'robust', drawsAsPoints: false, limits: [0, 1], valued: true }
+
+  it('raises continuous to 7 classes and says so', () => {
+    const { effective, notes } = resolveStyle({ ...DEFAULT_STYLE, texture: true }, ctx)
+    expect(effective.texture).toBe(true)
+    expect(effective.classes).toBe(7)
+    expect(notes.texture).toBe(TEXTURE_CLASSES_NOTE)
+  })
+
+  it('keeps 9 classes with no note', () => {
+    const { effective, notes } = resolveStyle({ classes: 9, symmetric: false, texture: true }, ctx)
+    expect(effective).toEqual({ classes: 9, symmetric: false, texture: true })
+    expect(notes.texture).toBeNull()
+  })
+
+  it('refuses texture on a group drawn as dots, with the reason, and still applies the classes', () => {
+    const { effective, notes } = resolveStyle({ classes: 9, symmetric: false, texture: true }, { ...ctx, drawsAsPoints: true })
+    expect(effective.texture).toBe(false)
+    expect(effective.classes).toBe(9)
+    expect(notes.texture).toBe(TEXTURE_DOTS_REASON)
+  })
+
+  it('gives the dots reason even when texture was not asked for, so the switch can say why it is grey', () => {
+    const { effective, notes } = resolveStyle({ classes: 7, symmetric: false, texture: false }, { ...ctx, drawsAsPoints: true })
+    expect(effective.texture).toBe(false)
+    expect(notes.texture).toBe(TEXTURE_DOTS_REASON)
+  })
+
+  it('combines with the one-class rule: one class, texture still on', () => {
+    const { effective, notes } = resolveStyle({ ...DEFAULT_STYLE, texture: true }, { ...ctx, limits: [5, 5] })
+    expect(effective.classes).toBe(1)
+    expect(effective.texture).toBe(true)
+    expect(notes.classes).toBe(ONE_CLASS_EQUAL)
+  })
+
+  it('leaves texture off when it was not asked for', () => {
+    const { effective, notes } = resolveStyle({ classes: 7, symmetric: false, texture: false }, ctx)
+    expect(effective.texture).toBe(false)
+    expect(notes.texture).toBeNull()
   })
 })

@@ -244,6 +244,17 @@ export function classColour(k: number, n: number, table: Uint8Array): [number, n
   return [table[i], table[i + 1], table[i + 2]]
 }
 
+/** The line angle of each of n texture classes in degrees, counter-clockwise with y up; class 0 is the lowest (D-12). */
+export function textureAngles(n: number): number[] {
+  return Array.from({ length: n }, (_, k) => (k * 180) / n)
+}
+
+/** The CSS gradient angle whose stripes match a shader line angle. CSS turns clockwise
+ *  with y down, so the sign flips (research Pitfall 14, derived, to be checked in Chrome). */
+export function swatchCssAngle(deg: number): number {
+  return (((360 - deg) % 360) + 360) % 360
+}
+
 /** The limits centred on zero, -m to +m with m the larger absolute end (D-08). */
 export function symmetricLimits(limits: [number, number]): [number, number] {
   const m = Math.max(Math.abs(limits[0]), Math.abs(limits[1]))
