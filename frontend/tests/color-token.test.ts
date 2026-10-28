@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // WINDOWS.md #10: getComputedStyle serialises --hairline (authored as
 // rgba(255, 255, 255, 0.1)) back as the 8-digit hex #ffffff1a, not an
 // rgba() string. readColorToken's old int32 bitwise arithmetic overflowed
@@ -6,6 +7,7 @@
 // browser hands back, since jsdom does not reproduce that serialisation.
 
 import { describe, expect, it } from 'vitest'
+import { parseNumberToken, readNumberToken } from '../src/gl/color-token'
 import { parseColorToken } from '../src/views/map'
 
 describe('parseColorToken', () => {
@@ -85,5 +87,34 @@ describe('parseColorToken', () => {
     // resolved value this code cannot read, which is the actual defect
     // this file exists to catch, so only that case throws.
     expect(parseColorToken('')).toEqual([0, 0, 0, 1])
+  })
+})
+
+describe('parseNumberToken', () => {
+  it('reads a fraction token as its number', () => {
+    expect(parseNumberToken('0.35')).toBe(0.35)
+    expect(parseNumberToken(' 0.3 ')).toBe(0.3)
+  })
+
+  it('treats an empty string as an unset property and dims nothing', () => {
+    expect(parseNumberToken('')).toBe(1)
+  })
+
+  it('throws, naming the value, for something that is not a number', () => {
+    expect(() => parseNumberToken('abc')).toThrow(/"abc"/)
+  })
+
+  it('throws, naming the value, for a number outside 0 to 1', () => {
+    expect(() => parseNumberToken('1.5')).toThrow(/"1\.5"/)
+    expect(() => parseNumberToken('-0.1')).toThrow(/"-0\.1"/)
+  })
+
+  it('reads a token off the document root', () => {
+    document.documentElement.style.setProperty('--test-fraction', '0.25')
+    try {
+      expect(readNumberToken('--test-fraction')).toBe(0.25)
+    } finally {
+      document.documentElement.style.removeProperty('--test-fraction')
+    }
   })
 })

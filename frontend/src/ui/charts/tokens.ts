@@ -1,6 +1,8 @@
 // The colours a chart draws with, as resolved CSS strings. They come from
 // the theme's custom properties so a chart follows light and dark.
 
+import { parseNumberToken } from '../../gl/color-token'
+
 export interface ChartTokens {
   axis: string
   gridline: string
@@ -21,4 +23,10 @@ export function readChartTokens(el: Element): ChartTokens {
     series1: read('--series-1'),
     series2: read('--series-2'),
   }
+}
+
+/** How faint an unselected mark draws, from the theme's --dim-alpha. Kept off
+ *  ChartTokens so the literals tests build stay valid. */
+export function readDimAlpha(el: Element): number {
+  return parseNumberToken(getComputedStyle(el).getPropertyValue('--dim-alpha'))
 }
