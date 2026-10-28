@@ -385,7 +385,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   // The cells last handed to the layer as rings, so a write that changes nothing draws nothing.
-  let ringedKey: string | null = null
+  // A new layer rings nothing.
+  let ringedKey = ''
   // Cells of parameters picked outside the map, on the drawn layer.
   let parRingCells: readonly number[] = []
   // Where the parameters picked outside the map are (/link/par); null while none is held.
@@ -523,7 +524,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         lines.push(...whereLines(answer, drawn))
       }
     }
-    const box = cameraBox()
+    const box = ringedSiteDots.length > 0 ? cameraBox() : null
     if (box !== null && ringedSiteXy !== null) {
       const off = offScreenLine(offScreenCount(ringedSiteXy, ringedSiteDots, box))
       if (off !== null) lines.push(off)
@@ -3000,7 +3001,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
     if (store.get().pars.size > 0) followPars(new Set(['mount']))
     askSitesWhere()
-    refreshMarks()
+    // The first draw is still to come and shows these.
+    refreshMarks(false)
     store.subscribe(
       (selection) => selection.obsGroups,
       (next) => followObsGroup(next),
