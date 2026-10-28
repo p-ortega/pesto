@@ -5,17 +5,19 @@
 // and the canvas is a recording context.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Obs1to1Payload, SitePoints } from '../src/data/obs'
+import type { Obs1to1Payload, ObsResidHistPayload, SitePoints } from '../src/data/obs'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import { renderGroupFit, type GroupFitHandle } from '../src/ui/obs-fit'
 import type { DensitySpec } from '../src/ui/charts/density'
+import type { HistogramSpec } from '../src/ui/charts/histogram'
 import { createRecording2d, type RecordedCall } from './support/recording-2d'
 import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
 const obsApi = vi.hoisted(() => ({
   fetchObs1to1: vi.fn(),
   fetchObsPoints: vi.fn(),
+  fetchObsResidHist: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -27,6 +29,13 @@ vi.mock('../src/ui/charts/density', async () => {
   const actual = await vi.importActual<typeof import('../src/ui/charts/density')>('../src/ui/charts/density')
   density.drawDensity.mockImplementation(actual.drawDensity)
   return { ...actual, drawDensity: density.drawDensity }
+})
+
+const histogram = vi.hoisted(() => ({ drawHistogram: vi.fn() }))
+vi.mock('../src/ui/charts/histogram', async () => {
+  const actual = await vi.importActual<typeof import('../src/ui/charts/histogram')>('../src/ui/charts/histogram')
+  histogram.drawHistogram.mockImplementation(actual.drawHistogram)
+  return { ...actual, drawHistogram: histogram.drawHistogram }
 })
 
 const N_BINS = 4
@@ -104,7 +113,11 @@ beforeEach(() => {
   obsApi.fetchObs1to1.mockReset()
   obsApi.fetchObs1to1.mockResolvedValue(answer())
   obsApi.fetchObsPoints.mockReset()
+  obsApi.fetchObsResidHist.mockReset()
+  // Refused unless a test asks for a histogram, so the 1:1 tests count only their own canvases.
+  obsApi.fetchObsResidHist.mockResolvedValue({ ok: false, artifact: 'obs_agg', reason: 'no histogram in this test' })
   density.drawDensity.mockClear()
+  histogram.drawHistogram.mockClear()
 })
 
 afterEach(() => {
@@ -533,5 +546,205 @@ describe('the selected sites', () => {
     await Promise.resolve()
 
     expect(legendText(m.host)).toContain('circles, selected sites: 1')
+  })
+})
+
+// ---- the residual histogram ----
+
+const EDGES = Array.from({ length: 6 }, (_, i) => -5 + i * 2)
+
+function residPayload(over: Partial<ObsResidHistPayload> = {}): ObsResidHistPayload {
+  return {
+    group: 'gw_head',
+    residual: 'simulated minus observed',
+    inequality: 'none',
+    inequality_note: null,
+    edges: EDGES,
+    first: { iteration: 0, n: 20, counts: [1, 2, 10, 5, 2], density: [0.025, 0.05, 0.25, 0.125, 0.05] },
+    last: { iteration: 1, n: 20, counts: [0, 1, 15, 3, 1], density: [0, 0.025, 0.375, 0.075, 0.025] },
+    n_outside: { first: 0, last: 0 },
+    left_out: { no_value: 1, sentinel: 0, no_valid_realization: { first: 0, last: 2 } },
+    n_zero_weight: 3,
+    refused: null,
+    notes: [],
+    ...over,
+  }
+}
+
+function residAnswer(over: Partial<ObsResidHistPayload> = {}) {
+  return { ok: true, payload: residPayload(over) }
+}
+
+function histSpecs(): HistogramSpec[] {
+  return histogram.drawHistogram.mock.calls.map((call) => call[1] as HistogramSpec)
+}
+
+function residText(host: HTMLElement): string {
+  return host.querySelector('.obs-fit-resid')?.textContent ?? ''
+}
+
+async function histDrawn(m: Mounted, group = 'gw_head'): Promise<void> {
+  m.handle.setGroup(group)
+  await vi.waitFor(() => expect(histSpecs().length).toBeGreaterThan(0))
+}
+
+describe('the residual histogram', () => {
+  it('draws the first and last iteration on shared edges as densities in native space', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount()
+    await histDrawn(m)
+
+    expect(obsApi.fetchObsResidHist).toHaveBeenCalledWith('gw_head', expect.anything())
+    const spec = histSpecs()[0]
+    expect(spec.space).toBe('native')
+    expect(spec.edges).toEqual(EDGES)
+    expect(spec.xLabel).toBe('residual: simulated minus observed')
+    expect(spec.series.map((s) => s.label)).toEqual(['first, iteration 0', 'last, iteration 1'])
+    expect(spec.series[0].density).toEqual([0.025, 0.05, 0.25, 0.125, 0.05])
+    expect(spec.series[1].density).toEqual([0, 0.025, 0.375, 0.075, 0.025])
+  })
+
+  it('states the sign, the zero-weight count, the left-out counts by reason and the values outside the range', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer({ n_outside: { first: 0, last: 4 } }))
+    const m = mount()
+    await histDrawn(m)
+
+    const text = residText(m.host)
+    expect(text).toContain('simulated minus observed')
+    expect(text).toContain('zero weight included: 3')
+    expect(text).toContain('left out: 1 no measured value, 0 sentinel, 2 with no valid realization at the last iteration')
+    expect(text).toContain('first, iteration 0: 0 outside the drawn range')
+    expect(text).toContain('last, iteration 1: 4 outside the drawn range')
+  })
+
+  it('counts the observations with no valid realization at the first iteration too', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(
+      residAnswer({ left_out: { no_value: 0, sentinel: 0, no_valid_realization: { first: 5, last: 2 } } }),
+    )
+    const m = mount()
+    await histDrawn(m)
+
+    expect(residText(m.host)).toContain('5 with no valid realization at the first iteration')
+  })
+
+  it('draws one series and says which iteration when only one has an ensemble', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(
+      residAnswer({ last: null, left_out: { no_value: 0, sentinel: 1, no_valid_realization: { first: 3, last: 0 } } }),
+    )
+    const m = mount()
+    await histDrawn(m)
+
+    expect(histSpecs()[0].series.map((s) => s.label)).toEqual(['iteration 0'])
+    expect(residText(m.host)).toContain('0 no measured value, 1 sentinel, 3 with no valid realization at iteration 0')
+  })
+
+  it('shows the inequality note for an inequality group', async () => {
+    const note = 'this is an inequality group; the residual shown is plain simulated minus observed, not one-sided'
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer({ inequality: 'greater', inequality_note: note }))
+    const m = mount()
+    await histDrawn(m)
+
+    expect(residText(m.host)).toContain(note)
+  })
+
+  it('shows no inequality note for a group that has none', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount()
+    await histDrawn(m)
+
+    expect(residText(m.host)).not.toContain('inequality')
+  })
+
+  it('shows the reason in place of the chart when the histogram is refused, and the 1:1 panels still draw', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(
+      residAnswer({ refused: 'no observation in this group has a residual (1 sentinel)', edges: [], first: null, last: null }),
+    )
+    const m = mount()
+    m.handle.setGroup('gw_head')
+    await vi.waitFor(() => expect(m.host.querySelector('.obs-fit-resid .notice-parts')).not.toBeNull())
+
+    expect(residText(m.host)).toContain('no observation in this group has a residual (1 sentinel)')
+    expect(residText(m.host)).toContain('zero weight included: 3')
+    expect(m.host.querySelector('.obs-fit-resid canvas')).toBeNull()
+    expect(m.host.querySelectorAll('.obs-fit-1to1 canvas').length).toBe(2)
+  })
+
+  it('shows the server reason when the histogram answer is a refusal', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue({ ok: false, artifact: 'obs_agg', reason: 'obs_agg is not in the cache' })
+    const m = mount()
+    m.handle.setGroup('gw_head')
+    await vi.waitFor(() => expect(m.host.querySelector('.obs-fit-resid .notice-parts')).not.toBeNull())
+
+    expect(residText(m.host)).toContain('obs_agg: obs_agg is not in the cache')
+  })
+
+  it('shows a refused 1:1 and a drawn histogram side by side', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue({ ok: false, artifact: 'obs_1to1', reason: 'no 1:1 grid' })
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount()
+    await histDrawn(m)
+
+    expect(m.host.querySelector('.obs-fit-1to1')!.textContent).toContain('obs_1to1: no 1:1 grid')
+    expect(m.host.querySelectorAll('canvas').length).toBe(1)
+  })
+
+  it('draws only the newest group when the group changes while answers are out', async () => {
+    const waiting: Array<(value: unknown) => void> = []
+    obsApi.fetchObsResidHist.mockImplementation(
+      (name: string) =>
+        new Promise((resolve) => {
+          waiting.push(() => resolve(residAnswer({ group: name, n_zero_weight: name === 'old' ? 111 : 222 })))
+        }),
+    )
+    obsApi.fetchObs1to1.mockImplementation(async (name: string) => answer({ group: name }))
+    const m = mount()
+    m.handle.setGroup('old')
+    m.handle.setGroup('new')
+    expect(waiting.length).toBe(2)
+
+    waiting[1](undefined)
+    await vi.waitFor(() => expect(histSpecs().length).toBe(1))
+    waiting[0](undefined)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(histSpecs().length).toBe(1)
+    expect(residText(m.host)).toContain('zero weight included: 222')
+    expect(residText(m.host)).not.toContain('111')
+    expect(m.host.querySelector('.obs-fit-title')!.textContent).toBe('Fit of group new')
+  })
+
+  it('fetches and draws nothing while hidden, and fetches once on show', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount({ startHidden: true })
+
+    m.handle.setGroup('gw_head')
+    await Promise.resolve()
+    expect(obsApi.fetchObs1to1).not.toHaveBeenCalled()
+    expect(obsApi.fetchObsResidHist).not.toHaveBeenCalled()
+    expect(m.calls.length).toBe(0)
+
+    m.handle.onShow()
+    await vi.waitFor(() => expect(histSpecs().length).toBe(1))
+    m.handle.onHide()
+    m.handle.onShow()
+
+    expect(obsApi.fetchObs1to1).toHaveBeenCalledTimes(1)
+    expect(obsApi.fetchObsResidHist).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws nothing when an answer arrives after the tab was hidden, and draws on show', async () => {
+    let release: (value: unknown) => void = () => undefined
+    obsApi.fetchObsResidHist.mockImplementation(() => new Promise((resolve) => (release = resolve)))
+    const m = mount()
+    m.handle.setGroup('gw_head')
+    m.handle.onHide()
+
+    release(residAnswer())
+    await vi.waitFor(() => expect(m.host.querySelector('.obs-fit-resid canvas')).not.toBeNull())
+    expect(histSpecs().length).toBe(0)
+
+    m.handle.onShow()
+    expect(histSpecs().length).toBe(1)
   })
 })
