@@ -5,7 +5,7 @@
 // pixels; the screenshot in tests/visual/mesh.spec.ts is what proves those.
 
 import { describe, expect, it } from 'vitest'
-import { ramp, scaleLimits, STOPS, hexToRgb } from '../src/gl/colormap'
+import { classTexelIndices, ramp, scaleLimits, STOPS, hexToRgb } from '../src/gl/colormap'
 import { MeshLayer, type MeshData } from '../src/gl/mesh-layer'
 import { createRecordingGl } from './support/recording-gl'
 import { gridMesh } from './support/grid-mesh'
@@ -905,5 +905,114 @@ describe('MeshLayer hatch pass', () => {
     calls.length = 0
     layer.draw()
     expect(draws(calls)).toHaveLength(2)
+  })
+})
+
+describe('MeshLayer classes', () => {
+  // The value each uniform call receives, with the program it was looked up on.
+  function uniformsFor(calls: Call[], name: string): Array<{ program: unknown; method: string; value: unknown }> {
+    const out: Array<{ program: unknown; method: string; value: unknown }> = []
+    calls.forEach((c, i) => {
+      if (c.method !== 'getUniformLocation' || c.args[1] !== name) return
+      const next = calls[i + 1]
+      out.push({ program: c.args[0], method: next.method, value: next.args[1] })
+    })
+    return out
+  }
+
+  function fillProgram(calls: Call[]): unknown {
+    return calls.find((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_values')?.args[0]
+  }
+
+  function fillFragmentSource(calls: Call[]): string {
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    return sources.find((s) => s.includes('out vec4 fragColor') && s.includes('flat in float v_norm') && !s.includes('v_flags'))!
+  }
+
+  it('hands the fill program the class count and the texel each class samples', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    layer.setStyle({ classes: 9, symmetric: false, texture: false })
+    calls.length = 0
+    layer.draw()
+
+    const program = fillProgram(calls)
+    const classes = uniformsFor(calls, 'u_classes').filter((u) => u.program === program)
+    expect(classes).toEqual([{ program, method: 'uniform1f', value: 9 }])
+    const texels = uniformsFor(calls, 'u_classTexel').filter((u) => u.program === program)
+    expect(texels).toHaveLength(1)
+    expect(texels[0].method).toBe('uniform1fv')
+    const array = texels[0].value as Float32Array
+    expect(array).toHaveLength(11)
+    expect(Array.from(array.slice(0, 9))).toEqual(classTexelIndices(9))
+    expect(Array.from(array.slice(9))).toEqual([0, 0])
+  })
+
+  it('hands the fill program 0 classes when continuous', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setStyle({ classes: 9, symmetric: false, texture: false })
+    layer.setStyle({ classes: 0, symmetric: false, texture: false })
+    calls.length = 0
+    layer.draw()
+    const program = fillProgram(calls)
+    expect(uniformsFor(calls, 'u_classes').filter((u) => u.program === program).map((u) => u.value)).toEqual([0])
+  })
+
+  it('keeps the class count across a context restore', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setStyle({ classes: 7, symmetric: false, texture: false })
+    layer.reupload()
+    calls.length = 0
+    layer.draw()
+    const program = fillProgram(calls)
+    expect(uniformsFor(calls, 'u_classes').filter((u) => u.program === program).map((u) => u.value)).toEqual([7])
+  })
+
+  it('quantises in the fill shader only after a missing cell is discarded', () => {
+    const { gl, calls } = createRecordingGl()
+    new MeshLayer(gl, threeCellMesh())
+    const source = fillFragmentSource(calls)
+    expect(source).toContain('uniform float u_classes;')
+    expect(source).toContain('uniform float u_classTexel[11];')
+    const discardAt = source.indexOf('discard')
+    expect(discardAt).toBeGreaterThan(0)
+    expect(source.indexOf('u_classes >')).toBeGreaterThan(discardAt)
+    expect(source.indexOf('u_classTexel[k]')).toBeGreaterThan(discardAt)
+  })
+
+  it('steps the dots the same way, after a missing dot is discarded (D-31)', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    const points = sources.find((s) => s.includes('v_flags') && s.includes('out vec4 fragColor'))!
+    expect(points).toContain('uniform float u_classes;')
+    expect(points).toContain('uniform float u_classTexel[11];')
+    expect(points.indexOf('u_classTexel[k]')).toBeGreaterThan(points.indexOf('if (missing && u_missingStyle < 0.5) discard;'))
+
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.setStyle({ classes: 11, symmetric: false, texture: false })
+    calls.length = 0
+    layer.draw()
+    const pointsProgram = calls.find((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_size')?.args[0]
+    const fill = fillProgram(calls)
+    expect(pointsProgram).not.toBe(fill)
+    for (const program of [fill, pointsProgram]) {
+      expect(uniformsFor(calls, 'u_classes').filter((u) => u.program === program).map((u) => u.value)).toEqual([11])
+      const texel = uniformsFor(calls, 'u_classTexel').find((u) => u.program === program)
+      expect(Array.from(texel!.value as Float32Array)).toEqual(classTexelIndices(11))
+    }
+  })
+
+  it('still uploads every missing cell as NaN for the fill to discard, whatever the classes', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setStyle({ classes: 9, symmetric: false, texture: false })
+    layer.setValues(new Float32Array([Number.NaN, Number.NaN, Number.NaN]))
+    const upload = calls.filter((c) => c.method === 'texSubImage2D').pop()!
+    const staging = upload.args[8] as Float32Array
+    expect(Array.from(staging.slice(0, 3)).every(Number.isNaN)).toBe(true)
   })
 })

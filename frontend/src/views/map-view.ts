@@ -27,6 +27,7 @@ import { applyScale, logIsUsable, scaleLimits, subsetValues, LimitsMemory, type 
 import { readColorToken, readNumberToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { MeshLayer, type MeshData } from '../gl/mesh-layer'
+import { CONTINUOUS, DEFAULT_STYLE, classLabel, resolveStyle, type EffectiveStyle } from '../gl/field-style'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
@@ -818,6 +819,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     scaleInferred: true,
     limitsMode: 'robust',
     manualLimits: null,
+    style: DEFAULT_STYLE,
   }
   let pending: FieldChoice | null = null
   // What picks the values of the field held (null when none is held) and of
@@ -999,6 +1001,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   // The legend last drawn for the parameter field, so a base name that lands later can relabel it.
   let shownLegend: LegendOptions | null = null
+  // The style and limits deriveAndDraw last drew with, for the readout's class line.
+  let drawnStyle: EffectiveStyle = CONTINUOUS
+  let drawnLimits: [number, number] = [0, 1]
 
   function paintLegend(legend: LegendOptions | null): void {
     shownLegend = legend
@@ -1164,7 +1169,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
             contributors: contributorsMemo.get(selectedCellId) ?? null,
           }
         : undefined
-    renderReadout(readoutEl, { pick, group, joined, field, interpolated })
+    // The class lives in the drawn scale, so it is read from the scaled field at the row the value comes from.
+    const classIndex =
+      pick.kind === 'point'
+        ? pick.row
+        : classification?.kind === 'valued'
+        ? classification.row
+        : classification?.kind === 'interpolated'
+        ? selectedCellId
+        : null
+    const classLine =
+      obsActive || classIndex === null || fullField === null
+        ? null
+        : classLabel(fullField[classIndex] ?? Number.NaN, drawnLimits, drawnStyle, scaledFieldScale ?? committed.scale)
+    renderReadout(readoutEl, { pick, group, joined, field, interpolated, classLine })
   }
 
   function fetchContributors(cellId: number): void {
@@ -1837,8 +1855,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
 
     fullField = scaled
+    // D-02: the one effective style; nothing else reads the requested one.
+    const { effective, notes } = resolveStyle(committed.style, {
+      scale: effectiveScale,
+      limitsMode: committed.limitsMode,
+      drawsAsPoints: drawsAsPoints(),
+      limits,
+      valued: groupHasFiniteValue(scaled),
+    })
     layer.setColormap(committed.colormap, committed.reverseColormap)
     layer.setLimits(limits)
+    layer.setStyle(effective)
+    controlsHandle?.showStyle(effective, notes)
+    drawnStyle = effective
+    drawnLimits = limits
     const { contested, noValue } = applyLayer()
 
     paintLegend({
@@ -1853,7 +1883,22 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       noValue,
       points: drawsAsPoints() ? currentPoints.rows.length : undefined,
       inactiveDrawn: inactiveDrawnCount(),
+      style: effective,
+      styleNotes: notes,
     })
+  }
+
+  // Stops at the first finite value, so a normal field costs one look. A
+  // cached or manual pair says nothing about whether the group has a value.
+  function groupHasFiniteValue(scaled: Float32Array): boolean {
+    if (fieldKind === 'cell') {
+      for (let c = 0; c < scaled.length; c++) if (Number.isFinite(scaled[c])) return true
+      return false
+    }
+    for (let i = 0; i < joined.length; i++) {
+      if (joined[i]?.pargp === drawnGroup && Number.isFinite(scaled[i])) return true
+    }
+    return false
   }
 
   // A pilot-point field paints its value on an idomain-inactive cell too; this says how many.
@@ -2012,7 +2057,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       a.scaleInferred !== b.scaleInferred ||
       a.limitsMode !== b.limitsMode ||
       a.manualLimits?.[0] !== b.manualLimits?.[0] ||
-      a.manualLimits?.[1] !== b.manualLimits?.[1]
+      a.manualLimits?.[1] !== b.manualLimits?.[1] ||
+      a.style.classes !== b.style.classes ||
+      a.style.symmetric !== b.style.symmetric ||
+      a.style.texture !== b.style.texture
     )
   }
 
@@ -2419,6 +2467,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsLookLayer = committed.layer
     mapCanvasArea.classList.add('colour-obs')
     const active = activeMaskFor(committed.layer)
+    // D-01: observation dots keep their own continuous colouring.
+    layer.setStyle(CONTINUOUS)
     layer.setMissingStyle('ring')
     layer.setValues(new Float32Array(mesh.nCells).fill(Number.NaN))
     layer.setContested(new Uint8Array(mesh.nCells))
@@ -3145,6 +3195,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       scaleInferred: !wasVisitedBefore,
       limitsMode: wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust',
       manualLimits: null,
+      style: DEFAULT_STYLE,
     }
     // A saved layer holding none of a dot group's dots gives way to the layer that does.
     committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
@@ -3172,6 +3223,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         scaleInferred: committed.scaleInferred,
         limitsMode: committed.limitsMode,
         manualLimits: committed.manualLimits,
+        style: committed.style,
         stat: committed.stat,
       },
       onSelectionChange: handleSelectionChange,

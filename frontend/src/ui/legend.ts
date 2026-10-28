@@ -4,7 +4,8 @@
 // reaches the DOM through textContent alone, so a group name carrying
 // markup renders as text.
 
-import { ramp, type ColormapName, type LimitsMode, type ValueScale } from '../gl/colormap'
+import { classColour, classEdges, ramp, type ColormapName, type LimitsMode, type ValueScale } from '../gl/colormap'
+import { formatEdge, type EffectiveStyle, type StyleNotes } from '../gl/field-style'
 
 export interface LegendOptions {
   colormap: ColormapName
@@ -22,6 +23,9 @@ export interface LegendOptions {
   points?: number
   /** Set for an interpolated field: cells it paints that idomain marks inactive. */
   inactiveDrawn?: number
+  /** The effective style the layer draws with; absent means continuous. */
+  style?: EffectiveStyle
+  styleNotes?: StyleNotes
 }
 
 const LIMITS_LABEL: Record<LimitsMode, string> = {
@@ -48,10 +52,52 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   }
   el.classList.add('floating')
 
+  const table = ramp(opts.colormap, opts.reverse)
+  const classes = opts.style?.classes ?? 0
+  if (classes > 0) {
+    renderClasses(el, table, classes, opts.limits)
+  } else {
+    renderRamp(el, table, opts.limits)
+  }
+  renderLines(el, opts)
+}
+
+// One swatch per class from classColour, the function the shader's texel
+// indices come from, and one edge value per class boundary (D-06, D-07).
+function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [number, number]): void {
+  const swatches = document.createElement('div')
+  swatches.setAttribute('aria-hidden', 'true')
+  swatches.style.display = 'flex'
+  swatches.style.width = '128px'
+  for (let k = 0; k < n; k++) {
+    const [r, g, b] = classColour(k, n, table)
+    const swatch = document.createElement('span')
+    swatch.classList.add('legend-class')
+    swatch.style.display = 'inline-block'
+    swatch.style.width = `${128 / n}px`
+    swatch.style.height = '8px'
+    swatch.style.background = `rgb(${r}, ${g}, ${b})`
+    swatches.appendChild(swatch)
+  }
+  el.appendChild(swatches)
+
+  const edges = document.createElement('div')
+  edges.classList.add('legend-figures')
+  edges.style.flexWrap = 'wrap'
+  for (const value of classEdges(limits, n)) {
+    const edge = document.createElement('span')
+    edge.classList.add('legend-edge', 'tabular-nums')
+    edge.style.whiteSpace = 'nowrap'
+    edge.textContent = formatEdge(value)
+    edges.appendChild(edge)
+  }
+  el.appendChild(edges)
+}
+
+function renderRamp(el: HTMLElement, table: Uint8Array, limits: [number, number]): void {
   // The ramp swatch: a CSS gradient sampled from the same 256-entry table
   // the GPU draws with, so the legend can never show a different ramp
   // than the one actually on screen.
-  const table = ramp(opts.colormap, opts.reverse)
   const stops: string[] = []
   for (let i = 0; i < 256; i += 32) {
     const r = table[i * 4]
@@ -76,16 +122,25 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   lowEl.style.display = 'inline-block'
   lowEl.style.minWidth = '7ch'
   lowEl.style.whiteSpace = 'nowrap'
-  lowEl.textContent = formatEndValue(opts.limits[0])
+  lowEl.textContent = formatEndValue(limits[0])
   const highEl = document.createElement('span')
   highEl.classList.add('tabular-nums')
   highEl.style.display = 'inline-block'
   highEl.style.minWidth = '7ch'
   highEl.style.whiteSpace = 'nowrap'
-  highEl.textContent = formatEndValue(opts.limits[1])
+  highEl.textContent = formatEndValue(limits[1])
   endValues.appendChild(lowEl)
   endValues.appendChild(highEl)
   el.appendChild(endValues)
+}
+
+function renderLines(el: HTMLElement, opts: LegendOptions): void {
+  if (opts.styleNotes?.classes) {
+    const noteLine = document.createElement('div')
+    noteLine.classList.add('label')
+    noteLine.textContent = opts.styleNotes.classes
+    el.appendChild(noteLine)
+  }
 
   // The scale in use, and whether it was inferred from partrans rather
   // than chosen explicitly -- the log default is an inference and §1
