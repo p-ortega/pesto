@@ -48,6 +48,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     FRAGMENT_SHADER: 'FRAGMENT_SHADER',
     TEXTURE0: 0,
     TEXTURE1: 1,
+    TEXTURE2: 2,
     COLOR_BUFFER_BIT: 'COLOR_BUFFER_BIT',
     BLEND: 'BLEND',
     SCISSOR_TEST: 'SCISSOR_TEST',
