@@ -111,8 +111,11 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
   const slot = new LatestWins<SitesWhereResult>()
   let pending = false
   let drawn: { pane: HTMLElement; render(): void } | null = null
+  // Where the grid just cleared was scrolled to, for the grid drawn next.
+  let keptTop = 0
 
   function clear(): void {
+    keptTop = drawn?.pane.scrollTop ?? 0
     host.textContent = ''
     drawn = null
   }
@@ -179,6 +182,7 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
     pane.addEventListener('scroll', () => {
       if (!opts.isHidden()) render()
     })
+    pane.scrollTop = Math.min(keptTop, Math.max(0, rows.length * ROW_HEIGHT - pane.clientHeight))
     drawn = { pane, render }
     render()
   }
@@ -301,7 +305,8 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
     const key = `${iteration}|${ids.length}|${asked.join(',')}`
     // The same question asked or answered already: nothing new to fetch.
     if (slot.current() === key) return
-    drawLoading(ids.length)
+    // A grid already on screen stays until the new answer lands, so a click does not blink the list.
+    if (drawn === null) drawLoading(ids.length)
     void slot.run(key, (signal) => loadWhere(asked, iteration, { signal })).then(
       (answer) => {
         if (answer.stale) return

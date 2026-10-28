@@ -155,7 +155,7 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
     }
   }
 
-  function drawGrid(items: Item[], columns: string[]): void {
+  function drawGrid(items: Item[], columns: string[], top: number): void {
     const grid = document.createElement('div')
     grid.setAttribute('role', 'grid')
     grid.setAttribute('aria-label', 'Selected parameters')
@@ -181,11 +181,14 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
     scrollPane.addEventListener('scroll', () => {
       if (!disposed && !opts.isHidden()) drawRows(scrollPane, rowsHost, items)
     })
+    // A redraw after a click keeps the list where it was, so the clicked row stays in view.
+    scrollPane.scrollTop = Math.min(top, Math.max(0, items.length * ROW_HEIGHT - scrollPane.clientHeight))
     drawRows(scrollPane, rowsHost, items)
   }
 
   function refresh(): void {
     if (disposed) return
+    const top = host.querySelector<HTMLElement>('.scroll-pane')?.scrollTop ?? 0
     host.textContent = ''
     const { pars, cells } = opts.store.get()
     const found = matchingAnswer(pars, cells)
@@ -219,6 +222,7 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
       drawGrid(
         flatten(groups, (p) => ({ kind: 'par', name: p.parnme, ...parDetail(p) })),
         ['Parameter', 'On the clicked cells'],
+        top,
       )
       return
     }
@@ -228,6 +232,7 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
     drawGrid(
       flatten(groups, (name) => ({ kind: 'par', name, detail: '', title: '' })),
       ['Parameter'],
+      top,
     )
   }
 

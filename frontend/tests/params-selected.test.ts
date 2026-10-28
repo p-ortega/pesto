@@ -157,6 +157,23 @@ describe('renderSelectedParams after a cell click', () => {
   })
 })
 
+describe('renderSelectedParams keeps its place', () => {
+  it('puts a redrawn list back where it was scrolled to', () => {
+    const names = Array.from({ length: 300 }, (_, i) => `p${i}`)
+    const store = makeStore({ pars: names })
+    const { host, handle } = render(store)
+    const pane = host.querySelector<HTMLElement>('.scroll-pane')!
+    pane.scrollTop = 200 * 24
+
+    store.set({ pars: new Set(names.slice(0, 299)) }, 'map')
+    handle.refresh()
+
+    const again = host.querySelector<HTMLElement>('.scroll-pane')!
+    expect(again).not.toBe(pane)
+    expect(again.scrollTop).toBe(200 * 24)
+  })
+})
+
 describe('renderSelectedParams for pars from a tab or a dot', () => {
   it('ignores a cell answer whose names are not the selected pars, and groups by the parameter table', () => {
     linkApi.recentCellLink.mockReturnValue(answer({ pars: [direct('zz', 'Z')], parsTotal: 1 }))
