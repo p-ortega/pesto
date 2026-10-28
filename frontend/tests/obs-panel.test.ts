@@ -28,6 +28,24 @@ vi.mock('../src/data/obs', async () => ({
   ...obsApi,
 }))
 
+const linkTargets = vi.hoisted(() => ({ fetchLinkSites: vi.fn() }))
+vi.mock('../src/data/link-targets', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/link-targets')>('../src/data/link-targets')),
+  ...linkTargets,
+}))
+
+const overlaysApi = vi.hoisted(() => ({ fetchPdcSites: vi.fn() }))
+vi.mock('../src/data/overlays', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/overlays')>('../src/data/overlays')),
+  ...overlaysApi,
+}))
+
+const linkApi = vi.hoisted(() => ({ recentCellLink: vi.fn() }))
+vi.mock('../src/data/link', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/link')>('../src/data/link')),
+  ...linkApi,
+}))
+
 function group(name: string, over: Partial<ObsGroupRow> = {}): ObsGroupRow {
   return {
     group: name,
@@ -48,6 +66,68 @@ function group(name: string, over: Partial<ObsGroupRow> = {}): ObsGroupRow {
     nResidFirst: 100,
     nResidLast: 100,
     ...over,
+  }
+}
+
+function pdcSites(entries: { id: number; nObs: number; group?: number }[]) {
+  return {
+    id: Int32Array.from(entries.map((e) => e.id)),
+    cell: Int32Array.from(entries.map(() => 0)),
+    layer: Int32Array.from(entries.map(() => 1)),
+    groupIndex: Int32Array.from(entries.map((e) => e.group ?? 0)),
+    nObs: Int32Array.from(entries.map((e) => e.nObs)),
+  }
+}
+
+function pdcOn(iteration: number, over: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    answer: {
+      available: true,
+      reason: null,
+      artifact: `pdc/${iteration}`,
+      iteration,
+      source: 'file',
+      sourceFile: 'case.3.pdc.csv',
+      weightsSource: null,
+      rule: null,
+      nObs: 9,
+      nSites: 3,
+      nUnmatched: 0,
+      nLeftOut: 0,
+      byGroup: [{ group: 'gw_head', nObs: 7, nSites: 2 }],
+      sites: pdcSites([
+        { id: 40, nObs: 5 },
+        { id: 41, nObs: 2 },
+      ]),
+      groups: ['gw_head'],
+      notes: [],
+      ...over,
+    },
+  }
+}
+
+function pdcOff(iteration: number, reason: string) {
+  return {
+    ok: true,
+    answer: {
+      available: false,
+      reason,
+      artifact: `pdc/${iteration}`,
+      iteration,
+      source: null,
+      sourceFile: null,
+      weightsSource: null,
+      rule: null,
+      nObs: null,
+      nSites: null,
+      nUnmatched: null,
+      nLeftOut: null,
+      byGroup: [],
+      sites: pdcSites([]),
+      groups: [],
+      notes: [],
+    },
   }
 }
 
@@ -101,6 +181,12 @@ beforeEach(() => {
   obsApi.fetchObsPoints.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no points in this test' })
   obsApi.fetchObsSites.mockResolvedValue({ ok: true, rows: [], notes: [] })
   obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('gw_head'), group('gw_date')]))
+  linkTargets.fetchLinkSites.mockReset()
+  linkTargets.fetchLinkSites.mockResolvedValue({ ok: false, artifact: 'obs_cell', reason: 'no site places in this test' })
+  linkApi.recentCellLink.mockReset()
+  linkApi.recentCellLink.mockReturnValue(null)
+  overlaysApi.fetchPdcSites.mockReset()
+  overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) => pdcOff(iteration, 'no pdc in this test'))
 })
 
 afterEach(() => {
@@ -198,11 +284,11 @@ describe('the group summary', () => {
     expect(cell(groupRows(host)[0], 'group').textContent).toBe(name)
   })
 
-  it('has the five sections in the order the later plans mount into', () => {
+  it('has the six sections in order, the selected sites between the group table and the fit', () => {
     const { host } = mount({ startHidden: true })
 
     const classes = [...host.children].map((el) => el.className).filter((c) => c.startsWith('obs-'))
-    expect(classes).toEqual(['obs-notices', 'obs-groups', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
+    expect(classes).toEqual(['obs-notices', 'obs-groups', 'obs-selected', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
   })
 })
 
@@ -499,7 +585,7 @@ describe('the site list', () => {
     expect(cell(b, 'layer').textContent).toBe('unknown')
     expect(cell(b, 'placement').textContent).toBe('not placed')
     expect(cell(b, 'placement').title).toBe('no x or y in the file')
-    expect(host.querySelector('.obs-sites-title')?.textContent).toBe('gw_head: 2 sites')
+    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('gw_head: 2 sites')
   })
 
   it('shows the site by name and keys it by site_id, never by position', async () => {
@@ -593,7 +679,7 @@ describe('the site list', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     expect(siteRows(host).map((r) => cell(r, 'site').textContent)).toEqual(['date_a'])
-    expect(host.querySelector('.obs-sites-title')?.textContent).toBe('gw_date: 1 site')
+    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('gw_date: 1 site')
   })
 
   it('shows the reason in place of the list when the sites are refused', async () => {
@@ -669,6 +755,389 @@ describe('the site list', () => {
 
     expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
     expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('false')
+  })
+})
+
+describe('picking sites with modifiers', () => {
+  beforeEach(() => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(2, 's2'), site(3, 's3'), site(4, 's4')]))
+  })
+
+  async function openSites(over: Partial<ObsPanelOptions> = {}) {
+    const view = await openWithGroups(over)
+    groupRows(view.host)[0].click()
+    await vi.waitFor(() => expect(siteRows(view.host).length).toBe(3))
+    return view
+  }
+
+  function rowOf(host: HTMLElement, id: number): HTMLElement {
+    return siteRows(host).find((r) => r.dataset.siteId === String(id))!
+  }
+
+  function clickRow(host: HTMLElement, id: number, init: MouseEventInit = {}): void {
+    rowOf(host, id).dispatchEvent(new MouseEvent('click', { bubbles: true, ...init }))
+  }
+
+  it('replaces on a plain click, adds on shift and removes on alt, always with the origin obs', async () => {
+    const store = makeStore()
+    const heard: { sites: number[]; origins: string[] }[] = []
+    store.subscribe(
+      (s) => s.sites,
+      (next, _prev, origins) => heard.push({ sites: [...next.sites].sort(), origins: [...origins] }),
+    )
+    const { host } = await openSites({ store })
+
+    clickRow(host, 2)
+    store.flush()
+    clickRow(host, 3, { shiftKey: true })
+    store.flush()
+    clickRow(host, 2, { altKey: true })
+    store.flush()
+
+    expect(heard).toEqual([
+      { sites: [2], origins: ['obs'] },
+      { sites: [2, 3], origins: ['obs'] },
+      { sites: [3], origins: ['obs'] },
+    ])
+  })
+
+  it('treats Enter and shift+Enter like a click and a shift-click', async () => {
+    const { host, store } = await openSites()
+
+    rowOf(host, 2).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    rowOf(host, 4).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }))
+
+    expect([...store.get().sites].sort()).toEqual([2, 4])
+  })
+
+  it('marks the sites another view chose and dims the rest, and dims nothing with no site chosen', async () => {
+    const { host, store } = await openSites()
+
+    store.set({ sites: new Set([3]) }, 'map')
+    store.flush()
+    expect(rowOf(host, 3).getAttribute('aria-selected')).toBe('true')
+    expect(rowOf(host, 3).classList.contains('dimmed')).toBe(false)
+    expect(rowOf(host, 2).classList.contains('dimmed')).toBe(true)
+    expect(rowOf(host, 4).classList.contains('dimmed')).toBe(true)
+
+    store.set({ sites: new Set() }, 'map')
+    store.flush()
+    expect(siteRows(host).some((r) => r.classList.contains('dimmed'))).toBe(false)
+  })
+
+  it('keeps every row in its place whatever is chosen', async () => {
+    const { host, store } = await openSites()
+    sortButton(host, 'Group').click()
+    sortButton(host, 'Group').click()
+    const groupsBefore = names(host)
+
+    store.set({ sites: new Set([4]) }, 'map')
+    store.flush()
+    clickRow(host, 3, { shiftKey: true })
+    store.flush()
+
+    expect(siteRows(host).map((r) => r.dataset.siteId)).toEqual(['2', '3', '4'])
+    expect(names(host)).toEqual(groupsBefore)
+    expect(heading(host, 'Group').getAttribute('aria-sort')).toBe('descending')
+  })
+
+  it('leaves the group rows alone when the sites change', async () => {
+    const { host, store } = await openSites()
+    const groupsSelected = groupRows(host).map((r) => r.getAttribute('aria-selected'))
+
+    store.set({ sites: new Set([2]) }, 'map')
+    store.flush()
+
+    expect(groupRows(host).map((r) => r.getAttribute('aria-selected'))).toEqual(groupsSelected)
+    expect(groupRows(host).some((r) => r.classList.contains('dimmed'))).toBe(false)
+    expect([...store.get().obsGroups]).toEqual(['gw_head'])
+  })
+})
+
+describe("the site list's 'Show selected' button", () => {
+  function showButton(host: HTMLElement): HTMLButtonElement {
+    return host.querySelector<HTMLButtonElement>('.obs-sites-title button')!
+  }
+
+  it('scrolls to the first chosen site in list order', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer(Array.from({ length: 9086 }, (_, i) => site(i, `site_${i}`))))
+    const { host, store } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBeGreaterThan(0))
+
+    store.set({ sites: new Set([8000, 7000]) }, 'map')
+    store.flush()
+    expect(showButton(host).disabled).toBe(false)
+    showButton(host).click()
+
+    const pane = host.querySelector<HTMLElement>('.obs-sites .obs-grid > .scroll-pane')!
+    expect(pane.scrollTop).toBe(7000 * 24)
+    expect(siteRows(host).map((r) => r.dataset.siteId)).toContain('7000')
+  })
+
+  it('is disabled with the reason when no chosen site is in this group', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(2, 's2'), site(3, 's3')]))
+    const { host, store } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    expect(showButton(host).textContent).toBe('Show selected')
+    expect(showButton(host).disabled).toBe(true)
+    expect(showButton(host).title).toBe('no selected site is in this group')
+
+    store.set({ sites: new Set([99]) }, 'map')
+    store.flush()
+    expect(showButton(host).disabled).toBe(true)
+
+    store.set({ sites: new Set([3]) }, 'map')
+    store.flush()
+    expect(showButton(host).disabled).toBe(false)
+  })
+})
+
+describe('the Selected sites section in the panel', () => {
+  function cellAnswer() {
+    return {
+      layer: 3,
+      cells: [1234],
+      ring: [1, 2, 3, 4, 5, 6, 7, 8],
+      ringRule: 'cells sharing a corner',
+      pars: [],
+      parsTotal: 0,
+      parNotes: [],
+      sites: [
+        { siteId: 10, site: 'well_a', group: 'gw_head', layer: 3, cell: 1234, inClickedCell: true },
+        { siteId: 11, site: 'well_b', group: 'gw_head', layer: 3, cell: 1235, inClickedCell: false },
+      ],
+      sitesTotal: 73,
+      sitesCap: 50,
+      siteCounts: { unknownLayerIncluded: 0, otherLayerLeftOut: 0, unplacedInRun: 0 },
+      reasons: { pars: null, sites: null },
+    }
+  }
+
+  function selectedRows(host: HTMLElement): HTMLElement[] {
+    return [...host.querySelectorAll<HTMLElement>('.obs-selected .obs-grid-row')]
+  }
+
+  it("states where a cell click found its sites when the map writes the click's cells and sites", async () => {
+    linkApi.recentCellLink.mockReturnValue(cellAnswer())
+    const { host, store } = await openWithGroups()
+
+    store.set({ cells: new Set([1234]), sites: new Set([10, 11]) }, 'map')
+    store.flush()
+
+    expect(host.querySelector('.obs-selected-title')?.textContent).toBe('Sites in cell 1234 and its 8 neighbouring cells on layer 3')
+    expect(host.querySelector('.obs-selected')?.textContent).toContain('2 of 73 sites shown; zoom in or lasso to pick fewer')
+    expect(selectedRows(host).length).toBe(2)
+    expect(linkTargets.fetchLinkSites).not.toHaveBeenCalled()
+  })
+
+  it('turns a shift-click in the section into an added site with the origin obs', async () => {
+    linkTargets.fetchLinkSites.mockResolvedValue({
+      ok: true,
+      iteration: 0,
+      sites: [{ siteId: 5, site: 's5', group: 'gw_head', layer: 1, cell: 9, placed: true, hasValue: true }],
+      unknown: [],
+      valueRule: 'rule',
+      valueReason: null,
+      notAsked: 0,
+    })
+    const store = makeStore()
+    const { host } = await openWithGroups({ store })
+    store.set({ sites: new Set([5]) }, 'map')
+    store.flush()
+    await vi.waitFor(() => expect(selectedRows(host).length).toBe(1))
+    const heard: string[][] = []
+    store.subscribe(
+      (s) => s.sites,
+      (_next, _prev, origins) => heard.push([...origins]),
+    )
+
+    selectedRows(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }))
+    store.flush()
+
+    expect([...store.get().sites]).toEqual([])
+    expect(heard).toEqual([['obs']])
+    expect(host.querySelector('.obs-selected')?.textContent).toBe('')
+  })
+
+  it('asks where the sites are only once the tab is shown', async () => {
+    const { store, handle } = mount({ startHidden: true })
+    store.set({ sites: new Set([5]) }, 'map')
+    store.flush()
+    await Promise.resolve()
+    expect(linkTargets.fetchLinkSites).not.toHaveBeenCalled()
+
+    handle.onShow()
+
+    await vi.waitFor(() => expect(linkTargets.fetchLinkSites).toHaveBeenCalledTimes(1))
+    expect(linkTargets.fetchLinkSites).toHaveBeenCalledWith([5], 0, expect.anything())
+  })
+})
+
+describe('prior-data conflict in the group table and the site list', () => {
+  it('asks once for the shown iteration and fills both columns from by_group, 0 for an unlisted group', async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) => pdcOn(iteration))
+    const { host } = await openWithGroups({ store: createSelectionStore({ initial: emptySelection('run', 3), schedule: () => {} }) })
+
+    await vi.waitFor(() => expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('7'))
+    expect(overlaysApi.fetchPdcSites).toHaveBeenCalledTimes(1)
+    expect(overlaysApi.fetchPdcSites).toHaveBeenCalledWith(3, expect.anything())
+    expect(cell(groupRows(host)[0], 'pdc_sites').textContent).toBe('2')
+    expect(cell(groupRows(host)[1], 'pdc_obs').textContent).toBe('0')
+    expect(cell(groupRows(host)[1], 'pdc_sites').textContent).toBe('0')
+    expect(heading(host, 'Conflict obs').textContent).toBe('Conflict obs')
+    expect(heading(host, 'Conflict sites').textContent).toBe('Conflict sites')
+  })
+
+  it('sorts on the conflict count', async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) => pdcOn(iteration))
+    const { host } = await openWithGroups()
+    await vi.waitFor(() => expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('7'))
+
+    sortButton(host, 'Conflict obs').click()
+    expect(names(host)).toEqual(['gw_date', 'gw_head'])
+    sortButton(host, 'Conflict obs').click()
+    expect(names(host)).toEqual(['gw_head', 'gw_date'])
+  })
+
+  it("says in the heading's title where the figures came from and what matched nothing or was left out", async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) => pdcOn(iteration, { nUnmatched: 3, nLeftOut: 2 }))
+    const { host } = await openWithGroups()
+    await vi.waitFor(() => expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('7'))
+
+    const title = heading(host, 'Conflict obs').title
+    expect(title).toContain("from pestpp's pdc file")
+    expect(title).toContain('3 pdc rows match no observation')
+    expect(title).toContain('2 rows left out: a simulated range holds a sentinel')
+    expect(heading(host, 'Conflict sites').title).toBe(title)
+  })
+
+  it('names the rule when the conflict was computed, and leaves out zero counts', async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) =>
+      pdcOn(iteration, { source: 'computed', sourceFile: null, rule: 'obs+noise outside the simulated range' }),
+    )
+    const { host } = await openWithGroups()
+    await vi.waitFor(() => expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('7'))
+
+    const title = heading(host, 'Conflict obs').title
+    expect(title).toContain('computed: obs+noise outside the simulated range')
+    expect(title).not.toContain('match no observation')
+    expect(title).not.toContain('left out')
+  })
+
+  it('marks conflicted sites in the site list with the 135-degree swatch and the count in its title', async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) => pdcOn(iteration))
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, 'well_a'), site(42, 'well_c')]))
+    const { host } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+    await vi.waitFor(() => expect(host.querySelector('.obs-sites .conflict-mark')).not.toBeNull())
+
+    const [a, c] = siteRows(host)
+    const mark = cell(a, 'site').querySelector<HTMLElement>('.conflict-mark')!
+    expect(mark.title).toBe('prior-data conflict at iteration 0: 5 observations')
+    expect(cell(a, 'site').textContent).toBe('well_a')
+    expect(cell(c, 'site').querySelector('.conflict-mark')).toBeNull()
+  })
+
+  it('shows a dash with the reason and no marks when the iteration has no conflict answer', async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async (iteration: number) =>
+      pdcOff(iteration, 'no prior-data conflict for iteration 0: no pdc file and no obs+noise to compute one'),
+    )
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, 'well_a')]))
+    const { host } = await openWithGroups()
+    await vi.waitFor(() => expect(overlaysApi.fetchPdcSites).toHaveBeenCalled())
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    await new Promise((r) => setTimeout(r, 0))
+
+    for (const row of groupRows(host)) {
+      expect(cell(row, 'pdc_obs').textContent).toBe('—')
+      expect(cell(row, 'pdc_sites').textContent).toBe('—')
+      expect(cell(row, 'pdc_obs').title).toContain('no pdc file and no obs+noise to compute one')
+    }
+    expect(host.querySelector('.conflict-mark')).toBeNull()
+  })
+
+  it('says pdc: and the reason when the answer is refused', async () => {
+    overlaysApi.fetchPdcSites.mockResolvedValue({ ok: false, artifact: 'pdc/0', reason: 'the pdc table could not be read' })
+    const { host } = await openWithGroups()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('pdc: the pdc table could not be read'))
+    expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('—')
+    expect(cell(groupRows(host)[0], 'pdc_obs').title).toContain('the pdc table could not be read')
+  })
+
+  it('refuses an answer for another iteration than the one shown', async () => {
+    overlaysApi.fetchPdcSites.mockImplementation(async () => pdcOn(2))
+    const { host } = await openWithGroups()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('pdc: the answer was for iteration 2, not 0'))
+    expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('—')
+  })
+
+  it('asks again on an iteration change while shown and never draws the older answer', async () => {
+    const slow = deferred<ReturnType<typeof pdcOn>>()
+    overlaysApi.fetchPdcSites.mockImplementation((iteration: number) =>
+      iteration === 0 ? slow.promise : Promise.resolve(pdcOn(iteration, { byGroup: [{ group: 'gw_head', nObs: 1, nSites: 1 }] })),
+    )
+    const { host, store } = await openWithGroups()
+
+    store.set({ iteration: 4 }, 'map')
+    store.flush()
+    await vi.waitFor(() => expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('1'))
+    slow.resolve(pdcOn(0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(overlaysApi.fetchPdcSites).toHaveBeenCalledWith(4, expect.anything())
+    expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('1')
+  })
+
+  it('shows a dash while the new iteration is asked for, never the old numbers', async () => {
+    const later = deferred<ReturnType<typeof pdcOn>>()
+    overlaysApi.fetchPdcSites.mockImplementation((iteration: number) => (iteration === 0 ? Promise.resolve(pdcOn(0)) : later.promise))
+    const { host, store } = await openWithGroups()
+    await vi.waitFor(() => expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('7'))
+
+    store.set({ iteration: 1 }, 'map')
+    store.flush()
+
+    expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('—')
+    expect(cell(groupRows(host)[0], 'pdc_obs').title).toContain('iteration 1')
+  })
+
+  it('asks for nothing while hidden, and asks for the iteration shown at the next show', async () => {
+    const { store, handle } = mount({ startHidden: true })
+    store.set({ iteration: 2 }, 'map')
+    store.flush()
+    await Promise.resolve()
+    expect(overlaysApi.fetchPdcSites).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(overlaysApi.fetchPdcSites).toHaveBeenCalledTimes(1))
+    expect(overlaysApi.fetchPdcSites).toHaveBeenCalledWith(2, expect.anything())
+
+    handle.onHide()
+    store.set({ iteration: 3 }, 'map')
+    store.flush()
+    await Promise.resolve()
+    expect(overlaysApi.fetchPdcSites).toHaveBeenCalledTimes(1)
+    handle.onShow()
+    await vi.waitFor(() => expect(overlaysApi.fetchPdcSites).toHaveBeenCalledTimes(2))
+    expect(overlaysApi.fetchPdcSites).toHaveBeenLastCalledWith(3, expect.anything())
+  })
+
+  it('makes no request when the pdc capability is off, and gives its reason', async () => {
+    const capabilities = available()
+    capabilities.pdc = { available: false, blockedBy: [{ artifact: 'pdc', reason: 'no iteration has a conflict source' }] }
+    const { host } = await openWithGroups({ capabilities })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(overlaysApi.fetchPdcSites).not.toHaveBeenCalled()
+    expect(cell(groupRows(host)[0], 'pdc_obs').textContent).toBe('—')
+    expect(cell(groupRows(host)[0], 'pdc_obs').title).toContain('pdc: no iteration has a conflict source')
   })
 })
 
