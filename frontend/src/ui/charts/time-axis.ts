@@ -13,6 +13,10 @@ function dayToDate(days: number): Date {
   return new Date(days * MS_PER_DAY)
 }
 
+function dateToDay(date: Date): number {
+  return date.getTime() / MS_PER_DAY
+}
+
 // "ordinal (no time found)" gives "no time found"; any other kind is shown as sent.
 function bracketed(kind: string): string {
   const match = /^ordinal \((.*)\)$/.exec(kind)
@@ -23,6 +27,7 @@ function integerAxis(domain: [number, number], range: [number, number]): Axis {
   const scale = scaleLinear().domain(domain).range(range)
   return {
     toPx: (value) => scale(value),
+    invert: (px) => scale.invert(px),
     ticks: scale
       .ticks(5)
       .filter(Number.isInteger)
@@ -36,8 +41,9 @@ function utcAxis(domain: [number, number], range: [number, number]): Axis {
   const format = scale.tickFormat(count)
   return {
     toPx: (days) => scale(dayToDate(days)),
+    invert: (px) => dateToDay(scale.invert(px)),
     ticks: scale.ticks(count).map((date) => ({
-      value: date.getTime() / MS_PER_DAY,
+      value: dateToDay(date),
       label: format(date),
       px: scale(date),
     })),

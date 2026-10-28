@@ -51,6 +51,28 @@ describe('timeAxis', () => {
   })
 })
 
+describe('timeAxis invert', () => {
+  it('turns a pixel on a datetime axis back into the same day value toPx took', () => {
+    const { axis } = timeAxis('datetime', [18262, 18628], [0, 400])
+    expect(axis.invert(0)).toBe(18262)
+    expect(axis.invert(400)).toBe(18628)
+    for (const days of [18262, 18300.25, 18444.5, 18628]) {
+      expect(Math.abs(axis.invert(axis.toPx(days)) - days)).toBeLessThan(1e-6)
+    }
+  })
+
+  it('turns a pixel on a numeric axis back into model days', () => {
+    const { axis } = timeAxis('numeric', [0, 365], [0, 400])
+    for (const days of [0, 12.5, 200, 365]) expect(Math.abs(axis.invert(axis.toPx(days)) - days)).toBeLessThan(1e-9)
+  })
+
+  it('turns a pixel on an ordinal axis back into a position', () => {
+    const { axis } = timeAxis('ordinal (no time found)', [0, 9], [0, 300])
+    expect(axis.invert(150)).toBe(4.5)
+    for (const pos of [0, 3, 9]) expect(Math.abs(axis.invert(axis.toPx(pos)) - pos)).toBeLessThan(1e-9)
+  })
+})
+
 describe('timeAxisTitle and formatTimeValue', () => {
   it('gives each kind its own wording', () => {
     expect(timeAxisTitle('datetime')).toBe('date')
