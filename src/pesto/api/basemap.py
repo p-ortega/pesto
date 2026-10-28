@@ -435,7 +435,40 @@ def basemap_state(request: Request) -> Response:
                 "extent": None,
             }
         )
+    stale = store.check_source(record)
+    if stale is not None:
+        # Reported, never re-placed: the record stays until the user removes it (D-24).
+        return JSONResponse(
+            {
+                "status": "unavailable",
+                "reason": stale,
+                "name": Path(record["source"]).name,
+                "placed_by": record["placed_by"],
+                "extent": record["extent"],
+            }
+        )
     return JSONResponse(_state(record))
+
+
+@router.post("/remove")
+def remove_basemap(request: Request) -> Response:
+    opened = _open(request)
+    if opened is None:
+        return _no_run()
+    layout, run_dir = opened
+    if store.store_inside(run_dir, layout.root):
+        return _refuse(
+            409,
+            "store_inside_run",
+            "the basemap store would sit inside the run folder or its cache, so nothing was removed",
+        )
+    try:
+        store.remove_registration(run_dir)
+    except store.StoreLinkError:
+        return _refuse(409, "store_link", "the basemap store folder is a link, so nothing was removed")
+    except OSError as exc:
+        return _refuse(500, "store", "the basemap could not be removed", detail=str(exc))
+    return JSONResponse({"status": "none"})
 
 
 class _ImageQuery(RunQuery):
@@ -462,6 +495,9 @@ def basemap_image(request: Request, params: Annotated[_ImageQuery, Query()]) -> 
         return _refuse(404, "none", "no basemap is registered for this run")
     if isinstance(record, store.StoreFailure):
         return _refuse(409, "unavailable", _unreadable_record(record))
+    stale = store.check_source(record)
+    if stale is not None:
+        return _refuse(409, "unavailable", stale)
 
     source = Path(record["source"])
     try:

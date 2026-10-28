@@ -249,11 +249,31 @@ def test_the_image_route_with_nothing_registered_answers_none(opened):
     assert opened.get("/api/run/basemap").json() == {"status": "none"}
 
 
-def test_the_routes_refuse_a_request_without_the_session_token(opened):
+def test_every_basemap_route_refuses_a_request_without_the_session_token(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    put_world_file(opened.images, "map.pgw")
+    file_id = opened.file_id("map.png")
+    stamp = opened.post("/api/run/basemap/inspect", json={"id": file_id}).json()["stamp"]
+    assert opened.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"}).status_code == 200
+    folder_id = opened.folder_id(opened.images)
     opened.client.headers.pop("x-pesto-token")
-    assert opened.client.get("/api/run/basemap").status_code == 401
-    assert opened.client.get("/api/run/basemap/image").status_code == 401
-    assert opened.client.get("/api/fs/images", params={"id": "x"}).status_code == 401
+
+    client = opened.client
+    responses = [
+        client.get("/api/run/basemap/start"),
+        client.get("/api/fs/images", params={"id": folder_id}),
+        client.post("/api/run/basemap/inspect", json={"id": file_id}),
+        client.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"}),
+        client.post(
+            "/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "numbers", "extent": [999, 1199, 1901, 2001]}
+        ),
+        client.get("/api/run/basemap"),
+        client.get("/api/run/basemap/image"),
+        client.post("/api/run/basemap/remove", json={}),
+    ]
+    for response in responses:
+        assert response.status_code == 401, response.request.url
+    assert read_registration(opened.run_dir)["placed_by"] == "world_file"
 
 
 def test_an_unknown_folder_id_in_the_listing_is_no_longer_available(opened):
