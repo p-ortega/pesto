@@ -22,30 +22,9 @@ vi.mock('../src/gl/context', () => ({
   })),
 }))
 
-vi.mock('../src/gl/mesh-layer', () => ({
-  MeshLayer: vi.fn().mockImplementation(function MockMeshLayer(this: object) {
-    Object.assign(this, {
-      setValues: vi.fn(),
-      setLimits: vi.fn(),
-      setColormap: vi.fn(),
-      setMatrix: vi.fn(),
-      setInactive: vi.fn(),
-      setHairlineColor: vi.fn(),
-      setContested: vi.fn(),
-      setContestedColors: vi.fn(),
-      setSelected: vi.fn(),
-      setAccentColor: vi.fn(),
-      setPoints: vi.fn(),
-      setPointRingColor: vi.fn(),
-      setFootprint: vi.fn(),
-      setFootprintColor: vi.fn(),
-      setSelectedPoint: vi.fn(),
-      draw: vi.fn(),
-      reupload: vi.fn(),
-      dispose: vi.fn(),
-    })
-  }),
-}))
+vi.mock('../src/gl/mesh-layer', async (importOriginal) =>
+  (await import('./support/mesh-layer-mock')).meshLayerMockModule(await importOriginal()),
+)
 
 function artifact(name: string, state = 'ok'): ArtifactRow {
   return { name, kind: name.split('/')[0], state, reason: null, stale: false, seconds: null, bytes: 0 }
