@@ -419,3 +419,257 @@ describe('a registered basemap drawn when the run opens', () => {
     expect(controls(root).querySelector('.basemap-muted')).toBeNull()
   })
 })
+
+function inspectAnswer(id: string, name: string, placement: Record<string, unknown>): Record<string, unknown> {
+  return {
+    file_id: id,
+    name,
+    format: 'png',
+    width: 4,
+    height: 2,
+    stamp: `stamp-${id}`,
+    notes: [],
+    model_extent: [0, 1, 0, 1],
+    placement,
+  }
+}
+
+const BY_WORLD_FILE = { by: 'world_file', world_file: 'a.pgw', extent: [0, 1, 0, 1] }
+const BY_NUMBERS = { by: 'numbers', reason: 'no world file was found next to the image', world_files: [] }
+
+function problem(status: number, code: string, title: string): Reply {
+  return { status, body: { title, status, code } }
+}
+
+function postBodies(path: string): Array<Record<string, unknown>> {
+  return fetchCalls(path)
+    .filter(([url, init]) => url === path && init?.method === 'POST')
+    .map(([, init]) => JSON.parse(String(init?.body)))
+}
+
+async function openWithNoBasemap(): Promise<HTMLElement> {
+  basemapRoutes['GET /api/run/basemap'] = () => ({ status: 200, body: { status: 'none' } })
+  const root = await openMap()
+  await vi.waitFor(() => expect(buttonIn(controls(root), 'Add basemap')).not.toBeNull())
+  return root
+}
+
+function pick(root: HTMLElement, id: string, name: string): void {
+  click(controls(root), 'Add basemap')
+  picker.calls.at(-1)!.opts.onPick({ id, name })
+}
+
+function imageReply(tag: string): Reply {
+  return { status: 200, bytes: new Uint8Array([137, 80, 78, 71]), headers: { 'X-Pesto-Meta': JSON.stringify(imageMeta(tag)) } }
+}
+
+describe('adding, placing and removing a basemap', () => {
+  it('opens the picker in the map box, proposes the world-file placement, and draws it on Confirm', async () => {
+    const root = await openWithNoBasemap()
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fA', 'a.png', BY_WORLD_FILE) })
+
+    click(controls(root), 'Add basemap')
+    expect(picker.calls).toHaveLength(1)
+    expect(picker.calls[0].host).toBe(root.querySelector('.map-area'))
+    picker.calls[0].opts.onPick({ id: 'fA', name: 'a.png' })
+
+    await vi.waitFor(() => expect(view(root)).toBe('proposal'))
+    expect(postBodies('/api/run/basemap/inspect')).toEqual([{ id: 'fA' }])
+    expect(controls(root).textContent).toContain('Place a.png by its world file a.pgw?')
+
+    serveReady('t2', { name: 'a.png', world_file: 'a.pgw' })
+    basemapRoutes['POST /api/run/basemap'] = () => ({ status: 200, body: ready('t2', { name: 'a.png', world_file: 'a.pgw' }) })
+    click(controls(root), 'Confirm')
+
+    await vi.waitFor(() => expect(view(root)).toBe('ready'))
+    expect(postBodies('/api/run/basemap')).toEqual([{ id: 'fA', stamp: 'stamp-fA', by: 'world_file' }])
+    const [basemap] = await basemapLayers()
+    expect(basemap.setImage).toHaveBeenCalledWith(bitmaps[0], [0, 1, 0, 1], [500, 7000])
+    expect(controls(root).textContent).toContain('basemap placed by world file a.pgw')
+  })
+
+  it('opens the four-number form with the reason, sends the typed numbers, and shows a no-overlap refusal in the form', async () => {
+    const root = await openWithNoBasemap()
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fN', 'n.png', BY_NUMBERS) })
+    pick(root, 'fN', 'n.png')
+
+    await vi.waitFor(() => expect(view(root)).toBe('numbers'))
+    expect(controls(root).textContent).toContain('no world file was found next to the image')
+    expect(controls(root).textContent).toContain('the model spans x 0 to 1 · y 0 to 1')
+
+    basemapRoutes['POST /api/run/basemap'] = () => problem(422, 'no_overlap', 'the placement does not overlap the model')
+    const values = ['10', '20', '30', '40']
+    for (const [i, label] of ['x min', 'x max', 'y min', 'y max'].entries()) {
+      ;(controls(root).querySelector(`input[aria-label="${label}"]`) as HTMLInputElement).value = values[i]
+    }
+    click(controls(root), 'Place')
+
+    await vi.waitFor(() =>
+      expect(controls(root).querySelector('.basemap-warning')?.textContent).toBe('the placement does not overlap the model'),
+    )
+    expect(view(root)).toBe('numbers')
+    expect(postBodies('/api/run/basemap')).toEqual([{ id: 'fN', stamp: 'stamp-fN', by: 'numbers', extent: [10, 20, 30, 40] }])
+    expect((controls(root).querySelector('input[aria-label="x min"]') as HTMLInputElement).value).toBe('10')
+  })
+
+  it('draws a placement the server took even when the form was cancelled before it answered', async () => {
+    const root = await openWithNoBasemap()
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fN', 'n.png', BY_NUMBERS) })
+    pick(root, 'fN', 'n.png')
+    await vi.waitFor(() => expect(view(root)).toBe('numbers'))
+    const register = deferred<Reply>()
+    basemapRoutes['POST /api/run/basemap'] = () => register.promise
+    basemapRoutes['GET /api/run/basemap/image'] = () => imageReply('t3')
+    for (const label of ['x min', 'x max', 'y min', 'y max']) {
+      ;(controls(root).querySelector(`input[aria-label="${label}"]`) as HTMLInputElement).value = label.endsWith('min') ? '0' : '1'
+    }
+    click(controls(root), 'Place')
+    click(controls(root), 'Cancel')
+    expect(view(root)).toBe('none')
+
+    register.resolve({ status: 200, body: ready('t3', { name: 'n.png', placed_by: 'numbers', world_file: null }) })
+    await vi.waitFor(() => expect(view(root)).toBe('ready'))
+    expect(controls(root).textContent).toContain('basemap placed by four numbers you typed')
+  })
+
+  it('offers the four-number form when the world file no longer overlaps at Confirm', async () => {
+    const root = await openWithNoBasemap()
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fA', 'a.png', BY_WORLD_FILE) })
+    pick(root, 'fA', 'a.png')
+    await vi.waitFor(() => expect(view(root)).toBe('proposal'))
+    basemapRoutes['POST /api/run/basemap'] = () => ({
+      status: 422,
+      body: { title: 'the placement does not overlap the model', detail: 'the world file is a.pgw', status: 422, code: 'no_overlap' },
+    })
+    click(controls(root), 'Confirm')
+    await vi.waitFor(() => expect(view(root)).toBe('numbers'))
+    expect(controls(root).textContent).toContain('the placement does not overlap the model: the world file is a.pgw')
+  })
+
+  it.each([
+    ['tiff', 'TIFF and GeoTIFF basemaps are not supported yet (planned for M2)'],
+    ['rotated', 'the world file has rotation terms; pesto draws only north-up images'],
+    ['mirrored', 'the world file flips the image; pesto draws only images with x growing right and y growing up'],
+    ['format', 'the file is not a PNG or JPEG image'],
+    ['too_large', 'the image has more pixels than pesto opens'],
+  ])('shows an inspect refusal (%s) with the server reason', async (code, reason) => {
+    const root = await openWithNoBasemap()
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => problem(422, code, reason)
+    pick(root, 'fX', 'x.png')
+    await vi.waitFor(() => expect(view(root)).toBe('refused'))
+    expect(controls(root).textContent).toContain(reason)
+    expect(buttonIn(controls(root), 'Add basemap')).not.toBeNull()
+    expect(postBodies('/api/run/basemap')).toHaveLength(0)
+  })
+
+  it('says the file changed when the register answers 409 changed', async () => {
+    const root = await openWithNoBasemap()
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fA', 'a.png', BY_WORLD_FILE) })
+    pick(root, 'fA', 'a.png')
+    await vi.waitFor(() => expect(view(root)).toBe('proposal'))
+    basemapRoutes['POST /api/run/basemap'] = () => problem(409, 'changed', 'the file changed after it was inspected; add it again')
+    click(controls(root), 'Confirm')
+    await vi.waitFor(() => expect(view(root)).toBe('refused'))
+    expect(controls(root).textContent).toContain('the file changed after it was inspected; add it again')
+    expect(await basemapLayers()).toHaveLength(0)
+  })
+
+  it('removes the basemap from the map and the store and offers Add again', async () => {
+    serveReady()
+    const root = await openMap()
+    await vi.waitFor(() => expect(view(root)).toBe('ready'))
+    const [basemap] = await basemapLayers()
+    const mesh = await meshLayer()
+    basemapRoutes['POST /api/run/basemap/remove'] = () => ({ status: 200, body: { status: 'none' } })
+    mesh.draw.mockClear()
+
+    click(controls(root), 'Remove basemap')
+
+    await vi.waitFor(() => expect(view(root)).toBe('none'))
+    expect(postBodies('/api/run/basemap/remove')).toHaveLength(1)
+    expect(basemap.setImage).toHaveBeenLastCalledWith(null, null, [500, 7000])
+    expect(bitmaps[0].close).toHaveBeenCalled()
+    expect(mesh.draw).toHaveBeenCalled()
+    expect(buttonIn(controls(root), 'Add basemap')).not.toBeNull()
+  })
+
+  it('keeps the basemap and says so when Remove is refused', async () => {
+    serveReady()
+    const root = await openMap()
+    await vi.waitFor(() => expect(view(root)).toBe('ready'))
+    basemapRoutes['POST /api/run/basemap/remove'] = () =>
+      problem(409, 'store_link', 'the basemap store folder is a link, so nothing was removed')
+    click(controls(root), 'Remove basemap')
+    await vi.waitFor(() =>
+      expect(controls(root).textContent).toContain('the basemap could not be removed: the basemap store folder is a link'),
+    )
+    expect(view(root)).toBe('ready')
+    expect(bitmaps[0].close).not.toHaveBeenCalled()
+  })
+
+  it('shows only the latest pick when an older inspect answers after it', async () => {
+    const root = await openWithNoBasemap()
+    const first = deferred<Reply>()
+    basemapRoutes['POST /api/run/basemap/inspect'] = (init) => {
+      const { id } = JSON.parse(String(init?.body)) as { id: string }
+      if (id === 'fA') return first.promise
+      return { status: 200, body: inspectAnswer('fB', 'b.png', BY_NUMBERS) }
+    }
+    pick(root, 'fA', 'a.png')
+    await vi.waitFor(() => expect(controls(root).textContent).toContain('reading a.png'))
+    pick(root, 'fB', 'b.png')
+    await vi.waitFor(() => expect(view(root)).toBe('numbers'))
+
+    first.resolve({ status: 200, body: inspectAnswer('fA', 'a.png', BY_WORLD_FILE) })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(view(root)).toBe('numbers')
+    expect(controls(root).textContent).not.toContain('a.png')
+  })
+
+  it('never draws an image whose load was overtaken by a newer registration', async () => {
+    const heldRead = deferred<Reply>()
+    const heldImage = deferred<Reply>()
+    basemapRoutes['GET /api/run/basemap'] = () => heldRead.promise
+    basemapRoutes['GET /api/run/basemap/image'] = () => heldImage.promise
+    const root = await openMap()
+    // The picker is opened while the state is still being read, then the read lands.
+    await vi.waitFor(() => expect(fetchCalls('/api/run/basemap')).toHaveLength(1))
+    click(controls(root), 'Add basemap')
+    heldRead.resolve({ status: 200, body: ready('t1') })
+    await vi.waitFor(() => expect(fetchCalls('/api/run/basemap/image')).toHaveLength(1))
+
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fB', 'b.png', BY_WORLD_FILE) })
+    picker.calls[0].opts.onPick({ id: 'fB', name: 'b.png' })
+    await vi.waitFor(() => expect(view(root)).toBe('proposal'))
+    basemapRoutes['POST /api/run/basemap'] = () => ({ status: 200, body: ready('t2', { name: 'b.png', world_file: 'b.pgw' }) })
+    basemapRoutes['GET /api/run/basemap/image'] = () => imageReply('t2')
+    click(controls(root), 'Confirm')
+    await vi.waitFor(() => expect(view(root)).toBe('ready'))
+    const [basemap] = await basemapLayers()
+    expect(basemap.setImage).toHaveBeenCalledTimes(1)
+    const drawn = basemap.setImage.mock.calls[0][0]
+
+    heldImage.resolve(imageReply('t1'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(basemap.setImage).toHaveBeenCalledTimes(1)
+    expect(basemap.setImage.mock.calls[0][0]).toBe(drawn)
+    expect(controls(root).textContent).toContain('basemap placed by world file b.pgw')
+    expect(bitmaps.filter((b) => b !== drawn).every((b) => b.close.mock.calls.length > 0)).toBe(true)
+  })
+
+  it('goes back to the view before Add when the picker or the proposal is cancelled', async () => {
+    const root = await openWithNoBasemap()
+    click(controls(root), 'Add basemap')
+    picker.calls[0].opts.onClose()
+    expect(view(root)).toBe('none')
+
+    basemapRoutes['POST /api/run/basemap/inspect'] = () => ({ status: 200, body: inspectAnswer('fA', 'a.png', BY_WORLD_FILE) })
+    pick(root, 'fA', 'a.png')
+    await vi.waitFor(() => expect(view(root)).toBe('proposal'))
+    click(controls(root), 'Cancel')
+    expect(view(root)).toBe('none')
+    expect(buttonIn(controls(root), 'Add basemap')).not.toBeNull()
+    expect(postBodies('/api/run/basemap')).toHaveLength(0)
+    expect(await basemapLayers()).toHaveLength(0)
+  })
+})
