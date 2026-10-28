@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,8 +15,10 @@ from fastapi.testclient import TestClient
 
 from model.fixtures import _VERTICES, write_disv_grb
 from pesto.api.app import create_app
+from pesto.api.basemap import NO_OVERLAP_REASON
 from pesto.api.fs import _issue_id
 from pesto.basemap.imageinfo import TIFF_REASON
+from pesto.basemap.store import read_registration
 from pesto.basemap.worldfile import ROTATED_REASON
 from pesto.cache.layout import CacheLayout
 from pesto.ingest.mesh import load_mesh_extent, write_grid_from_adapter
@@ -445,3 +448,160 @@ def test_a_rotated_grid_extent_is_its_rotated_world_bounds_and_a_north_up_image_
     assert body["placement"]["by"] == "world_file"
     for actual, want in zip(body["placement"]["extent"], expected):
         assert actual == pytest.approx(want, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Placement by four typed numbers (D-21, D-30)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def at_zero(tmp_path, monkeypatch) -> Opened:
+    """A run whose mesh sits near (0, 0), so [0, 1000, 0, 500] covers it."""
+    return open_run(tmp_path, monkeypatch, xorigin=0.0, yorigin=0.0)
+
+
+def _inspected(opened: Opened, name: str) -> tuple[str, str]:
+    file_id = opened.file_id(name)
+    response = opened.post("/api/run/basemap/inspect", json={"id": file_id})
+    assert response.status_code == 200, response.text
+    return file_id, response.json()["stamp"]
+
+
+def _by_numbers(opened: Opened, file_id: str, stamp: str, extent):
+    return opened.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "numbers", "extent": extent})
+
+
+def test_an_image_placed_by_four_numbers_is_ready_with_exactly_those_numbers(at_zero):
+    put_png(at_zero.images, "map.png", 100, 50)
+    file_id, stamp = _inspected(at_zero, "map.png")
+
+    response = _by_numbers(at_zero, file_id, stamp, [0, 1000, 0, 500])
+
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["status"] == "ready"
+    assert state["placed_by"] == "numbers"
+    assert state["world_file"] is None
+    assert state["extent"] == [0.0, 1000.0, 0.0, 500.0]
+    assert at_zero.get("/api/run/basemap").json() == state
+    assert at_zero.get("/api/run/basemap/image").status_code == 200
+    record = read_registration(at_zero.run_dir)
+    assert (record["world_file"], record["world_file_size"], record["world_file_mtime_ns"]) == (None, None, None)
+    assert_no_path_leaked(at_zero)
+
+
+def test_numbers_that_miss_the_model_are_refused_like_a_world_file(at_zero):
+    put_png(at_zero.images, "map.png", 100, 50)
+    file_id, stamp = _inspected(at_zero, "map.png")
+
+    response = _by_numbers(at_zero, file_id, stamp, [5000, 6000, 5000, 6000])
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "no_overlap"
+    assert response.json()["title"] == NO_OVERLAP_REASON
+    assert at_zero.get("/api/run/basemap").json() == {"status": "none"}
+
+
+@pytest.mark.parametrize(
+    "extent, said",
+    [
+        ([1000, 1000, 0, 500], "x min must be less than x max"),
+        ([1000, 0, 0, 500], "x min must be less than x max"),
+        ([0, 1000, 500, 500], "y min must be less than y max"),
+        ([0, 1000, 500, 0], "y min must be less than y max"),
+        ([0, 1000, 0, 2e12], "each number must be within 1e12 of zero"),
+        ([-2e12, 1000, 0, 500], "each number must be within 1e12 of zero"),
+        ([0, 10**400, 0, 500], "each number must be within 1e12 of zero"),
+        ([0, 1000, 0], "four numbers"),
+        ([0, 1000, 0, 500, 7], "four numbers"),
+        ([0, "1000", 0, 500], "must be a number"),
+        ([0, True, 0, 500], "must be a number"),
+        ([0, None, 0, 500], "must be a number"),
+    ],
+)
+def test_numbers_out_of_order_too_big_or_not_numbers_are_refused_with_a_reason(at_zero, extent, said):
+    put_png(at_zero.images, "map.png", 100, 50)
+    file_id, stamp = _inspected(at_zero, "map.png")
+
+    response = _by_numbers(at_zero, file_id, stamp, extent)
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "numbers"
+    assert said in response.json()["title"]
+    assert at_zero.get("/api/run/basemap").json() == {"status": "none"}
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_number_that_is_not_finite_is_refused(at_zero, literal):
+    put_png(at_zero.images, "map.png", 100, 50)
+    file_id, stamp = _inspected(at_zero, "map.png")
+    # The JSON standard has no NaN, but Python's parser takes these literals, so send them raw.
+    raw = f'{{"id": "{file_id}", "stamp": "{stamp}", "by": "numbers", "extent": [0, {literal}, 0, 500]}}'
+
+    response = at_zero.post("/api/run/basemap", content=raw, headers={"content-type": "application/json"})
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "numbers"
+    assert "finite" in response.json()["title"]
+
+
+def test_numbers_without_an_extent_and_a_world_file_with_one_are_both_refused(at_zero):
+    put_png(at_zero.images, "map.png", 100, 50)
+    put_world_file(at_zero.images, "map.pgw", c=0.0, f=10.0)
+    file_id, stamp = _inspected(at_zero, "map.png")
+
+    missing = at_zero.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "numbers"})
+    extra = at_zero.post(
+        "/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file", "extent": [0, 1000, 0, 500]}
+    )
+    unknown = at_zero.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "guess"})
+
+    assert (missing.status_code, extra.status_code, unknown.status_code) == (422, 422, 422)
+    assert at_zero.get("/api/run/basemap").json() == {"status": "none"}
+
+
+def test_an_image_appended_to_after_inspect_is_refused_and_nothing_is_written(at_zero):
+    image = put_png(at_zero.images, "map.png", 100, 50)
+    file_id, stamp = _inspected(at_zero, "map.png")
+    with open(image, "ab") as f:
+        f.write(b"more")
+
+    response = _by_numbers(at_zero, file_id, stamp, [0, 1000, 0, 500])
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "changed"
+    assert read_registration(at_zero.run_dir) is None
+
+
+def test_a_world_file_moved_far_away_after_inspect_is_reread_and_refused(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    world = put_world_file(opened.images, "map.pgw", c=1000.0, f=2000.0)
+    file_id, stamp = _inspected(opened, "map.png")
+    before = world.stat()
+    # Same length and the same modified time, so only a fresh read of the file can tell.
+    put_world_file(opened.images, "map.pgw", c=9000.0, f=9000.0)
+    os.utime(world, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert world.stat().st_size == before.st_size
+
+    response = opened.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"})
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "no_overlap"
+    assert response.json()["title"] == NO_OVERLAP_REASON
+    assert read_registration(opened.run_dir) is None
+
+
+def test_a_numbers_registration_replaces_a_world_file_one_and_changes_the_tag(at_zero):
+    put_png(at_zero.images, "map.png", 100, 50)
+    put_world_file(at_zero.images, "map.pgw", a=0.1, e=-0.1, c=0.0, f=5.0)
+    file_id, stamp = _inspected(at_zero, "map.png")
+    first = at_zero.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"}).json()
+    assert first["placed_by"] == "world_file"
+
+    second = _by_numbers(at_zero, file_id, stamp, [0, 1000, 0, 500]).json()
+
+    assert second["placed_by"] == "numbers"
+    assert second["world_file"] is None
+    assert second["tag"] != first["tag"]
+    assert at_zero.get("/api/run/basemap").json() == second
