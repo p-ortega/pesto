@@ -39,9 +39,23 @@ function par(over: Partial<ParLink> & { parnme: string }): ParLink {
   return { pargp: 'g', kind: 'cell', layer: 0, cell: 0, cells: [0], nCells: 1, cellsCapped: false, reason: null, ...over }
 }
 
-function parAnswer(pars: ParLink[], unknown: string[] = [], notAsked = 0): ParLinkAnswer {
-  return { ok: true, pars, unknown, notAsked }
+function parAnswer(pars: ParLink[], unknown: string[] = [], notAsked = 0, extra: Partial<ParLinkAnswer> = {}): ParLinkAnswer {
+  return { ok: true, pars, unknown, notAsked, reason: null, notes: [], ...extra }
 }
+
+describe('the reason and notes the server gives for a parameter lookup', () => {
+  it("says why no name could be looked up instead of calling them missing from the table", () => {
+    const reason = 'no parameter placement was ingested for this run'
+    const rings = parameterRingCells(parAnswer([], ['hk1', 'hk2'], 0, { reason }), 0)
+    expect(parameterLines(rings)).toEqual([`2 selected parameters are not looked up: ${reason}`])
+  })
+
+  it("keeps the server's notes as lines", () => {
+    const note = 'pp_factors could not be read: gone, so pilot points are listed as plain parameters'
+    const rings = parameterRingCells(parAnswer([par({ parnme: 'a' })], [], 0, { notes: [note] }), 0)
+    expect(parameterLines(rings)).toEqual([note])
+  })
+})
 
 describe('parameterRingCells', () => {
   it('rings the union of cells on the drawn layer, ascending', () => {
@@ -102,10 +116,24 @@ function site(over: Partial<SiteWhere> & { siteId: number }): SiteWhere {
 }
 
 function sitesAnswer(sites: SiteWhere[], extra: Partial<SitesWhereAnswer> = {}): SitesWhereAnswer {
-  return { ok: true, iteration: 2, sites, unknown: [], valueRule: 'a measured value', valueReason: null, notAsked: 0, ...extra }
+  return { ok: true, iteration: 2, sites, unknown: [], valueRule: 'a measured value', valueReason: null, notAsked: 0, reason: null, notes: [], ...extra }
 }
 
 const OBS = { colourSource: 'obs' as const, group: 'heads', layer: 0, allLayers: false }
+
+describe('the reason and notes the server gives for a site lookup', () => {
+  it('says why no id could be looked up instead of calling them missing from the index', () => {
+    const reason = 'no observation placement was ingested for this run'
+    expect(whereLines(sitesAnswer([], { unknown: [1, 2], reason }), OBS)).toEqual([`2 selected sites are not looked up: ${reason}`])
+  })
+
+  it("keeps the server's notes, also while the map is coloured by parameters", () => {
+    const note = 'site x has no observation group, so its group is sent as empty text'
+    const answer = sitesAnswer([site({ siteId: 1, group: '' })], { notes: [note] })
+    expect(whereLines(answer, OBS)).toEqual(['1 selected site is in another group (shown: heads)', note])
+    expect(whereLines(answer, { ...OBS, colourSource: 'par' })).toEqual(['1 selected site is not drawn: the map is coloured by parameters', note])
+  })
+})
 
 describe('whereLines', () => {
   it('gives one line per reason a selected site is not drawn', () => {

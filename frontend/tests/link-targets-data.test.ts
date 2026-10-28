@@ -44,7 +44,7 @@ function parRow(extra: Record<string, unknown> = {}): Record<string, unknown> {
 
 describe('fetchLinkPar', () => {
   it('sends the names as one JSON list, unchanged, and reads each answer', async () => {
-    const fetchMock = stubFetch({ json: { pars: [parRow()], unknown: [' hk_1 '] } })
+    const fetchMock = stubFetch({ json: { pars: [parRow()], unknown: [' hk_1 '], reason: null, notes: ['a note'] } })
 
     const result = await fetchLinkPar([' hk_1 ', 'hk,1'])
 
@@ -56,11 +56,13 @@ describe('fetchLinkPar', () => {
       pars: [{ parnme: 'hk,1', pargp: 'hk', kind: 'pilot_point', layer: 0, cell: 12, cells: [3, 12, 40], nCells: 3, cellsCapped: false, reason: null }],
       unknown: [' hk_1 '],
       notAsked: 0,
+      reason: null,
+      notes: ['a note'],
     })
   })
 
   it('asks for the first 50 of 60 names in the order given and says 10 were left out', async () => {
-    const fetchMock = stubFetch({ json: { pars: [], unknown: [] } })
+    const fetchMock = stubFetch({ json: { pars: [], unknown: [], reason: null, notes: [] } })
     const names = Array.from({ length: 60 }, (_, i) => `p${i}`)
 
     const result = await fetchLinkPar(names)
@@ -73,7 +75,7 @@ describe('fetchLinkPar', () => {
   it('refuses an answer missing cells_capped, naming the field and the route', async () => {
     const row = parRow()
     delete row.cells_capped
-    stubFetch({ json: { pars: [row], unknown: [] } })
+    stubFetch({ json: { pars: [row], unknown: [], reason: null, notes: [] } })
 
     const result = await fetchLinkPar(['hk,1'])
 
@@ -90,11 +92,11 @@ describe('fetchLinkPar', () => {
   })
 
   it('refuses a kind it does not know and a cell that is not a whole number', async () => {
-    stubFetch({ json: { pars: [parRow({ kind: 'zone' })], unknown: [] } })
+    stubFetch({ json: { pars: [parRow({ kind: 'zone' })], unknown: [], reason: null, notes: [] } })
     const kind = await fetchLinkPar(['a'])
     expect(!kind.ok && kind.reason).toContain("kind 'zone'")
 
-    stubFetch({ json: { pars: [parRow({ cell: null })], unknown: [] } })
+    stubFetch({ json: { pars: [parRow({ cell: null })], unknown: [], reason: null, notes: [] } })
     const cell = await fetchLinkPar(['a'])
     expect(!cell.ok && cell.reason).toBe("the /link/par answer's pars[0]'s cell is not a whole number")
   })
@@ -136,6 +138,8 @@ describe('fetchLinkSites', () => {
       unknown: [9],
       value_rule: 'a site has a value when at least one of its observations has a usable ensemble mean in this iteration',
       value_reason: null,
+      reason: 'no observation placement was ingested for this run',
+      notes: ['site x has no observation group, so its group is sent as empty text'],
     }
     const fetchMock = stubFetch({ json: body })
 
@@ -152,10 +156,12 @@ describe('fetchLinkSites', () => {
     expect(result.valueRule).toBe(body.value_rule)
     expect(result.valueReason).toBeNull()
     expect(result.notAsked).toBe(0)
+    expect(result.reason).toBe(body.reason)
+    expect(result.notes).toEqual(body.notes)
   })
 
   it('asks for the first 200 of 250 ids and says 50 were left out', async () => {
-    const fetchMock = stubFetch({ json: { iteration: 0, sites: [], unknown: [], value_rule: 'r', value_reason: 'no observation statistics for iteration 0' } })
+    const fetchMock = stubFetch({ json: { iteration: 0, sites: [], unknown: [], value_rule: 'r', value_reason: 'no observation statistics for iteration 0', reason: null, notes: [] } })
     const ids = Array.from({ length: 250 }, (_, i) => 249 - i)
 
     const result = await fetchLinkSites(ids, 0)
@@ -167,13 +173,13 @@ describe('fetchLinkSites', () => {
   })
 
   it('refuses an answer missing value_rule or has_value, naming the field', async () => {
-    stubFetch({ json: { iteration: 0, sites: [], unknown: [], value_reason: null } })
+    stubFetch({ json: { iteration: 0, sites: [], unknown: [], value_reason: null, reason: null, notes: [] } })
     const rule = await fetchLinkSites([1], 0)
     expect(rule).toEqual({ ok: false, artifact: 'obs_cell', reason: 'the /link/sites answer is missing value_rule' })
 
     const row = siteRow()
     delete row.has_value
-    stubFetch({ json: { iteration: 0, sites: [row], unknown: [], value_rule: 'r', value_reason: null } })
+    stubFetch({ json: { iteration: 0, sites: [row], unknown: [], value_rule: 'r', value_reason: null, reason: null, notes: [] } })
     const value = await fetchLinkSites([1], 0)
     expect(!value.ok && value.reason).toBe("the /link/sites answer's sites[0] is missing has_value")
   })

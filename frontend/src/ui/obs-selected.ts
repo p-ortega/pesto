@@ -265,8 +265,13 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
       appendLine(`${notListed} more selected ${notListed === 1 ? 'site is' : 'sites are'} not listed: only the first ${MAX_LINK_SITES} are looked up`)
     }
     if (result.unknown.length > 0) {
-      appendLine(`${plural(result.unknown.length, 'selected site id is', 'selected site ids are')} not in this run`)
+      appendLine(
+        result.reason !== null
+          ? `${plural(result.unknown.length, 'selected site id', 'selected site ids')} could not be looked up: ${result.reason}`
+          : `${plural(result.unknown.length, 'selected site id is', 'selected site ids are')} not in this run`,
+      )
     }
+    for (const note of result.notes) appendLine(note)
     const noValue = result.sites.filter((s) => s.hasValue === false).length
     if (noValue > 0) {
       appendLine(`${noValue} of these sites ${noValue === 1 ? 'has' : 'have'} no observation with a value at iteration ${iteration}`)
@@ -276,7 +281,8 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
       result.sites.map((s) => ({
         siteId: s.siteId,
         site: s.site,
-        group: s.group,
+        // The server sends empty text for a site with no group.
+        group: s.group === '' ? null : s.group,
         layer: s.layer,
         where: s.placed ? `cell ${s.cell}` : 'not placed',
         whereTitle: s.placed ? `cell ${s.cell} on layer ${s.layer}` : 'this site has no position in the model grid',

@@ -942,6 +942,8 @@ describe('the Selected sites section in the panel', () => {
       valueRule: 'rule',
       valueReason: null,
       notAsked: 0,
+      reason: null,
+      notes: [],
     })
     const store = makeStore()
     const { host } = await openWithGroups({ store })

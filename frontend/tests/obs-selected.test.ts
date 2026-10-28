@@ -44,7 +44,7 @@ function where(id: number, over: Partial<SiteWhere> = {}): SiteWhere {
 }
 
 function whereAnswer(sites: SiteWhere[], over: Partial<Extract<SitesWhereResult, { ok: true }>> = {}): SitesWhereResult {
-  return { ok: true, iteration: 0, sites, unknown: [], valueRule: 'one observation with a value', valueReason: null, notAsked: 0, ...over }
+  return { ok: true, iteration: 0, sites, unknown: [], valueRule: 'one observation with a value', valueReason: null, notAsked: 0, reason: null, notes: [], ...over }
 }
 
 function makeStore(over: Partial<SharedSelection> = {}): SelectionStore {
@@ -205,6 +205,22 @@ describe('sites chosen another way', () => {
 
     expect(lines(host)).toContain('1 selected site id is not in this run')
     expect(lines(host)).toContain('1 of these sites has no observation with a value at iteration 0')
+  })
+
+  it("shows the server's reason and notes, and a dash for a site with no group", async () => {
+    const store = makeStore({ sites: new Set([1, 2]) })
+    const reason = 'no observation placement was ingested for this run'
+    const note = 'site site_1 has no observation group, so its group is sent as empty text'
+    const loadWhere = vi.fn(async () => whereAnswer([where(1, { group: '' })], { unknown: [2], reason, notes: [note] }))
+    const { host, handle } = mount({ store, loadWhere })
+
+    handle.refresh()
+    await vi.waitFor(() => expect(rows(host).length).toBe(1))
+
+    expect(lines(host)).toContain(`1 selected site id could not be looked up: ${reason}`)
+    expect(lines(host)).not.toContain('1 selected site id is not in this run')
+    expect(lines(host)).toContain(note)
+    expect(cell(rows(host)[0], 'group').textContent).toBe('—')
   })
 
   it('shows the reason when the places cannot be read', async () => {

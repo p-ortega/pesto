@@ -319,7 +319,7 @@ function stubEnvironment(): Stub {
           stub.linkPar.push(names)
           return respond({
             status: 200,
-            body: { pars: names.filter((n) => n in stub.pars).map((n) => stub.pars[n]), unknown: names.filter((n) => !(n in stub.pars)) },
+            body: { pars: names.filter((n) => n in stub.pars).map((n) => stub.pars[n]), unknown: names.filter((n) => !(n in stub.pars)), reason: null, notes: [] },
           })
         }
         case '/api/run/link/sites': {
@@ -336,6 +336,8 @@ function stubEnvironment(): Stub {
               unknown: ids.filter((id) => !(id in stub.sites)),
               value_rule: 'a site has a valid observation when one of its observations has a measured value',
               value_reason: stub.valueReason,
+              reason: null,
+              notes: [],
             },
           })
         }
