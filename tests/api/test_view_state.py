@@ -28,6 +28,9 @@ DEFAULT_STATE = {
     "stat": "value",
     "layer": None,
     "tab": "params",
+    "classes": 0,
+    "symmetric": False,
+    "texture": False,
 }
 
 
@@ -289,3 +292,97 @@ def test_put_view_with_no_tab_stores_params(tmp_path, monkeypatch):
 
     assert client.put("/api/run/view", json=body).status_code == 200
     assert client.get("/api/run/view").json()["tab"] == "params"
+
+
+# ---------------------------------------------------------------------------
+# The field style settings: classes, symmetric and texture (D-03)
+# ---------------------------------------------------------------------------
+
+
+def test_the_style_settings_round_trip_through_the_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    state = {**DEFAULT_STATE, "classes": 9, "symmetric": True, "texture": True}
+    write_view_state(cache_root, state)
+
+    assert read_view_state(cache_root) == state
+
+
+def test_a_store_written_before_the_style_settings_reads_back_with_their_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    old = {k: v for k, v in DEFAULT_STATE.items() if k not in ("classes", "symmetric", "texture")}
+    _store_raw_entry(tmp_path, cache_root, {**old, "colormap": "magma", "group": "G1"})
+
+    assert read_view_state(cache_root) == {**DEFAULT_STATE, "colormap": "magma", "group": "G1"}
+
+
+@pytest.mark.parametrize("bad", [5, "9", True, False, 9.0, None, [9]])
+def test_a_stored_class_count_that_is_not_a_known_choice_reads_back_as_continuous(
+    tmp_path, monkeypatch, bad
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    _store_raw_entry(tmp_path, cache_root, {**DEFAULT_STATE, "classes": bad})
+
+    state = read_view_state(cache_root)
+
+    assert state["classes"] == 0
+    assert type(state["classes"]) is int
+
+
+@pytest.mark.parametrize("good", [0, 7, 9, 11])
+def test_a_stored_known_class_count_reads_back_unchanged(tmp_path, monkeypatch, good):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    _store_raw_entry(tmp_path, cache_root, {**DEFAULT_STATE, "classes": good})
+
+    assert read_view_state(cache_root)["classes"] == good
+
+
+@pytest.mark.parametrize("key", ["symmetric", "texture"])
+@pytest.mark.parametrize("bad", ["yes", 1, 0, None, "true"])
+def test_a_stored_style_flag_that_is_not_a_boolean_reads_back_as_off(tmp_path, monkeypatch, key, bad):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_root = tmp_path / "run" / ".pesto"
+    _store_raw_entry(tmp_path, cache_root, {**DEFAULT_STATE, key: bad})
+
+    assert read_view_state(cache_root)[key] is False
+
+
+def test_put_view_keeps_the_style_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+    body = {**DEFAULT_STATE, "classes": 9, "symmetric": True}
+
+    assert client.put("/api/run/view", json=body).status_code == 200
+    got = client.get("/api/run/view").json()
+    assert got["classes"] == 9
+    assert got["symmetric"] is True
+    assert got["texture"] is False
+
+
+def test_put_view_with_no_style_settings_stores_their_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+    body = {k: v for k, v in DEFAULT_STATE.items() if k not in ("classes", "symmetric", "texture")}
+
+    assert client.put("/api/run/view", json=body).status_code == 200
+    assert client.get("/api/run/view").json() == DEFAULT_STATE
+
+
+@pytest.mark.parametrize("bad", [5, True, False, "9", 9.5])
+def test_put_view_refuses_a_class_count_that_is_not_a_known_choice(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+    client.put("/api/run/view", json={**DEFAULT_STATE, "classes": 7})
+
+    assert client.put("/api/run/view", json={**DEFAULT_STATE, "classes": bad}).status_code == 422
+    assert client.get("/api/run/view").json()["classes"] == 7
+
+
+def test_put_view_still_refuses_an_unknown_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = _opened_client(tmp_path / "run" / ".pesto")
+
+    assert client.put("/api/run/view", json={**DEFAULT_STATE, "palette": "x"}).status_code == 422
