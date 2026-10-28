@@ -99,8 +99,8 @@ void main() {
 
 // D-06's contested mark: a fine diagonal stripe at 22.5 degrees over a
 // neutral fill, in screen space so the stripe period stays constant on
-// screen whatever the zoom. 22.5 is deliberate -- 45 and 135 are reserved
-// for the at-bounds and prior-data-conflict overlays that arrive later, so
+// screen whatever the zoom. 22.5 is deliberate -- the hatch pass below
+// draws the at-bounds and prior-data-conflict overlays at 45 and 135, so
 // reusing either here would collide with them.
 const CONTESTED_VERTEX = `#version 300 es
 in vec2 a_pos;
@@ -122,6 +122,62 @@ void main() {
   float d = gl_FragCoord.x * cos(angle) + gl_FragCoord.y * sin(angle);
   float inStripe = step(mod(d, period), period * 0.35);
   fragColor = vec4(mix(u_fillColor, u_stripeColor, inStripe), 1.0);
+}`
+
+// The hatch pass (D-21): one per-cell mask, bit 0 at bounds and bit 1
+// prior-data conflict, each drawn as a family of screen-space lines over the
+// fill. It reads its own texture, so the field's values and limits are never
+// touched. The mask is stored as floats 0-3, the same proven R32F path as the
+// value texture.
+const HATCH_VERTEX = `#version 300 es
+in vec2 a_pos;
+in float a_cell;
+uniform mat3 u_matrix;
+uniform sampler2D u_mask;
+uniform vec2 u_texSize;
+flat out float v_mask;
+
+void main() {
+  float x = mod(a_cell, u_texSize.x);
+  float y = floor(a_cell / u_texSize.x);
+  v_mask = texelFetch(u_mask, ivec2(int(x), int(y)), 0).r;
+  gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
+}`
+
+// Each line is an ink band with a halo band either side, so it reads over
+// the dark and the light end of every ramp. Widths are in device pixels.
+const HATCH_FRAGMENT = `#version 300 es
+precision highp float;
+flat in float v_mask;
+uniform float u_angle0;
+uniform float u_angle1;
+uniform float u_period;
+uniform float u_inkHalf;
+uniform float u_haloWidth;
+uniform vec3 u_ink;
+uniform vec3 u_halo;
+out vec4 fragColor;
+
+// Distance from this fragment to the nearest line running at angle a.
+float lineDistance(float a) {
+  float d = -gl_FragCoord.x * sin(a) + gl_FragCoord.y * cos(a);
+  float m = mod(d, u_period);
+  return min(m, u_period - m);
+}
+
+void main() {
+  int bits = int(v_mask + 0.5);
+  if (bits == 0) discard;
+  float dist = 1e9;
+  if ((bits & 1) != 0) dist = min(dist, lineDistance(u_angle0));
+  if ((bits & 2) != 0) dist = min(dist, lineDistance(u_angle1));
+  if (dist <= u_inkHalf) {
+    fragColor = vec4(u_ink, 1.0);
+  } else if (dist <= u_inkHalf + u_haloWidth) {
+    fragColor = vec4(u_halo, 1.0);
+  } else {
+    discard;
+  }
 }`
 
 // The points pass draws an x/y group as fixed-size dots, sized in device
@@ -238,6 +294,16 @@ export class MeshLayer {
   private footprintMask: Uint8Array | null = null
   private footprintColor: [number, number, number] = [0, 0, 0]
 
+  private hatchProgram!: WebGLProgram
+  private hatchVao!: WebGLVertexArrayObject
+  private hatchTex!: WebGLTexture
+  private hatchStaging: Float32Array<ArrayBuffer>
+  private lastHatch: Uint8Array | null = null
+  private hatchAny = false
+  private hatchInk: [number, number, number] = [0, 0, 0]
+  private hatchHalo: [number, number, number] = [1, 1, 1]
+  private hatchAngles: [number, number] = [45, 135]
+
   private ringProgram!: WebGLProgram
   private selectionVao!: WebGLVertexArrayObject
   private selectionVerts!: WebGLBuffer
@@ -274,6 +340,7 @@ export class MeshLayer {
     this.mesh = mesh
     this.texHeight = Math.max(1, Math.ceil(mesh.nCells / TEX_WIDTH))
     this.staging = new Float32Array(TEX_WIDTH * this.texHeight).fill(Number.NaN)
+    this.hatchStaging = new Float32Array(TEX_WIDTH * this.texHeight)
     this.rings = ringsByCell(mesh.cellIndex, mesh.nCells)
     this.build()
   }
@@ -358,6 +425,28 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.footprintElements)
     gl.bindVertexArray(null)
 
+    this.hatchProgram = gl.createProgram()!
+    gl.attachShader(this.hatchProgram, compile(gl, gl.VERTEX_SHADER, HATCH_VERTEX))
+    gl.attachShader(this.hatchProgram, compile(gl, gl.FRAGMENT_SHADER, HATCH_FRAGMENT))
+    gl.linkProgram(this.hatchProgram)
+    if (!gl.getProgramParameter(this.hatchProgram, gl.LINK_STATUS)) {
+      throw new Error(`hatch program failed to link: ${gl.getProgramInfoLog(this.hatchProgram)}`)
+    }
+
+    // Same geometry as the fill: every triangle, with the mask deciding per cell.
+    this.hatchVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.hatchVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
+    const hatchPosLoc = gl.getAttribLocation(this.hatchProgram, 'a_pos')
+    gl.enableVertexAttribArray(hatchPosLoc)
+    gl.vertexAttribPointer(hatchPosLoc, 2, gl.FLOAT, false, 0, 0)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cellBuffer)
+    const hatchCellLoc = gl.getAttribLocation(this.hatchProgram, 'a_cell')
+    gl.enableVertexAttribArray(hatchCellLoc)
+    gl.vertexAttribPointer(hatchCellLoc, 1, gl.FLOAT, false, 0, 0)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.elementsBuffer)
+    gl.bindVertexArray(null)
+
     this.ringProgram = gl.createProgram()!
     gl.attachShader(this.ringProgram, compile(gl, gl.VERTEX_SHADER, RING_VERTEX))
     gl.attachShader(this.ringProgram, compile(gl, gl.FRAGMENT_SHADER, RING_FRAGMENT))
@@ -411,6 +500,14 @@ export class MeshLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
+    // The hatch mask, laid out exactly like the value texture and NEAREST for
+    // the same reason: a blend of two cells' bits would be a bit set neither has.
+    this.hatchTex = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_2D, this.hatchTex)
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, TEX_WIDTH, this.texHeight)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+
     this.rampTex = gl.createTexture()!
     this.setColormap(this.colormapName, this.colormapReverse)
 
@@ -418,6 +515,8 @@ export class MeshLayer {
     if (this.contestedMask) this.setContested(this.contestedMask)
     if (this.footprintMask) this.setFootprint(this.footprintMask)
     if (this.selectedCell !== null) this.setSelected(this.selectedCell)
+    // The mask goes up before the field, so the field stays the latest upload.
+    if (this.lastHatch) this.setHatch(this.lastHatch)
     if (this.lastValues) this.setValues(this.lastValues)
     if (this.lastPointXy && this.lastPointValues) this.setPoints(this.lastPointXy, this.lastPointValues)
   }
@@ -550,6 +649,44 @@ export class MeshLayer {
   setContestedColors(stripe: [number, number, number], fill: [number, number, number]): void {
     this.stripeColor = stripe
     this.contestedFillColor = fill
+  }
+
+  /** One entry per cell: bit 0 hatches at `angle0` (at bounds), bit 1 at
+   *  `angle1` (prior-data conflict), both cross-hatch. `null` clears it.
+   *  A mask of any other length than the cell count is refused, never
+   *  padded or cut. */
+  setHatch(mask: Uint8Array | null): void {
+    if (mask === null) {
+      this.lastHatch = null
+      this.hatchAny = false
+      return
+    }
+    if (mask.length !== this.mesh.nCells) {
+      throw new Error(
+        `the hatch mask needs one entry per cell, got ${mask.length} entries for ${this.mesh.nCells} cells`,
+      )
+    }
+    this.lastHatch = mask.slice()
+    let any = false
+    for (let i = 0; i < mask.length; i++) {
+      this.hatchStaging[i] = mask[i] & 3
+      if (mask[i] & 3) any = true
+    }
+    this.hatchAny = any
+    const { gl } = this
+    gl.bindTexture(gl.TEXTURE_2D, this.hatchTex)
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_WIDTH, this.texHeight, gl.RED, gl.FLOAT, this.hatchStaging)
+  }
+
+  /** `--ink-primary` and `--page-plane`, resolved by the caller like the other colours. */
+  setHatchColors(ink: [number, number, number], halo: [number, number, number]): void {
+    this.hatchInk = ink
+    this.hatchHalo = halo
+  }
+
+  /** The line angle in degrees for bit 0 and for bit 1. */
+  setHatchAngles(angle0Deg = 45, angle1Deg = 135): void {
+    this.hatchAngles = [angle0Deg, angle1Deg]
   }
 
   /** Which cell carries the selection ring, over whatever of the four
@@ -743,6 +880,39 @@ export class MeshLayer {
     gl.bindVertexArray(null)
   }
 
+  private drawHatch(): void {
+    if (!this.hatchAny) return
+    const { gl } = this
+    const program = this.hatchProgram
+    const dpr = globalThis.devicePixelRatio || 1
+    gl.useProgram(program)
+    gl.bindVertexArray(this.hatchVao)
+    // Unit 2: unit 0 holds the values and unit 1 the ramp.
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, this.hatchTex)
+    gl.uniform1i(gl.getUniformLocation(program, 'u_mask'), 2)
+    gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
+    gl.uniform2f(gl.getUniformLocation(program, 'u_texSize'), TEX_WIDTH, this.texHeight)
+    const toRad = Math.PI / 180
+    gl.uniform1f(gl.getUniformLocation(program, 'u_angle0'), this.hatchAngles[0] * toRad)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_angle1'), this.hatchAngles[1] * toRad)
+    // In device pixels: lines 7 apart, a 1.25 ink band, a 1 halo band each side.
+    gl.uniform1f(gl.getUniformLocation(program, 'u_period'), 7 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_inkHalf'), 0.625 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_haloWidth'), 1 * dpr)
+    const ink = this.hatchInk
+    const halo = this.hatchHalo
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ink'), ink[0], ink[1], ink[2])
+    gl.uniform3f(gl.getUniformLocation(program, 'u_halo'), halo[0], halo[1], halo[2])
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    gl.drawElements(gl.TRIANGLES, this.mesh.indices.length, gl.UNSIGNED_INT, 0)
+    if (!wasBlending) gl.disable(gl.BLEND)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindVertexArray(null)
+  }
+
   private drawSelection(): void {
     if (this.selectionCount === 0) return
     const { gl } = this
@@ -773,13 +943,16 @@ export class MeshLayer {
    *  drawn over it; the stripe before the value pass since a contested
    *  cell's value is always NaN and so never overwrites it; the ring last
    *  so it sits over whichever of the first three marks the selected cell
-   *  carries. Points go after the fill and before the ring. The footprint
-   *  goes under everything, so the hairline still reads at its edge. */
+   *  carries. The hatch goes over the fill and under the points, so it
+   *  never covers a dot. Points go after the fill and before the ring. The
+   *  footprint goes under everything, so the hairline still reads at its
+   *  edge. */
   draw(): void {
     this.drawFootprint()
     this.drawOutline()
     this.drawContested()
     this.drawFill()
+    this.drawHatch()
     this.drawPoints()
     this.drawSelection()
   }
@@ -798,6 +971,9 @@ export class MeshLayer {
     gl.deleteProgram(this.contestedProgram)
     gl.deleteProgram(this.pointsProgram)
     gl.deleteProgram(this.ringProgram)
+    gl.deleteProgram(this.hatchProgram)
+    gl.deleteVertexArray(this.hatchVao)
+    gl.deleteTexture(this.hatchTex)
     gl.deleteVertexArray(this.vao)
     gl.deleteVertexArray(this.outlineVao)
     gl.deleteVertexArray(this.contestedVao)
