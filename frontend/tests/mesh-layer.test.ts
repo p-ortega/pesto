@@ -474,6 +474,158 @@ const uniformAfter = (calls: Call[], name: string, method: string) =>
       : [],
   )
 
+describe('MeshLayer many selected dots and dot flags', () => {
+  const sixXy = new Float32Array([0, 0, 1, 0, 2, 0, 0, 1, 1, 1, 2, 1])
+  const sixValues = () => new Float32Array([0, 0.2, 0.4, 0.6, 0.8, 1])
+  const pointDraws = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'drawArrays' && c.args[0] === 'POINTS').map((c) => c.args)
+  const withSixDots = () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(sixXy, sixValues())
+    return { layer, calls }
+  }
+  const arrayUploads = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'bufferData' && c.args[0] === 'ARRAY_BUFFER').map((c) => c.args[1] as Float32Array)
+  const pointsFragment = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string).find((s) => s.includes('u_missingStyle'))!
+
+  it('draws each selected dot once more, larger and with the accent ring, in ascending order', () => {
+    const { layer, calls } = withSixDots()
+    layer.setAccentColor([0.2, 0.4, 0.6])
+    layer.setSelectedPoints([5, 2])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 6],
+      ['POINTS', 2, 1],
+      ['POINTS', 5, 1],
+    ])
+    expect(uniformAfter(calls, 'u_size', 'uniform1f').map((a) => a[0])).toEqual([7, 9])
+    expect(uniformAfter(calls, 'u_ringColor', 'uniform3f').at(-1)).toEqual([0.2, 0.4, 0.6])
+  })
+
+  it('setSelectedPoint(2) draws exactly what setSelectedPoints([2]) draws', () => {
+    const one = withSixDots()
+    one.layer.setSelectedPoint(2)
+    one.calls.length = 0
+    one.layer.draw()
+    const many = withSixDots()
+    many.layer.setSelectedPoints([2])
+    many.calls.length = 0
+    many.layer.draw()
+    expect(pointDraws(many.calls)).toEqual(pointDraws(one.calls))
+    one.layer.setSelectedPoint(null)
+    one.calls.length = 0
+    one.layer.draw()
+    expect(pointDraws(one.calls)).toEqual([['POINTS', 0, 6]])
+  })
+
+  it('drops indices that are not a drawn dot and counts them', () => {
+    const { layer, calls } = withSixDots()
+    layer.setSelectedPoints([1, 6, 9, -1, 1.5, 1])
+    expect(layer.selectedPointsDropped()).toBe(4)
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 6],
+      ['POINTS', 1, 1],
+    ])
+    layer.setSelectedPoints([])
+    expect(layer.selectedPointsDropped()).toBe(0)
+  })
+
+  it('uploads the flags as a third points attribute, and zeros when there are none', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    expect(pointsFragment(calls)).toMatch(/flat in float v_flags/)
+    const vertex = calls
+      .filter((c) => c.method === 'shaderSource')
+      .map((c) => c.args[1] as string)
+      .find((s) => s.includes('gl_PointSize'))!
+    expect(vertex).toMatch(/in float a_flags/)
+
+    layer.setPoints(sixXy, sixValues())
+    const onSet = arrayUploads(calls).slice(-3)
+    expect(onSet[0]).toBe(sixXy)
+    expect(Array.from(onSet[2])).toEqual([0, 0, 0, 0, 0, 0])
+
+    calls.length = 0
+    layer.setPointFlags(new Float32Array([1, 2, 3, 4, 5, 0]))
+    expect(arrayUploads(calls).map((a) => Array.from(a))).toEqual([[1, 2, 3, 4, 5, 0]])
+
+    calls.length = 0
+    layer.setPointFlags(null)
+    expect(arrayUploads(calls).map((a) => Array.from(a))).toEqual([[0, 0, 0, 0, 0, 0]])
+  })
+
+  it('refuses a flags array of the wrong length with a sentence naming both lengths', () => {
+    const { layer } = withSixDots()
+    expect(() => layer.setPointFlags(new Float32Array(2))).toThrow(/2 flags for 6 points/)
+  })
+
+  it('setPoints clears the flags and the selected dots, so the caller re-applies them', () => {
+    const { layer, calls } = withSixDots()
+    layer.setPointFlags(new Float32Array([4, 4, 4, 4, 4, 4]))
+    layer.setSelectedPoints([1, 3])
+    layer.setPoints(sixXy, sixValues())
+    expect(Array.from(arrayUploads(calls).at(-1)!)).toEqual([0, 0, 0, 0, 0, 0])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([['POINTS', 0, 6]])
+    calls.length = 0
+    layer.reupload()
+    expect(Array.from(arrayUploads(calls).at(-1)!)).toEqual([0, 0, 0, 0, 0, 0])
+  })
+
+  it('sends the dim alpha the caller set and blends the points pass, restoring the blend state after', () => {
+    const { layer, calls } = withSixDots()
+    layer.setDimAlpha(0.35)
+    calls.length = 0
+    layer.draw()
+    expect(uniformAfter(calls, 'u_dimAlpha', 'uniform1f')).toEqual([[0.35]])
+    const pointsDraw = calls.findIndex((c) => c.method === 'drawArrays')
+    const enable = calls.findIndex((c) => c.method === 'enable' && c.args[0] === 'BLEND')
+    const blend = calls.findIndex((c) => c.method === 'blendFuncSeparate')
+    const disable = calls.findIndex((c) => c.method === 'disable' && c.args[0] === 'BLEND')
+    expect(enable).toBeLessThan(pointsDraw)
+    expect(blend).toBeLessThan(pointsDraw)
+    // Colour blends; alpha stays opaque over an opaque canvas.
+    expect(calls[blend].args).toEqual(['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ONE', 'ONE_MINUS_SRC_ALPHA'])
+    expect(disable).toBeGreaterThan(pointsDraw)
+  })
+
+  it('the fragment shader dims on bit 4 and draws a 45 and a 135 degree swatch for bits 1 and 2 in the hatch ink', () => {
+    const { layer, calls } = withSixDots()
+    const fragment = pointsFragment(calls)
+    expect(fragment).toMatch(/int\(v_flags \+ 0\.5\)/)
+    expect(fragment).toMatch(/\(flags & 1\) != 0/)
+    expect(fragment).toMatch(/\(flags & 2\) != 0/)
+    expect(fragment).toMatch(/\(flags & 4\) != 0\) color\.a \*= u_dimAlpha/)
+    expect(fragment).toMatch(/gl_PointCoord/)
+    layer.setHatchColors([0.1, 0.2, 0.3], [1, 1, 1])
+    calls.length = 0
+    layer.draw()
+    expect(uniformAfter(calls, 'u_ink', 'uniform3f')).toEqual([[0.1, 0.2, 0.3]])
+  })
+
+  it('uploads the same flags and draws the same selected dots after a context restore', () => {
+    const { layer, calls } = withSixDots()
+    layer.setPointFlags(new Float32Array([1, 0, 2, 0, 4, 0]))
+    layer.setSelectedPoints([0, 4])
+    calls.length = 0
+    layer.reupload()
+    expect(Array.from(arrayUploads(calls).at(-1)!)).toEqual([1, 0, 2, 0, 4, 0])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 6],
+      ['POINTS', 0, 1],
+      ['POINTS', 4, 1],
+    ])
+  })
+})
+
 describe('MeshLayer many rings', () => {
   // The vertex and index uploads of the last ring build.
   const ringUploads = (calls: Call[]) => {
