@@ -126,6 +126,26 @@ def check_budget(width: int, height: int) -> None:
         )
 
 
+def _other_format(head: bytes) -> str | None:
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "GIF"
+    # "BM" alone is too common in text; a real BMP header has four reserved zero bytes after the size.
+    if head[:2] == b"BM" and head[6:10] == b"\x00\x00\x00\x00":
+        return "BMP"
+    if head[:5] == b"%PDF-":
+        return "PDF"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "WebP"
+    if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+        return "ZIP"
+    return None
+
+
 def format_refusal(head: bytes) -> str:
-    """The refusal for bytes that are neither PNG, JPEG nor TIFF."""
-    return "the file holds bytes that match no PNG, JPEG or TIFF signature; only PNG and JPEG basemaps are supported"
+    """The refusal for bytes that are neither PNG, JPEG nor TIFF, naming what they are when known."""
+    found = _other_format(head)
+    if found is None:
+        what = "the file holds bytes that match no PNG, JPEG or TIFF signature"
+    else:
+        what = f"the file is a {found} file"
+    return f"{what}; only PNG and JPEG basemaps are supported"

@@ -190,12 +190,14 @@ def _overlaps(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
     return max(a[0], b[0]) < min(a[1], b[1]) and max(a[2], b[2]) < min(a[3], b[3])
 
 
-def _place(path: Path, width: int, height: int, model_extent) -> tuple[dict, os.stat_result | None] | JSONResponse:
+def _place(
+    path: Path, kind: str, width: int, height: int, model_extent
+) -> tuple[dict, os.stat_result | None] | JSONResponse:
     """The placement a world file gives, or the four-number form with the
     reason. A rotated or mirrored world file refuses the image outright: it
     says the image is not north-up, so typed numbers would ignore it."""
     try:
-        names = worldfile.find_world_files(path)
+        names = worldfile.find_world_files(path, kind)
     except WorldFileRefusal as refusal:
         return _numbers(refusal.reason, []), None
     if not names:
@@ -244,11 +246,12 @@ def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
         return _refuse(409, "not_file", "that is a folder, not an image file")
 
     try:
-        kind = imageinfo.sniff(imageinfo.read_head(path))
+        head = imageinfo.read_head(path)
+        kind = imageinfo.sniff(head)
         if kind == "tiff":
             return _refuse(422, "tiff", TIFF_REASON)
         if kind not in _MEDIA_TYPES:
-            return _refuse(422, "format", imageinfo.format_refusal(imageinfo.read_head(path)))
+            return _refuse(422, "format", imageinfo.format_refusal(head))
         width, height = imageinfo.image_size(path, kind)
         imageinfo.check_budget(width, height)
     except ImageRefusal as refusal:
@@ -262,7 +265,7 @@ def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
     if isinstance(model_extent, ReadFailure):
         return problem_from_failure(502, model_extent)
 
-    placed = _place(path, width, height, model_extent)
+    placed = _place(path, kind, width, height, model_extent)
     if isinstance(placed, JSONResponse):
         return placed
     placement, wf_stat = placed
