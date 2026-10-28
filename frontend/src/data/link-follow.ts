@@ -42,6 +42,8 @@ export interface ParameterRings {
   noCell: Array<{ reason: string; count: number }>
   /** Cells past OUTLINE_MAX_CELLS, not outlined. */
   capped: number
+  /** Parameters outlined by their own cell only, because the server could not give their reach, counted by its reason. */
+  ownCellOnly: Array<{ reason: string; count: number }>
   /** Cells of a pilot point's reach the server did not list, so not outlined. */
   reachCapped: number
   unknown: number
@@ -57,10 +59,12 @@ export function parameterRingCells(answer: ParLinkAnswer, layer: number): Parame
   const union = new Set<number>()
   const otherLayer = new Map<number, number>()
   const noCell = new Map<string, number>()
+  const ownCellOnly = new Map<string, number>()
   let unknownLayer = 0
   let reachCapped = 0
   for (const par of answer.pars) {
-    const own = par.cells.length > 0 ? par.cells : par.cell >= 0 ? [par.cell] : []
+    // The server's list is the answer; an empty list with a reason is not the point's own cell.
+    const own = par.cells
     if (par.kind === 'unplaced' || own.length === 0) {
       const reason = par.reason ?? 'no reason was recorded'
       noCell.set(reason, (noCell.get(reason) ?? 0) + 1)
@@ -70,6 +74,7 @@ export function parameterRingCells(answer: ParLinkAnswer, layer: number): Parame
       otherLayer.set(par.layer, (otherLayer.get(par.layer) ?? 0) + 1)
     } else {
       for (const cell of own) union.add(cell)
+      if (par.reason !== null) ownCellOnly.set(par.reason, (ownCellOnly.get(par.reason) ?? 0) + 1)
       if (par.cellsCapped) reachCapped += Math.max(0, par.nCells - par.cells.length)
     }
   }
@@ -80,6 +85,7 @@ export function parameterRingCells(answer: ParLinkAnswer, layer: number): Parame
     otherLayer: countedLayers(otherLayer),
     unknownLayer,
     noCell: [...noCell.entries()].map(([reason, count]) => ({ reason, count })),
+    ownCellOnly: [...ownCellOnly.entries()].map(([reason, count]) => ({ reason, count })),
     capped: all.length - cells.length,
     reachCapped,
     unknown: answer.unknown.length,
@@ -99,6 +105,9 @@ export function parameterLines(rings: ParameterRings): string[] {
   for (const { layer, count } of rings.otherLayer) lines.push(`${selected(count, 'parameter', 'is')} on layer ${layer}`)
   if (rings.unknownLayer > 0) lines.push(`${selected(rings.unknownLayer, 'parameter', 'has')} an unknown layer`)
   for (const { reason, count } of rings.noCell) lines.push(`${selected(count, 'parameter', 'has')} no cell: ${reason}`)
+  for (const { reason, count } of rings.ownCellOnly) {
+    lines.push(`${selected(count, 'parameter', 'has')} only ${count === 1 ? 'its' : 'their'} own cell outlined: ${reason}`)
+  }
   if (rings.capped > 0) {
     lines.push(`${cellsAre(rings.capped)} not outlined: the outline stops at ${OUTLINE_MAX_CELLS.toLocaleString('en-US')} cells`)
   }
