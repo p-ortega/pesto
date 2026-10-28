@@ -78,7 +78,16 @@ import {
 import { fetchLinkCell, type CellLinkResult } from '../data/link'
 import { LatestWins } from '../data/latest-wins'
 import { buildPointFlags, type PointFlagRules } from '../data/hatch-mask'
-import { selectedDotIndices } from '../data/link-follow'
+import {
+  missingValueLine,
+  offScreenCount,
+  offScreenLine,
+  parameterLines,
+  parameterRingCells,
+  selectedDotIndices,
+  whereLines,
+} from '../data/link-follow'
+import { fetchLinkPar, fetchLinkSites, MAX_LINK_PARS, MAX_LINK_SITES, type ParLinkResult, type SitesWhereResult } from '../data/link-targets'
 import { modeOf } from '../state/modifiers'
 import { sameSet, selectCells, selectPars, selectSites, type SelectMode, type SharedSelection } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
@@ -379,6 +388,25 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let ringedKey: string | null = null
   // Cells of parameters picked outside the map, on the drawn layer.
   let parRingCells: readonly number[] = []
+  // Where the parameters picked outside the map are (/link/par); null while none is held.
+  const parSlot = new LatestWins<ParLinkResult>()
+  let parAnswer: ParLinkResult | null = null
+  let parRingsFor: { answer: ParLinkResult; layer: number } | null = null
+  let parLines: string[] = []
+  // Where the selected sites are and whether they have a value this iteration (/link/sites).
+  const sitesSlot = new LatestWins<SitesWhereResult>()
+  let sitesAnswer: SitesWhereResult | null = null
+  // The ringed site dots and the positions they index, for the off-screen count.
+  let ringedSiteDots: number[] = []
+  let ringedSiteXy: Float32Array | null = null
+  // D-09, D-10: how many selected items the map cannot draw, and why. It never moves the map to show them.
+  const whereEl = document.createElement('div')
+  whereEl.setAttribute('data-testid', 'selection-where')
+  whereEl.setAttribute('role', 'status')
+  whereEl.classList.add('floating')
+  whereEl.hidden = true
+  topLeftEl.appendChild(whereEl)
+  let whereText = ''
 
   // Rings the cell set of an unanswered click when there is one, else the store's cells, plus the
   // picked parameters' cells. Says whether the rings changed, so the caller redraws once.
@@ -418,10 +446,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const { kind, count } = drawnPoints
     let selected: number[] = []
     let dimOn = false
+    ringedSiteDots = []
+    ringedSiteXy = null
     if (kind === 'obs' && obsDots !== null && obsData !== null && obsDots.rows.length === count) {
       const data = obsData
       selected = selectedDotIndices(obsDots.rows, (row) => data.rows[row].siteId, selection.sites)
       dimOn = selection.sites.size > 0
+      ringedSiteDots = selected
+      ringedSiteXy = obsDots.xy
     } else if (kind === 'par' && currentPoints.rows.length === count) {
       selected = selectedDotIndices(currentPoints.rows, (row) => joined[row]?.parnme ?? null, selection.pars)
       dimOn = selection.pars.size > 0
@@ -443,9 +475,123 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // Everything the map marks from the shared selection, then one redraw if any of it changed.
   // Runs after every dot draw, layer change and time change, so a redraw never loses a mark.
   function refreshMarks(draw = true): void {
+    refreshParRings()
     const rings = refreshRings()
     const dots = refreshPointMarks()
     if ((rings || dots) && draw) redraw()
+    renderWhere()
+  }
+
+  // The held /link/par answer on the drawn layer; worked out again only when the answer or layer moves.
+  function refreshParRings(): void {
+    const answer = parAnswer
+    if (answer === null) {
+      parRingsFor = null
+      parRingCells = []
+      parLines = []
+      return
+    }
+    if (parRingsFor !== null && parRingsFor.answer === answer && parRingsFor.layer === committed.layer) return
+    parRingsFor = { answer, layer: committed.layer }
+    if (!answer.ok) {
+      parRingCells = []
+      parLines = [`The cells of the selected parameters could not be read: ${answer.artifact}: ${answer.reason}`]
+      return
+    }
+    const rings = parameterRingCells(answer, committed.layer)
+    parRingCells = rings.cells
+    parLines = parameterLines(rings)
+  }
+
+  // The world box the camera shows now, as [minX, minY, maxX, maxY].
+  function cameraBox(): [number, number, number, number] | null {
+    if (!camera) return null
+    const [ax, ay] = camera.screenToWorld(0, 0)
+    const [bx, by] = camera.screenToWorld(canvas.width, canvas.height)
+    return [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]
+  }
+
+  // Local work only, so it can run on every pan frame; the lines are rebuilt only when they change.
+  function renderWhere(): void {
+    const lines = [...parLines]
+    const answer = sitesAnswer
+    if (answer !== null && store.get().sites.size > 0) {
+      if (!answer.ok) {
+        lines.push(`Where the selected sites are could not be read: ${answer.artifact}: ${answer.reason}`)
+      } else {
+        const drawn = { colourSource: obsActive ? 'obs' : 'par', group: obsGroupInUse, layer: committed.layer, allLayers: obsAllLayers } as const
+        lines.push(...whereLines(answer, drawn))
+      }
+    }
+    const box = cameraBox()
+    if (box !== null && ringedSiteXy !== null) {
+      const off = offScreenLine(offScreenCount(ringedSiteXy, ringedSiteDots, box))
+      if (off !== null) lines.push(off)
+    }
+    const text = lines.join('\n')
+    if (text === whereText) return
+    whereText = text
+    whereEl.textContent = ''
+    for (const line of lines) {
+      const el = document.createElement('div')
+      el.classList.add('link-reach')
+      el.textContent = line
+      whereEl.appendChild(el)
+    }
+    whereEl.hidden = lines.length === 0
+  }
+
+  // Parameters picked outside the map ring the cells they set; the map's own writes already ring theirs.
+  function followPars(origins: ReadonlySet<string>): void {
+    const names = [...store.get().pars].sort()
+    parAnswer = null
+    if (names.length === 0 || [...origins].every((origin) => origin === 'map')) {
+      parSlot.cancel()
+      refreshMarks()
+      return
+    }
+    refreshMarks()
+    const key = `${names.length}|${JSON.stringify(names.slice(0, MAX_LINK_PARS))}`
+    void parSlot.run(key, (signal) => fetchLinkPar(names, { signal })).then(
+      (result) => {
+        if (result.stale) return
+        parAnswer = result.value
+        refreshMarks()
+      },
+      (error: unknown) => {
+        parAnswer = { ok: false, artifact: 'link/par', reason: problemArtifactAndReason(error).reason }
+        refreshMarks()
+      },
+    )
+  }
+
+  // Asked when the sites or the shown iteration change, whoever wrote them; it only reads and draws.
+  function askSitesWhere(): void {
+    const ids = [...store.get().sites].sort((a, b) => a - b)
+    const iteration = committed.iteration
+    if (ids.length === 0) {
+      sitesSlot.cancel()
+      sitesAnswer = null
+      renderWhere()
+      renderSelectedNotice()
+      return
+    }
+    const key = `${iteration}|${ids.length}|${ids.slice(0, MAX_LINK_SITES).join(',')}`
+    if (sitesSlot.current() === key) return
+    sitesAnswer = null
+    renderWhere()
+    renderSelectedNotice()
+    const land = (answer: SitesWhereResult): void => {
+      sitesAnswer = answer
+      renderWhere()
+      renderSelectedNotice()
+    }
+    void sitesSlot.run(key, (signal) => fetchLinkSites(ids, iteration, { signal })).then(
+      (result) => {
+        if (!result.stale) land(result.value)
+      },
+      (error: unknown) => land({ ok: false, artifact: 'link/sites', reason: problemArtifactAndReason(error).reason }),
+    )
   }
 
   // MAP-08: true from webglcontextlost until webglcontextrestored (or the
@@ -966,6 +1112,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (!camera) return
     layer?.setMatrix(camera.matrix())
     redraw()
+    renderWhere()
   }
 
   // The canvas's pixel size follows the box it sits in, at the device's
@@ -1792,9 +1939,22 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
   }
 
-  // D-03: selected realizations the shown iteration lacks stay in the store; this only counts them.
+  // D-03, D-20: selected realizations and sites the shown iteration lacks stay in the store; this only counts them.
   function renderSelectedNotice(): void {
     selectedNoticeEl.textContent = ''
+    renderMissingRealizations()
+    renderMissingSites()
+  }
+
+  function renderMissingSites(): void {
+    const answer = sitesAnswer
+    const total = store.get().sites.size
+    if (answer === null || !answer.ok || total === 0 || answer.iteration !== committed.iteration) return
+    const line = missingValueLine(answer, total)
+    if (line !== null) addNotice(selectedNoticeEl, { ...line, tone: 'info' })
+  }
+
+  function renderMissingRealizations(): void {
     const reals = store.get().reals
     if (reals === 'all' || reals.size === 0) return
     const shown = committed.iteration
@@ -1939,6 +2099,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       drawNothing()
       renderDrawnNotice()
       renderSelectedNotice()
+      askSitesWhere()
       paintStatusBar()
       scheduleViewWrite()
       return
@@ -1954,6 +2115,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     renderDrawnNotice()
     renderSelectedNotice()
+    askSitesWhere()
     scheduleFetch(committed)
   }
 
@@ -2827,12 +2989,17 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
     store.subscribe(
       (selection) => selection.sites,
-      () => refreshMarks(),
+      () => {
+        askSitesWhere()
+        refreshMarks()
+      },
     )
     store.subscribe(
       (selection) => selection.pars,
-      () => refreshMarks(),
+      (_next, _prev, origins) => followPars(origins),
     )
+    if (store.get().pars.size > 0) followPars(new Set(['mount']))
+    askSitesWhere()
     refreshMarks()
     store.subscribe(
       (selection) => selection.obsGroups,
