@@ -66,6 +66,7 @@ export class BasemapLayer {
   private bitmap: ImageBitmap | null = null
   private positions: Float32Array | null = null
   private saturation = 0
+  private disposed = false
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
 
   constructor(gl: WebGL2RenderingContext) {
@@ -84,6 +85,7 @@ export class BasemapLayer {
   setImage(bitmap: ImageBitmap | null, extent: Extent | null, origin: Origin): string | null {
     this.bitmap = null
     this.positions = null
+    if (this.disposed) return 'the basemap layer has been removed'
     if (bitmap === null) return null
 
     if (!(bitmap.width > 0) || !(bitmap.height > 0)) return 'the image has no pixels'
@@ -121,7 +123,7 @@ export class BasemapLayer {
   }
 
   draw(): void {
-    if (this.bitmap === null) return
+    if (this.disposed || this.bitmap === null) return
     const { gl, program } = this
     gl.useProgram(program)
     gl.bindVertexArray(this.vao)
@@ -138,6 +140,25 @@ export class BasemapLayer {
     if (!wasBlending) gl.disable(gl.BLEND)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindVertexArray(null)
+  }
+
+  /** Rebuilds every GL object from the image and state this layer holds, after a lost and restored context. */
+  reupload(): void {
+    if (this.disposed) return
+    this.build()
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    const { gl } = this
+    gl.deleteProgram(this.program)
+    gl.deleteVertexArray(this.vao)
+    gl.deleteBuffer(this.positionsBuffer)
+    gl.deleteBuffer(this.uvBuffer)
+    gl.deleteTexture(this.texture)
+    this.disposed = true
+    this.bitmap = null
+    this.positions = null
   }
 
   private build(): void {
