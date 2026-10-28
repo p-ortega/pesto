@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.responses import JSONResponse
 
 from pesto.api.prefs import read_view_state, write_view_state
@@ -95,6 +95,17 @@ class ViewState(BaseModel):
     stat: str = "value"
     layer: int | None = Field(default=None, ge=0)
     tab: Literal["params", "obs", "config"] = "params"
+    classes: Literal[0, 7, 9, 11] = 0
+    symmetric: bool = False
+    texture: bool = False
+
+    @field_validator("classes", mode="before")
+    @classmethod
+    def _refuse_a_boolean_class_count(cls, value: object) -> object:
+        # JSON true must not pass as the class count 1, nor false as continuous.
+        if isinstance(value, bool):
+            raise ValueError("classes must be 0, 7, 9 or 11, not a boolean")
+        return value
 
 
 @router.get("/view")

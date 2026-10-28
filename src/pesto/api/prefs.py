@@ -120,9 +120,14 @@ _VIEW_STATE_DEFAULTS: dict = {
     "stat": "value",
     "layer": None,
     "tab": "params",
+    "classes": 0,
+    "symmetric": False,
+    "texture": False,
 }
 
 _PANEL_TABS = ("params", "obs", "config")
+
+_CLASS_CHOICES = (0, 7, 9, 11)
 
 
 def _view_store_path() -> Path:
@@ -166,6 +171,12 @@ def read_view_state(cache_root: Path | str) -> dict:
     # A tab this build does not know (a hand edit, a newer build) reopens on Params.
     if not isinstance(state["tab"], str) or state["tab"] not in _PANEL_TABS:
         state["tab"] = _VIEW_STATE_DEFAULTS["tab"]
+    # type(...) is, because bool is an int subclass: False == 0 and True == 1 would pass a membership test.
+    if not (type(state["classes"]) is int and state["classes"] in _CLASS_CHOICES):
+        state["classes"] = _VIEW_STATE_DEFAULTS["classes"]
+    for flag in ("symmetric", "texture"):
+        if type(state[flag]) is not bool:
+            state[flag] = _VIEW_STATE_DEFAULTS[flag]
     return state
 
 
