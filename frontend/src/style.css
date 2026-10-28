@@ -1247,3 +1247,75 @@ body {
   justify-content: flex-end;
   gap: var(--space-sm);
 }
+
+/* The basemap controls: one column of lines and buttons; a long reason wraps inside the panel. */
+.basemap-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  max-width: 22rem;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  padding: var(--space-sm);
+  pointer-events: auto;
+}
+
+.basemap-controls > div,
+.basemap-controls label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.basemap-controls label,
+.basemap-number-fields label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.basemap-extent,
+.basemap-opacity-reading,
+.basemap-number-fields input {
+  font-variant-numeric: tabular-nums;
+}
+
+.basemap-reason,
+.basemap-hint {
+  color: var(--ink-secondary);
+}
+
+.basemap-note,
+.basemap-muted {
+  color: var(--ink-muted);
+}
+
+.basemap-warning {
+  color: var(--status-warning);
+}
+
+.basemap-warning:empty {
+  display: none;
+}
+
+.basemap-numbers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.basemap-number-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.basemap-number-fields input {
+  width: 8em;
+}
+
+.basemap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
