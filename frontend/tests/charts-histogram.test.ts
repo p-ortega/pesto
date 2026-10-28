@@ -5,9 +5,9 @@
 import { describe, expect, it } from 'vitest'
 import { linearAxis, logAxis } from '../src/ui/charts/axes'
 import { barRects } from '../src/ui/charts/bars'
-import { drawHistogram, type HistogramSpec } from '../src/ui/charts/histogram'
+import { drawHistogram, histogramLayout, type HistogramSpec } from '../src/ui/charts/histogram'
 import type { ChartTokens } from '../src/ui/charts/tokens'
-import { createRecording2d } from './support/recording-2d'
+import { createRecording2d, type RecordedCall } from './support/recording-2d'
 
 const TOKENS: ChartTokens = {
   axis: 'tok-axis',
@@ -231,5 +231,152 @@ describe('drawHistogram', () => {
       .filter((c) => c.method === 'fillText' && c.state.fillStyle === TOKENS.inkPrimary)
       .map((c) => c.args[0])
     expect(legend).toEqual(['Posterior (iteration 3)', 'Prior'])
+  })
+})
+
+// ---- the brush band, the dimmed outside and the other iteration's outline ----
+
+function nativeSpec(over: Partial<HistogramSpec> = {}): HistogramSpec {
+  return {
+    space: 'native',
+    edges: [-4, -2, 0, 2, 4],
+    series: [
+      { label: 'first', density: [0.1, 0.2, 0.15, 0.05] },
+      { label: 'last', density: [0.05, 0.3, 0.1, 0.05] },
+    ],
+    xLabel: 'residual',
+    ...over,
+  }
+}
+
+// Bar fills are wider than the 10 px legend swatch; the band is the only fill in ink-muted.
+function barFills(calls: RecordedCall[]): RecordedCall[] {
+  return calls.filter((c) => c.method === 'fillRect' && (c.args[2] as number) > 10 && c.state.fillStyle !== TOKENS.inkMuted)
+}
+
+describe('histogramLayout', () => {
+  it('gives the plot edges and the x axis drawHistogram uses, and its invert undoes toPx', () => {
+    const layout = histogramLayout(nativeSpec(), SIZE)!
+    expect(layout).not.toBeNull()
+    expect([layout.left, layout.right, layout.top, layout.bottom]).toEqual([44, SIZE.width - 12, 28, SIZE.height - 40])
+    for (const v of [-4, -1.5, 0, 3.25, 4]) expect(layout.xAxis.invert(layout.xAxis.toPx(v))).toBeCloseTo(v, 9)
+    expect(layout.xAxis.toPx(-4)).toBeCloseTo(layout.left, 9)
+    expect(layout.xAxis.toPx(4)).toBeCloseTo(layout.right, 9)
+  })
+
+  it('reads a log10 histogram pixel back in log10, the space of its edges, not in native units', () => {
+    const layout = histogramLayout(twoSeries(), SIZE)!
+    const px = layout.xAxis.toPx(10 ** 1.5)
+    expect(layout.xAxis.invert(px)).toBeCloseTo(10 ** 1.5, 6)
+    expect(layout.edgeAt(px)).toBeCloseTo(1.5, 9)
+    expect(layout.edgeToPx(1.5)).toBeCloseTo(px, 9)
+  })
+
+  it('reads a native histogram pixel back unchanged', () => {
+    const layout = histogramLayout(nativeSpec(), SIZE)!
+    const px = layout.xAxis.toPx(1.25)
+    expect(layout.edgeAt(px)).toBeCloseTo(1.25, 9)
+    expect(layout.edgeToPx(1.25)).toBeCloseTo(px, 9)
+  })
+
+  it('is null when drawHistogram would refuse', () => {
+    expect(histogramLayout({ ...nativeSpec(), edges: [] }, SIZE)).toBeNull()
+    expect(histogramLayout(nativeSpec(), { width: 40, height: 240 })).toBeNull()
+  })
+})
+
+describe('drawHistogram with a band', () => {
+  it('draws the band once at reduced alpha with two edge lines at the band ends', () => {
+    const { ctx, calls } = createRecording2d()
+    expect(drawHistogram(ctx, nativeSpec({ band: [-1, 1] }), TOKENS, SIZE)).toBe(true)
+    const layout = histogramLayout(nativeSpec(), SIZE)!
+    const band = calls.filter((c) => c.method === 'fillRect' && c.state.fillStyle === TOKENS.inkMuted)
+    expect(band).toHaveLength(1)
+    expect(band[0].state.globalAlpha).toBeLessThan(1)
+    expect(band[0].args[0] as number).toBeCloseTo(layout.xAxis.toPx(-1), 9)
+    expect(band[0].args[2] as number).toBeCloseTo(layout.xAxis.toPx(1) - layout.xAxis.toPx(-1), 9)
+    const after = calls.slice(calls.indexOf(band[0]))
+    const edges = after.filter((c) => c.method === 'moveTo' && c.state.strokeStyle === TOKENS.inkPrimary).slice(0, 2)
+    expect(edges.map((c) => c.args[0] as number)).toEqual([layout.xAxis.toPx(-1), layout.xAxis.toPx(1)])
+  })
+
+  it('dims every bar wholly outside the band and keeps the bars that overlap it', () => {
+    const { ctx, calls } = createRecording2d()
+    drawHistogram(ctx, nativeSpec({ band: [-1, 1], dimAlpha: 0.3 }), TOKENS, SIZE)
+    // Bins -4..-2 and 2..4 lie outside -1..1; -2..0 and 0..2 overlap it.
+    const dim = 0.4 * 0.3
+    expect(barFills(calls).map((c) => c.state.globalAlpha)).toEqual([dim, 0.4, 0.4, dim, dim, 0.4, 0.4, dim])
+  })
+
+  it('keeps a bar whose left edge is the band end, since that value is in the closed range', () => {
+    const { ctx, calls } = createRecording2d()
+    drawHistogram(ctx, nativeSpec({ band: [-3, -2], dimAlpha: 0.5 }), TOKENS, SIZE)
+    // -4..-2 holds -3; -2..0 starts at -2, inside the closed band; 0..2 and 2..4 are outside.
+    expect(barFills(calls).slice(0, 4).map((c) => c.state.globalAlpha)).toEqual([0.4, 0.4, 0.2, 0.2])
+  })
+
+  it('compares a log10 histogram band with its edges in log10', () => {
+    const { ctx, calls } = createRecording2d()
+    drawHistogram(ctx, { ...twoSeries(), band: [1.2, 1.8], dimAlpha: 0.5 }, TOKENS, SIZE)
+    expect(barFills(calls).slice(0, 3).map((c) => c.state.globalAlpha)).toEqual([0.2, 0.4, 0.2])
+    const layout = histogramLayout(twoSeries(), SIZE)!
+    const band = calls.find((c) => c.method === 'fillRect' && c.state.fillStyle === TOKENS.inkMuted)!
+    expect(band.args[0] as number).toBeCloseTo(layout.xAxis.toPx(10 ** 1.2), 9)
+  })
+
+  it('refuses a reversed or non-finite band', () => {
+    for (const band of [
+      [1, -1],
+      [Number.NaN, 1],
+    ] as [number, number][]) {
+      const { ctx, calls } = createRecording2d()
+      expect(drawHistogram(ctx, nativeSpec({ band }), TOKENS, SIZE)).toBe(false)
+      expect(calls).toEqual([])
+    }
+  })
+})
+
+describe('drawHistogram with an overlay', () => {
+  it('outlines the overlay on the same edges at the dim alpha, in the slot it names, and names it in the legend', () => {
+    const { ctx, calls } = createRecording2d()
+    const overlay = { density: [0, 0.1, 0.05, 0], label: 'the same sites in iteration 0', slot: 0 as const }
+    expect(drawHistogram(ctx, nativeSpec({ overlay, dimAlpha: 0.35 }), TOKENS, SIZE)).toBe(true)
+    const plain = createRecording2d()
+    drawHistogram(plain.ctx, nativeSpec(), TOKENS, SIZE)
+    const seriesX = plain.calls
+      .filter((c) => c.method === 'strokeRect' && (c.args[2] as number) > 10)
+      .slice(0, 4)
+      .map((c) => c.args[0])
+    const outlines = calls.filter((c) => c.method === 'strokeRect' && (c.args[2] as number) > 10 && c.state.globalAlpha === 0.35)
+    expect(outlines).toHaveLength(4)
+    expect(outlines.every((c) => c.state.strokeStyle === TOKENS.series1)).toBe(true)
+    expect(outlines.map((c) => c.args[0])).toEqual(seriesX)
+    expect(calls.some((c) => c.method === 'fillRect' && c.state.globalAlpha === 0.35)).toBe(false)
+    const legend = calls.filter((c) => c.method === 'fillText' && c.state.fillStyle === TOKENS.inkPrimary).map((c) => c.args[0])
+    expect(legend).toEqual(['first', 'last', 'the same sites in iteration 0'])
+  })
+
+  it('draws the overlay at full alpha when no dim alpha is given', () => {
+    const { ctx, calls } = createRecording2d()
+    drawHistogram(ctx, nativeSpec({ overlay: { density: [0, 0.1, 0.05, 0], label: 'subset', slot: 1 } }), TOKENS, SIZE)
+    const outlines = calls.filter(
+      (c) => c.method === 'strokeRect' && (c.args[2] as number) > 10 && c.state.strokeStyle === TOKENS.series2 && c.state.globalAlpha === 1,
+    )
+    expect(outlines).toHaveLength(8)
+  })
+
+  it('refuses an overlay whose density does not match the edges', () => {
+    const { ctx, calls } = createRecording2d()
+    expect(drawHistogram(ctx, nativeSpec({ overlay: { density: [0.1, 0.2], label: 'subset', slot: 0 } }), TOKENS, SIZE)).toBe(false)
+    expect(calls).toEqual([])
+  })
+
+  it('draws exactly as before with no band, overlay or dim alpha', () => {
+    const a = createRecording2d()
+    const b = createRecording2d()
+    drawHistogram(a.ctx, nativeSpec(), TOKENS, SIZE)
+    drawHistogram(b.ctx, nativeSpec({ band: null, overlay: null }), TOKENS, SIZE)
+    expect(b.calls).toEqual(a.calls)
+    expect(barFills(a.calls).every((c) => c.state.globalAlpha === 0.4)).toBe(true)
   })
 })
