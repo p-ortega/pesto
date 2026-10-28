@@ -33,8 +33,10 @@ import {
   SYMMETRIC_TURNED_OFF_PREFIX,
   classLabel,
   followLimits,
+  isClassCount,
   resolveStyle,
   type EffectiveStyle,
+  type FieldStyle,
 } from '../gl/field-style'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
@@ -150,7 +152,7 @@ export interface PanelFacts {
 /** The map's own choices that the shell saves, next to the divider. */
 export type MapViewFields = Pick<
   ViewState,
-  'colormap' | 'reverse' | 'scale' | 'limitsMode' | 'group' | 'stat' | 'layer'
+  'colormap' | 'reverse' | 'scale' | 'limitsMode' | 'group' | 'stat' | 'layer' | 'classes' | 'symmetric' | 'texture'
 >
 
 export interface MapViewOptions {
@@ -315,6 +317,14 @@ function restoredStat(value: string | undefined, realNamesOk: boolean): FieldCho
 // naming why, is the honest version of "we don't actually know this."
 function restoredLimitsMode(mode: ViewState['limitsMode']): 'robust' | 'minmax' {
   return mode === 'manual' ? 'robust' : mode
+}
+
+function restoredFieldStyle(saved: ViewState): FieldStyle {
+  return {
+    classes: isClassCount(saved.classes) ? saved.classes : DEFAULT_STYLE.classes,
+    symmetric: saved.symmetric === true,
+    texture: saved.texture === true,
+  }
 }
 
 /**
@@ -874,6 +884,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       group: drawnGroup,
       stat: committed.stat,
       layer: committed.layer,
+      classes: committed.style.classes,
+      symmetric: committed.style.symmetric,
+      texture: committed.style.texture,
     }
   }
 
@@ -3198,6 +3211,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       })
     }
     const savedLayer = wasVisitedBefore ? restoredView!.layer : null
+    const initialLimitsMode = wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust'
+    // D-03: the style is trusted only on a run visited before, and a saved symmetric the scale refuses is turned off out loud.
+    const restoredStyle = followLimits(
+      wasVisitedBefore ? restoredFieldStyle(restoredView!) : DEFAULT_STYLE,
+      initialScale,
+      initialLimitsMode,
+    )
     committed = {
       iteration,
       layer: interpolatedEntry(drawnGroup)?.layer ?? (savedLayer !== null && savedLayer < mesh.nlay ? savedLayer : 0),
@@ -3207,9 +3227,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       reverseColormap: wasVisitedBefore ? restoredView!.reverse : false,
       scale: initialScale,
       scaleInferred: !wasVisitedBefore,
-      limitsMode: wasVisitedBefore ? restoredLimitsMode(restoredView!.limitsMode) : 'robust',
+      limitsMode: initialLimitsMode,
       manualLimits: null,
-      style: DEFAULT_STYLE,
+      style: restoredStyle.style,
     }
     // A saved layer holding none of a dot group's dots gives way to the layer that does.
     committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
@@ -3240,6 +3260,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         style: committed.style,
         stat: committed.stat,
       },
+      styleNote: restoredStyle.turnedOff === null ? null : SYMMETRIC_TURNED_OFF_PREFIX + restoredStyle.turnedOff,
       onSelectionChange: handleSelectionChange,
       onFitToExtent: fitToExtent,
     })

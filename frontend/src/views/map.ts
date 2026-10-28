@@ -34,7 +34,18 @@ export interface MountMapOptions {
 
 function savedMapFields(saved: ViewState): MapViewFields {
   const { colormap, reverse, scale, limitsMode, group, stat, layer } = saved
-  return { colormap, reverse, scale, limitsMode, group, stat, layer }
+  return {
+    colormap,
+    reverse,
+    scale,
+    limitsMode,
+    group,
+    stat,
+    layer,
+    classes: saved.classes ?? 0,
+    symmetric: saved.symmetric ?? false,
+    texture: saved.texture ?? false,
+  }
 }
 
 /**
