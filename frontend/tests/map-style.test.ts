@@ -8,7 +8,8 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { Camera } from '../src/gl/camera'
-import { ONE_CLASS_EMPTY, ONE_CLASS_EQUAL } from '../src/gl/field-style'
+import { scaleLimits } from '../src/gl/colormap'
+import { ONE_CLASS_EMPTY, ONE_CLASS_EQUAL, type EffectiveStyle } from '../src/gl/field-style'
 import { MeshLayer } from '../src/gl/mesh-layer'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
@@ -25,6 +26,12 @@ vi.mock('../src/gl/context', () => ({
 vi.mock('../src/gl/mesh-layer', async (importOriginal) =>
   (await import('./support/mesh-layer-mock')).meshLayerMockModule(await importOriginal()),
 )
+
+// Counted, so a test can tell a remembered pair from a new computation.
+vi.mock('../src/gl/colormap', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/gl/colormap')>()
+  return { ...actual, scaleLimits: vi.fn(actual.scaleLimits) }
+})
 
 const CONFIG: RunConfig = {
   case: 'test_run',
@@ -61,10 +68,16 @@ const PARMAP = new Int32Array([0, 1])
 const CELL_ARRAY = new Int32Array([0, 1])
 const LAYER_ARRAY = new Int32Array([0, 0])
 
-const PAR_TABLE = tableToIPC(
+const ONE_GROUP = tableToIPC(
   tableFromArrays({ parnme: ['p0', 'p1'], pargp: ['G1', 'G1'], partrans: ['none', 'none'] }),
   'stream',
 )
+// G1 is linear and G2 is log, so a group change infers log10.
+const TWO_GROUPS = tableToIPC(
+  tableFromArrays({ parnme: ['p0', 'p1'], pargp: ['G1', 'G2'], partrans: ['none', 'log'] }),
+  'stream',
+)
+let PAR_TABLE = ONE_GROUP
 const REALS_TABLE = tableToIPC(tableFromArrays({ realization: ['base'] }), 'stream')
 
 let field = new Float32Array([10, 20])
@@ -134,13 +147,17 @@ function stubEnvironment(): void {
 }
 
 type Mocked = ReturnType<typeof vi.fn>
-function layerMock(): { setStyle: Mocked } {
-  return vi.mocked(MeshLayer).mock.instances[0] as unknown as { setStyle: Mocked }
+function layerMock(): { setStyle: Mocked; setLimits: Mocked } {
+  return vi.mocked(MeshLayer).mock.instances[0] as unknown as { setStyle: Mocked; setLimits: Mocked }
 }
 
-function lastStyle(): { classes: number } {
+function lastLimits(): [number, number] {
+  return layerMock().setLimits.mock.calls.at(-1)?.[0] as [number, number]
+}
+
+function lastStyle(): EffectiveStyle {
   const calls = layerMock().setStyle.mock.calls
-  return calls[calls.length - 1][0] as { classes: number }
+  return calls[calls.length - 1][0] as EffectiveStyle
 }
 
 async function mounted(): Promise<{ root: HTMLElement; store: SelectionStore }> {
@@ -260,5 +277,118 @@ describe('the Classes control on the map', () => {
 
     const label = (root.querySelector('select[aria-label="Colour classes"]') as HTMLElement).closest('label')
     expect(label?.getAttribute('data-colour-source')).toBe('par')
+  })
+})
+
+describe('the Symmetric about 0 switch on the map', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    field = new Float32Array([-2, 5])
+    PAR_TABLE = ONE_GROUP
+  })
+
+  afterEach(() => {
+    PAR_TABLE = ONE_GROUP
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  const box = (root: HTMLElement) => root.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
+  const reason = (root: HTMLElement) => root.querySelector('#symmetric-reason') as HTMLElement
+  const symmetricLine = (root: HTMLElement) =>
+    [...legend(root).querySelectorAll('div.label')].some((d) => d.textContent === 'symmetric about 0')
+
+  function setSymmetric(root: HTMLElement, on: boolean): void {
+    box(root).checked = on
+    box(root).dispatchEvent(new Event('change'))
+  }
+
+  function pick(root: HTMLElement, label: string, value: string): void {
+    const select = root.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement
+    select.value = value
+    select.dispatchEvent(new Event('change'))
+  }
+
+  it('draws -m..+m from the remembered pair and gives the exact pair back when switched off', async () => {
+    const { root } = await mounted()
+    expect(lastLimits()).toEqual([-2, 5])
+    const computed = vi.mocked(scaleLimits).mock.calls.length
+
+    setSymmetric(root, true)
+    expect(lastLimits()).toEqual([-5, 5])
+    expect(lastStyle()).toEqual({ classes: 0, symmetric: true, texture: false })
+    expect(symmetricLine(root)).toBe(true)
+
+    setSymmetric(root, false)
+    expect(lastLimits()).toEqual([-2, 5])
+    expect(symmetricLine(root)).toBe(false)
+    expect(vi.mocked(scaleLimits).mock.calls.length).toBe(computed)
+  })
+
+  it('draws zero limits as [0, 0] and still says symmetric about 0', async () => {
+    field = new Float32Array([0, 0])
+    const { root } = await mounted()
+    setSymmetric(root, true)
+    expect(lastLimits()).toEqual([0, 0])
+    expect(lastStyle().classes).toBe(0)
+    expect(symmetricLine(root)).toBe(true)
+  })
+
+  it('draws typed manual limits exactly as typed and shows why symmetric is off', async () => {
+    const { root } = await mounted()
+    setSymmetric(root, true)
+    pick(root, 'Limits', 'manual')
+    const lower = root.querySelector('input[aria-label="Lower limit"]') as HTMLInputElement
+    const upper = root.querySelector('input[aria-label="Upper limit"]') as HTMLInputElement
+    lower.value = '1'
+    lower.dispatchEvent(new Event('input'))
+    upper.value = '4'
+    upper.dispatchEvent(new Event('input'))
+
+    expect(lastLimits()).toEqual([1, 4])
+    expect(lastStyle().symmetric).toBe(false)
+    expect(box(root).checked).toBe(false)
+    expect(box(root).disabled).toBe(true)
+    expect(reason(root).textContent).toBe('symmetric was turned off: manual limits are used as typed')
+    expect(symmetricLine(root)).toBe(false)
+  })
+
+  it('turns symmetric off when the user picks Log10, and says so', async () => {
+    field = new Float32Array([2, 5])
+    const { root } = await mounted()
+    setSymmetric(root, true)
+    pick(root, 'Value scale', 'log10')
+
+    expect(lastStyle().symmetric).toBe(false)
+    expect(box(root).disabled).toBe(true)
+    expect(reason(root).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+    expect(symmetricLine(root)).toBe(false)
+  })
+
+  it('turns symmetric off when a group change infers log10, and says so', async () => {
+    PAR_TABLE = TWO_GROUPS
+    field = new Float32Array([2, 5])
+    const { root } = await mounted()
+    setSymmetric(root, true)
+    expect(lastStyle().symmetric).toBe(true)
+
+    pick(root, 'Parameter group', 'G2')
+
+    await vi.waitFor(() => expect(lastStyle().symmetric).toBe(false))
+    expect(box(root).checked).toBe(false)
+    expect(box(root).disabled).toBe(true)
+    expect(reason(root).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+  })
+
+  it('keeps symmetric on when the inferred log10 is refused and the group is drawn linear', async () => {
+    PAR_TABLE = TWO_GROUPS
+    const { root } = await mounted()
+    setSymmetric(root, true)
+
+    pick(root, 'Parameter group', 'G2')
+
+    expect(lastStyle().symmetric).toBe(true)
+    expect(box(root).checked).toBe(true)
+    expect(reason(root).textContent).toBe('')
   })
 })

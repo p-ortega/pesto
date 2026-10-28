@@ -404,6 +404,162 @@ describe('renderSelectionControls', () => {
     })
   })
 
+  describe('the Symmetric about 0 switch', () => {
+    const box = (el: HTMLElement) => el.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
+    const reason = (el: HTMLElement) => el.querySelector('#symmetric-reason') as HTMLElement
+    const NO_NOTES = { classes: null, symmetric: null, texture: null }
+    const LINEAR = { classes: 0, symmetric: false, texture: false }
+
+    function pick(select: HTMLSelectElement, value: string): void {
+      select.value = value
+      select.dispatchEvent(new Event('change'))
+    }
+
+    it('is a parameter-only checkbox after the Classes select, with its reason line hidden', () => {
+      const { el } = mount(THREE_NAMES)
+      const input = box(el)
+      expect(input.type).toBe('checkbox')
+      expect(input.checked).toBe(false)
+      const label = input.closest('label') as HTMLElement
+      expect(label.textContent).toContain('Symmetric about 0')
+      expect(label.getAttribute('data-colour-source')).toBe('par')
+      const classesLabel = (el.querySelector('select[aria-label="Colour classes"]') as HTMLElement).closest('label') as HTMLElement
+      expect(classesLabel.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(reason(el).style.display).toBe('none')
+    })
+
+    it('emits style.symmetric true when checked', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      box(el).checked = true
+      box(el).dispatchEvent(new Event('change'))
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ style: { classes: 0, symmetric: true, texture: false } }),
+      )
+    })
+
+    it('turns symmetric off when Log10 is picked, and says so', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      box(el).checked = true
+      box(el).dispatchEvent(new Event('change'))
+      pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'log10')
+
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ scale: 'log10', style: { classes: 0, symmetric: false, texture: false } }),
+      )
+      expect(box(el).checked).toBe(false)
+      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      expect(reason(el).style.display).toBe('')
+    })
+
+    it('turns symmetric off when Manual is picked, and says so', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES)
+      box(el).checked = true
+      box(el).dispatchEvent(new Event('change'))
+      pick(el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement, 'manual')
+
+      expect(onSelectionChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ limitsMode: 'manual', style: { classes: 0, symmetric: false, texture: false } }),
+      )
+      expect(reason(el).textContent).toBe('symmetric was turned off: manual limits are used as typed')
+    })
+
+    it('gives only the plain reason, not a turned-off line, when the scale moves while symmetric is off', () => {
+      const { el } = mount(THREE_NAMES)
+      pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'log10')
+      expect(box(el).disabled).toBe(true)
+      expect(reason(el).textContent).toBe('a log scale has no zero to centre on')
+      pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'linear')
+      expect(box(el).disabled).toBe(false)
+      expect(reason(el).textContent).toBe('')
+    })
+
+    it('is disabled with the reason showStyle gives, and enabled again when there is none', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      handle.showStyle(LINEAR, { ...NO_NOTES, symmetric: 'a log scale has no zero to centre on' })
+      expect(box(el).disabled).toBe(true)
+      expect(reason(el).textContent).toBe('a log scale has no zero to centre on')
+      expect(reason(el).style.display).toBe('')
+      expect(box(el).getAttribute('aria-describedby')).toBe('symmetric-reason')
+
+      handle.showStyle(LINEAR, NO_NOTES)
+      expect(box(el).disabled).toBe(false)
+      expect(reason(el).style.display).toBe('none')
+      expect(box(el).hasAttribute('aria-describedby')).toBe(false)
+    })
+
+    it('keeps the turned-off line through later draws until the user moves symmetric, the scale or the limits', () => {
+      const { el, handle } = mount(THREE_NAMES)
+      box(el).checked = true
+      box(el).dispatchEvent(new Event('change'))
+      pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'log10')
+      handle.showStyle(LINEAR, { ...NO_NOTES, symmetric: 'a log scale has no zero to centre on' })
+      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      // The view drew linear after all (log refused for non-positive cells): the trace stays.
+      handle.showStyle(LINEAR, NO_NOTES)
+      expect(box(el).disabled).toBe(false)
+      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+
+      box(el).checked = true
+      box(el).dispatchEvent(new Event('change'))
+      expect(reason(el).style.display).toBe('none')
+    })
+
+    it('clears the turned-off line when the scale goes back to linear', () => {
+      const { el } = mount(THREE_NAMES)
+      box(el).checked = true
+      box(el).dispatchEvent(new Event('change'))
+      const scale = el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement
+      pick(scale, 'log10')
+      pick(scale, 'linear')
+      expect(reason(el).textContent).toBe('')
+      expect(box(el).checked).toBe(false)
+    })
+
+    it('shows a turned-off line the view caused through sync, without emitting', () => {
+      const { el, handle, onSelectionChange } = mount(THREE_NAMES)
+      box(el).checked = true
+      handle.sync(
+        {
+          colormap: 'viridis',
+          reverseColormap: false,
+          scale: 'log10',
+          scaleInferred: true,
+          limitsMode: 'robust',
+          manualLimits: null,
+          style: { classes: 0, symmetric: false, texture: false },
+        },
+        'symmetric was turned off: a log scale has no zero to centre on',
+      )
+      expect(box(el).checked).toBe(false)
+      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      expect(onSelectionChange).not.toHaveBeenCalled()
+    })
+
+    it('starts checked from the initial style and shows the initial styleNote', () => {
+      const el = document.createElement('div')
+      renderSelectionControls(el, {
+        nlay: 3,
+        iteration: 0,
+        realNames: THREE_NAMES,
+        partrans: 'none',
+        initial: {
+          colormap: 'viridis',
+          reverseColormap: false,
+          scale: 'linear',
+          scaleInferred: true,
+          limitsMode: 'robust',
+          manualLimits: null,
+          style: { classes: 0, symmetric: true, texture: false },
+        },
+        styleNote: 'symmetric was turned off: manual limits are used as typed',
+        onSelectionChange: vi.fn(),
+        onFitToExtent: vi.fn(),
+      })
+      expect(box(el).checked).toBe(true)
+      expect(reason(el).textContent).toBe('symmetric was turned off: manual limits are used as typed')
+    })
+  })
+
   it('caps the panel at 32rem and still wraps, so it stops spanning the whole map', () => {
     const { el } = mount(THREE_NAMES)
     expect(el.style.maxWidth).toBe('32rem')

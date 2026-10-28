@@ -244,6 +244,14 @@ export function classColour(k: number, n: number, table: Uint8Array): [number, n
   return [table[i], table[i + 1], table[i + 2]]
 }
 
+/** The limits centred on zero, -m to +m with m the larger absolute end (D-08). */
+export function symmetricLimits(limits: [number, number]): [number, number] {
+  const m = Math.max(Math.abs(limits[0]), Math.abs(limits[1]))
+  // -0 would print as "-0" in the legend.
+  if (m === 0) return [0, 0]
+  return [-m, m]
+}
+
 /**
  * A small limits memory (D-02), keyed by whatever string the caller
  * builds: two realizations of one statistic share the limits computed for
