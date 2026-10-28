@@ -48,6 +48,7 @@ function timesPayload(over: Partial<ObsTimesPayload> = {}): ObsTimesPayload {
     iterations: [{ iteration: 0, available: true, reason: null }],
     limits: { resid_mean: [-1, 1], rmse: [0, 1], std: [0, 1], mean: [0, 1] },
     limits_rule: 'fixed per group',
+    limits_refused: null,
     refused: null,
     notes: [],
     ...over,

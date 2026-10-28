@@ -242,6 +242,7 @@ function stubFetch(): void {
               iterations: [{ iteration: 0, available: true, reason: null }],
               limits: { resid_mean: [-1, 1], rmse: [0, 2], std: [0, 1], mean: [9, 11] },
               limits_rule: 'pooled over the first and last iteration',
+              limits_refused: null,
               refused: spec.refused,
               notes: [],
             },

@@ -42,6 +42,7 @@ LIMITS_RULE = (
     "2nd to 98th percentile over every time of this group and both iterations, so colours do "
     "not shift while the slider moves; the mean residual is symmetric about 0"
 )
+NO_LIMITS_REASON = "no iteration has observation statistics, so no colour limits can be made"
 POSITION_NOTE = "this group has no times, so the slider steps by position in site"
 MIXED_SITES_NOTE = (
     "the sites of this group mix kinds of time, so the slider steps by position in site"
@@ -394,10 +395,14 @@ async def get_obs_sites(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     return arrow_response(table, notes=tuple(notes), meta={"order_digest": index.order_digest})
 
 
-def _limits(state, cache_root, rows: GroupRows, group: str, ends: list[int]) -> dict:
-    """Colour limits per statistic, pooled over every row of the group in both ends."""
+def _limits(
+    state, cache_root, rows: GroupRows, group: str, ends: list[int]
+) -> tuple[dict, str | None]:
+    """Colour limits per statistic, pooled over every row of the group in both ends, and the
+    reason they could not be made when they could not."""
+    unknown = {stat: None for stat in STATS}
     if not ends:
-        return {stat: None for stat in STATS}
+        return unknown, NO_LIMITS_REASON
     first, last = ends[0], ends[-1]
     names = tuple(dict.fromkeys(("obs_index", f"{AGG_PREFIX}{first}", f"{AGG_PREFIX}{last}")))
 
@@ -427,8 +432,8 @@ def _limits(state, cache_root, rows: GroupRows, group: str, ends: list[int]) -> 
 
     limits = obscache.memoised(state, cache_root, ("limits", group, first, last), names, build)
     if isinstance(limits, ReadFailure):
-        return {stat: None for stat in STATS}
-    return limits
+        return unknown, f"the colour limits could not be made: {_reason(limits)}"
+    return limits, None
 
 
 @router.get("/obs/times")
@@ -459,11 +464,10 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
             "site; a frame shows the last of them and counts the rest as hidden"
         )
 
-    limits = (
-        {stat: None for stat in STATS}
-        if rows.refused is not None
-        else _limits(state, cache_root, rows, params.group, ends)
-    )
+    if rows.refused is not None:
+        limits, limits_refused = {stat: None for stat in STATS}, None
+    else:
+        limits, limits_refused = _limits(state, cache_root, rows, params.group, ends)
     body = {
         "group": params.group,
         "order_digest": index.order_digest,
@@ -475,6 +479,7 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
         "iterations": iterations,
         "limits": limits,
         "limits_rule": LIMITS_RULE,
+        "limits_refused": limits_refused,
         "refused": rows.refused,
         "notes": notes,
     }

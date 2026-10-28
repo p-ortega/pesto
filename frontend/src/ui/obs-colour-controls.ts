@@ -215,6 +215,8 @@ export interface ObsLegendOptions {
   /** null when the statistic has no finite value in the group. */
   limits: [number, number] | null
   limitsRule: string
+  /** Why the limits are unknown; the dots are then drawn without a colour. */
+  limitsRefused?: string | null
   timeText: string
   counts: ObsDotCounts
   /** null while no frame is held, or when the group has no time. */
@@ -287,7 +289,11 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
     group.title = opts.group
   }
   line(el, opts.timeText, 'wrap-note')
-  line(el, opts.limits === null ? `Limits: none, this statistic has no finite value (${opts.limitsRule})` : `Limits: ${opts.limitsRule}`, 'wrap-note')
+  if (opts.limitsRefused) {
+    line(el, `Limits unknown, so the dots carry no colour: ${opts.limitsRefused}`, 'wrap-note')
+  } else {
+    line(el, opts.limits === null ? `Limits: none, this statistic has no finite value (${opts.limitsRule})` : `Limits: ${opts.limitsRule}`, 'wrap-note')
+  }
 
   const { counts, atTime } = opts
   if (counts.drawn === 0) {

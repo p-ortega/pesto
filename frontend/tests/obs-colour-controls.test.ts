@@ -284,6 +284,13 @@ describe('renderObsLegend', () => {
     expect(el.textContent).not.toContain('have a value at this time')
   })
 
+  it('names the reason the limits are unknown instead of saying the statistic has no value', () => {
+    const el = document.createElement('div')
+    renderObsLegend(el, { ...base, limits: null, limitsRefused: 'the colour limits could not be made: the file is short' })
+    expect(el.textContent).toContain('Limits unknown, so the dots carry no colour: the colour limits could not be made: the file is short')
+    expect(el.textContent).not.toContain('no finite value')
+  })
+
   it('shows no figures when a statistic has no limits, with its reason', () => {
     const el = document.createElement('div')
     renderObsLegend(el, { ...base, limits: null })

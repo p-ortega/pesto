@@ -2173,7 +2173,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     const target = layer
     if (target === null) return
-    const values = valuesForDots(frame, dots)
+    const values = valuesToDraw(data, frame, dots)
     const limits = data.times.limits[stat]
     target.setColormap(OBS_RAMP[stat], false)
     target.setLimits(limits ?? [0, 1])
@@ -2201,6 +2201,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     refreshObsPick()
   }
 
+  // With no known limits a colour would be a guess, so the dots are drawn as missing.
+  function valuesToDraw(data: ObsGroupData, frame: Float32Array, dots: ObsDots): Float32Array {
+    if (data.times.limits_refused) return new Float32Array(dots.rows.length).fill(Number.NaN)
+    return valuesForDots(frame, dots)
+  }
+
   // Everything but the time comes from what the last full draw left in place.
   function paintObsLegend(frame: Float32Array, index: number, timeNotes: string[]): void {
     const data = obsData
@@ -2213,6 +2219,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       iteration: obsIteration,
       limits: data.times.limits[obsStat],
       limitsRule: data.times.limits_rule,
+      limitsRefused: data.times.limits_refused,
       timeText: index >= 0 ? formatTimeValue(data.times.time_kind, times[index]) : 'no time to show',
       counts: dots.counts,
       atTime: index >= 0 ? countsAtTime(frame, dots, data.times.n_at_time[index] ?? 0, obsSource.frames.rowsHiddenIn(frame)) : null,
@@ -2226,7 +2233,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const data = obsData
     const dots = obsDots
     if (!layer || data === null || dots === null) return
-    layer.setPointValues(valuesForDots(frame, dots))
+    layer.setPointValues(valuesToDraw(data, frame, dots))
     obsFrame = frame
     obsTimePos = { kind: data.times.time_kind, times: data.times.times, index }
     obsDrawnIndex = index

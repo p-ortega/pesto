@@ -196,10 +196,12 @@ function statValues(stat: string, base: number[]): number[] {
 let calls: string[] = []
 // A refused /obs/site for this site id, to see the reason shown.
 let refuseSite: number | null = null
+let limitsRefused: string | null = null
 
 function stubFetch(): void {
   calls = []
   refuseSite = null
+  limitsRefused = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
@@ -273,6 +275,7 @@ function stubFetch(): void {
                 mean: limits ? [9, 11] : null,
               },
               limits_rule: 'pooled over the first and last iteration',
+              limits_refused: limitsRefused,
               refused: null,
               notes: [],
             },
@@ -566,6 +569,16 @@ describe('colouring the map by observations', () => {
       expect(text).toContain('1 site not placed: no cell contains this site')
       expect(text).toContain('1 site on another layer')
       expect(text).toContain('1 site with an unknown layer, shown only under all layers')
+    })
+
+    it('draws no colour and says why when the server could not make the limits', async () => {
+      const { root } = await mounted()
+      limitsRefused = 'the colour limits could not be made: the file is short'
+      await enterObservations(root)
+      const [, values] = lastPoints()
+      expect(Array.from(values).every((v) => Number.isNaN(v))).toBe(true)
+      expect(legendText(root)).toContain('Limits unknown, so the dots carry no colour: the colour limits could not be made: the file is short')
+      expect(legendText(root)).not.toContain('this statistic has no finite value')
     })
 
     it('draws every layer, the unknown-layer site included, under all layers', async () => {
