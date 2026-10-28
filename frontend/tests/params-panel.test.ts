@@ -1425,3 +1425,80 @@ describe('the parameter rows and the shared pars selection', () => {
     expect([...store.get().parGroups]).toEqual(['G'])
   })
 })
+
+describe('the Selected parameters section in the panel', () => {
+  const MIXED = {
+    parnme: ['a1', 'a2', 'b1'],
+    pargp: ['A', 'A', 'B'],
+    parlbnd: [0, 0, 0],
+    parubnd: [1, 1, 1],
+    partrans: ['none', 'none', 'none'],
+  }
+
+  beforeEach(() => {
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('A'), groupRow('B')]))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function selectedNames(el: HTMLElement): string[] {
+    return [...el.querySelectorAll<HTMLElement>('.params-selected [data-selected-parameter]')].map((r) => r.dataset.selectedParameter ?? '')
+  }
+
+  async function mountMixed(startHidden = false) {
+    const store = makeStore(['A'])
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, startHidden, parTable: Promise.resolve(parTableBuffer(MIXED)) }))
+    if (!startHidden) await vi.waitFor(() => expect(el.querySelectorAll('.params-table .param-row').length).toBe(2))
+    else await new Promise((resolve) => setTimeout(resolve, 0))
+    return { el, store, handle }
+  }
+
+  it('is hidden while pars is empty and lists another view\'s pars grouped by the table\'s pargp', async () => {
+    const { el, store } = await mountMixed()
+    const section = el.querySelector<HTMLElement>('.params-selected')!
+    expect(section.style.display).toBe('none')
+
+    store.set({ pars: new Set(['b1', 'a2']) }, 'map')
+    store.flush()
+
+    expect(section.style.display).not.toBe('none')
+    expect(selectedNames(el)).toEqual(['b1', 'a2'])
+    expect([...section.querySelectorAll<HTMLElement>('.selected-group')].map((g) => g.dataset.group)).toEqual(['B', 'A'])
+  })
+
+  it('routes a click in the section through the modifier rule into pars with origin "params", never parGroups', async () => {
+    const { el, store } = await mountMixed()
+    store.set({ pars: new Set(['a1', 'b1']) }, 'map')
+    store.flush()
+    const heard: string[][] = []
+    store.subscribe(
+      (s) => s.pars,
+      (_next, _prev, origins) => heard.push([...origins]),
+    )
+
+    const b1 = el.querySelector<HTMLElement>('.params-selected [data-selected-parameter="b1"]')!
+    b1.dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }))
+    store.flush()
+
+    expect([...store.get().pars]).toEqual(['a1'])
+    expect(heard).toEqual([['params']])
+    expect([...store.get().parGroups]).toEqual(['A'])
+    expect(selectedNames(el)).toEqual(['a1'])
+  })
+
+  it('draws a pars change made while hidden when the tab is shown, and fetches nothing for it', async () => {
+    const { el, store, handle } = await mountMixed(true)
+    store.set({ pars: new Set(['a1']) }, 'map')
+    store.flush()
+    expect(selectedNames(el)).toEqual([])
+
+    handle.onShow()
+    expect(selectedNames(el)).toEqual(['a1'])
+    expect(parApi.fetchParValues).not.toHaveBeenCalled()
+  })
+})

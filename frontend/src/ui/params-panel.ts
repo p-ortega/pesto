@@ -36,6 +36,7 @@ import {
   type DetailHandle,
   type GroupDetailBase,
 } from './params-detail'
+import { OVERSCAN, renderSelectedParams, ROW_HEIGHT } from './params-selected'
 
 export interface ParamsPanelOptions {
   /** The same D-07 unmapped list the group picker's disclosure builds --
@@ -65,12 +66,11 @@ interface ParamRow {
   partrans: string | null
 }
 
-// Fixed row height in px -- the spacer's total height (`rows.length *
-// ROW_HEIGHT`) is what makes the scrollbar tell the truth about a table
-// that may hold up to a million rows without ever placing them all in the
-// DOM (T-5.1-05).
-const ROW_HEIGHT = 24
-const OVERSCAN = 20
+// ROW_HEIGHT is fixed so the spacer's total height (`rows.length *
+// ROW_HEIGHT`) makes the scrollbar tell the truth about a table that may
+// hold up to a million rows without ever placing them all in the DOM
+// (T-5.1-05). It lives in params-selected.ts so the two lists share it
+// without an import cycle.
 const VIEWPORT_HEIGHT = 240
 
 function formatBound(value: number | null): string {
@@ -592,6 +592,10 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   groupsHost.classList.add('params-groups')
   el.appendChild(groupsHost)
 
+  const selectedHost = document.createElement('div')
+  selectedHost.classList.add('params-selected')
+  el.appendChild(selectedHost)
+
   const detailHost = document.createElement('div')
   detailHost.classList.add('params-detail-host')
   makeFocusable(detailHost, 'Group detail')
@@ -906,6 +910,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     opts.store.set({ pars: next.pars }, 'params')
     const follow = detailAfter(parameter, next.pars)
     if (!hidden) redrawTable?.()
+    refreshSelected()
     if (follow === null) {
       dropParameter()
       return
@@ -939,15 +944,32 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     dropParameter()
   }
 
+  let pargpByName: Map<string, string> | null = null
+  const selectedSection = renderSelectedParams(selectedHost, {
+    store: opts.store,
+    pargpOf: (name) => pargpByName?.get(name) ?? null,
+    onPick: pickParameter,
+    isHidden: () => hidden,
+  })
+
+  // A change while hidden is drawn on show; an unchanged section keeps its pane and scroll offset.
+  let selectedPending = false
+  function refreshSelected(): void {
+    selectedPending = hidden
+    if (!hidden) selectedSection.refresh()
+  }
+
   renderDetail()
   void opts.parTable.then(
     (buffer) => {
       try {
         rows = readParamRows(buffer)
+        pargpByName = new Map(rows.map((row) => [row.parnme, row.pargp]))
       } catch (error) {
         tableFailure = describeFailure(error)
       }
       renderDetail()
+      refreshSelected()
     },
     (error: unknown) => {
       tableFailure = describeFailure(error)
@@ -965,11 +987,12 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
   )
 
-  // Any view's pars change only redraws the marks; drawing never writes back.
+  // Any view's pars or cells change only redraws; drawing never writes back.
   const unsubscribePars = opts.store.subscribe(
-    (selection) => selection.pars,
+    (selection) => ({ pars: selection.pars, cells: selection.cells }),
     () => {
       if (!hidden) redrawTable?.()
+      refreshSelected()
     },
   )
 
@@ -992,6 +1015,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       redrawTable?.()
+      if (selectedPending) refreshSelected()
       // A choice made while hidden is fetched now; otherwise the canvases redraw at their real size.
       if (detailPending) refreshGroupDetail()
       else detailHandle?.onShow()
@@ -1000,6 +1024,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     dispose() {
       unsubscribe()
       unsubscribePars()
+      selectedSection.dispose()
       histSlot.cancel()
       changeSlot.cancel()
       valuesSlot.cancel()
