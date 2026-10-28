@@ -19,6 +19,7 @@ from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import (
     load_idomain,
     load_mesh,
+    load_mesh_extent,
     load_mesh_origin,
     write_grid_from_adapter,
     write_mesh,
@@ -199,6 +200,20 @@ def test_a_mesh_json_without_origin_is_refused_not_read_as_zero(tmp_path):
     assert isinstance(result, ReadFailure)
     assert "unexpected shape" in result.reason
     assert isinstance(origin, ReadFailure)
+    assert isinstance(load_mesh_extent(layout), ReadFailure)
+
+
+def test_the_mesh_extent_is_the_stored_bounds_plus_the_origin_in_float64(tmp_path):
+    verts = np.array([[712345.137, 7019873.291], [712346.137, 7019873.291], [712346.137, 7019875.5]])
+    mesh = fan_polygons(verts, [[0, 1, 2]])
+    layout = CacheLayout(root=tmp_path / ".pesto")
+    layout.ensure()
+    write_mesh(mesh, _shape(), layout)
+
+    extent = load_mesh_extent(layout)
+
+    assert all(isinstance(v, float) for v in extent)
+    assert extent == pytest.approx((712345.137, 712346.137, 7019873.291, 7019875.5), abs=1e-3)
 
 
 def test_write_grid_from_adapter_with_no_adapter_returns_none_and_writes_nothing(tmp_path):

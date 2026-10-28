@@ -4,20 +4,24 @@ with every image and world file written by the test into tmp_path (D-27)."""
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from model.fixtures import write_disv_grb
+from model.fixtures import _VERTICES, write_disv_grb
 from pesto.api.app import create_app
 from pesto.api.fs import _issue_id
+from pesto.basemap.imageinfo import TIFF_REASON
+from pesto.basemap.worldfile import ROTATED_REASON
 from pesto.cache.layout import CacheLayout
-from pesto.ingest.mesh import write_grid_from_adapter
+from pesto.ingest.mesh import load_mesh_extent, write_grid_from_adapter
 from pesto.model.mf6 import Mf6Adapter
 
-from .basemap_images import png_bytes, world_file_text
+from .basemap_images import jpeg_header_bytes, png_bytes, tiff_bytes, world_file_text
 
 BASE_URL = "http://127.0.0.1"
 
@@ -306,3 +310,138 @@ def test_a_mesh_with_no_origin_is_a_read_failure_not_a_mesh_at_zero(opened):
     assert response.status_code == 502
     assert response.json()["artifact"] == "grid"
     assert_no_path_leaked(opened)
+
+
+# ---------------------------------------------------------------------------
+# Refusals and the four-number form
+# ---------------------------------------------------------------------------
+
+
+def _inspect(opened: Opened, name: str):
+    return opened.post("/api/run/basemap/inspect", json={"id": opened.file_id(name)})
+
+
+def test_a_tiff_is_listed_with_the_reason_and_refused_at_inspect(opened):
+    (opened.images / "scan.tif").write_bytes(tiff_bytes("MM"))
+    rows = opened.get("/api/fs/images", params={"id": opened.folder_id(opened.images)}).json()["entries"]
+    assert rows[0]["kind"] == "tiff"
+    assert rows[0]["reason"] == TIFF_REASON
+
+    response = _inspect(opened, "scan.tif")
+    assert response.status_code == 422
+    assert response.json()["title"] == TIFF_REASON
+    assert response.json()["code"] == "tiff"
+
+
+def test_a_gif_is_refused_naming_gif(opened):
+    (opened.images / "anim.gif").write_bytes(b"GIF89a" + bytes(30))
+    # A GIF is not listed, so this reaches inspect through an id the picker issued for it elsewhere.
+    response = opened.post("/api/run/basemap/inspect", json={"id": opened.folder_id(opened.images / "anim.gif")})
+    assert response.status_code == 422
+    assert response.json()["code"] == "format"
+    assert "GIF" in response.json()["title"]
+
+
+def test_a_rotated_world_file_refuses_the_image(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    put_world_file(opened.images, "map.pgw", d=0.5)
+    response = _inspect(opened, "map.png")
+    assert response.status_code == 422
+    assert response.json()["code"] == "rotated"
+    assert response.json()["title"] == ROTATED_REASON
+    assert_no_path_leaked(opened)
+
+
+def test_a_mirrored_world_file_refuses_the_image(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    put_world_file(opened.images, "map.pgw", e=2.0)
+    response = _inspect(opened, "map.png")
+    assert response.status_code == 422
+    assert response.json()["code"] == "mirrored"
+
+
+def test_an_image_over_the_pixel_budget_is_refused(opened):
+    (opened.images / "huge.jpg").write_bytes(jpeg_header_bytes(10000, 9000))
+    response = _inspect(opened, "huge.jpg")
+    assert response.status_code == 422
+    assert response.json()["code"] == "too_large"
+    assert "90,000,000 pixels" in response.json()["title"]
+
+
+def test_a_truncated_header_is_refused(opened):
+    (opened.images / "cut.png").write_bytes(png_bytes(4, 4)[:18])
+    response = _inspect(opened, "cut.png")
+    assert response.status_code == 422
+    assert response.json()["code"] == "header"
+
+
+def test_two_world_files_are_listed_and_neither_is_picked(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    put_world_file(opened.images, "map.pgw")
+    put_world_file(opened.images, "map.wld", c=1001.0)
+    placement = _inspect(opened, "map.png").json()["placement"]
+    assert placement["by"] == "numbers"
+    assert placement["world_files"] == ["map.pgw", "map.wld"]
+    assert "map.pgw" in placement["reason"] and "map.wld" in placement["reason"]
+
+
+def test_registering_without_a_usable_world_file_is_refused(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    file_id = opened.file_id("map.png")
+    stamp = opened.post("/api/run/basemap/inspect", json={"id": file_id}).json()["stamp"]
+    response = opened.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"})
+    assert response.status_code == 409
+    assert opened.get("/api/run/basemap").json() == {"status": "none"}
+
+
+def test_no_world_file_offers_the_numbers_form(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    placement = _inspect(opened, "map.png").json()["placement"]
+    assert placement == {"by": "numbers", "reason": "no world file was found next to the image", "world_files": []}
+
+
+def test_a_malformed_world_file_offers_the_numbers_form_naming_the_line(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    (opened.images / "map.pgw").write_text("2\n0\n0\n-2,0\n1000\n2000\n")
+    placement = _inspect(opened, "map.png").json()["placement"]
+    assert placement["by"] == "numbers"
+    assert placement["world_files"] == ["map.pgw"]
+    assert "line 4 of map.pgw" in placement["reason"]
+
+
+def test_a_world_file_far_from_the_mesh_offers_the_numbers_form(opened):
+    put_png(opened.images, "map.png", 100, 50)
+    put_world_file(opened.images, "map.pgw", c=500000.0, f=7000000.0)
+    placement = _inspect(opened, "map.png").json()["placement"]
+    assert placement["by"] == "numbers"
+    assert placement["reason"] == "the image does not overlap the model; reprojection is not supported yet"
+
+
+def test_a_rotated_grid_extent_is_its_rotated_world_bounds_and_a_north_up_image_there_is_placed(
+    tmp_path, monkeypatch
+):
+    xorigin, yorigin, angrot = 1000.0, 2000.0, 30.0
+    opened = open_run(tmp_path, monkeypatch, xorigin=xorigin, yorigin=yorigin, angrot=angrot)
+
+    theta = math.radians(angrot)
+    verts = np.array(_VERTICES, dtype=np.float64)
+    x, y = verts[:, 0], verts[:, 1]
+    wx = xorigin + x * math.cos(theta) - y * math.sin(theta)
+    wy = yorigin + x * math.sin(theta) + y * math.cos(theta)
+    expected = (wx.min(), wx.max(), wy.min(), wy.max())
+
+    extent = load_mesh_extent(CacheLayout(root=opened.cache_root))
+    for actual, want in zip(extent, expected):
+        assert actual == pytest.approx(want, abs=1e-2)
+
+    # A 10 x 10 image whose outer edge is those bounds.
+    width = height = 10
+    a = (expected[1] - expected[0]) / width
+    e = -(expected[3] - expected[2]) / height
+    put_png(opened.images, "map.png", width, height)
+    put_world_file(opened.images, "map.pgw", a=a, e=e, c=expected[0] + a / 2, f=expected[3] + e / 2)
+
+    body = _inspect(opened, "map.png").json()
+    assert body["placement"]["by"] == "world_file"
+    for actual, want in zip(body["placement"]["extent"], expected):
+        assert actual == pytest.approx(want, abs=1e-6)
