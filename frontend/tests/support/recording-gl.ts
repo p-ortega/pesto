@@ -48,11 +48,13 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     FRAGMENT_SHADER: 'FRAGMENT_SHADER',
     TEXTURE0: 0,
     TEXTURE1: 1,
+    TEXTURE2: 2,
     COLOR_BUFFER_BIT: 'COLOR_BUFFER_BIT',
     BLEND: 'BLEND',
     SCISSOR_TEST: 'SCISSOR_TEST',
     SRC_ALPHA: 'SRC_ALPHA',
     ONE_MINUS_SRC_ALPHA: 'ONE_MINUS_SRC_ALPHA',
+    ONE: 'ONE',
   }
 
   const gl = {
@@ -116,6 +118,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     enable: record('enable'),
     disable: record('disable'),
     blendFunc: record('blendFunc'),
+    blendFuncSeparate: record('blendFuncSeparate'),
     drawElements: record('drawElements'),
     drawArrays: record('drawArrays'),
     deleteProgram: record('deleteProgram'),

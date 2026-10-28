@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { ramp, scaleLimits, STOPS, hexToRgb } from '../src/gl/colormap'
 import { MeshLayer, type MeshData } from '../src/gl/mesh-layer'
 import { createRecordingGl } from './support/recording-gl'
+import { gridMesh } from './support/grid-mesh'
 
 describe('scaleLimits', () => {
   it('returns the 2nd and 98th percentile of the finite values, ignoring NaN', () => {
@@ -454,5 +455,455 @@ describe('MeshLayer points', () => {
     layer.reupload()
     const uploads = calls.filter((c) => c.method === 'bufferData')
     expect(uploads.some((c) => c.args[1] === next)).toBe(true)
+  })
+})
+
+type Call = { method: string; args: unknown[] }
+const allDraws = (calls: Call[]) =>
+  calls.filter((c) => c.method === 'drawElements' || c.method === 'drawArrays')
+// The texture bound most recently before call `i`.
+const boundBefore = (calls: Call[], i: number) => {
+  for (let j = i - 1; j >= 0; j--) if (calls[j].method === 'bindTexture') return calls[j].args[1]
+  return undefined
+}
+// The arguments (after the location) of every `method` call made right after looking up `name`.
+const uniformAfter = (calls: Call[], name: string, method: string) =>
+  calls.flatMap((c, i) =>
+    c.method === method && calls[i - 1]?.method === 'getUniformLocation' && calls[i - 1].args[1] === name
+      ? [c.args.slice(1)]
+      : [],
+  )
+
+describe('MeshLayer many selected dots and dot flags', () => {
+  const sixXy = new Float32Array([0, 0, 1, 0, 2, 0, 0, 1, 1, 1, 2, 1])
+  const sixValues = () => new Float32Array([0, 0.2, 0.4, 0.6, 0.8, 1])
+  const pointDraws = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'drawArrays' && c.args[0] === 'POINTS').map((c) => c.args)
+  const withSixDots = () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(sixXy, sixValues())
+    return { layer, calls }
+  }
+  const arrayUploads = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'bufferData' && c.args[0] === 'ARRAY_BUFFER').map((c) => c.args[1] as Float32Array)
+  const pointsFragment = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string).find((s) => s.includes('u_missingStyle'))!
+
+  it('draws each selected dot once more, larger and with the accent ring, in ascending order', () => {
+    const { layer, calls } = withSixDots()
+    layer.setAccentColor([0.2, 0.4, 0.6])
+    layer.setSelectedPoints([5, 2])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 6],
+      ['POINTS', 2, 1],
+      ['POINTS', 5, 1],
+    ])
+    expect(uniformAfter(calls, 'u_size', 'uniform1f').map((a) => a[0])).toEqual([7, 9])
+    expect(uniformAfter(calls, 'u_ringColor', 'uniform3f').at(-1)).toEqual([0.2, 0.4, 0.6])
+  })
+
+  it('setSelectedPoint(2) draws exactly what setSelectedPoints([2]) draws', () => {
+    const one = withSixDots()
+    one.layer.setSelectedPoint(2)
+    one.calls.length = 0
+    one.layer.draw()
+    const many = withSixDots()
+    many.layer.setSelectedPoints([2])
+    many.calls.length = 0
+    many.layer.draw()
+    expect(pointDraws(many.calls)).toEqual(pointDraws(one.calls))
+    one.layer.setSelectedPoint(null)
+    one.calls.length = 0
+    one.layer.draw()
+    expect(pointDraws(one.calls)).toEqual([['POINTS', 0, 6]])
+  })
+
+  it('drops indices that are not a drawn dot and counts them', () => {
+    const { layer, calls } = withSixDots()
+    layer.setSelectedPoints([1, 6, 9, -1, 1.5, 1])
+    expect(layer.selectedPointsDropped()).toBe(4)
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 6],
+      ['POINTS', 1, 1],
+    ])
+    layer.setSelectedPoints([])
+    expect(layer.selectedPointsDropped()).toBe(0)
+  })
+
+  it('uploads the flags as a third points attribute, and zeros when there are none', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    expect(pointsFragment(calls)).toMatch(/flat in float v_flags/)
+    const vertex = calls
+      .filter((c) => c.method === 'shaderSource')
+      .map((c) => c.args[1] as string)
+      .find((s) => s.includes('gl_PointSize'))!
+    expect(vertex).toMatch(/in float a_flags/)
+
+    layer.setPoints(sixXy, sixValues())
+    const onSet = arrayUploads(calls).slice(-3)
+    expect(onSet[0]).toBe(sixXy)
+    expect(Array.from(onSet[2])).toEqual([0, 0, 0, 0, 0, 0])
+
+    calls.length = 0
+    layer.setPointFlags(new Float32Array([1, 2, 3, 4, 5, 0]))
+    expect(arrayUploads(calls).map((a) => Array.from(a))).toEqual([[1, 2, 3, 4, 5, 0]])
+
+    calls.length = 0
+    layer.setPointFlags(null)
+    expect(arrayUploads(calls).map((a) => Array.from(a))).toEqual([[0, 0, 0, 0, 0, 0]])
+  })
+
+  it('refuses a flags array of the wrong length with a sentence naming both lengths', () => {
+    const { layer } = withSixDots()
+    expect(() => layer.setPointFlags(new Float32Array(2))).toThrow(/2 flags for 6 points/)
+  })
+
+  it('setPoints clears the flags and the selected dots, so the caller re-applies them', () => {
+    const { layer, calls } = withSixDots()
+    layer.setPointFlags(new Float32Array([4, 4, 4, 4, 4, 4]))
+    layer.setSelectedPoints([1, 3])
+    layer.setPoints(sixXy, sixValues())
+    expect(Array.from(arrayUploads(calls).at(-1)!)).toEqual([0, 0, 0, 0, 0, 0])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([['POINTS', 0, 6]])
+    calls.length = 0
+    layer.reupload()
+    expect(Array.from(arrayUploads(calls).at(-1)!)).toEqual([0, 0, 0, 0, 0, 0])
+  })
+
+  it('sends the dim alpha the caller set and blends the points pass, restoring the blend state after', () => {
+    const { layer, calls } = withSixDots()
+    layer.setDimAlpha(0.35)
+    calls.length = 0
+    layer.draw()
+    expect(uniformAfter(calls, 'u_dimAlpha', 'uniform1f')).toEqual([[0.35]])
+    const pointsDraw = calls.findIndex((c) => c.method === 'drawArrays')
+    const enable = calls.findIndex((c) => c.method === 'enable' && c.args[0] === 'BLEND')
+    const blend = calls.findIndex((c) => c.method === 'blendFuncSeparate')
+    const disable = calls.findIndex((c) => c.method === 'disable' && c.args[0] === 'BLEND')
+    expect(enable).toBeLessThan(pointsDraw)
+    expect(blend).toBeLessThan(pointsDraw)
+    // Colour blends; alpha stays opaque over an opaque canvas.
+    expect(calls[blend].args).toEqual(['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ONE', 'ONE_MINUS_SRC_ALPHA'])
+    expect(disable).toBeGreaterThan(pointsDraw)
+  })
+
+  it('the fragment shader dims on bit 4 and draws a 45 and a 135 degree swatch for bits 1 and 2 in the hatch ink', () => {
+    const { layer, calls } = withSixDots()
+    const fragment = pointsFragment(calls)
+    expect(fragment).toMatch(/int\(v_flags \+ 0\.5\)/)
+    expect(fragment).toMatch(/\(flags & 1\) != 0/)
+    expect(fragment).toMatch(/\(flags & 2\) != 0/)
+    expect(fragment).toMatch(/\(flags & 4\) != 0\) color\.a \*= u_dimAlpha/)
+    expect(fragment).toMatch(/gl_PointCoord/)
+    layer.setHatchColors([0.1, 0.2, 0.3], [1, 1, 1])
+    calls.length = 0
+    layer.draw()
+    expect(uniformAfter(calls, 'u_ink', 'uniform3f')).toEqual([[0.1, 0.2, 0.3]])
+  })
+
+  it('uploads the same flags and draws the same selected dots after a context restore', () => {
+    const { layer, calls } = withSixDots()
+    layer.setPointFlags(new Float32Array([1, 0, 2, 0, 4, 0]))
+    layer.setSelectedPoints([0, 4])
+    calls.length = 0
+    layer.reupload()
+    expect(Array.from(arrayUploads(calls).at(-1)!)).toEqual([1, 0, 2, 0, 4, 0])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 6],
+      ['POINTS', 0, 1],
+      ['POINTS', 4, 1],
+    ])
+  })
+})
+
+describe('MeshLayer many rings', () => {
+  // The vertex and index uploads of the last ring build.
+  const ringUploads = (calls: Call[]) => {
+    const uploads = calls.filter((c) => c.method === 'bufferData')
+    const verts = uploads.filter((c) => c.args[0] === 'ARRAY_BUFFER').at(-1)!.args[1] as Float32Array
+    const indices = uploads.filter((c) => c.args[0] === 'ELEMENT_ARRAY_BUFFER').at(-1)!.args[1] as Uint32Array
+    return { verts: Array.from(verts), indices: Array.from(indices) }
+  }
+
+  it('setSelected(3) and setSelectedCells([3]) build the same quads, one per edge of the cell', () => {
+    const a = createRecordingGl()
+    const layerA = new MeshLayer(a.gl, gridMesh(3, 2))
+    a.calls.length = 0
+    layerA.setSelected(3)
+    const viaOne = ringUploads(a.calls)
+
+    const b = createRecordingGl()
+    const layerB = new MeshLayer(b.gl, gridMesh(3, 2))
+    b.calls.length = 0
+    layerB.setSelectedCells([3])
+    const viaMany = ringUploads(b.calls)
+
+    expect(viaMany).toEqual(viaOne)
+    // Cell 3 is the square (0,1)-(1,2): 4 edges, 4 corners each, 6 floats a corner.
+    expect(viaOne.verts.length).toBe(4 * 4 * 6)
+    expect(viaOne.indices.length).toBe(24)
+    expect(viaOne.verts.slice(0, 6)).toEqual([0, 1, 1, 1, 0, -1])
+  })
+
+  it('rings each of up to 8 cells on its own', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    calls.length = 0
+    // A plus shape: an outline would drop the 4 edges round the centre.
+    layer.setSelectedCells([1, 3, 4, 5, 7])
+    expect(ringUploads(calls).indices.length).toBe(5 * 4 * 6)
+  })
+
+  it('draws 9 or more cells as the outline of the set only', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    calls.length = 0
+    layer.setSelectedCells([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    expect(ringUploads(calls).indices.length).toBe(12 * 6)
+
+    calls.length = 0
+    layer.draw()
+    const ringDraws = calls.filter((c) => c.method === 'drawElements' && c.args[1] === 72)
+    expect(ringDraws).toHaveLength(2)
+  })
+
+  it('outlines only the first 20,000 of 25,000 cells, in the order given', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(250, 100))
+    calls.length = 0
+    layer.setSelectedCells(Array.from({ length: 25_000 }, (_, i) => i))
+    // The first 20,000 cells are rows 0-79: one 250 x 80 rectangle.
+    const { verts, indices } = ringUploads(calls)
+    expect(indices.length).toBe(2 * (250 + 80) * 6)
+    for (let i = 0; i < verts.length; i += 6) {
+      expect(verts[i + 1]).toBeLessThanOrEqual(80)
+      expect(verts[i + 3]).toBeLessThanOrEqual(80)
+    }
+  })
+
+  it('setSelected(null) and an empty list draw no ring', () => {
+    for (const clear of [(l: MeshLayer) => l.setSelected(null), (l: MeshLayer) => l.setSelectedCells([])]) {
+      const { gl, calls } = createRecordingGl()
+      const layer = new MeshLayer(gl, gridMesh(3, 3))
+      layer.setSelectedCells([0, 1, 2, 3, 4, 5, 6, 7, 8])
+      clear(layer)
+      calls.length = 0
+      layer.draw()
+      expect(calls.filter((c) => c.method === 'drawElements')).toHaveLength(1)
+    }
+  })
+
+  it('holds a copy, so a caller changing its array later does not move the ring', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    const ids = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    layer.setSelectedCells(ids)
+    ids.length = 1
+    calls.length = 0
+    layer.reupload()
+    expect(ringUploads(calls).indices.length).toBe(12 * 6)
+  })
+
+  it('rebuilds the same ring quads after a context restore', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, gridMesh(3, 3))
+    calls.length = 0
+    layer.setSelectedCells([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    const before = ringUploads(calls)
+    calls.length = 0
+    layer.reupload()
+    expect(ringUploads(calls)).toEqual(before)
+  })
+})
+
+describe('MeshLayer hatch pass', () => {
+  const draws = allDraws
+  const hatchSources = (calls: Call[]) => {
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    return {
+      vertex: sources.find((s) => s.includes('v_mask') && s.includes('gl_Position')),
+      fragment: sources.find((s) => s.includes('u_angle0')),
+    }
+  }
+
+  it('uploads the mask as one float per cell to its own R32F texture, through texSubImage2D in RED/FLOAT', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    const storage = calls.filter((c) => c.method === 'texStorage2D')
+    expect(storage).toHaveLength(2)
+    expect(storage[1].args).toEqual(storage[0].args)
+    expect(storage[1].args[2]).toBe('R32F')
+
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    const valuesUpload = calls.findIndex((c) => c.method === 'texSubImage2D')
+    const valuesTex = boundBefore(calls, valuesUpload)
+
+    calls.length = 0
+    layer.setHatch(new Uint8Array([1, 0, 3]))
+    const uploads = calls.filter((c) => c.method === 'texSubImage2D')
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0].args[6]).toBe('RED')
+    expect(uploads[0].args[7]).toBe('FLOAT')
+    const staging = uploads[0].args[8] as Float32Array
+    expect(Array.from(staging.slice(0, 3))).toEqual([1, 0, 3])
+    const hatchTex = boundBefore(calls, calls.indexOf(uploads[0]))
+    expect(hatchTex).toBeDefined()
+    expect(hatchTex).not.toBe(valuesTex)
+  })
+
+  it('filters the mask texture NEAREST, never LINEAR', () => {
+    const { gl, calls } = createRecordingGl()
+    new MeshLayer(gl, threeCellMesh())
+    const storageAt = calls.map((c, i) => (c.method === 'texStorage2D' ? i : -1)).filter((i) => i >= 0)
+    const afterMask = calls.slice(storageAt[1], storageAt[1] + 3)
+    expect(afterMask.filter((c) => c.method === 'texParameteri').map((c) => c.args[2])).toEqual([
+      'NEAREST',
+      'NEAREST',
+    ])
+  })
+
+  it('refuses a mask of the wrong length with a sentence naming both lengths', () => {
+    const { gl } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    expect(() => layer.setHatch(new Uint8Array([1, 0]))).toThrow(/2 entries for 3 cells/)
+  })
+
+  it('draws the hatch after the fill and before the points', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.setHatch(new Uint8Array([1, 2, 0]))
+    calls.length = 0
+    layer.draw()
+
+    const order = draws(calls)
+    expect(order.map((c) => [c.method, c.args[0]])).toEqual([
+      ['drawElements', 'TRIANGLES'],
+      ['drawElements', 'TRIANGLES'],
+      ['drawArrays', 'POINTS'],
+    ])
+    const fillDraw = calls.indexOf(order[0])
+    const hatchDraw = calls.indexOf(order[1])
+    const valuesLookup = calls.findIndex((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_values')
+    const angleLookup = calls.findIndex((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_angle0')
+    expect(valuesLookup).toBeLessThan(fillDraw)
+    expect(angleLookup).toBeGreaterThan(fillDraw)
+    expect(angleLookup).toBeLessThan(hatchDraw)
+    // The hatch runs over every triangle; the shader drops the unmasked cells.
+    expect(order[1].args[1]).toBe(18)
+  })
+
+  it('draws no hatch for null or an all-zero mask', () => {
+    for (const mask of [null, new Uint8Array([0, 0, 0])]) {
+      const { gl, calls } = createRecordingGl()
+      const layer = new MeshLayer(gl, threeCellMesh())
+      layer.setHatch(new Uint8Array([3, 3, 3]))
+      layer.setHatch(mask)
+      calls.length = 0
+      layer.draw()
+      expect(draws(calls)).toHaveLength(1)
+      expect(calls.some((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_angle0')).toBe(false)
+    }
+  })
+
+  it('sends the angles in radians, 45 and 135 degrees by default, and whatever setHatchAngles last set', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setHatch(new Uint8Array([1, 0, 0]))
+    layer.draw()
+    expect(uniformAfter(calls, 'u_angle0', 'uniform1f')[0][0]).toBeCloseTo(Math.PI / 4, 10)
+    expect(uniformAfter(calls, 'u_angle1', 'uniform1f')[0][0]).toBeCloseTo((3 * Math.PI) / 4, 10)
+
+    calls.length = 0
+    layer.setHatchAngles(30, 60)
+    layer.draw()
+    expect(uniformAfter(calls, 'u_angle0', 'uniform1f')[0][0]).toBeCloseTo(Math.PI / 6, 10)
+    expect(uniformAfter(calls, 'u_angle1', 'uniform1f')[0][0]).toBeCloseTo(Math.PI / 3, 10)
+
+    calls.length = 0
+    layer.setHatchAngles()
+    layer.draw()
+    expect(uniformAfter(calls, 'u_angle0', 'uniform1f')[0][0]).toBeCloseTo(Math.PI / 4, 10)
+  })
+
+  it('draws the ink and halo colours setHatchColors last set', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setHatch(new Uint8Array([0, 1, 0]))
+    layer.setHatchColors([0.1, 0.2, 0.3], [0.9, 0.8, 0.7])
+    layer.draw()
+    expect(uniformAfter(calls, 'u_ink', 'uniform3f')).toContainEqual([0.1, 0.2, 0.3])
+    expect(uniformAfter(calls, 'u_halo', 'uniform3f')).toEqual([[0.9, 0.8, 0.7]])
+  })
+
+  it('leaves the value texture, the colour limits and the colormap alone', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([0, 0.5, 1]))
+    layer.setLimits([2, 7])
+    const valuesTex = boundBefore(calls, calls.findIndex((c) => c.method === 'texSubImage2D'))
+    layer.setHatch(new Uint8Array([3, 3, 3]))
+
+    calls.length = 0
+    layer.draw()
+    expect(calls.some((c) => ['texSubImage2D', 'texImage2D', 'texStorage2D'].includes(c.method))).toBe(false)
+    expect(uniformAfter(calls, 'u_limits', 'uniform2f')).toEqual([[2, 7]])
+    // The fill still samples the value texture on unit 0; the hatch has its own unit.
+    const valuesBind = calls.findIndex((c) => c.method === 'bindTexture' && c.args[1] === valuesTex)
+    expect(calls[valuesBind - 1]).toEqual({ method: 'activeTexture', args: [0] })
+    expect(uniformAfter(calls, 'u_mask', 'uniform1i')).toEqual([[2]])
+  })
+
+  it('blends the hatch pass and restores the blend state after it', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setHatch(new Uint8Array([1, 0, 0]))
+    calls.length = 0
+    layer.draw()
+    const hatchDraw = calls.indexOf(draws(calls)[1])
+    const enable = calls.findIndex((c) => c.method === 'enable' && c.args[0] === 'BLEND')
+    const disable = calls.findIndex((c) => c.method === 'disable' && c.args[0] === 'BLEND')
+    expect(enable).toBeGreaterThanOrEqual(0)
+    expect(enable).toBeLessThan(hatchDraw)
+    expect(disable).toBeGreaterThan(hatchDraw)
+  })
+
+  it('decodes the mask as a whole number in the shader and draws lines from gl_FragCoord', () => {
+    const { gl, calls } = createRecordingGl()
+    new MeshLayer(gl, threeCellMesh())
+    const { vertex, fragment } = hatchSources(calls)
+    expect(vertex).toMatch(/texelFetch\(u_mask/)
+    expect(fragment).toMatch(/int\(v_mask \+ 0\.5\)/)
+    expect(fragment).toMatch(/gl_FragCoord/)
+    expect(fragment).toMatch(/u_angle1/)
+  })
+
+  it('uploads the same mask again after a context restore, before the field', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setValues(new Float32Array([4, 5, 6]))
+    layer.setHatch(new Uint8Array([2, 0, 1]))
+    calls.length = 0
+    layer.reupload()
+    const uploads = calls.filter((c) => c.method === 'texSubImage2D').map((c) => c.args[8] as Float32Array)
+    expect(uploads).toHaveLength(2)
+    expect(Array.from(uploads[0].slice(0, 3))).toEqual([2, 0, 1])
+    // The field goes last, so anything reading the latest upload still sees the values.
+    expect(Array.from(uploads[1].slice(0, 3))).toEqual([4, 5, 6])
+
+    calls.length = 0
+    layer.draw()
+    expect(draws(calls)).toHaveLength(2)
   })
 })

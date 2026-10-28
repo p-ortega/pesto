@@ -5,6 +5,7 @@
 // geometry rebuild.
 
 import { ramp, type ColormapName } from './colormap'
+import { OUTLINE_MAX_CELLS, RING_EACH_MAX, outlineEdges } from './outline'
 
 const VERTEX = `#version 300 es
 in vec2 a_pos;
@@ -99,8 +100,8 @@ void main() {
 
 // D-06's contested mark: a fine diagonal stripe at 22.5 degrees over a
 // neutral fill, in screen space so the stripe period stays constant on
-// screen whatever the zoom. 22.5 is deliberate -- 45 and 135 are reserved
-// for the at-bounds and prior-data-conflict overlays that arrive later, so
+// screen whatever the zoom. 22.5 is deliberate -- the hatch pass below
+// draws the at-bounds and prior-data-conflict overlays at 45 and 135, so
 // reusing either here would collide with them.
 const CONTESTED_VERTEX = `#version 300 es
 in vec2 a_pos;
@@ -124,20 +125,81 @@ void main() {
   fragColor = vec4(mix(u_fillColor, u_stripeColor, inStripe), 1.0);
 }`
 
+// The hatch pass (D-21): one per-cell mask, bit 0 at bounds and bit 1
+// prior-data conflict, each drawn as a family of screen-space lines over the
+// fill. It reads its own texture, so the field's values and limits are never
+// touched. The mask is stored as floats 0-3, the same proven R32F path as the
+// value texture.
+const HATCH_VERTEX = `#version 300 es
+in vec2 a_pos;
+in float a_cell;
+uniform mat3 u_matrix;
+uniform sampler2D u_mask;
+uniform vec2 u_texSize;
+flat out float v_mask;
+
+void main() {
+  float x = mod(a_cell, u_texSize.x);
+  float y = floor(a_cell / u_texSize.x);
+  v_mask = texelFetch(u_mask, ivec2(int(x), int(y)), 0).r;
+  gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
+}`
+
+// Each line is an ink band with a halo band either side, so it reads over
+// the dark and the light end of every ramp. Widths are in device pixels.
+const HATCH_FRAGMENT = `#version 300 es
+precision highp float;
+flat in float v_mask;
+uniform float u_angle0;
+uniform float u_angle1;
+uniform float u_period;
+uniform float u_inkHalf;
+uniform float u_haloWidth;
+uniform vec3 u_ink;
+uniform vec3 u_halo;
+out vec4 fragColor;
+
+// Distance from this fragment to the nearest line running at angle a.
+float lineDistance(float a) {
+  float d = -gl_FragCoord.x * sin(a) + gl_FragCoord.y * cos(a);
+  float m = mod(d, u_period);
+  return min(m, u_period - m);
+}
+
+void main() {
+  int bits = int(v_mask + 0.5);
+  if (bits == 0) discard;
+  float dist = 1e9;
+  if ((bits & 1) != 0) dist = min(dist, lineDistance(u_angle0));
+  if ((bits & 2) != 0) dist = min(dist, lineDistance(u_angle1));
+  if (dist <= u_inkHalf) {
+    fragColor = vec4(u_ink, 1.0);
+  } else if (dist <= u_inkHalf + u_haloWidth) {
+    fragColor = vec4(u_halo, 1.0);
+  } else {
+    discard;
+  }
+}`
+
 // The points pass draws an x/y group as fixed-size dots, sized in device
 // pixels so they stay the same on screen at any zoom. The ring keeps a dot
 // readable on any fill. A NaN value is discarded, never drawn at a ramp end,
 // unless u_missingStyle is 1: then it draws as a ring with no fill (absence).
+// Each dot also carries a flag bit set: a hatch swatch inside the dot so an
+// overlay still reads under it (D-25, D-29), and dimming (D-02).
 const POINTS_VERTEX = `#version 300 es
 in vec2 a_pos;
 in float a_value;
+in float a_flags;
 uniform mat3 u_matrix;
 uniform vec2 u_limits;
 uniform float u_size;
 flat out float v_norm;
 flat out float v_missing;
+flat out float v_flags;
 
 void main() {
+  v_flags = a_flags;
   v_missing = (isnan(a_value) || isinf(a_value)) ? 1.0 : 0.0;
   v_norm = clamp((a_value - u_limits.x) / max(u_limits.y - u_limits.x, 1e-20), 0.0, 1.0);
   gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
@@ -148,10 +210,19 @@ const POINTS_FRAGMENT = `#version 300 es
 precision highp float;
 flat in float v_norm;
 flat in float v_missing;
+flat in float v_flags;
 uniform sampler2D u_ramp;
 uniform vec3 u_ringColor;
 uniform float u_missingStyle;
+uniform vec3 u_ink;
+uniform float u_dimAlpha;
 out vec4 fragColor;
+
+// One swatch line family across the dot; d is in point-coordinate units.
+float swatch(float d) {
+  float m = mod(d, 0.5);
+  return step(min(m, 0.5 - m), 0.09);
+}
 
 void main() {
   bool missing = v_missing > 0.5;
@@ -160,7 +231,18 @@ void main() {
   float r = length(d);
   if (r > 0.5) discard;
   if (missing && r <= 0.36) discard;
-  fragColor = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
+  vec4 color = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
+  // Bits as named in data/hatch-mask.ts: 1 at-bounds swatch, 2 conflict swatch, 4 dim.
+  int flags = int(v_flags + 0.5);
+  if (r <= 0.36) {
+    // gl_PointCoord runs downward, so x + y is constant along a 45-degree line.
+    float s = 0.0;
+    if ((flags & 1) != 0) s = max(s, swatch(gl_PointCoord.x + gl_PointCoord.y));
+    if ((flags & 2) != 0) s = max(s, swatch(gl_PointCoord.x - gl_PointCoord.y));
+    if (s > 0.5) color = vec4(u_ink, 1.0);
+  }
+  if ((flags & 4) != 0) color.a *= u_dimAlpha;
+  fragColor = color;
 }`
 
 export interface MeshData {
@@ -238,6 +320,16 @@ export class MeshLayer {
   private footprintMask: Uint8Array | null = null
   private footprintColor: [number, number, number] = [0, 0, 0]
 
+  private hatchProgram!: WebGLProgram
+  private hatchVao!: WebGLVertexArrayObject
+  private hatchTex!: WebGLTexture
+  private hatchStaging: Float32Array<ArrayBuffer>
+  private lastHatch: Uint8Array | null = null
+  private hatchAny = false
+  private hatchInk: [number, number, number] = [0, 0, 0]
+  private hatchHalo: [number, number, number] = [1, 1, 1]
+  private hatchAngles: [number, number] = [45, 135]
+
   private ringProgram!: WebGLProgram
   private selectionVao!: WebGLVertexArrayObject
   private selectionVerts!: WebGLBuffer
@@ -248,11 +340,15 @@ export class MeshLayer {
   private pointsVao!: WebGLVertexArrayObject
   private pointsPosBuffer!: WebGLBuffer
   private pointsValueBuffer!: WebGLBuffer
+  private pointsFlagBuffer!: WebGLBuffer
   private pointCount = 0
   private lastPointXy: Float32Array | null = null
   private lastPointValues: Float32Array | null = null
+  private lastPointFlags: Float32Array | null = null
   private pointRingColor: [number, number, number] = [0, 0, 0]
-  private selectedPoint: number | null = null
+  private selectedPoints: number[] = []
+  private droppedPoints = 0
+  private dimAlpha = 0.35
   private missingStyle: 'discard' | 'ring' = 'discard'
 
   private limits: [number, number] = [0, 1]
@@ -265,7 +361,7 @@ export class MeshLayer {
   private contestedMask: Uint8Array | null = null
   private stripeColor: [number, number, number] = [0, 0, 0]
   private contestedFillColor: [number, number, number] = [0, 0, 0]
-  private selectedCell: number | null = null
+  private selectedCells: number[] = []
   private accentColor: [number, number, number] = [0, 0, 0]
   private haloColor: [number, number, number] = [1, 1, 1]
 
@@ -274,6 +370,7 @@ export class MeshLayer {
     this.mesh = mesh
     this.texHeight = Math.max(1, Math.ceil(mesh.nCells / TEX_WIDTH))
     this.staging = new Float32Array(TEX_WIDTH * this.texHeight).fill(Number.NaN)
+    this.hatchStaging = new Float32Array(TEX_WIDTH * this.texHeight)
     this.rings = ringsByCell(mesh.cellIndex, mesh.nCells)
     this.build()
   }
@@ -358,6 +455,28 @@ export class MeshLayer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.footprintElements)
     gl.bindVertexArray(null)
 
+    this.hatchProgram = gl.createProgram()!
+    gl.attachShader(this.hatchProgram, compile(gl, gl.VERTEX_SHADER, HATCH_VERTEX))
+    gl.attachShader(this.hatchProgram, compile(gl, gl.FRAGMENT_SHADER, HATCH_FRAGMENT))
+    gl.linkProgram(this.hatchProgram)
+    if (!gl.getProgramParameter(this.hatchProgram, gl.LINK_STATUS)) {
+      throw new Error(`hatch program failed to link: ${gl.getProgramInfoLog(this.hatchProgram)}`)
+    }
+
+    // Same geometry as the fill: every triangle, with the mask deciding per cell.
+    this.hatchVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.hatchVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionsBuffer)
+    const hatchPosLoc = gl.getAttribLocation(this.hatchProgram, 'a_pos')
+    gl.enableVertexAttribArray(hatchPosLoc)
+    gl.vertexAttribPointer(hatchPosLoc, 2, gl.FLOAT, false, 0, 0)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cellBuffer)
+    const hatchCellLoc = gl.getAttribLocation(this.hatchProgram, 'a_cell')
+    gl.enableVertexAttribArray(hatchCellLoc)
+    gl.vertexAttribPointer(hatchCellLoc, 1, gl.FLOAT, false, 0, 0)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.elementsBuffer)
+    gl.bindVertexArray(null)
+
     this.ringProgram = gl.createProgram()!
     gl.attachShader(this.ringProgram, compile(gl, gl.VERTEX_SHADER, RING_VERTEX))
     gl.attachShader(this.ringProgram, compile(gl, gl.FRAGMENT_SHADER, RING_FRAGMENT))
@@ -400,6 +519,11 @@ export class MeshLayer {
     const pointsValueLoc = gl.getAttribLocation(this.pointsProgram, 'a_value')
     gl.enableVertexAttribArray(pointsValueLoc)
     gl.vertexAttribPointer(pointsValueLoc, 1, gl.FLOAT, false, 0, 0)
+    this.pointsFlagBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsFlagBuffer)
+    const pointsFlagLoc = gl.getAttribLocation(this.pointsProgram, 'a_flags')
+    gl.enableVertexAttribArray(pointsFlagLoc)
+    gl.vertexAttribPointer(pointsFlagLoc, 1, gl.FLOAT, false, 0, 0)
     gl.bindVertexArray(null)
 
     this.valuesTex = gl.createTexture()!
@@ -411,15 +535,26 @@ export class MeshLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
+    // The hatch mask, laid out exactly like the value texture and NEAREST for
+    // the same reason: a blend of two cells' bits would be a bit set neither has.
+    this.hatchTex = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_2D, this.hatchTex)
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, TEX_WIDTH, this.texHeight)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+
     this.rampTex = gl.createTexture()!
     this.setColormap(this.colormapName, this.colormapReverse)
 
     if (this.inactiveMask) this.setInactive(this.inactiveMask)
     if (this.contestedMask) this.setContested(this.contestedMask)
     if (this.footprintMask) this.setFootprint(this.footprintMask)
-    if (this.selectedCell !== null) this.setSelected(this.selectedCell)
+    if (this.selectedCells.length > 0) this.setSelectedCells(this.selectedCells)
+    // The mask goes up before the field, so the field stays the latest upload.
+    if (this.lastHatch) this.setHatch(this.lastHatch)
     if (this.lastValues) this.setValues(this.lastValues)
-    if (this.lastPointXy && this.lastPointValues) this.setPoints(this.lastPointXy, this.lastPointValues)
+    // Not setPoints: that would clear the flags and selected dots being restored.
+    if (this.lastPointXy && this.lastPointValues) this.uploadPoints()
   }
 
   /** Uploads `values` to the value texture, forcing every contested cell
@@ -552,34 +687,98 @@ export class MeshLayer {
     this.contestedFillColor = fill
   }
 
+  /** One entry per cell: bit 0 hatches at `angle0` (at bounds), bit 1 at
+   *  `angle1` (prior-data conflict), both cross-hatch. `null` clears it.
+   *  A mask of any other length than the cell count is refused, never
+   *  padded or cut. */
+  setHatch(mask: Uint8Array | null): void {
+    if (mask === null) {
+      this.lastHatch = null
+      this.hatchAny = false
+      return
+    }
+    if (mask.length !== this.mesh.nCells) {
+      throw new Error(
+        `the hatch mask needs one entry per cell, got ${mask.length} entries for ${this.mesh.nCells} cells`,
+      )
+    }
+    this.lastHatch = mask.slice()
+    let any = false
+    for (let i = 0; i < mask.length; i++) {
+      this.hatchStaging[i] = mask[i] & 3
+      if (mask[i] & 3) any = true
+    }
+    this.hatchAny = any
+    const { gl } = this
+    gl.bindTexture(gl.TEXTURE_2D, this.hatchTex)
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_WIDTH, this.texHeight, gl.RED, gl.FLOAT, this.hatchStaging)
+  }
+
+  /** `--ink-primary` and `--page-plane`, resolved by the caller like the other colours. */
+  setHatchColors(ink: [number, number, number], halo: [number, number, number]): void {
+    this.hatchInk = ink
+    this.hatchHalo = halo
+  }
+
+  /** The line angle in degrees for bit 0 and for bit 1. */
+  setHatchAngles(angle0Deg = 45, angle1Deg = 135): void {
+    this.hatchAngles = [angle0Deg, angle1Deg]
+  }
+
   /** Which cell carries the selection ring, over whatever of the four
-   *  marks that cell already has -- `null` removes it. Builds one quad
-   *  per edge of that cell's ring. */
+   *  marks that cell already has -- `null` removes it. */
   setSelected(cellId: number | null): void {
-    this.selectedCell = cellId
+    this.setSelectedCells(cellId === null ? [] : [cellId])
+  }
+
+  /** Rings each cell on its own for up to RING_EACH_MAX cells, and the outer
+   *  outline of the set beyond that. Only the first OUTLINE_MAX_CELLS ids are
+   *  drawn; the caller counts the rest from that constant. Builds one quad
+   *  per ring edge. */
+  setSelectedCells(ids: readonly number[]): void {
+    this.selectedCells = ids.slice(0, OUTLINE_MAX_CELLS)
+    const cells = this.selectedCells
+    let edges: ArrayLike<number>
+    if (cells.length <= RING_EACH_MAX) {
+      const own: number[] = []
+      for (const cell of cells) {
+        const ring = this.rings[cell]
+        if (!ring) continue
+        const [start, count] = ring
+        for (let i = 0; i < count; i++) own.push(start + i, start + ((i + 1) % count))
+      }
+      edges = own
+    } else {
+      edges = outlineEdges(this.rings, this.mesh.positions, cells).edges
+    }
+
     const { gl } = this
     const pos = this.mesh.positions
-    const verts: number[] = []
-    const indices: number[] = []
-    const ring = cellId !== null ? this.rings[cellId] : null
-    if (ring) {
-      const [start, count] = ring
-      for (let i = 0; i < count; i++) {
-        const a = start + i
-        const b = start + ((i + 1) % count)
-        const base = verts.length / 6
-        for (const [t, side] of [[0, -1], [0, 1], [1, -1], [1, 1]]) {
-          verts.push(pos[2 * a], pos[2 * a + 1], pos[2 * b], pos[2 * b + 1], t, side)
-        }
-        indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
+    const nEdges = edges.length / 2
+    const verts = new Float32Array(nEdges * 4 * 6)
+    const indices = new Uint32Array(nEdges * 6)
+    const corners = [[0, -1], [0, 1], [1, -1], [1, 1]] as const
+    for (let e = 0; e < nEdges; e++) {
+      const a = edges[2 * e]
+      const b = edges[2 * e + 1]
+      const base = e * 4
+      for (let k = 0; k < 4; k++) {
+        const o = (base + k) * 6
+        verts[o] = pos[2 * a]
+        verts[o + 1] = pos[2 * a + 1]
+        verts[o + 2] = pos[2 * b]
+        verts[o + 3] = pos[2 * b + 1]
+        verts[o + 4] = corners[k][0]
+        verts[o + 5] = corners[k][1]
       }
+      indices.set([base, base + 1, base + 2, base + 1, base + 3, base + 2], e * 6)
     }
     this.selectionCount = indices.length
     gl.bindVertexArray(this.selectionVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.selectionVerts)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW)
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionElements)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indices), gl.DYNAMIC_DRAW)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.DYNAMIC_DRAW)
     gl.bindVertexArray(null)
   }
 
@@ -592,7 +791,9 @@ export class MeshLayer {
   }
 
   /** `xy` is x, y pairs in the same coordinates as the mesh; `values` is
-   *  one already-scaled value per point. An empty `xy` clears the points. */
+   *  one already-scaled value per point. An empty `xy` clears the points.
+   *  New dots clear the flags and the selected dots: both name dots by
+   *  index, so the caller re-applies them for the new set. */
   setPoints(xy: Float32Array, values: Float32Array): void {
     if (values.length * 2 !== xy.length) {
       throw new Error(
@@ -601,13 +802,47 @@ export class MeshLayer {
     }
     this.lastPointXy = xy
     this.lastPointValues = values
+    this.lastPointFlags = null
+    this.selectedPoints = []
+    this.droppedPoints = 0
+    this.uploadPoints()
+  }
+
+  private uploadPoints(): void {
+    const xy = this.lastPointXy ?? new Float32Array(0)
+    const values = this.lastPointValues ?? new Float32Array(0)
     this.pointCount = values.length
     const { gl } = this
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsPosBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, xy, gl.DYNAMIC_DRAW)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsValueBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW)
-    if (this.selectedPoint !== null && this.selectedPoint >= this.pointCount) this.selectedPoint = null
+    this.uploadPointFlags()
+  }
+
+  // With no flags set the attribute still gets zeros, so it always has data.
+  private uploadPointFlags(): void {
+    const { gl } = this
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsFlagBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, this.lastPointFlags ?? new Float32Array(this.pointCount), gl.DYNAMIC_DRAW)
+  }
+
+  /** One flag bit set per dot: 1 draws a 45-degree swatch, 2 a 135-degree
+   *  swatch, 4 dims the dot to the dim alpha. `null` clears every flag. A
+   *  flags array of another length than the point count is refused. */
+  setPointFlags(flags: Float32Array | null): void {
+    if (flags !== null && flags.length !== this.pointCount) {
+      throw new Error(
+        `point flags need one entry per point, got ${flags.length} flags for ${this.pointCount} points`,
+      )
+    }
+    this.lastPointFlags = flags === null ? null : flags.slice()
+    this.uploadPointFlags()
+  }
+
+  /** The alpha a dot flagged dim (bit 4) draws at, read by the caller from the theme. */
+  setDimAlpha(alpha: number): void {
+    this.dimAlpha = alpha
   }
 
   /** Replaces the point values only; the dots do not move. The length must match the point count. */
@@ -634,7 +869,25 @@ export class MeshLayer {
 
   /** The point drawn larger with an accent ring; `null` removes it. */
   setSelectedPoint(index: number | null): void {
-    this.selectedPoint = index
+    this.setSelectedPoints(index === null ? [] : [index])
+  }
+
+  /** The dots drawn larger with an accent ring. An index that is not a
+   *  drawn dot is dropped and counted in selectedPointsDropped(). */
+  setSelectedPoints(indices: readonly number[]): void {
+    const kept = new Set<number>()
+    let dropped = 0
+    for (const i of indices) {
+      if (Number.isInteger(i) && i >= 0 && i < this.pointCount) kept.add(i)
+      else dropped += 1
+    }
+    this.selectedPoints = [...kept].sort((a, b) => a - b)
+    this.droppedPoints = dropped
+  }
+
+  /** How many indices the last setSelectedPoints call dropped. */
+  selectedPointsDropped(): number {
+    return this.droppedPoints
   }
 
   private drawPoints(): void {
@@ -653,14 +906,24 @@ export class MeshLayer {
     const ring = this.pointRingColor
     gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), ring[0], ring[1], ring[2])
     gl.uniform1f(gl.getUniformLocation(program, 'u_missingStyle'), this.missingStyle === 'ring' ? 1 : 0)
+    const ink = this.hatchInk
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ink'), ink[0], ink[1], ink[2])
+    gl.uniform1f(gl.getUniformLocation(program, 'u_dimAlpha'), this.dimAlpha)
+    // Blend colour only; alpha stays 1 so a dimmed dot never makes the canvas see-through.
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.drawArrays(gl.POINTS, 0, this.pointCount)
 
-    if (this.selectedPoint !== null && this.selectedPoint < this.pointCount) {
+    if (this.selectedPoints.length > 0) {
       const accent = this.accentColor
       gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 9 * dpr)
       gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), accent[0], accent[1], accent[2])
-      gl.drawArrays(gl.POINTS, this.selectedPoint, 1)
+      for (const index of this.selectedPoints) {
+        if (index < this.pointCount) gl.drawArrays(gl.POINTS, index, 1)
+      }
     }
+    if (!wasBlending) gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
   }
 
@@ -743,6 +1006,39 @@ export class MeshLayer {
     gl.bindVertexArray(null)
   }
 
+  private drawHatch(): void {
+    if (!this.hatchAny) return
+    const { gl } = this
+    const program = this.hatchProgram
+    const dpr = globalThis.devicePixelRatio || 1
+    gl.useProgram(program)
+    gl.bindVertexArray(this.hatchVao)
+    // Unit 2: unit 0 holds the values and unit 1 the ramp.
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, this.hatchTex)
+    gl.uniform1i(gl.getUniformLocation(program, 'u_mask'), 2)
+    gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
+    gl.uniform2f(gl.getUniformLocation(program, 'u_texSize'), TEX_WIDTH, this.texHeight)
+    const toRad = Math.PI / 180
+    gl.uniform1f(gl.getUniformLocation(program, 'u_angle0'), this.hatchAngles[0] * toRad)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_angle1'), this.hatchAngles[1] * toRad)
+    // In device pixels: lines 7 apart, a 1.25 ink band, a 1 halo band each side.
+    gl.uniform1f(gl.getUniformLocation(program, 'u_period'), 7 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_inkHalf'), 0.625 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_haloWidth'), 1 * dpr)
+    const ink = this.hatchInk
+    const halo = this.hatchHalo
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ink'), ink[0], ink[1], ink[2])
+    gl.uniform3f(gl.getUniformLocation(program, 'u_halo'), halo[0], halo[1], halo[2])
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    gl.drawElements(gl.TRIANGLES, this.mesh.indices.length, gl.UNSIGNED_INT, 0)
+    if (!wasBlending) gl.disable(gl.BLEND)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindVertexArray(null)
+  }
+
   private drawSelection(): void {
     if (this.selectionCount === 0) return
     const { gl } = this
@@ -773,13 +1069,16 @@ export class MeshLayer {
    *  drawn over it; the stripe before the value pass since a contested
    *  cell's value is always NaN and so never overwrites it; the ring last
    *  so it sits over whichever of the first three marks the selected cell
-   *  carries. Points go after the fill and before the ring. The footprint
-   *  goes under everything, so the hairline still reads at its edge. */
+   *  carries. The hatch goes over the fill and under the points, so it
+   *  never covers a dot. Points go after the fill and before the ring. The
+   *  footprint goes under everything, so the hairline still reads at its
+   *  edge. */
   draw(): void {
     this.drawFootprint()
     this.drawOutline()
     this.drawContested()
     this.drawFill()
+    this.drawHatch()
     this.drawPoints()
     this.drawSelection()
   }
@@ -798,6 +1097,9 @@ export class MeshLayer {
     gl.deleteProgram(this.contestedProgram)
     gl.deleteProgram(this.pointsProgram)
     gl.deleteProgram(this.ringProgram)
+    gl.deleteProgram(this.hatchProgram)
+    gl.deleteVertexArray(this.hatchVao)
+    gl.deleteTexture(this.hatchTex)
     gl.deleteVertexArray(this.vao)
     gl.deleteVertexArray(this.outlineVao)
     gl.deleteVertexArray(this.contestedVao)
@@ -814,6 +1116,7 @@ export class MeshLayer {
     gl.deleteBuffer(this.footprintElements)
     gl.deleteBuffer(this.pointsPosBuffer)
     gl.deleteBuffer(this.pointsValueBuffer)
+    gl.deleteBuffer(this.pointsFlagBuffer)
     gl.deleteTexture(this.valuesTex)
     gl.deleteTexture(this.rampTex)
   }
