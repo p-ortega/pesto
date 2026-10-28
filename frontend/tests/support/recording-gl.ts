@@ -42,6 +42,10 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     TEXTURE_MIN_FILTER: 'TEXTURE_MIN_FILTER',
     TEXTURE_MAG_FILTER: 'TEXTURE_MAG_FILTER',
     TEXTURE_WRAP_S: 'TEXTURE_WRAP_S',
+    TEXTURE_WRAP_T: 'TEXTURE_WRAP_T',
+    LINEAR_MIPMAP_LINEAR: 'LINEAR_MIPMAP_LINEAR',
+    MAX_TEXTURE_SIZE: 'MAX_TEXTURE_SIZE',
+    TRIANGLE_STRIP: 'TRIANGLE_STRIP',
     COMPILE_STATUS: 'COMPILE_STATUS',
     LINK_STATUS: 'LINK_STATUS',
     VERTEX_SHADER: 'VERTEX_SHADER',
@@ -49,6 +53,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     TEXTURE0: 0,
     TEXTURE1: 1,
     TEXTURE2: 2,
+    TEXTURE3: 3,
     COLOR_BUFFER_BIT: 'COLOR_BUFFER_BIT',
     BLEND: 'BLEND',
     SCISSOR_TEST: 'SCISSOR_TEST',
@@ -99,6 +104,12 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     texParameteri: record('texParameteri'),
     texSubImage2D: record('texSubImage2D'),
     texImage2D: record('texImage2D'),
+    generateMipmap: record('generateMipmap'),
+    // A typical desktop card's limit, so a basemap's size check has a real number to compare.
+    getParameter: (...a: unknown[]) => {
+      record('getParameter')(...a)
+      return a[0] === 'MAX_TEXTURE_SIZE' ? 16384 : null
+    },
     useProgram: record('useProgram'),
     activeTexture: record('activeTexture'),
     getUniformLocation: (...a: unknown[]) => {
