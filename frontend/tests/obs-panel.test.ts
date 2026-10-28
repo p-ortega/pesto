@@ -424,6 +424,15 @@ describe('the narrow-panel layout', () => {
     expect(rule('.obs-sites')).toMatch(/max-height/)
     expect(rule('.obs-groups')).toMatch(/flex:\s*1 1 0/)
     expect(rule('.obs-groups')).toMatch(/min-height:\s*\d+rem/)
+    expect(rule('.obs-groups')).toMatch(/max-height:\s*\d+%/)
+  })
+
+  it('lets the plot hosts shrink and scroll inside themselves so the page does not scroll', () => {
+    for (const host of ['.obs-fit', '.obs-spaghetti']) {
+      expect(rule(host), host).toMatch(/flex:\s*0 1 auto/)
+      expect(rule(host), host).toMatch(/overflow-y:\s*auto/)
+      expect(rule(host), host).toMatch(/max-height:\s*\d+%/)
+    }
   })
 
   it('sets the spaghetti panel height and the width of both plot hosts', () => {
