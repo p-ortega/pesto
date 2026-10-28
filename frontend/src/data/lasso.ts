@@ -28,10 +28,27 @@ export function buildDotIndex(xy: Float32Array): Flatbush | null {
  */
 export function pointInPolygon(x: number, y: number, poly: readonly LassoPoint[]): boolean {
   if (poly.length < MIN_LASSO_POINTS) return false
+  return insideFlat(x, y, flatten(poly))
+}
+
+function flatten(poly: readonly LassoPoint[]): Float64Array {
+  const flat = new Float64Array(2 * poly.length)
+  poly.forEach(([px, py], i) => {
+    flat[2 * i] = px
+    flat[2 * i + 1] = py
+  })
+  return flat
+}
+
+// Same test over a flat x, y array, so thousands of candidates skip the tuple reads.
+function insideFlat(x: number, y: number, flat: Float64Array): boolean {
   let inside = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i]
-    const [xj, yj] = poly[j]
+  const n = flat.length / 2
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = flat[2 * i]
+    const yi = flat[2 * i + 1]
+    const xj = flat[2 * j]
+    const yj = flat[2 * j + 1]
     if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
   }
   return inside
@@ -50,8 +67,9 @@ export function dotsInPolygon(tree: Flatbush | null, xy: Float32Array, poly: rea
     if (px > maxX) maxX = px
     if (py > maxY) maxY = py
   }
+  const flat = flatten(poly)
   const hits = tree.search(minX, minY, maxX, maxY)
-  return hits.filter((i) => pointInPolygon(xy[2 * i], xy[2 * i + 1], poly)).sort((a, b) => a - b)
+  return hits.filter((i) => insideFlat(xy[2 * i], xy[2 * i + 1], flat)).sort((a, b) => a - b)
 }
 
 /** Drops points closer than `minSpacing` to the last kept one; the first and last always stay. */
