@@ -1,16 +1,28 @@
 // What the Obs tab shows for the chosen group: its 1:1 plot as one density
-// panel per iteration on shared axes. Every string that came from a run goes in
+// panel per iteration on shared axes, with the most outlying sites and the
+// selected sites drawn on top, and every count of what was left out. Every string that came from a run goes in
 // through textContent. A hidden tab fetches and draws nothing, and a group
 // change while an answer is out draws only the newest group.
 
 import { ApiError } from '../data/client'
 import { LatestWins } from '../data/latest-wins'
-import { fetchObs1to1, type Obs1to1Payload, type Obs1to1Result } from '../data/obs'
+import {
+  fetchObs1to1,
+  fetchObsPoints,
+  MAX_POINT_SITES,
+  TABLE_RMSE_LABEL,
+  type Obs1to1Payload,
+  type Obs1to1Result,
+  type ObsPointsResult,
+  type SitePoints,
+} from '../data/obs'
 import type { SelectionStore } from '../state/selection'
+import { linearAxis } from './charts/axes'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
-import { drawDensity, type DensitySpec } from './charts/density'
-import type { Chart2D } from './charts/histogram'
-import { readChartTokens } from './charts/tokens'
+import { densityPlotArea, drawDensity, type DensitySpec } from './charts/density'
+import type { Chart2D, ChartSize } from './charts/histogram'
+import { drawMarkers, drawRangeBars } from './charts/marks'
+import { readChartTokens, type ChartTokens } from './charts/tokens'
 import { renderNotice } from './chrome'
 
 export interface GroupFitOptions {
@@ -29,6 +41,14 @@ export interface GroupFitHandle {
 }
 
 const PANEL_HEIGHT = 280
+const MARKER_RADIUS = 3
+const BAR_WIDTH = 1.5
+
+/** The selected sites' answer, with how many ids were asked for and how many of those were over the cap. */
+interface SelectedState {
+  answer: ObsPointsResult | { ok: false; artifact: string; reason: string }
+  notAsked: number
+}
 
 type FitState =
   | { kind: 'loading' }
@@ -70,14 +90,175 @@ function largestCount(payload: Obs1to1Payload): number {
   return top
 }
 
+interface PlacedPoint {
+  obsval: number
+  mean: number
+  q05: number | null
+  q95: number | null
+  hollow: boolean
+}
+
+interface Placed {
+  points: PlacedPoint[]
+  /** Points whose observed or simulated value lies off the drawn range. */
+  outside: number
+  noMean: number
+  /** Sites with no series for this panel's iteration. */
+  noSeries: number
+}
+
+function finiteOrNull(value: number | null | undefined): number | null {
+  return value !== null && value !== undefined && Number.isFinite(value) ? value : null
+}
+
+// A point off the range is counted, never moved onto the edge; a missing mean is counted, never drawn at zero.
+function placePoints(sites: readonly SitePoints[], iteration: number, lo: number, hi: number): Placed {
+  const placed: Placed = { points: [], outside: 0, noMean: 0, noSeries: 0 }
+  for (const site of sites) {
+    const series = site.series.find((s) => s.iteration === iteration)
+    if (series === undefined) {
+      placed.noSeries += 1
+      continue
+    }
+    for (let i = 0; i < series.obsval.length; i++) {
+      const obsval = finiteOrNull(series.obsval[i])
+      const mean = finiteOrNull(series.mean[i])
+      if (obsval === null || mean === null) {
+        placed.noMean += 1
+        continue
+      }
+      if (obsval < lo || obsval > hi || mean < lo || mean > hi) {
+        placed.outside += 1
+        continue
+      }
+      placed.points.push({
+        obsval,
+        mean,
+        q05: finiteOrNull(series.q05[i]),
+        q95: finiteOrNull(series.q95[i]),
+        hollow: series.weighted[i] !== true,
+      })
+    }
+  }
+  return placed
+}
+
+interface PointSet {
+  points: PlacedPoint[]
+  shape: 'circle' | 'square'
+  slot: 'series1' | 'series2'
+}
+
+// The points sit on the density's own pixels, and a bar that runs off the range is cut at its edge.
+function drawPointSets(ctx: Chart2D, size: ChartSize, range: [number, number], tokens: ChartTokens, sets: PointSet[]): void {
+  const area = densityPlotArea(size)
+  const xAxis = linearAxis(range, [area.left, area.left + area.width])
+  const yAxis = linearAxis(range, [area.top + area.height, area.top])
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(area.left, area.top, area.width, area.height)
+  ctx.clip()
+  for (const set of sets) {
+    const bars = set.points.flatMap((p) =>
+      p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: yAxis.toPx(p.q05), high: yAxis.toPx(p.q95) }],
+    )
+    const colour = tokens[set.slot]
+    drawRangeBars(ctx, bars, { colour, width: BAR_WIDTH })
+    drawMarkers(
+      ctx,
+      set.points.map((p) => ({ x: xAxis.toPx(p.obsval), y: yAxis.toPx(p.mean), hollow: p.hollow })),
+      { shape: set.shape, radius: MARKER_RADIUS, colour },
+    )
+  }
+  ctx.restore()
+}
+
+function formatFigure(value: number | null): string {
+  return value === null ? 'no figure' : Number(value.toPrecision(4)).toString()
+}
+
+interface Panel {
+  grid: Obs1to1Payload['grids'][number]
+  outlying: Placed
+  chosen: Placed
+}
+
+function selectedLines(selected: SelectedState | null): string[] {
+  if (selected === null) return []
+  const lines: string[] = []
+  const { answer } = selected
+  if (!answer.ok) {
+    lines.push(`The selected sites' points could not be read: ${answer.artifact}: ${answer.reason}`)
+  } else {
+    const { sites, not_in_group, unknown } = answer.payload
+    if (not_in_group.length > 0) lines.push(`${plural(not_in_group.length, 'selected site is', 'selected sites are')} not in this group`)
+    if (unknown.length > 0) lines.push(`${plural(unknown.length, 'selected site is', 'selected sites are')} not known to this run`)
+    const bare = sites.filter((site) => site.series.every((s) => s.obsval.length === 0)).length
+    if (bare > 0) lines.push(`${plural(bare, 'selected site has', 'selected sites have')} no observation with a measured value`)
+  }
+  if (selected.notAsked > 0) {
+    lines.push(`${plural(selected.notAsked, 'more selected site is', 'more selected sites are')} not drawn: at most ${MAX_POINT_SITES} are drawn`)
+  }
+  return lines
+}
+
+function panelLines(panel: Panel): string[] {
+  const where = `iteration ${panel.grid.iteration}`
+  const lines = [`${where}: ${plural(panel.grid.n_outside, 'realization value lies', 'realization values lie')} outside the drawn range`]
+  if (panel.grid.n_nonfinite > 0) {
+    lines.push(`${where}: ${plural(panel.grid.n_nonfinite, 'simulated value is', 'simulated values are')} missing and not counted`)
+  }
+  const outside = panel.outlying.outside + panel.chosen.outside
+  if (outside > 0) lines.push(`${where}: ${plural(outside, 'point lies', 'points lie')} outside the drawn range and not drawn`)
+  const noMean = panel.outlying.noMean + panel.chosen.noMean
+  if (noMean > 0) lines.push(`${where}: ${plural(noMean, 'point has', 'points have')} no ensemble mean and ${noMean === 1 ? 'is' : 'are'} not drawn`)
+  const noSeries = panel.outlying.noSeries + panel.chosen.noSeries
+  if (noSeries > 0) lines.push(`${where}: ${plural(noSeries, 'site has', 'sites have')} no points at this iteration`)
+  return lines
+}
+
+// What the 1:1 legend says besides the colours: the rule, the shapes and every count left out.
+function fitLegend(payload: Obs1to1Payload, panels: Panel[], selected: SelectedState | null): string[] {
+  const lines: string[] = []
+  if (payload.grids.length === 1) lines.push(`only iteration ${payload.grids[0].iteration} has an observation ensemble`)
+  if (payload.outlying.length > 0) {
+    lines.push(`squares, outlying sites: ${payload.ranking_rule}`)
+    const named = payload.outlying.map((site) => `${site.site} ${formatFigure(site.rmse_last)}`)
+    lines.push(`outlying sites and their ${TABLE_RMSE_LABEL}: ${named.join(', ')}`)
+  }
+  const chosen = selected !== null && selected.answer.ok ? selected.answer.payload.sites.length : 0
+  if (chosen > 0) lines.push(`circles, selected sites: ${chosen}`)
+  const anyPoint = panels.some((p) => p.outlying.points.length + p.chosen.points.length > 0)
+  if (anyPoint) lines.push('bars: 5th to 95th percentile of the realizations')
+  if (panels.some((p) => [...p.outlying.points, ...p.chosen.points].some((point) => point.hollow))) {
+    lines.push('hollow marks: zero weight, a model output that is not fitted')
+  }
+  lines.push(`zero weight included: ${payload.n_zero_weight.toLocaleString('en-US')}`)
+  const last = payload.grids[payload.grids.length - 1]
+  lines.push(
+    `left out: ${payload.left_out.no_value.toLocaleString('en-US')} no measured value, ${payload.left_out.sentinel.toLocaleString('en-US')} sentinel, ${last.n_no_valid.toLocaleString('en-US')} no valid realization at iteration ${last.iteration}`,
+  )
+  const first = payload.grids[0]
+  if (payload.grids.length > 1 && first.n_no_valid > 0) {
+    lines.push(`iteration ${first.iteration}: ${plural(first.n_no_valid, 'observation has', 'observations have')} no valid realization`)
+  }
+  for (const panel of panels) lines.push(...panelLines(panel))
+  lines.push(...selectedLines(selected))
+  return lines
+}
+
 export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupFitHandle {
   let hidden = opts.startHidden === true
   let group: string | null = null
   // A group chosen while hidden is loaded by the next onShow.
   let pendingLoad = false
   let fit: FitState = { kind: 'loading' }
+  let selected: SelectedState | null = null
+  // A sites change while hidden is followed by the next onShow.
+  let pointsStale = false
   let fitHosts: CanvasHost[] = []
   const fitSlot = new LatestWins<Obs1to1Result>()
+  const pointsSlot = new LatestWins<ObsPointsResult>()
 
   let titleEl: HTMLElement | null = null
   let fitSection: HTMLElement | null = null
@@ -87,7 +268,7 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     fitHosts = []
   }
 
-  function mountPanel(row: HTMLElement, spec: DensitySpec, label: string): void {
+  function mountPanel(row: HTMLElement, spec: DensitySpec, label: string, sets: PointSet[]): void {
     const cell = document.createElement('div')
     cell.style.flex = '1 1 0'
     cell.style.minWidth = '0'
@@ -102,7 +283,9 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       label,
       context: opts.context2d,
       draw: (ctx, size) => {
-        const drawn = drawDensity(ctx, spec, readChartTokens(document.documentElement), size)
+        const tokens = readChartTokens(document.documentElement)
+        const drawn = drawDensity(ctx, spec, tokens, size)
+        if (drawn) drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets)
         failure.hidden = drawn
         failure.textContent = drawn ? '' : 'The 1:1 plot could not be drawn: its grid or range was not usable.'
       },
@@ -133,14 +316,21 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     const { lo, hi } = payload
     if (payload.refused !== null || lo === null || hi === null || payload.grids.length === 0) {
       notice(section, 'No 1:1 plot for this group', payload.refused ?? 'the server sent no grid and gave no reason')
+      line(section, `zero weight included: ${payload.n_zero_weight.toLocaleString('en-US')}`)
+      line(section, `left out: ${payload.left_out.no_value.toLocaleString('en-US')} no measured value, ${payload.left_out.sentinel.toLocaleString('en-US')} sentinel`)
       return
     }
+    const chosenSites = selected !== null && selected.answer.ok ? selected.answer.payload.sites : []
     const shadeMax = largestCount(payload)
     const row = document.createElement('div')
     row.style.display = 'flex'
     row.style.gap = 'var(--space-sm)'
     section.appendChild(row)
+    const panels: Panel[] = []
     for (const grid of payload.grids) {
+      const outlying = placePoints(payload.outlying, grid.iteration, lo, hi)
+      const chosen = placePoints(chosenSites, grid.iteration, lo, hi)
+      panels.push({ grid, outlying, chosen })
       const spec: DensitySpec = {
         nBins: payload.n_bins,
         counts: grid.counts,
@@ -151,11 +341,18 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
         xLabel: payload.x_label,
         yLabel: payload.y_label,
       }
-      mountPanel(row, spec, `1:1 plot of group ${payload.group}, iteration ${grid.iteration}, as a density of ensemble values`)
+      const sets: PointSet[] = [
+        { points: outlying.points, shape: 'square', slot: 'series2' },
+        { points: chosen.points, shape: 'circle', slot: 'series1' },
+      ]
+      mountPanel(row, spec, `1:1 plot of group ${payload.group}, iteration ${grid.iteration}, as a density of ensemble values`, sets)
     }
-    if (payload.grids.length === 1) {
-      line(section, `only iteration ${payload.grids[0].iteration} has an observation ensemble`)
-    }
+    const legend = document.createElement('div')
+    legend.classList.add('obs-fit-legend')
+    section.appendChild(legend)
+    for (const text of fitLegend(payload, panels, selected)) line(legend, text)
+    const shown = payload.notes.filter((note) => !note.startsWith('only iteration') && !/outside the drawn range/.test(note))
+    for (const note of shown) line(legend, note, true)
   }
 
   function buildSkeleton(): void {
@@ -171,10 +368,41 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
 
   function clear(): void {
     fitSlot.cancel()
+    pointsSlot.cancel()
+    selected = null
     destroyFitHosts()
     fitSection = null
     titleEl = null
     host.textContent = ''
+  }
+
+  // The ids go to the server in the set's own order, at most MAX_POINT_SITES of them; the rest are counted.
+  function loadSelected(): void {
+    if (group === null) return
+    pointsStale = false
+    const name = group
+    const ids = [...opts.store.get().sites]
+    if (ids.length === 0) {
+      pointsSlot.cancel()
+      if (selected !== null) {
+        selected = null
+        renderFit()
+      }
+      return
+    }
+    const asked = ids.slice(0, MAX_POINT_SITES)
+    const notAsked = ids.length - asked.length
+    void pointsSlot.run(`${name}|${asked.join(',')}`, (signal) => fetchObsPoints(name, asked, { signal })).then(
+      (answer) => {
+        if (answer.stale) return
+        selected = { answer: answer.value, notAsked }
+        renderFit()
+      },
+      (error: unknown) => {
+        selected = { answer: { ok: false, ...describeFailure(error, 'obs_index') }, notAsked }
+        renderFit()
+      },
+    )
   }
 
   function loadFit(name: string): void {
@@ -198,9 +426,20 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
   function load(): void {
     if (group === null) return
     pendingLoad = false
+    selected = null
     buildSkeleton()
     loadFit(group)
+    loadSelected()
   }
+
+  const unsubscribeSites = opts.store.subscribe(
+    (s) => s.sites,
+    () => {
+      if (group === null || pendingLoad) return
+      if (hidden) pointsStale = true
+      else loadSelected()
+    },
+  )
 
   return {
     setGroup(next) {
@@ -218,12 +457,14 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       hidden = false
       for (const canvas of fitHosts) canvas.onShow()
       if (pendingLoad) load()
+      else if (pointsStale) loadSelected()
     },
     onHide() {
       hidden = true
       for (const canvas of fitHosts) canvas.onHide()
     },
     dispose() {
+      unsubscribeSites()
       clear()
     },
   }
