@@ -231,7 +231,7 @@ describe('renderObsLegend', () => {
     limitsRule: 'symmetric about 0',
     timeText: 'day 10 (model time)',
     counts,
-    atTime: { withValue: 2, withObservationNoValue: 1, total: 3 },
+    atTime: { withValue: 2, withObservationNoValue: 1, rowsHidden: 0, total: 3 },
     layerMoved: null,
     notes: [],
   }
@@ -252,6 +252,16 @@ describe('renderObsLegend', () => {
     expect(text).toContain('1 site with an unknown layer, shown only under all layers')
   })
 
+  it('says how many observations lost to a later one of the same site, and is quiet when none did', () => {
+    const el = document.createElement('div')
+    renderObsLegend(el, base)
+    expect(el.textContent).not.toContain('share their time')
+    renderObsLegend(el, { ...base, atTime: { ...base.atTime!, rowsHidden: 2 } })
+    expect(el.textContent).toContain('2 observations share their time with a later one of the same site; the last is shown')
+    renderObsLegend(el, { ...base, atTime: { ...base.atTime!, rowsHidden: 1 } })
+    expect(el.textContent).toContain('1 observation shares its time with a later one of the same site; the last is shown')
+  })
+
   it('leaves the sign line off a magnitude statistic and names the spread', () => {
     const el = document.createElement('div')
     renderObsLegend(el, { ...base, stat: 'rmse', limits: [0, 3] })
@@ -269,7 +279,7 @@ describe('renderObsLegend', () => {
 
   it('says no site is drawn when the group has none, and counts no time line', () => {
     const el = document.createElement('div')
-    renderObsLegend(el, { ...base, counts: { ...counts, drawn: 0, own: 0, cellCentre: 0 }, atTime: { withValue: 0, withObservationNoValue: 0, total: 0 } })
+    renderObsLegend(el, { ...base, counts: { ...counts, drawn: 0, own: 0, cellCentre: 0 }, atTime: { withValue: 0, withObservationNoValue: 0, rowsHidden: 0, total: 0 } })
     expect(el.textContent).toContain('No site of this group is drawn')
     expect(el.textContent).not.toContain('have a value at this time')
   })

@@ -1911,18 +1911,31 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     scheduleViewWrite()
   }
 
-  function observedFor(siteId: number, time: number | null): SiteReadoutEntry['observed'] {
-    if (time === null) return { kind: 'no_observation' }
+  // The last row at the time, the same one the frame takes, and how many rows sit at that time.
+  function rowsAt(times: number[], time: number): { last: number; count: number } {
+    let last = -1
+    let count = 0
+    times.forEach((t, i) => {
+      if (t === time) {
+        last = i
+        count += 1
+      }
+    })
+    return { last, count }
+  }
+
+  function observedFor(siteId: number, time: number | null): { observed: SiteReadoutEntry['observed']; rowsAtTime: number } {
+    if (time === null) return { observed: { kind: 'no_observation' }, rowsAtTime: 0 }
     const read = obsSiteMemo.get(siteId)
-    if (read === undefined || read.state === 'loading') return { kind: 'loading' }
-    if (read.state === 'failed') return { kind: 'unavailable', reason: read.reason }
+    if (read === undefined || read.state === 'loading') return { observed: { kind: 'loading' }, rowsAtTime: 0 }
+    if (read.state === 'failed') return { observed: { kind: 'unavailable', reason: read.reason }, rowsAtTime: 0 }
     const { time: times, obsval, no_value: noValue, sentinel, weighted } = read.payload
     // The exact time only; the nearest time is never used.
-    const at = times.findIndex((t) => t === time)
-    if (at < 0) return { kind: 'no_observation' }
+    const { last: at, count: rowsAtTime } = rowsAt(times, time)
+    if (at < 0) return { observed: { kind: 'no_observation' }, rowsAtTime: 0 }
     const value = obsval[at]
-    if (noValue[at] || sentinel[at] || value === null) return { kind: 'no_value' }
-    return weighted[at] ? { kind: 'value', value } : { kind: 'zero_weight', value }
+    if (noValue[at] || sentinel[at] || value === null) return { observed: { kind: 'no_value' }, rowsAtTime }
+    return { observed: weighted[at] ? { kind: 'value', value } : { kind: 'zero_weight', value }, rowsAtTime }
   }
 
   function sitesPick(rows: number[]): ReadoutPick {
@@ -1935,6 +1948,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const entries: SiteReadoutEntry[] = rows.slice(0, OBS_SITE_LIST_CAP).map((row) => {
       const site = data.rows[row]
       const value = frame[row]
+      const seen = observedFor(site.siteId, time)
       return {
         name: site.site,
         group: data.group,
@@ -1945,7 +1959,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         cell: site.cell,
         rule: site.rule,
         timeText,
-        observed: observedFor(site.siteId, time),
+        observed: seen.observed,
+        rowsAtTime: seen.rowsAtTime,
         stat: { label: OBS_STAT_LABEL[obsStat], value: Number.isFinite(value) ? value : null, iteration: obsIteration },
       }
     })
@@ -2200,7 +2215,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       limitsRule: data.times.limits_rule,
       timeText: index >= 0 ? formatTimeValue(data.times.time_kind, times[index]) : 'no time to show',
       counts: dots.counts,
-      atTime: index >= 0 ? countsAtTime(frame, dots, data.times.n_at_time[index] ?? 0) : null,
+      atTime: index >= 0 ? countsAtTime(frame, dots, data.times.n_at_time[index] ?? 0, obsSource.frames.rowsHiddenIn(frame)) : null,
       layerMoved: obsLayerMoved === committed.layer ? obsLayerMoved : null,
       notes: [...timeNotes, ...obsStaticNotes],
     })

@@ -456,7 +456,7 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     if rows.n_duplicate:
         notes.append(
             f"{rows.n_duplicate} observation(s) share a time with another observation of the same "
-            "site; a frame shows the last of them"
+            "site; a frame shows the last of them and counts the rest as hidden"
         )
 
     limits = (
@@ -481,16 +481,27 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
-def build_frame(rows: GroupRows, stat_values: np.ndarray, time: float) -> tuple[np.ndarray, int] | None:
+def build_frame(
+    rows: GroupRows, stat_values: np.ndarray, time: float
+) -> tuple[np.ndarray, int, int] | None:
     """The statistic of every site of the group at exactly ``time``, NaN where a site has
-    no observation then, and how many sites have one. None when the group has no such time."""
+    no observation then, how many sites have one, and how many rows lost to a later row of
+    the same site at this time. None when the group has no such time.
+
+    A site with two rows at one time shows the last of them in index order; the readout
+    uses the same rule."""
     k = int(np.searchsorted(rows.times, time))
     if k >= rows.times.size or rows.times[k] != time:
         return None
     lo, hi = int(rows.bounds[k]), int(rows.bounds[k + 1])
+    sites = rows.site_of_order[lo:hi]
+    chosen = rows.order[lo:hi]
+    # Reversed, the first hit of each site is its last row.
+    site_ids, first_from_end = np.unique(sites[::-1], return_index=True)
+    last = (hi - lo - 1) - first_from_end
     out = np.full(rows.n_sites, np.nan, dtype=np.float32)
-    out[rows.site_of_order[lo:hi]] = stat_values[rows.order[lo:hi]]
-    return out, int(rows.n_at_time[k])
+    out[site_ids] = stat_values[chosen[last]]
+    return out, int(rows.n_at_time[k]), int((hi - lo) - site_ids.size)
 
 
 @router.get("/obs/frame")
@@ -531,7 +542,7 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
     built = build_frame(rows, agg.values[agg.stats.index(params.stat)], params.time)
     if built is None:
         return problem(404, "no observation at that time", artifact="obs_index", detail=NO_NEAREST_TEXT)
-    values, n_at_time = built
+    values, n_at_time, n_rows_hidden = built
     meta = {
         "group": params.group,
         "iteration": int(params.iteration),
@@ -540,6 +551,7 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
         "stat": params.stat,
         "n_sites": rows.n_sites,
         "n_at_time": n_at_time,
+        "n_rows_hidden": n_rows_hidden,
         "n_finite": int(np.count_nonzero(np.isfinite(values))),
     }
     return blob_response(values, meta=meta, cache_control="no-store")

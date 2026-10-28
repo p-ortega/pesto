@@ -129,6 +129,8 @@ const GROUPS: Record<string, GroupSpec> = {
 
 const SITE_PAYLOADS: Record<number, { time: number[]; obsval: (number | null)[]; no_value: boolean[]; weighted: boolean[] }> = {
   // 10.5 is not 10: the nearest time must never be used.
+  // Two rows at time 10: the frame and the readout both take the last, 2.5.
+  101: { time: [10, 10], obsval: [1.5, 2.5], no_value: [false, false], weighted: [true, true] },
   102: { time: [10.5, 20], obsval: [5.5, 6.5], no_value: [false, false], weighted: [true, true] },
   103: { time: [10, 20], obsval: [7.5, null], no_value: [false, true], weighted: [false, true] },
 }
@@ -297,6 +299,7 @@ function stubFetch(): void {
                 stat,
                 n_sites: spec.sites.length,
                 n_at_time: spec.nAtTime[spec.times.indexOf(time)] ?? 0,
+                n_rows_hidden: 0,
                 n_finite: finite,
               }),
             },
@@ -783,6 +786,17 @@ describe('colouring the map by observations', () => {
       refuseSite = 103
       clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 0.75, 0.6)
       await vi.waitFor(() => expect(readoutText(root)).toContain('the observed value could not be read: obs_index: the index has no such site'))
+    })
+
+    it('reads the last of two observations at one time and says there are two', async () => {
+      const { root } = await mounted()
+      await enterObservations(root)
+      clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 0.25, 0.6)
+      await vi.waitFor(() => expect(readoutText(root)).not.toContain('reading the observed value…'))
+      const text = readoutText(root)
+      expect(text).toContain('observed 2.500')
+      expect(text).not.toContain('observed 1.500')
+      expect(text).toContain('2 observations at this time; the last is shown')
     })
 
     it('shows a site name as text, never as markup', async () => {

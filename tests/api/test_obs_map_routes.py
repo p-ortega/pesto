@@ -598,3 +598,45 @@ def test_a_warm_frame_is_built_well_under_a_millisecond(tmp_path, in_process):
 
     assert built is not None
     assert per_frame < 0.001
+
+
+# ---------------------------------------------------------------------------
+# two observations of one site at one time
+# ---------------------------------------------------------------------------
+
+DUP_SITE = "oname:hds_otype:lst_usecol:dup-a"
+DUP_RUN = {
+    "sites": (SiteSpec("g_dup", DUP_SITE, (1.0, 1.0, 2.0), "time-column"),),
+    "iterations": (0, 1),
+    "n_real": 4,
+}
+
+
+def test_a_site_with_two_rows_at_one_time_shows_the_last_row_and_counts_the_hidden_one(tmp_path, in_process):
+    client, run = open_obs_run(tmp_path, **DUP_RUN)
+    index = load_obs_index(_layout(client))
+    agg = load_obs_agg(1, _layout(client))
+    stat = agg.stats.index("mean")
+    at_one = [i for i in range(index.n_obs) if index.time[i] == 1.0]
+    assert len(at_one) == 2
+
+    response = _frame(client, "g_dup", 1, 1.0, "mean")
+
+    assert _values(response)[0] == agg.values[stat, max(at_one)]
+    meta = series_meta(response)
+    assert meta["n_at_time"] == 1 and meta["n_rows_hidden"] == 1
+    assert series_meta(_frame(client, "g_dup", 1, 2.0, "mean"))["n_rows_hidden"] == 0
+    assert any("share a time" in note for note in _times(client, "g_dup")["notes"])
+
+
+def test_build_frame_takes_the_last_row_of_a_site_whatever_the_assignment_order(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **DUP_RUN)
+    assert _frame(client, "g_dup", 1, 1.0, "mean").status_code == 200
+    state = client.pesto_app.state
+    rows = next(v[1] for k, v in state.obs_memo.items() if k[1:] == ("frame_rows", "g_dup"))
+    stat = np.arange(rows.stop, dtype=np.float64) * 10.0
+
+    out, n_at_time, n_hidden = obsmap.build_frame(rows, stat, 1.0)
+
+    assert n_at_time == 1 and n_hidden == 1
+    assert out[0] == np.float32(10.0 * (rows.start + 1))
