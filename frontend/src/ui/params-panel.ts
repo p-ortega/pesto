@@ -22,6 +22,10 @@ import {
   type ParHistResult,
   type ParValuesResult,
 } from '../data/par'
+import { isDimmed } from '../data/dim'
+import { fetchAtBounds, type AtBoundsResult } from '../data/overlays'
+import { modeOf } from '../state/modifiers'
+import { selectPars } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import type { UnmappedGroup } from './group-picker'
@@ -33,6 +37,7 @@ import {
   type DetailHandle,
   type GroupDetailBase,
 } from './params-detail'
+import { OVERSCAN, renderSelectedParams, ROW_HEIGHT } from './params-selected'
 
 export interface ParamsPanelOptions {
   /** The same D-07 unmapped list the group picker's disclosure builds --
@@ -62,12 +67,11 @@ interface ParamRow {
   partrans: string | null
 }
 
-// Fixed row height in px -- the spacer's total height (`rows.length *
-// ROW_HEIGHT`) is what makes the scrollbar tell the truth about a table
-// that may hold up to a million rows without ever placing them all in the
-// DOM (T-5.1-05).
-const ROW_HEIGHT = 24
-const OVERSCAN = 20
+// ROW_HEIGHT is fixed so the spacer's total height (`rows.length *
+// ROW_HEIGHT`) makes the scrollbar tell the truth about a table that may
+// hold up to a million rows without ever placing them all in the DOM
+// (T-5.1-05). It lives in params-selected.ts so the two lists share it
+// without an import cycle.
 const VIEWPORT_HEIGHT = 240
 
 function formatBound(value: number | null): string {
@@ -206,15 +210,27 @@ function appendRowCells(rowEl: HTMLElement, row: ParamRow, change: ChangeCells):
 //
 // Returns `redraw`, the same windowing the scroll handler runs, so the panel
 // can recompute the window when it is shown again at its real height.
+const NO_SELECTED_HERE = 'no selected parameter is in this group'
+
 function renderTable(
   host: HTMLElement,
   rows: ParamRow[],
   isHidden: () => boolean,
   changeFor: (parnme: string) => ChangeRowState,
-  selected: () => string | null,
-  pick: (parnme: string) => void,
+  selected: () => ReadonlySet<string>,
+  pick: (parnme: string, event: MouseEvent | KeyboardEvent) => void,
 ): () => void {
   host.textContent = ''
+
+  // Selected rows stay where the sort put them (D-03), so this is the way to reach one.
+  const showSelected = document.createElement('button')
+  showSelected.type = 'button'
+  showSelected.classList.add('label', 'show-selected')
+  showSelected.textContent = 'Show selected'
+  showSelected.style.flex = 'none'
+  showSelected.style.alignSelf = 'flex-start'
+  showSelected.style.marginBottom = 'var(--space-xs)'
+  host.appendChild(showSelected)
 
   // One header row above the windowed table, with the same column rule as
   // every data row (style.css `.param-header`), so the labels line up.
@@ -243,8 +259,17 @@ function renderTable(
   const rowsHost = document.createElement('div')
   spacer.appendChild(rowsHost)
 
+  function firstSelectedIndex(chosen: ReadonlySet<string>): number {
+    if (chosen.size === 0) return -1
+    return rows.findIndex((row) => chosen.has(row.parnme))
+  }
+
   function renderVisible(): void {
     rowsHost.textContent = ''
+    const chosen = selected()
+    const first = firstSelectedIndex(chosen)
+    showSelected.disabled = first < 0
+    showSelected.title = first < 0 ? NO_SELECTED_HERE : 'scroll to the first selected parameter'
     const scrollTop = scrollPane.scrollTop
     const viewportHeight = scrollPane.clientHeight || VIEWPORT_HEIGHT
     const firstIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
@@ -262,14 +287,15 @@ function renderTable(
       rowEl.style.gap = 'var(--space-sm)'
       rowEl.tabIndex = 0
       rowEl.dataset.parameter = rows[i].parnme
-      rowEl.setAttribute('aria-selected', String(rows[i].parnme === selected()))
-      appendRowCells(rowEl, rows[i], changeCellsFor(changeFor(rows[i].parnme)))
       const name = rows[i].parnme
-      rowEl.addEventListener('click', () => pick(name))
+      rowEl.setAttribute('aria-selected', String(chosen.has(name)))
+      if (isDimmed(chosen, name)) rowEl.classList.add('dimmed')
+      appendRowCells(rowEl, rows[i], changeCellsFor(changeFor(name)))
+      rowEl.addEventListener('click', (event) => pick(name, event))
       rowEl.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
-          pick(name)
+          pick(name, event)
         }
       })
       rowsHost.appendChild(rowEl)
@@ -279,6 +305,12 @@ function renderTable(
   // A hidden panel draws nothing; showing it again redraws once.
   scrollPane.addEventListener('scroll', () => {
     if (!isHidden()) renderVisible()
+  })
+  showSelected.addEventListener('click', () => {
+    const first = firstSelectedIndex(selected())
+    if (first < 0) return
+    scrollPane.scrollTop = first * ROW_HEIGHT
+    renderVisible()
   })
   renderVisible()
   host.appendChild(scrollPane)
@@ -397,7 +429,56 @@ function groupCell(column: string, text: string, title: string, extraClasses: st
   return cell
 }
 
-type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp' | 'sigma'
+// The at-bounds counts for one iteration, from /par/at_bounds (D-25 to D-27).
+type AtBoundsState =
+  | { kind: 'idle' }
+  | { kind: 'loading'; iteration: number }
+  | { kind: 'ready'; iteration: number; result: AtBoundsResult }
+
+const AT_BOUNDS_IDLE = 'the at-bounds counts are not loaded'
+
+// Why the whole column has no figure, or null when the answer carries counts.
+function atBoundsWhyNot(state: AtBoundsState): string | null {
+  if (state.kind === 'idle') return AT_BOUNDS_IDLE
+  if (state.kind === 'loading') return null
+  const { result } = state
+  if (!result.ok) return `${result.artifact}: ${result.reason}`
+  if (!result.answer.available) return result.answer.reason ?? 'the at-bounds counts are not available for this iteration'
+  return null
+}
+
+function excludedText(counts: Record<string, number>): string {
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0)
+  const kinds = Object.entries(counts)
+    .filter(([, n]) => n > 0)
+    .map(([kind, n]) => `${kind.replace(/_/g, ' ')} ${n}`)
+  return kinds.length === 0 ? `${total} excluded` : `${total} excluded: ${kinds.join(', ')}`
+}
+
+function atBoundsFigure(state: AtBoundsState, group: string): FigureCell & { value: number | null } {
+  if (state.kind === 'loading') return { text: '…', title: 'Loading the at-bounds counts', value: null }
+  const why = atBoundsWhyNot(state)
+  if (why !== null || state.kind !== 'ready' || !state.result.ok) return { text: NO_FIGURE, title: why ?? '', value: null }
+  const { answer } = state.result
+  const found = answer.groups.find((entry) => entry.group === group)
+  if (found === undefined) return { text: NO_FIGURE, title: 'the at-bounds answer has no row for this group', value: null }
+  return {
+    text: String(found.nAtBounds),
+    title: `${answer.rule} ${answer.caveat} ${excludedText(found.nExcluded)}`,
+    value: found.nAtBounds,
+  }
+}
+
+function atBoundsHeading(state: AtBoundsState): { label: string; title: string } {
+  if (state.kind === 'idle') return { label: 'At bounds', title: '' }
+  const label = `At bounds, iteration ${state.iteration}`
+  if (state.kind === 'loading') return { label, title: 'Loading the at-bounds counts' }
+  const why = atBoundsWhyNot(state)
+  if (why !== null) return { label, title: why }
+  return state.result.ok ? { label, title: `${state.result.answer.rule} ${state.result.answer.caveat}` } : { label, title: '' }
+}
+
+type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp' | 'sigma' | 'at_bounds'
 type SortDirection = 'ascending' | 'descending'
 
 const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
@@ -408,12 +489,15 @@ const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
   { column: 'pesto', label: 'Mean change, pesto' },
   { column: 'pestpp', label: 'Mean change, pestpp' },
   { column: 'sigma', label: 'Sigma ratio' },
+  { column: 'at_bounds', label: 'At bounds' },
 ]
 
 // What a column sorts on. null is "no value" and always sorts last; a layer
 // given as "several" sorts after every numbered layer.
-function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
+function sortValue(row: ParGroupRow, key: SortKey, atBounds: AtBoundsState): string | number | null {
   switch (key) {
+    case 'at_bounds':
+      return atBoundsFigure(atBounds, row.group).value
     case 'group':
       return row.group
     case 'type':
@@ -435,11 +519,12 @@ function sortValue(row: ParGroupRow, key: SortKey): string | number | null {
 function sortedGroups(
   groups: readonly ParGroupRow[],
   sort: { key: SortKey; direction: SortDirection } | null,
+  atBounds: AtBoundsState,
 ): ParGroupRow[] {
   if (sort === null) return [...groups]
   const sign = sort.direction === 'ascending' ? 1 : -1
   return groups
-    .map((row, index) => ({ row, index, value: sortValue(row, sort.key) }))
+    .map((row, index) => ({ row, index, value: sortValue(row, sort.key, atBounds) }))
     .sort((a, b) => {
       if (a.value === null || b.value === null) {
         if (a.value === b.value) return a.index - b.index
@@ -455,6 +540,7 @@ function renderGroupRow(
   row: ParGroupRow,
   chosen: boolean,
   offMap: { note: string | null } | null,
+  atBounds: FigureCell,
   pick: (group: string) => void,
 ): HTMLElement {
   const rowEl = document.createElement('div')
@@ -493,6 +579,7 @@ function renderGroupRow(
   rowEl.appendChild(groupCell('pesto', pestoText(row), pestoTitle(row), ['tabular-nums']))
   rowEl.appendChild(groupCell('pestpp', pestppText(row), pestppTitle(row), ['tabular-nums']))
   rowEl.appendChild(groupCell('sigma', sigmaText(row), sigmaTitle(row), ['tabular-nums']))
+  rowEl.appendChild(groupCell('at_bounds', atBounds.text, atBounds.title, ['tabular-nums']))
   rowEl.addEventListener('click', () => pick(row.group))
   rowEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -561,6 +648,10 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   groupsHost.classList.add('params-groups')
   el.appendChild(groupsHost)
 
+  const selectedHost = document.createElement('div')
+  selectedHost.classList.add('params-selected')
+  el.appendChild(selectedHost)
+
   const detailHost = document.createElement('div')
   detailHost.classList.add('params-detail-host')
   makeFocusable(detailHost, 'Group detail')
@@ -597,18 +688,57 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
 
   const offMap = new Map(opts.unmapped.map((entry) => [entry.group, entry.note]))
   let sort: { key: SortKey; direction: SortDirection } | null = null
+  let atBounds: AtBoundsState = { kind: 'idle' }
+  const atBoundsSlot = new LatestWins<AtBoundsResult>()
   let groupsPane: HTMLElement | null = null
 
   function fillRows(): void {
     if (groups === null || groupsPane === null) return
     groupsPane.textContent = ''
     const chosen = chosenGroups()
-    for (const row of sortedGroups(groups.groups, sort)) {
+    for (const row of sortedGroups(groups.groups, sort, atBounds)) {
       const note = offMap.get(row.group)
       groupsPane.appendChild(
-        renderGroupRow(row, chosen.has(row.group), note === undefined ? null : { note }, pick),
+        renderGroupRow(row, chosen.has(row.group), note === undefined ? null : { note }, atBoundsFigure(atBounds, row.group), pick),
       )
     }
+  }
+
+  function markAtBoundsHeading(): void {
+    const heading = groupsHost.querySelector<HTMLElement>('.group-header [data-column="at_bounds"]')
+    if (heading === null) return
+    const { label, title: why } = atBoundsHeading(atBounds)
+    const text = heading.querySelector('.sort-label')
+    if (text) text.textContent = label
+    if (why === '') heading.removeAttribute('title')
+    else heading.title = why
+  }
+
+  function drawAtBounds(): void {
+    markAtBoundsHeading()
+    fillRows()
+  }
+
+  // The column follows the map's shown iteration; a hidden tab asks nothing until it is shown.
+  function requestAtBounds(): void {
+    if (hidden) return
+    const iteration = opts.store.get().iteration
+    if (atBounds.kind !== 'idle' && atBounds.iteration === iteration) return
+    atBounds = { kind: 'loading', iteration }
+    drawAtBounds()
+    const current = () => atBounds.kind === 'loading' && atBounds.iteration === iteration
+    void atBoundsSlot.run(String(iteration), (signal) => fetchAtBounds(iteration, undefined, { signal })).then(
+      (result) => {
+        if (result.stale || !current()) return
+        atBounds = { kind: 'ready', iteration, result: result.value }
+        drawAtBounds()
+      },
+      (error: unknown) => {
+        if (!current()) return
+        atBounds = { kind: 'ready', iteration, result: { ok: false, ...describeFailure(error, 'par_change') } }
+        drawAtBounds()
+      },
+    )
   }
 
   function markHeadings(): void {
@@ -645,6 +775,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       button.type = 'button'
       button.classList.add('label', 'sort-button')
       const text = document.createElement('span')
+      text.classList.add('sort-label')
       text.textContent = label
       const mark = document.createElement('span')
       mark.classList.add('sort-mark')
@@ -663,6 +794,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     grid.appendChild(pane)
     groupsPane = pane
     groupsHost.appendChild(grid)
+    markAtBoundsHeading()
     fillRows()
   }
 
@@ -734,7 +866,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       return
     }
     const shown = rows.filter((row) => chosen.has(row.pargp))
-    redrawTable = renderTable(tableHost, shown, () => hidden, changeFor, () => selectedParameter, pickParameter)
+    redrawTable = renderTable(tableHost, shown, () => hidden, changeFor, () => opts.store.get().pars, pickParameter)
   }
 
   function changeFor(parnme: string): ChangeRowState {
@@ -858,10 +990,34 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     parameterHandle = renderParameterDetail(parameterHost, { parameter, values, isHidden: () => hidden })
   }
 
-  function pickParameter(parameter: string): void {
+  // The parameter the detail should follow after a click, given the pars it leaves.
+  function detailAfter(clicked: string, pars: ReadonlySet<string>): string | null {
+    if (pars.has(clicked)) return clicked
+    if (selectedParameter !== null && pars.has(selectedParameter)) return selectedParameter
+    if (rows === null || pars.size === 0) return null
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (pars.has(rows[i].parnme)) return rows[i].parnme
+    }
+    return null
+  }
+
+  // Every parameter click, in the table or the selected list, goes through the one modifier rule (D-01).
+  function pickParameter(parameter: string, event: MouseEvent | KeyboardEvent): void {
+    const next = selectPars(opts.store.get(), [parameter], modeOf(event))
+    opts.store.set({ pars: next.pars }, 'params')
+    const follow = detailAfter(parameter, next.pars)
+    if (!hidden) redrawTable?.()
+    refreshSelected()
+    if (follow === null) {
+      dropParameter()
+      return
+    }
+    if (follow !== selectedParameter) showParameter(follow)
+  }
+
+  function showParameter(parameter: string): void {
     if (blocked !== null) return
     selectedParameter = parameter
-    if (!hidden) redrawTable?.()
     parameterHandle?.destroy()
     parameterHandle = null
     parameterHost.textContent = ''
@@ -885,15 +1041,32 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     dropParameter()
   }
 
+  let pargpByName: Map<string, string> | null = null
+  const selectedSection = renderSelectedParams(selectedHost, {
+    store: opts.store,
+    pargpOf: (name) => pargpByName?.get(name) ?? null,
+    onPick: pickParameter,
+    isHidden: () => hidden,
+  })
+
+  // A change while hidden is drawn on show; an unchanged section keeps its pane and scroll offset.
+  let selectedPending = false
+  function refreshSelected(): void {
+    selectedPending = hidden
+    if (!hidden) selectedSection.refresh()
+  }
+
   renderDetail()
   void opts.parTable.then(
     (buffer) => {
       try {
         rows = readParamRows(buffer)
+        pargpByName = new Map(rows.map((row) => [row.parnme, row.pargp]))
       } catch (error) {
         tableFailure = describeFailure(error)
       }
       renderDetail()
+      refreshSelected()
     },
     (error: unknown) => {
       tableFailure = describeFailure(error)
@@ -911,10 +1084,36 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
   )
 
+  // Any view's pars or cells change only redraws; drawing never writes back.
+  const unsubscribePars = opts.store.subscribe(
+    (selection) => ({ pars: selection.pars, cells: selection.cells }),
+    () => {
+      if (!hidden) redrawTable?.()
+      refreshSelected()
+    },
+  )
+
+  // An iteration change while hidden drops the old counts, so they are never shown under the new iteration.
+  const unsubscribeIteration = opts.store.subscribe(
+    (selection) => selection.iteration,
+    () => {
+      if (hidden) {
+        atBoundsSlot.cancel()
+        atBounds = { kind: 'idle' }
+        drawAtBounds()
+        return
+      }
+      requestAtBounds()
+    },
+  )
+
   renderUnmappedSection(el, opts.unmapped)
   renderNotesSection(el, opts.artifactNotes)
 
-  if (!hidden) requestGroups()
+  if (!hidden) {
+    requestGroups()
+    requestAtBounds()
+  }
 
   return {
     onHide() {
@@ -927,9 +1126,11 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     onShow() {
       hidden = false
       requestGroups()
+      requestAtBounds()
       for (const [pane, top] of savedScroll) pane.scrollTop = top
       savedScroll.clear()
       redrawTable?.()
+      if (selectedPending) refreshSelected()
       // A choice made while hidden is fetched now; otherwise the canvases redraw at their real size.
       if (detailPending) refreshGroupDetail()
       else detailHandle?.onShow()
@@ -937,6 +1138,10 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
     dispose() {
       unsubscribe()
+      unsubscribePars()
+      unsubscribeIteration()
+      selectedSection.dispose()
+      atBoundsSlot.cancel()
       histSlot.cancel()
       changeSlot.cancel()
       valuesSlot.cancel()
