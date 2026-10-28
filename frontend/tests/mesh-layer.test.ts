@@ -982,4 +982,37 @@ describe('MeshLayer classes', () => {
     expect(source.indexOf('u_classes >')).toBeGreaterThan(discardAt)
     expect(source.indexOf('u_classTexel[k]')).toBeGreaterThan(discardAt)
   })
+
+  it('steps the dots the same way, after a missing dot is discarded (D-31)', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    const points = sources.find((s) => s.includes('v_flags') && s.includes('out vec4 fragColor'))!
+    expect(points).toContain('uniform float u_classes;')
+    expect(points).toContain('uniform float u_classTexel[11];')
+    expect(points.indexOf('u_classTexel[k]')).toBeGreaterThan(points.indexOf('if (missing && u_missingStyle < 0.5) discard;'))
+
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.setStyle({ classes: 11, symmetric: false, texture: false })
+    calls.length = 0
+    layer.draw()
+    const pointsProgram = calls.find((c) => c.method === 'getUniformLocation' && c.args[1] === 'u_size')?.args[0]
+    const fill = fillProgram(calls)
+    expect(pointsProgram).not.toBe(fill)
+    for (const program of [fill, pointsProgram]) {
+      expect(uniformsFor(calls, 'u_classes').filter((u) => u.program === program).map((u) => u.value)).toEqual([11])
+      const texel = uniformsFor(calls, 'u_classTexel').find((u) => u.program === program)
+      expect(Array.from(texel!.value as Float32Array)).toEqual(classTexelIndices(11))
+    }
+  })
+
+  it('still uploads every missing cell as NaN for the fill to discard, whatever the classes', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setStyle({ classes: 9, symmetric: false, texture: false })
+    layer.setValues(new Float32Array([Number.NaN, Number.NaN, Number.NaN]))
+    const upload = calls.filter((c) => c.method === 'texSubImage2D').pop()!
+    const staging = upload.args[8] as Float32Array
+    expect(Array.from(staging.slice(0, 3)).every(Number.isNaN)).toBe(true)
+  })
 })

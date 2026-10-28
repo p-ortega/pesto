@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
+import { classColour, ramp } from '../src/gl/colormap'
+import { ONE_CLASS_EQUAL } from '../src/gl/field-style'
 import { renderLegend, type LegendOptions } from '../src/ui/legend'
 
 const BASE_OPTIONS: LegendOptions = {
@@ -81,5 +83,57 @@ describe('renderLegend', () => {
       renderLegend(el, { ...BASE_OPTIONS, inactiveDrawn })
       expect(el.textContent).not.toContain('inactive in idomain')
     }
+  })
+})
+
+describe('renderLegend with classes', () => {
+  const NO_NOTES = { classes: null, symmetric: null, texture: null }
+
+  it('shows one swatch per class in the shader colour and one edge per boundary', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, limits: [0, 9], style: { classes: 9, symmetric: false, texture: false }, styleNotes: NO_NOTES })
+
+    const swatches = [...el.querySelectorAll('.legend-class')] as HTMLElement[]
+    expect(swatches).toHaveLength(9)
+    const table = ramp('viridis')
+    swatches.forEach((swatch, k) => {
+      const [r, g, b] = classColour(k, 9, table)
+      expect(swatch.style.background).toBe(`rgb(${r}, ${g}, ${b})`)
+    })
+    expect([...el.querySelectorAll('.legend-edge')].map((e) => e.textContent)).toEqual(
+      ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+    )
+    const gradient = [...el.querySelectorAll('div')].find((d) => d.style.background.includes('linear-gradient'))
+    expect(gradient).toBeUndefined()
+  })
+
+  it('reads the swatches from the reversed table when the ramp is reversed', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, reverse: true, style: { classes: 7, symmetric: false, texture: false } })
+    const first = el.querySelector('.legend-class') as HTMLElement
+    const [r, g, b] = classColour(0, 7, ramp('viridis', true))
+    expect(first.style.background).toBe(`rgb(${r}, ${g}, ${b})`)
+  })
+
+  it('shows one swatch, its two edges and the reason for the one-class case', () => {
+    const el = document.createElement('div')
+    renderLegend(el, {
+      ...BASE_OPTIONS,
+      limits: [5, 5],
+      style: { classes: 1, symmetric: false, texture: false },
+      styleNotes: { ...NO_NOTES, classes: ONE_CLASS_EQUAL },
+    })
+    expect(el.querySelectorAll('.legend-class')).toHaveLength(1)
+    expect([...el.querySelectorAll('.legend-edge')].map((e) => e.textContent)).toEqual(['5', '5'])
+    const note = [...el.querySelectorAll('div.label')].find((d) => d.textContent === ONE_CLASS_EQUAL)
+    expect(note).toBeDefined()
+  })
+
+  it('keeps the gradient when continuous', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, style: { classes: 0, symmetric: false, texture: false }, styleNotes: NO_NOTES })
+    expect(el.querySelectorAll('.legend-class')).toHaveLength(0)
+    const gradient = [...el.querySelectorAll('div')].find((d) => d.style.background.includes('linear-gradient'))
+    expect(gradient).toBeDefined()
   })
 })

@@ -215,6 +215,21 @@ export function classEdges(limits: [number, number], n: number): number[] {
 }
 
 /**
+ * The class (0 to n - 1) a value is drawn in, or -1 for a value that is not
+ * finite. Worked in float32 at each step, as the shader does, so a value off
+ * an edge lands in the class the GPU gives it. Beyond the limits it falls in
+ * the end classes, the same clamp normalize applies.
+ */
+export function classOf(value: number, limits: [number, number], n: number): number {
+  if (!Number.isFinite(value)) return -1
+  const f = Math.fround
+  const lo = f(limits[0])
+  const span = Math.max(f(f(limits[1]) - lo), 1e-20)
+  const norm = Math.min(Math.max(f(f(f(value) - lo) / f(span)), 0), 1)
+  return Math.min(Math.floor(f(norm * n)), n - 1)
+}
+
+/**
  * The ramp table entry each class is drawn in: the one nearest the class
  * middle. Computed here and handed to the shader, so the GPU never has to
  * round a half itself (n 9, class 1 lands exactly on 42.5).

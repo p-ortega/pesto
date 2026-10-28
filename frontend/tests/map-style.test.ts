@@ -7,6 +7,7 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
+import { ONE_CLASS_EMPTY, ONE_CLASS_EQUAL } from '../src/gl/field-style'
 import { MeshLayer } from '../src/gl/mesh-layer'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
@@ -196,6 +197,31 @@ describe('the Classes control on the map', () => {
     expect(legend(root).querySelectorAll('.legend-class')).toHaveLength(0)
     const gradient = [...legend(root).querySelectorAll('div')].find((d) => d.style.background.includes('linear-gradient'))
     expect(gradient).toBeDefined()
+  })
+
+  it('draws one class with the reason when every value of the group is the same', async () => {
+    field = new Float32Array([15, 15])
+    const { root } = await mounted()
+    chooseClasses(root, '9')
+
+    expect(lastStyle().classes).toBe(1)
+    expect(legend(root).querySelectorAll('.legend-class')).toHaveLength(1)
+    expect(legend(root).textContent).toContain(ONE_CLASS_EQUAL)
+    const note = root.querySelector('#classes-note') as HTMLElement
+    expect(note.textContent).toBe(ONE_CLASS_EQUAL)
+    expect(note.style.display).toBe('')
+
+    chooseClasses(root, '0')
+    expect(note.style.display).toBe('none')
+  })
+
+  it('draws one class with the reason when the group has no value at all', async () => {
+    field = new Float32Array([Number.NaN, Number.NaN])
+    const { root } = await mounted()
+    chooseClasses(root, '7')
+
+    expect(lastStyle().classes).toBe(1)
+    expect(legend(root).textContent).toContain(ONE_CLASS_EMPTY)
   })
 
   it('draws the observation look continuous and hides the Classes row there', async () => {
