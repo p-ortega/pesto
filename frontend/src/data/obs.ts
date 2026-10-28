@@ -439,6 +439,8 @@ export interface ObsSeries {
   baseIndex: number[]
   baseNote: string | null
   nNaN: number
+  /** Simulated values that were a 1e20-or-more placeholder; the server sent them as NaN. */
+  nSentinel: number
 }
 export type ObsSeriesResult = ({ ok: true } & ObsSeries) | Refused
 
@@ -471,6 +473,7 @@ export async function fetchObsSeries(siteId: number, iteration: number, opts?: F
       baseIndex: baseIndex as number[],
       baseNote: textOrNull(meta.base_note),
       nNaN: metaNumber(meta, 'n_nan'),
+      nSentinel: typeof meta.n_sentinel === 'number' ? meta.n_sentinel : 0,
     }
   })
 }

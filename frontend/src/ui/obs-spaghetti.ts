@@ -69,6 +69,7 @@ interface PreparedSeries {
   baseIndex: number[]
   baseNote: string | null
   nNaN: number
+  nSentinel: number
   line: LineSeries
 }
 
@@ -215,6 +216,7 @@ function prepare(
       baseIndex: result.baseIndex.filter((c) => Number.isInteger(c) && c >= 0 && c < result.nReal),
       baseNote: result.baseNote,
       nNaN: result.nNaN,
+      nSentinel: result.nSentinel,
       line: { values, count: result.count, nReal: result.nReal, x },
     })
   })
@@ -296,6 +298,10 @@ function legendLines(prepared: PreparedSite): string[] {
   const missing = prepared.series.reduce((sum, s) => sum + s.nNaN, 0)
   if (missing > 0) {
     lines.push(`${plural(missing, 'simulated value is', 'simulated values are')} missing; their lines break there, never joined`)
+  }
+  const sentinels = prepared.series.reduce((sum, s) => sum + s.nSentinel, 0)
+  if (sentinels > 0) {
+    lines.push(`${plural(sentinels, 'simulated value is', 'simulated values are')} a sentinel (a dry or no-flow placeholder) and left out; their lines break there`)
   }
   if (prepared.noTime > 0) {
     lines.push(`${plural(prepared.noTime, 'observation has', 'observations have')} no time, so ${prepared.noTime === 1 ? 'it is' : 'they are'} not drawn`)

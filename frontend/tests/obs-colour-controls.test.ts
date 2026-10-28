@@ -252,6 +252,18 @@ describe('renderObsLegend', () => {
     expect(text).toContain('1 site with an unknown layer, shown only under all layers')
   })
 
+  it('lets a long limit label grow instead of running into the next one', () => {
+    const el = document.createElement('div')
+    renderObsLegend(el, { ...base, limits: [-1.5e30, 1.5e30] })
+    const figures = Array.from(el.querySelectorAll<HTMLElement>('.legend-figures > span'))
+    expect(figures.map((f) => f.textContent)).toEqual(['-1.500e+30', '1.500e+30'])
+    for (const figure of figures) {
+      expect(figure.style.width).toBe('')
+      expect(figure.style.minWidth).toBe('7ch')
+      expect(figure.style.whiteSpace).toBe('nowrap')
+    }
+  })
+
   it('says how many observations lost to a later one of the same site, and is quiet when none did', () => {
     const el = document.createElement('div')
     renderObsLegend(el, base)
