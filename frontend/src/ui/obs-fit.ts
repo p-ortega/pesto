@@ -59,6 +59,8 @@ const PANEL_HEIGHT = 280
 const HIST_HEIGHT = 220
 const MARKER_RADIUS = 3
 const BAR_WIDTH = 1.5
+// How far from a drawn point, in css px, a click still picks its site.
+const PICK_PX = 6
 
 /** The selected sites' answer, with how many ids were asked for and how many of those were over the cap. */
 interface SelectedState {
@@ -112,6 +114,7 @@ function largestCount(payload: Obs1to1Payload): number {
 }
 
 interface PlacedPoint {
+  siteId: number
   obsval: number
   mean: number
   q05: number | null
@@ -153,6 +156,7 @@ function placePoints(sites: readonly SitePoints[], iteration: number, lo: number
         continue
       }
       placed.points.push({
+        siteId: site.site_id,
         obsval,
         mean,
         q05: finiteOrNull(series.q05[i]),
@@ -170,26 +174,63 @@ interface PointSet {
   slot: 'series1' | 'series2'
 }
 
+/** A drawn point in css px, so a click can find the site under it. */
+interface DrawnPoint {
+  x: number
+  y: number
+  siteId: number
+}
+
+interface PointDim {
+  dimmed(siteId: number): boolean
+  alpha: number
+}
+
 // The points sit on the density's own pixels, and a bar that runs off the range is cut at its edge.
-function drawPointSets(ctx: Chart2D, size: ChartSize, range: [number, number], tokens: ChartTokens, sets: PointSet[]): void {
+// Dimming changes alpha only: faded points are drawn first, then the rest on top of them.
+function drawPointSets(
+  ctx: Chart2D,
+  size: ChartSize,
+  range: [number, number],
+  tokens: ChartTokens,
+  sets: PointSet[],
+  dim: PointDim,
+): DrawnPoint[] {
   const { area, xAxis, yAxis } = densityLayout(ctx, size, range[0], range[1])
+  const drawn: DrawnPoint[] = []
   ctx.save()
   ctx.beginPath()
   ctx.rect(area.left, area.top, area.width, area.height)
   ctx.clip()
   for (const set of sets) {
-    const bars = set.points.flatMap((p) =>
-      p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: yAxis.toPx(p.q05), high: yAxis.toPx(p.q95) }],
-    )
     const colour = tokens[set.slot]
-    drawRangeBars(ctx, bars, { colour, width: BAR_WIDTH })
-    drawMarkers(
-      ctx,
-      set.points.map((p) => ({ x: xAxis.toPx(p.obsval), y: yAxis.toPx(p.mean), hollow: p.hollow })),
-      { shape: set.shape, radius: MARKER_RADIUS, colour },
-    )
+    const faded = set.points.filter((p) => dim.dimmed(p.siteId))
+    const kept = set.points.filter((p) => !dim.dimmed(p.siteId))
+    for (const [points, alpha] of [
+      [faded, dim.alpha],
+      [kept, 1],
+    ] as const) {
+      if (points.length === 0) continue
+      ctx.globalAlpha = alpha
+      const bars = points.flatMap((p) =>
+        p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: yAxis.toPx(p.q05), high: yAxis.toPx(p.q95) }],
+      )
+      drawRangeBars(ctx, bars, { colour, width: BAR_WIDTH })
+      const marks = points.map((p) => ({ x: xAxis.toPx(p.obsval), y: yAxis.toPx(p.mean), hollow: p.hollow }))
+      drawMarkers(ctx, marks, { shape: set.shape, radius: MARKER_RADIUS, colour })
+      points.forEach((p, i) => drawn.push({ x: marks[i].x, y: marks[i].y, siteId: p.siteId }))
+    }
+    ctx.globalAlpha = 1
   }
   ctx.restore()
+  return drawn
+}
+
+// Every site with a point in reach, in drawing order and once each; never only the nearest.
+function sitesNear(points: readonly DrawnPoint[], x: number, y: number): number[] {
+  const ids = new Set<number>()
+  for (const p of points) if (Math.hypot(p.x - x, p.y - y) <= PICK_PX) ids.add(p.siteId)
+  return [...ids]
 }
 
 function formatFigure(value: number | null): string {
@@ -402,6 +443,12 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     histHost?.redraw()
   }
 
+  // Read at draw time, so a sites change only needs a redraw.
+  function pointDim(): PointDim {
+    const sites = opts.store.get().sites
+    return { dimmed: (id) => sites.size > 0 && !sites.has(id), alpha: readDimAlpha(document.documentElement) }
+  }
+
   function withBrush(base: HistogramSpec): HistogramSpec {
     return {
       ...base,
@@ -593,16 +640,26 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     failure.style.color = 'var(--status-warning)'
     failure.hidden = true
     row.appendChild(cell)
+    let points: DrawnPoint[] = []
     const canvas = createCanvasHost(box, {
       label,
       context: opts.context2d,
       draw: (ctx, size) => {
         const tokens = readChartTokens(document.documentElement)
         const drawn = drawDensity(ctx, spec, tokens, size)
-        if (drawn) drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets)
+        points = drawn ? drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets, pointDim()) : []
         failure.hidden = drawn
         failure.textContent = drawn ? '' : 'The 1:1 plot could not be drawn: its grid or range was not usable.'
       },
+    })
+    box.querySelector('canvas')?.addEventListener('click', (event) => {
+      if (hidden) return
+      const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect()
+      const ids = sitesNear(points, event.clientX - rect.left, event.clientY - rect.top)
+      if (ids.length === 0) return
+      // A point pick replaces what the brush chose, so its band would no longer be true.
+      clearBrush()
+      opts.store.set({ sites: selectSites(opts.store.get(), ids, modeOf(event)).sites }, 'obs-fit')
     })
     fitHosts.push(canvas)
     if (hidden) canvas.onHide()
@@ -782,7 +839,10 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       // The band says what the brush selected; once another view moves the sites it no longer does.
       if ([...origins].some((origin) => origin !== 'obs-fit')) clearBrush()
       if (hidden) pointsStale = true
-      else loadSelected()
+      else {
+        for (const canvas of fitHosts) canvas.redraw()
+        loadSelected()
+      }
     },
   )
 
