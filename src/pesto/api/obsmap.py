@@ -57,6 +57,12 @@ class ObsMapGroupQuery(RunQuery):
     group: str
 
 
+class ObsPdcQuery(RunQuery):
+    """``iteration`` is the one accepted field; ``RunQuery`` turns any other into a 422."""
+
+    iteration: int
+
+
 class ObsFrameQuery(RunQuery):
     """A frame is one statistic of every site of ``group`` at one exact ``time``."""
 
@@ -584,3 +590,164 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
         "n_finite": int(np.count_nonzero(np.isfinite(values))),
     }
     return blob_response(values, meta=meta, cache_control="no-store")
+
+
+PDC_RANGE_COLUMNS = ("sim_min", "sim_max", "distance")
+
+
+def _empty_pdc_sites() -> dict[str, list[int]]:
+    return {"id": [], "cell": [], "layer": [], "group_index": [], "n_obs": []}
+
+
+def _build_pdc_sites(state, cache_root, iteration: int) -> dict | ReadFailure:
+    """The conflicted sites of one iteration, with their cells and per-group counts.
+    A row built from a sentinel or a non-number is left out and counted."""
+    from pesto.ingest import obspdc
+
+    name = f"pdc/{iteration}"
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return index
+    table = obspdc.load_pdc(iteration, CacheLayout(root=Path(cache_root)))
+    if isinstance(table, ReadFailure):
+        return table
+
+    frame = table.frame
+    keep = np.ones(len(frame), dtype=bool)
+    for column in PDC_RANGE_COLUMNS:
+        keep &= usable_mask(frame[column].to_numpy(dtype=np.float64))
+    n_left_out = int((~keep).sum())
+    positions = frame["position"].to_numpy(dtype=np.int64)[keep]
+
+    n_obs_total = index.n_obs
+    outside = (positions < 0) | (positions >= n_obs_total)
+    if outside.any():
+        return ReadFailure(
+            name=name,
+            path="",
+            reason=(
+                f"{int(outside.sum())} row(s) of {name} hold a position outside the "
+                f"{n_obs_total} observations of obs_index; ingest the run again"
+            ),
+        )
+
+    sites = index.sites
+    starts = sites["start"].to_numpy(dtype=np.int64)
+    counts = sites["count"].to_numpy(dtype=np.int64)
+    if starts.size and np.any(np.diff(starts) <= 0):
+        return ReadFailure(
+            name=name, path="", reason="the sites of obs_index are not in ascending row order"
+        )
+    owner = np.searchsorted(starts, positions, side="right") - 1
+    if positions.size and (np.any(owner < 0) or np.any(positions >= starts[owner] + counts[owner])):
+        return ReadFailure(
+            name=name,
+            path="",
+            reason=f"a row of {name} holds a position that no site of obs_index covers",
+        )
+
+    group_names = [str(g) for g in index.groups["group"]]
+    group_of = {g: i for i, g in enumerate(group_names)}
+    site_group = np.array([group_of.get(str(g), -1) for g in sites["group"]], dtype=np.int64)
+    if np.any(site_group < 0):
+        return ReadFailure(name="obs_index", path="", reason="a site names a group obs_index does not list")
+
+    hits = np.bincount(owner, minlength=len(sites)) if positions.size else np.zeros(len(sites), dtype=np.int64)
+    conflicted = np.flatnonzero(hits > 0)
+    ids = sites["site_id"].to_numpy(dtype=np.int64)[conflicted]
+    order = np.argsort(ids, kind="stable")
+    conflicted, ids = conflicted[order], ids[order]
+
+    cell = np.full(ids.size, -1, dtype=np.int64)
+    layer = np.full(ids.size, -1, dtype=np.int64)
+    notes = list(table.notes)
+    manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
+    reason = _recorded_reason(manifest, "obs_cell", NO_PLACEMENT_REASON)
+    placed = None
+    if reason is None:
+        placed = obscache.get_cell(state, cache_root)
+        if isinstance(placed, ReadFailure):
+            reason, placed = _reason(placed), None
+    if placed is None:
+        notes.append(f"obs_cell: {reason}, so no conflicted site has a cell")
+    else:
+        found = pd.Index(placed.site_id).get_indexer(ids)
+        here = found >= 0
+        cell[here] = np.asarray(placed.cell, dtype=np.int64)[found[here]]
+        layer[here] = np.asarray(placed.layer, dtype=np.int64)[found[here]]
+        if not here.all():
+            notes.append(f"{int((~here).sum())} conflicted site(s) are not in the cached placement")
+
+    obs_by_group = np.bincount(site_group, weights=hits, minlength=len(group_names)).astype(np.int64)
+    sites_by_group = np.bincount(site_group[conflicted], minlength=len(group_names)).astype(np.int64)
+    return {
+        "source": table.source,
+        "source_file": table.source_file,
+        "weights_source": table.weights_source,
+        "rule": table.rule,
+        "n_obs": int(positions.size),
+        "n_sites": int(ids.size),
+        "n_unmatched": int(table.n_unmatched),
+        "n_left_out": n_left_out,
+        "by_group": [
+            {"group": g, "n_obs": int(obs_by_group[i]), "n_sites": int(sites_by_group[i])}
+            for i, g in enumerate(group_names)
+        ],
+        "sites": {
+            "id": [int(v) for v in ids],
+            "cell": [int(v) for v in cell],
+            "layer": [int(v) for v in layer],
+            "group_index": [int(v) for v in site_group[conflicted]],
+            "n_obs": [int(v) for v in hits[conflicted]],
+        },
+        "groups": group_names,
+        "notes": notes,
+    }
+
+
+@router.get("/obs/pdc")
+async def get_obs_pdc(request: Request, params: Annotated[ObsPdcQuery, Query()]) -> Response:
+    """The sites holding prior-data conflict in one iteration, their cells and per-group
+    counts, and where the figures came from. Never the pdc table itself."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    iteration = int(params.iteration)
+    name = f"pdc/{iteration}"
+    body = {
+        "available": False,
+        "reason": None,
+        "artifact": name,
+        "iteration": iteration,
+        "source": None,
+        "source_file": None,
+        "weights_source": None,
+        "rule": None,
+        "n_obs": 0,
+        "n_sites": 0,
+        "n_unmatched": 0,
+        "n_left_out": 0,
+        "by_group": [],
+        "sites": _empty_pdc_sites(),
+        "groups": [],
+        "notes": [],
+    }
+    manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
+    reason = _recorded_reason(manifest, name, f"no prior-data conflict was ingested for iteration {iteration}")
+    if reason is not None:
+        body["reason"] = reason
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+    built = obscache.memoised(
+        state,
+        cache_root,
+        ("pdc_sites", iteration),
+        ("obs_index", name, "obs_cell"),
+        lambda _layout: _build_pdc_sites(state, cache_root, iteration),
+    )
+    if isinstance(built, ReadFailure):
+        return problem_from_failure(404, built)
+    body.update(built, available=True)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
