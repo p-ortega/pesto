@@ -8,6 +8,8 @@ import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../da
 import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
 import { chipFactsFrom, type ConfigFact } from '../data/config'
 import { pickPoint, pickPointsWithin, pointsOnLayer, type DrawnPoints } from '../data/points'
+import type Flatbush from 'flatbush'
+import { buildDotIndex, dotsInPolygon } from '../data/lasso'
 import { fetchObsGroups, fetchObsSite, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
@@ -28,6 +30,7 @@ import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
+import { renderLasso, type LassoKeys } from '../ui/lasso'
 import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
@@ -410,6 +413,24 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   whereEl.setAttribute('role', 'status')
   whereEl.classList.add('floating')
   whereEl.hidden = true
+
+  // D-11 to D-13: the lasso picks only the site dots drawn now, through one index per drawn set.
+  const LASSO_NO_DOTS = 'no observation site dots are drawn; colour the map by observations'
+  const LASSO_EMPTY = 'no site dots inside the region; the selection is unchanged'
+  const lasso = renderLasso({
+    area: mapCanvasArea,
+    canvas,
+    buttonHost: topLeftEl,
+    canvasPoint,
+    screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
+    worldToScreen,
+    onRelease: lassoRelease,
+    onTooSmall: () => lassoEmpty(),
+  })
+  let lassoIndex: { key: string; xy: Float32Array; tree: Flatbush | null } | null = null
+  let lassoAvailable = false
+  // The sites the lasso last wrote: a sites change to anything else takes its outline away.
+  let lassoSites: ReadonlySet<number> | null = null
   topLeftEl.appendChild(whereEl)
   let whereText = ''
 
@@ -541,10 +562,64 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if ((hatch || dots) && canvas.getAttribute('data-drawn') === 'true') redraw()
   }
 
+  // The camera's inverse of screenToWorld, from where the screen origin and one pixel land.
+  function worldToScreen(wx: number, wy: number): [number, number] {
+    if (!camera) return [wx, wy]
+    const [x0, y0] = camera.screenToWorld(0, 0)
+    const [x1, y1] = camera.screenToWorld(1, 1)
+    return [(wx - x0) / (x1 - x0), (wy - y0) / (y1 - y0)]
+  }
+
+  // The site dots on the layer now, or null; a set of another length than the layer's is not drawn.
+  function drawnSiteDots(): { dots: ObsDots; data: ObsGroupData } | null {
+    if (!obsActive || obsDots === null || obsData === null) return null
+    if (drawnPoints.kind !== 'obs' || drawnPoints.count === 0 || obsDots.rows.length !== drawnPoints.count) return null
+    return { dots: obsDots, data: obsData }
+  }
+
+  function syncLasso(): void {
+    const ok = drawnSiteDots() !== null
+    if (ok === lassoAvailable) return
+    lassoAvailable = ok
+    lasso.setAvailable(ok ? { ok: true } : { ok: false, reason: LASSO_NO_DOTS })
+  }
+
+  function lassoEmpty(): void {
+    lasso.clearOutline()
+    showObsNotice('The lasso caught no site', LASSO_EMPTY, 'info')
+  }
+
+  // D-12, D-13: drawn dots only, by site x, y; plain replaces, shift adds, alt removes; sites only.
+  function lassoRelease(path: [number, number][], keys: LassoKeys): void {
+    const drawn = drawnSiteDots()
+    if (drawn === null) {
+      lassoEmpty()
+      return
+    }
+    const { dots, data } = drawn
+    const key = `${obsDotsKey}|${dots.rows.length}`
+    if (lassoIndex === null || lassoIndex.key !== key || lassoIndex.xy !== dots.xy) {
+      lassoIndex = { key, xy: dots.xy, tree: buildDotIndex(dots.xy) }
+    }
+    const hits = dotsInPolygon(lassoIndex.tree, dots.xy, path)
+    if (hits.length === 0) {
+      lassoEmpty()
+      return
+    }
+    const ids = hits.map((i) => data.rows[dots.rows[i]].siteId)
+    // A cell answer still out would write its own sites over these when it lands.
+    dropPendingLink()
+    const sites = selectSites(store.get(), ids, modeOf(keys)).sites
+    lassoSites = sites
+    store.set({ sites }, 'map')
+    refreshMarks()
+  }
+
   // Site dots follow selection.sites and pilot-point dots follow selection.pars: the selected ones
   // are ringed and, while their kind has a selection, the rest dim (D-02). Never a hidden dot.
   // The at-bounds and conflict swatches sit next to the dim flag, from the last overlay build.
   function refreshPointMarks(): boolean {
+    syncLasso()
     if (!layer) return false
     const selection = store.get()
     const { kind, count } = drawnPoints
@@ -1109,12 +1184,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // camera.screenToWorld then pickAtWorld on a canvas click -- both are
   // null until loadAndDraw lands, so a click before then is a no-op.
   function handleCanvasClick(event: MouseEvent): void {
-    // The click that ends a pan selects nothing.
+    // The click that ends a lasso drag or a pan selects nothing.
+    if (lasso.consumeClick()) return
     if (gestureWasDrag) {
       gestureWasDrag = false
       return
     }
     if (!camera || !meshGeom || loadingIteration !== null) return
+    clearLassoOutline()
     const rect = canvas.getBoundingClientRect()
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width
     const y = ((event.clientY - rect.top) / rect.height) * canvas.height
@@ -1251,7 +1328,19 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (!camera) return
     layer?.setMatrix(camera.matrix())
     redraw()
+    lasso.redraw()
     renderWhere()
+  }
+
+  function clearLassoOutline(): void {
+    lassoSites = null
+    lasso.clearOutline()
+  }
+
+  // No map to draw on: the lasso's button and outline canvas go with it.
+  function removeCanvas(): void {
+    lasso.dispose()
+    canvas.remove()
   }
 
   // The canvas's pixel size follows the box it sits in, at the device's
@@ -1297,6 +1386,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let gestureWasDrag = false
 
   canvas.addEventListener('pointerdown', (event) => {
+    // An armed lasso owns the drag; the map must not pan under it.
+    if (lasso.armed()) return
     if (!camera || event.button !== 0) return
     // Ignore a second finger, but not a press that follows a lost release: the
     // same pointer again, or another one after the first lost capture.
@@ -1561,7 +1652,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       detail: "pesto needs WebGL2, which this browser doesn't provide. Try a recent version of Chrome, Firefox or Edge.",
       tone: 'critical',
     })
-    canvas.remove()
+    removeCanvas()
     return { viewFields }
   }
 
@@ -2872,7 +2963,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         tone: 'info',
       })
       paintPicker({ kind: 'failed' })
-      canvas.remove()
+      removeCanvas()
       return
     }
     meshBytes = positions.byteLength + cellIndexBuf.byteLength + indices.byteLength
@@ -2925,7 +3016,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         tone: 'serious',
       })
       paintPicker({ kind: 'failed' })
-      canvas.remove()
+      removeCanvas()
       return
     }
     allIdentities = identities
@@ -2951,7 +3042,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         tone: 'serious',
       })
       paintPicker({ kind: 'failed' })
-      canvas.remove()
+      removeCanvas()
       return
     }
     pointXy = await readPointXy(iteration)
@@ -2976,7 +3067,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       })
       paintPicker({ kind: 'none-drawable', unmapped })
       opts.onPanelFacts({ unmapped, artifactNotes, parTable })
-      canvas.remove()
+      removeCanvas()
       return
     }
     // D-11: a reopened run comes back showing the group it was left on,
@@ -3153,7 +3244,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
     store.subscribe(
       (selection) => selection.sites,
-      () => {
+      (next) => {
+        // The outline stays for the lasso's own write and goes with any other sites change.
+        if (lassoSites === null || !sameSet(next.sites, lassoSites)) clearLassoOutline()
         askSitesWhere()
         refreshMarks()
       },
