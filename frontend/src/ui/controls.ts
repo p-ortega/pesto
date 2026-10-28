@@ -6,7 +6,17 @@
 
 import type { RealNamesResult } from '../data/reals'
 import { STOPS, type ColormapName, type LimitsMode, type ValueScale } from '../gl/colormap'
-import { CLASS_CHOICES, DEFAULT_STYLE, isClassCount, type EffectiveStyle, type FieldStyle, type StyleNotes } from '../gl/field-style'
+import {
+  CLASS_CHOICES,
+  DEFAULT_STYLE,
+  SYMMETRIC_TURNED_OFF_PREFIX,
+  followLimits,
+  isClassCount,
+  symmetricRefusal,
+  type EffectiveStyle,
+  type FieldStyle,
+  type StyleNotes,
+} from '../gl/field-style'
 
 export const STATISTICS = ['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'] as const
 export type Statistic = (typeof STATISTICS)[number]
@@ -35,6 +45,7 @@ const LOG_WARNING_ID = 'scale-log10-warning'
 const REAL_NAMES_LIST_ID = 'go-to-realization-names'
 const GO_TO_REFUSAL_ID = 'go-to-realization-refusal'
 const CLASSES_NOTE_ID = 'classes-note'
+const SYMMETRIC_REASON_ID = 'symmetric-reason'
 
 export interface FieldChoice {
   iteration: number
@@ -79,6 +90,8 @@ export interface SelectionControlsOptions {
   initial?: ColourFields & {
     stat?: Statistic
   }
+  /** A turned-off line the view already decided on, such as a restored symmetric a log scale refused. */
+  styleNote?: string | null
   onSelectionChange: (selection: FieldChoice) => void
   /** MAP-11/D-15: the one button-shaped primary action this map surface
    *  has. Calls the same `camera.fit(bounds)` the `Home` key triggers. */
@@ -94,8 +107,9 @@ export interface SelectionControlsHandle {
    *  controls without emitting onSelectionChange -- for the view to call
    *  whenever it changes one of these fields on the control's behalf (a
    *  group change re-inferring the scale, say), so the control the user
-   *  sees never disagrees with what is actually drawn (WINDOWS.md #5, #8). */
-  sync(selection: ColourFields): void
+   *  sees never disagrees with what is actually drawn (WINDOWS.md #5, #8).
+   *  `styleNote` sets the symmetric turned-off line, null clears it, absent leaves it. */
+  sync(selection: ColourFields, styleNote?: string | null): void
   /** Moves the layer slider without emitting onSelectionChange. */
   setLayer(layer: number): void
   /** The iteration the emitted selections carry from now on. Emits nothing. */
@@ -443,12 +457,58 @@ export function renderSelectionControls(
   classesNote.style.color = 'var(--status-warning)'
   classesNote.style.display = 'none'
 
+  // Symmetric about 0 (D-08): disabled with its reason on log10 or manual limits (D-09, D-10).
+  const symmetricLabel = parameterOnly(document.createElement('label'))
+  symmetricLabel.classList.add('label')
+  symmetricLabel.textContent = 'Symmetric about 0'
+  const symmetricInput = document.createElement('input')
+  symmetricInput.type = 'checkbox'
+  symmetricInput.setAttribute('aria-label', 'Symmetric about 0')
+  symmetricInput.checked = opts.initial?.style?.symmetric ?? DEFAULT_STYLE.symmetric
+  symmetricLabel.appendChild(symmetricInput)
+
+  const symmetricReason = parameterOnly(document.createElement('div'))
+  symmetricReason.classList.add('label')
+  symmetricReason.id = SYMMETRIC_REASON_ID
+  symmetricReason.setAttribute('role', 'status')
+  symmetricReason.style.color = 'var(--status-warning)'
+
+  // A "was turned off" line outlives redraws, so a dropped request always leaves a trace; only a user move clears it.
+  let turnedOffLine: string | null = opts.styleNote ?? null
+  let symmetricNote: string | null = null
+
+  function showSymmetricReason(): void {
+    const text = turnedOffLine ?? symmetricNote ?? ''
+    symmetricReason.textContent = text
+    symmetricReason.style.display = text === '' ? 'none' : ''
+    if (text === '') symmetricInput.removeAttribute('aria-describedby')
+    else symmetricInput.setAttribute('aria-describedby', SYMMETRIC_REASON_ID)
+  }
+  showSymmetricReason()
+
   // The rest of the request rides along unchanged until its own control exists.
   let style: FieldStyle = { ...(opts.initial?.style ?? DEFAULT_STYLE) }
 
   function currentStyle(): FieldStyle {
     const n = Number(classesSelect.value)
-    return { ...style, classes: isClassCount(n) ? n : DEFAULT_STYLE.classes }
+    return { ...style, classes: isClassCount(n) ? n : DEFAULT_STYLE.classes, symmetric: symmetricInput.checked }
+  }
+
+  // Run before emitting a scale or limits change, so a refused symmetric is never sent.
+  function followScaleAndLimits(): void {
+    const scale: ValueScale = scaleSelect.value === 'log10' ? 'log10' : 'linear'
+    const limitsMode: LimitsMode =
+      limitsSelect.value === 'minmax' ? 'minmax' : limitsSelect.value === 'manual' ? 'manual' : 'robust'
+    const followed = followLimits(currentStyle(), scale, limitsMode)
+    symmetricNote = symmetricRefusal(scale, limitsMode)
+    symmetricInput.disabled = symmetricNote !== null
+    if (followed.turnedOff !== null) {
+      symmetricInput.checked = false
+      turnedOffLine = SYMMETRIC_TURNED_OFF_PREFIX + followed.turnedOff
+    } else if (symmetricNote === null) {
+      turnedOffLine = null
+    }
+    showSymmetricReason()
   }
 
   function currentManualLimits(): [number, number] | null {
@@ -546,11 +606,13 @@ export function renderSelectionControls(
 
   scaleSelect.addEventListener('change', () => {
     scaleTouchedByUser = true
+    followScaleAndLimits()
     opts.onSelectionChange(currentSelection())
   })
 
   limitsSelect.addEventListener('change', () => {
     updateManualVisibility()
+    followScaleAndLimits()
     opts.onSelectionChange(currentSelection())
   })
 
@@ -563,6 +625,12 @@ export function renderSelectionControls(
   })
 
   classesSelect.addEventListener('change', () => {
+    opts.onSelectionChange(currentSelection())
+  })
+
+  symmetricInput.addEventListener('change', () => {
+    turnedOffLine = null
+    showSymmetricReason()
     opts.onSelectionChange(currentSelection())
   })
 
@@ -584,6 +652,8 @@ export function renderSelectionControls(
   el.appendChild(manualUpper)
   el.appendChild(classesLabel)
   el.appendChild(classesNote)
+  el.appendChild(symmetricLabel)
+  el.appendChild(symmetricReason)
 
   return {
     setLogUsability(count: number): void {
@@ -600,7 +670,7 @@ export function renderSelectionControls(
         scaleSelect.removeAttribute('aria-describedby')
       }
     },
-    sync(selection): void {
+    sync(selection, styleNote): void {
       colormapSelect.value = selection.colormap
       reverseInput.checked = selection.reverseColormap
       scaleSelect.value = selection.scale
@@ -614,6 +684,11 @@ export function renderSelectionControls(
       if (selection.style) {
         style = { ...selection.style }
         classesSelect.value = String(selection.style.classes)
+        symmetricInput.checked = selection.style.symmetric
+      }
+      if (styleNote !== undefined) {
+        turnedOffLine = styleNote
+        showSymmetricReason()
       }
     },
     setLayer(layer): void {
@@ -671,6 +746,9 @@ export function renderSelectionControls(
       classesNote.style.display = notes.classes === null ? 'none' : ''
       if (notes.classes === null) classesSelect.removeAttribute('aria-describedby')
       else classesSelect.setAttribute('aria-describedby', CLASSES_NOTE_ID)
+      symmetricNote = notes.symmetric
+      symmetricInput.disabled = notes.symmetric !== null
+      showSymmetricReason()
     },
   }
 }

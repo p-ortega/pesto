@@ -3,7 +3,7 @@
 // controls all read the one effective object, so the legend can never show
 // steps the map does not draw (D-02).
 
-import { classEdges, classOf, type LimitsMode, type ValueScale } from './colormap'
+import { classEdges, classOf, symmetricLimits, type LimitsMode, type ValueScale } from './colormap'
 
 export const CLASS_CHOICES = [0, 7, 9, 11] as const
 export type ClassCount = (typeof CLASS_CHOICES)[number]
@@ -49,11 +49,39 @@ export const CONTINUOUS: EffectiveStyle = { classes: 0, symmetric: false, textur
 export const ONE_CLASS_EQUAL = 'the limits are equal, so every value falls in one class'
 export const ONE_CLASS_EMPTY = 'no cell has a value, so there is nothing to class'
 
+export const SYMMETRIC_LOG_REASON = 'a log scale has no zero to centre on'
+export const SYMMETRIC_MANUAL_REASON = 'manual limits are used as typed'
+export const SYMMETRIC_TURNED_OFF_PREFIX = 'symmetric was turned off: '
+
+/** Why the symmetric switch cannot apply under this scale and limits mode, or null when it can (D-09, D-10). */
+export function symmetricRefusal(scale: ValueScale, limitsMode: LimitsMode): string | null {
+  if (scale === 'log10') return SYMMETRIC_LOG_REASON
+  if (limitsMode === 'manual') return SYMMETRIC_MANUAL_REASON
+  return null
+}
+
+/**
+ * Turns a symmetric request off when the scale or limits mode refuses it, and
+ * names the reason so the caller can say so. Anything else passes unchanged.
+ */
+export function followLimits(
+  style: FieldStyle,
+  scale: ValueScale,
+  limitsMode: LimitsMode,
+): { style: FieldStyle; turnedOff: string | null } {
+  const refusal = symmetricRefusal(scale, limitsMode)
+  if (!style.symmetric || refusal === null) return { style, turnedOff: null }
+  return { style: { ...style, symmetric: false }, turnedOff: refusal }
+}
+
 export function resolveStyle(requested: FieldStyle, ctx: StyleContext): { effective: EffectiveStyle; notes: StyleNotes } {
+  const symmetricNote = symmetricRefusal(ctx.scale, ctx.limitsMode)
+  const symmetric = requested.symmetric && symmetricNote === null
   let classes: number = requested.classes
   let classesNote: string | null = null
   if (classes > 0) {
-    const [lo, hi] = ctx.limits
+    // Classes split the limits that are drawn, so a symmetric [3, 3] still steps across -3..3.
+    const [lo, hi] = symmetric ? symmetricLimits(ctx.limits) : ctx.limits
     // Limits that cannot be split draw every value in the ramp middle, the one swatch the legend shows.
     if (!ctx.valued) {
       classes = 1
@@ -64,8 +92,8 @@ export function resolveStyle(requested: FieldStyle, ctx: StyleContext): { effect
     }
   }
   return {
-    effective: { classes, symmetric: false, texture: false },
-    notes: { classes: classesNote, symmetric: null, texture: null },
+    effective: { classes, symmetric, texture: false },
+    notes: { classes: classesNote, symmetric: symmetricNote, texture: null },
   }
 }
 
