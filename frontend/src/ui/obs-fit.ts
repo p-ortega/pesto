@@ -9,23 +9,35 @@ import { ApiError } from '../data/client'
 import { LatestWins } from '../data/latest-wins'
 import {
   fetchObs1to1,
+  fetchObsBrush,
   fetchObsPoints,
   fetchObsResidHist,
   MAX_POINT_SITES,
   TABLE_RMSE_LABEL,
   type Obs1to1Payload,
   type Obs1to1Result,
+  type ObsBrushResult,
   type ObsPointsResult,
   type ObsResidHistPayload,
   type ObsResidHistResult,
   type SitePoints,
 } from '../data/obs'
+import { modeOf } from '../state/modifiers'
+import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
+import { attachBrush, type BrushHandle, type BrushKeys } from './charts/brush'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
 import { densityLayout, drawDensity, type DensitySpec } from './charts/density'
-import { drawHistogram, type Chart2D, type ChartSize, type HistogramSpec } from './charts/histogram'
+import {
+  drawHistogram,
+  histogramLayout,
+  type Chart2D,
+  type ChartSize,
+  type HistogramOverlay,
+  type HistogramSpec,
+} from './charts/histogram'
 import { drawMarkers, drawRangeBars } from './charts/marks'
-import { readChartTokens, type ChartTokens } from './charts/tokens'
+import { readChartTokens, readDimAlpha, type ChartTokens } from './charts/tokens'
 import { renderNotice } from './chrome'
 
 export interface GroupFitOptions {
@@ -47,6 +59,8 @@ const PANEL_HEIGHT = 280
 const HIST_HEIGHT = 220
 const MARKER_RADIUS = 3
 const BAR_WIDTH = 1.5
+// How far from a drawn point, in css px, a click still picks its site.
+const PICK_PX = 6
 
 /** The selected sites' answer, with how many ids were asked for and how many of those were over the cap. */
 interface SelectedState {
@@ -100,6 +114,7 @@ function largestCount(payload: Obs1to1Payload): number {
 }
 
 interface PlacedPoint {
+  siteId: number
   obsval: number
   mean: number
   q05: number | null
@@ -141,6 +156,7 @@ function placePoints(sites: readonly SitePoints[], iteration: number, lo: number
         continue
       }
       placed.points.push({
+        siteId: site.site_id,
         obsval,
         mean,
         q05: finiteOrNull(series.q05[i]),
@@ -158,26 +174,63 @@ interface PointSet {
   slot: 'series1' | 'series2'
 }
 
+/** A drawn point in css px, so a click can find the site under it. */
+interface DrawnPoint {
+  x: number
+  y: number
+  siteId: number
+}
+
+interface PointDim {
+  dimmed(siteId: number): boolean
+  alpha: number
+}
+
 // The points sit on the density's own pixels, and a bar that runs off the range is cut at its edge.
-function drawPointSets(ctx: Chart2D, size: ChartSize, range: [number, number], tokens: ChartTokens, sets: PointSet[]): void {
+// Dimming changes alpha only: faded points are drawn first, then the rest on top of them.
+function drawPointSets(
+  ctx: Chart2D,
+  size: ChartSize,
+  range: [number, number],
+  tokens: ChartTokens,
+  sets: PointSet[],
+  dim: PointDim,
+): DrawnPoint[] {
   const { area, xAxis, yAxis } = densityLayout(ctx, size, range[0], range[1])
+  const drawn: DrawnPoint[] = []
   ctx.save()
   ctx.beginPath()
   ctx.rect(area.left, area.top, area.width, area.height)
   ctx.clip()
   for (const set of sets) {
-    const bars = set.points.flatMap((p) =>
-      p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: yAxis.toPx(p.q05), high: yAxis.toPx(p.q95) }],
-    )
     const colour = tokens[set.slot]
-    drawRangeBars(ctx, bars, { colour, width: BAR_WIDTH })
-    drawMarkers(
-      ctx,
-      set.points.map((p) => ({ x: xAxis.toPx(p.obsval), y: yAxis.toPx(p.mean), hollow: p.hollow })),
-      { shape: set.shape, radius: MARKER_RADIUS, colour },
-    )
+    const faded = set.points.filter((p) => dim.dimmed(p.siteId))
+    const kept = set.points.filter((p) => !dim.dimmed(p.siteId))
+    for (const [points, alpha] of [
+      [faded, dim.alpha],
+      [kept, 1],
+    ] as const) {
+      if (points.length === 0) continue
+      ctx.globalAlpha = alpha
+      const bars = points.flatMap((p) =>
+        p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: yAxis.toPx(p.q05), high: yAxis.toPx(p.q95) }],
+      )
+      drawRangeBars(ctx, bars, { colour, width: BAR_WIDTH })
+      const marks = points.map((p) => ({ x: xAxis.toPx(p.obsval), y: yAxis.toPx(p.mean), hollow: p.hollow }))
+      drawMarkers(ctx, marks, { shape: set.shape, radius: MARKER_RADIUS, colour })
+      points.forEach((p, i) => drawn.push({ x: marks[i].x, y: marks[i].y, siteId: p.siteId }))
+    }
+    ctx.globalAlpha = 1
   }
   ctx.restore()
+  return drawn
+}
+
+// Every site with a point in reach, in drawing order and once each; never only the nearest.
+function sitesNear(points: readonly DrawnPoint[], x: number, y: number): number[] {
+  const ids = new Set<number>()
+  for (const p of points) if (Math.hypot(p.x - x, p.y - y) <= PICK_PX) ids.add(p.siteId)
+  return [...ids]
 }
 
 function formatFigure(value: number | null): string {
@@ -275,6 +328,35 @@ function histSpec(payload: DrawableHist): HistogramSpec {
   return { space: 'native', edges: payload.edges, series, xLabel: 'residual: simulated minus observed' }
 }
 
+type BrushOn = 'first' | 'last'
+
+interface BrushTarget {
+  iteration: number
+  /** The iteration whose answer may draw as the outline, and its colour slot. */
+  other: { iteration: number; slot: 0 | 1 } | null
+}
+
+// A one-series histogram can only be brushed in the iteration it has.
+function brushTarget(payload: DrawableHist, on: BrushOn): BrushTarget {
+  if (payload.last === null) return { iteration: payload.first.iteration, other: null }
+  if (on === 'last') return { iteration: payload.last.iteration, other: { iteration: payload.first.iteration, slot: 0 } }
+  return { iteration: payload.first.iteration, other: { iteration: payload.last.iteration, slot: 1 } }
+}
+
+interface HeldBrush {
+  range: [number, number]
+  overlay: HistogramOverlay | null
+}
+
+interface BrushNote {
+  lines: string[]
+  warn: boolean
+}
+
+function boxSize(box: HTMLElement): ChartSize {
+  return { width: box.clientWidth, height: box.clientHeight }
+}
+
 // What the histogram's legend says besides the colours: the sign, the zero-weight count and every count left out.
 function histLegend(payload: ObsResidHistPayload): string[] {
   const lines = ['residual: simulated minus observed']
@@ -308,7 +390,16 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
   let pointsStale = false
   let fitHosts: CanvasHost[] = []
   let histHost: CanvasHost | null = null
+  let histBrush: BrushHandle | null = null
+  // Which iteration the brush reads; kept across groups.
+  let brushOn: BrushOn = 'last'
+  // The band from the last brush, kept until another view changes the sites or the group changes.
+  let held: HeldBrush | null = null
+  let liveBand: [number, number] | null = null
+  let brushNote: BrushNote | null = null
+  let brushNoteEl: HTMLElement | null = null
   const histSlot = new LatestWins<ObsResidHistResult>()
+  const brushSlot = new LatestWins<ObsBrushResult>()
   const fitSlot = new LatestWins<Obs1to1Result>()
   const pointsSlot = new LatestWins<ObsPointsResult>()
 
@@ -322,8 +413,151 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
   }
 
   function destroyHistHost(): void {
+    histBrush?.dispose()
+    histBrush = null
     histHost?.destroy()
     histHost = null
+    brushNoteEl = null
+  }
+
+  function showBrushNote(): void {
+    if (brushNoteEl === null) return
+    brushNoteEl.textContent = ''
+    if (brushNote === null) return
+    for (const text of brushNote.lines) {
+      const el = line(brushNoteEl, text)
+      if (brushNote.warn) el.style.color = 'var(--status-warning)'
+    }
+  }
+
+  function setBrushNote(note: BrushNote | null): void {
+    brushNote = note
+    showBrushNote()
+  }
+
+  function clearBrush(): void {
+    brushSlot.cancel()
+    held = null
+    liveBand = null
+    setBrushNote(null)
+    histHost?.redraw()
+  }
+
+  // Read at draw time, so a sites change only needs a redraw.
+  function pointDim(): PointDim {
+    const sites = opts.store.get().sites
+    return { dimmed: (id) => sites.size > 0 && !sites.has(id), alpha: readDimAlpha(document.documentElement) }
+  }
+
+  function withBrush(base: HistogramSpec): HistogramSpec {
+    return {
+      ...base,
+      band: liveBand ?? held?.range ?? null,
+      // A live drag shows only its own band; the outline belongs to the last answered brush.
+      overlay: liveBand === null ? (held?.overlay ?? null) : null,
+      dimAlpha: readDimAlpha(document.documentElement),
+    }
+  }
+
+  function renderBrushSwitch(section: HTMLElement, payload: DrawableHist): void {
+    const el = document.createElement('div')
+    el.classList.add('brush-switch')
+    el.setAttribute('role', 'group')
+    el.setAttribute('aria-label', 'Which iteration the brush reads')
+    section.appendChild(el)
+    const label = document.createElement('span')
+    label.classList.add('label')
+    label.textContent = 'brush on:'
+    el.appendChild(label)
+    const first = document.createElement('button')
+    first.type = 'button'
+    first.textContent = `first (iteration ${payload.first.iteration})`
+    const last = document.createElement('button')
+    last.type = 'button'
+    last.textContent = payload.last === null ? 'last' : `last (iteration ${payload.last.iteration})`
+    el.append(first, last)
+    const press = () => {
+      const on = payload.last === null ? 'first' : brushOn
+      first.setAttribute('aria-pressed', String(on === 'first'))
+      last.setAttribute('aria-pressed', String(on === 'last'))
+    }
+    if (payload.last === null) {
+      last.disabled = true
+      line(section, `only iteration ${payload.first.iteration} has observation statistics, so the brush reads that one`, true)
+    } else {
+      first.addEventListener('click', () => {
+        brushOn = 'first'
+        press()
+      })
+      last.addEventListener('click', () => {
+        brushOn = 'last'
+        press()
+      })
+    }
+    press()
+  }
+
+  function settleBrush(result: ObsBrushResult, name: string, target: BrushTarget, range: [number, number], keys: BrushKeys, bins: number): void {
+    if (!result.ok) {
+      setBrushNote({ lines: [`The brush could not be read: ${result.artifact}: ${result.reason}`], warn: true })
+      return
+    }
+    const answer = result.payload
+    if (answer.group !== name) {
+      setBrushNote({ lines: [`The brush could not be read: the server answered for group ${answer.group}, not ${name}`], warn: true })
+      return
+    }
+    // Never borrow the other iteration's answer for the one the switch named.
+    if (answer.iteration !== target.iteration) {
+      setBrushNote({ lines: [`The brush could not be read: the server answered for iteration ${answer.iteration}, not ${target.iteration}`], warn: true })
+      return
+    }
+    const { no_target, sentinel, no_valid_realization } = answer.left_out
+    // The route counts these over the whole group at this iteration, not only the brushed range.
+    const leftOut = `left out of the histogram at iteration ${answer.iteration}: ${count(no_target)} with no target, ${count(sentinel)} sentinel, ${count(no_valid_realization)} with no valid realization`
+    if (answer.sites.length === 0) {
+      setBrushNote({ lines: ['no site has an observation in that range; the selection is unchanged', leftOut], warn: false })
+      return
+    }
+    const lines = [
+      `brushed iteration ${answer.iteration}, residual ${formatFigure(range[0])} to ${formatFigure(range[1])}: ${plural(answer.sites.length, 'site', 'sites')} with ${plural(answer.n_obs_in_range, 'observation', 'observations')} in the range`,
+    ]
+    let overlay: HistogramOverlay | null = null
+    if (target.other !== null) {
+      const other = answer.other
+      const want = target.other.iteration
+      if (other === null) lines.push(`no outline of the same sites: the server sent none for iteration ${want}`)
+      else if (other.iteration !== want) lines.push(`no outline of the same sites: the server sent iteration ${other.iteration}, not ${want}`)
+      else if (other.density.length !== bins) lines.push(`no outline of the same sites: its ${other.density.length} bins do not match the histogram's ${bins}`)
+      else {
+        overlay = { density: other.density, label: `the same sites in iteration ${other.iteration}`, slot: target.other.slot }
+        lines.push(`outline: ${plural(other.n_sites, 'of these sites has', 'of these sites have')} ${plural(other.n_obs, 'observation', 'observations')} counted in iteration ${other.iteration}`)
+      }
+    }
+    lines.push(leftOut)
+    held = { range, overlay }
+    setBrushNote({ lines, warn: false })
+    histHost?.redraw()
+    opts.store.set({ sites: selectSites(opts.store.get(), answer.sites, modeOf(keys)).sites }, 'obs-fit')
+  }
+
+  // One request per release; the slot drops the answer to any older drag.
+  function brush(payload: DrawableHist, range: [number, number], keys: BrushKeys): void {
+    if (hidden || group === null) return
+    const name = group
+    const target = brushTarget(payload, brushOn)
+    const [lo, hi] = range
+    const bins = payload.edges.length - 1
+    void brushSlot.run(`${name}|${target.iteration}|${lo}|${hi}`, (signal) => fetchObsBrush(name, target.iteration, lo, hi, { signal })).then(
+      (answer) => {
+        if (answer.stale) return
+        settleBrush(answer.value, name, target, range, keys, bins)
+      },
+      (error: unknown) => {
+        const failure = describeFailure(error, 'obs_agg')
+        setBrushNote({ lines: [`The brush could not be read: ${failure.artifact}: ${failure.reason}`], warn: true })
+      },
+    )
   }
 
   function renderHist(): void {
@@ -345,7 +579,7 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       return
     }
     if (drawableHist(payload)) {
-      const spec = histSpec(payload)
+      const base = histSpec(payload)
       const box = document.createElement('div')
       box.style.height = `${HIST_HEIGHT}px`
       section.appendChild(box)
@@ -356,11 +590,33 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
         label: `Residual histogram of group ${payload.group}, simulated minus observed, as densities`,
         context: opts.context2d,
         draw: (ctx, size) => {
-          const ok = drawHistogram(ctx, spec, readChartTokens(document.documentElement), size)
+          const ok = drawHistogram(ctx, withBrush(base), readChartTokens(document.documentElement), size)
           failure.hidden = ok
           failure.textContent = ok ? '' : 'The histogram could not be drawn: its bin edges or densities were not usable.'
         },
       })
+      const canvas = box.querySelector('canvas')
+      if (canvas !== null) {
+        // The layout is worked out from the box at each press, so a resize never leaves the brush on old pixels.
+        const layout = () => histogramLayout(base, boxSize(box))
+        histBrush = attachBrush(canvas, {
+          plotLeft: () => layout()?.left ?? 0,
+          plotRight: () => layout()?.right ?? 0,
+          // The residual edges are native, but edgeAt keeps a log10 histogram in its edges' space too.
+          invert: (px) => layout()?.edgeAt(px) ?? Number.NaN,
+          onDrag: (range) => {
+            if (hidden) return
+            liveBand = range
+            histHost?.redraw()
+          },
+          onBrush: (range, keys) => brush(payload, range, keys),
+        })
+      }
+      renderBrushSwitch(section, payload)
+      brushNoteEl = document.createElement('div')
+      brushNoteEl.classList.add('obs-fit-brush-note')
+      section.appendChild(brushNoteEl)
+      showBrushNote()
       if (hidden) histHost.onHide()
       else histHost.redraw()
     } else {
@@ -384,16 +640,26 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     failure.style.color = 'var(--status-warning)'
     failure.hidden = true
     row.appendChild(cell)
+    let points: DrawnPoint[] = []
     const canvas = createCanvasHost(box, {
       label,
       context: opts.context2d,
       draw: (ctx, size) => {
         const tokens = readChartTokens(document.documentElement)
         const drawn = drawDensity(ctx, spec, tokens, size)
-        if (drawn) drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets)
+        points = drawn ? drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets, pointDim()) : []
         failure.hidden = drawn
         failure.textContent = drawn ? '' : 'The 1:1 plot could not be drawn: its grid or range was not usable.'
       },
+    })
+    box.querySelector('canvas')?.addEventListener('click', (event) => {
+      if (hidden) return
+      const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect()
+      const ids = sitesNear(points, event.clientX - rect.left, event.clientY - rect.top)
+      if (ids.length === 0) return
+      // A point pick replaces what the brush chose, so its band would no longer be true.
+      clearBrush()
+      opts.store.set({ sites: selectSites(opts.store.get(), ids, modeOf(event)).sites }, 'obs-fit')
     })
     fitHosts.push(canvas)
     if (hidden) canvas.onHide()
@@ -478,6 +744,10 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     fitSlot.cancel()
     pointsSlot.cancel()
     histSlot.cancel()
+    brushSlot.cancel()
+    held = null
+    liveBand = null
+    brushNote = null
     selected = null
     destroyFitHosts()
     destroyHistHost()
@@ -564,10 +834,15 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
 
   const unsubscribeSites = opts.store.subscribe(
     (s) => s.sites,
-    () => {
+    (_next, _prev, origins) => {
       if (group === null || pendingLoad) return
+      // The band says what the brush selected; once another view moves the sites it no longer does.
+      if ([...origins].some((origin) => origin !== 'obs-fit')) clearBrush()
       if (hidden) pointsStale = true
-      else loadSelected()
+      else {
+        for (const canvas of fitHosts) canvas.redraw()
+        loadSelected()
+      }
     },
   )
 
