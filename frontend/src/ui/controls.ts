@@ -10,6 +10,8 @@ import {
   CLASS_CHOICES,
   DEFAULT_STYLE,
   SYMMETRIC_TURNED_OFF_PREFIX,
+  TEXTURE_CLASSES_NOTE,
+  TEXTURE_DEFAULT_CLASSES,
   followLimits,
   isClassCount,
   symmetricRefusal,
@@ -46,6 +48,7 @@ const REAL_NAMES_LIST_ID = 'go-to-realization-names'
 const GO_TO_REFUSAL_ID = 'go-to-realization-refusal'
 const CLASSES_NOTE_ID = 'classes-note'
 const SYMMETRIC_REASON_ID = 'symmetric-reason'
+const TEXTURE_REASON_ID = 'texture-reason'
 
 export interface FieldChoice {
   iteration: number
@@ -486,12 +489,59 @@ export function renderSelectionControls(
   }
   showSymmetricReason()
 
+  // Texture fill (D-12): needs classes, so Continuous is off the list while it is on (D-13).
+  const textureLabel = parameterOnly(document.createElement('label'))
+  textureLabel.classList.add('label')
+  textureLabel.textContent = 'Texture fill'
+  const textureInput = document.createElement('input')
+  textureInput.type = 'checkbox'
+  textureInput.setAttribute('aria-label', 'Texture fill')
+  textureInput.checked = opts.initial?.style?.texture ?? DEFAULT_STYLE.texture
+  textureLabel.appendChild(textureInput)
+
+  const textureReason = parameterOnly(document.createElement('div'))
+  textureReason.classList.add('label')
+  textureReason.id = TEXTURE_REASON_ID
+  textureReason.setAttribute('role', 'status')
+  textureReason.style.color = 'var(--status-warning)'
+  textureReason.style.display = 'none'
+
+  const continuousOption = classesSelect.querySelector('option[value="0"]') as HTMLOptionElement
+  // The "raised to 7" line outlives redraws (the request already says 7) until the user moves classes or texture.
+  let raisedNote: string | null = null
+  let classesReason: string | null = null
+
+  function showClassesNote(): void {
+    const text = classesReason ?? raisedNote
+    classesNote.textContent = text ?? ''
+    classesNote.style.display = text === null ? 'none' : ''
+    if (text === null) classesSelect.removeAttribute('aria-describedby')
+    else classesSelect.setAttribute('aria-describedby', CLASSES_NOTE_ID)
+  }
+
+  // Called after the texture box or the classes select is set from outside or by the user.
+  function followTexture(): void {
+    if (textureInput.checked && classesSelect.value === '0') {
+      classesSelect.value = String(TEXTURE_DEFAULT_CLASSES)
+      raisedNote = TEXTURE_CLASSES_NOTE
+    }
+    if (!textureInput.checked) raisedNote = null
+    continuousOption.disabled = textureInput.checked
+    showClassesNote()
+  }
+  followTexture()
+
   // The rest of the request rides along unchanged until its own control exists.
   let style: FieldStyle = { ...(opts.initial?.style ?? DEFAULT_STYLE) }
 
   function currentStyle(): FieldStyle {
     const n = Number(classesSelect.value)
-    return { ...style, classes: isClassCount(n) ? n : DEFAULT_STYLE.classes, symmetric: symmetricInput.checked }
+    return {
+      ...style,
+      classes: isClassCount(n) ? n : DEFAULT_STYLE.classes,
+      symmetric: symmetricInput.checked,
+      texture: textureInput.checked,
+    }
   }
 
   // Run before emitting a scale or limits change, so a refused symmetric is never sent.
@@ -625,6 +675,13 @@ export function renderSelectionControls(
   })
 
   classesSelect.addEventListener('change', () => {
+    raisedNote = null
+    showClassesNote()
+    opts.onSelectionChange(currentSelection())
+  })
+
+  textureInput.addEventListener('change', () => {
+    followTexture()
     opts.onSelectionChange(currentSelection())
   })
 
@@ -654,6 +711,8 @@ export function renderSelectionControls(
   el.appendChild(classesNote)
   el.appendChild(symmetricLabel)
   el.appendChild(symmetricReason)
+  el.appendChild(textureLabel)
+  el.appendChild(textureReason)
 
   return {
     setLogUsability(count: number): void {
@@ -683,8 +742,13 @@ export function renderSelectionControls(
       }
       if (selection.style) {
         style = { ...selection.style }
+        if (selection.style.classes !== Number(classesSelect.value) || selection.style.texture !== textureInput.checked) {
+          raisedNote = null
+        }
         classesSelect.value = String(selection.style.classes)
         symmetricInput.checked = selection.style.symmetric
+        textureInput.checked = selection.style.texture
+        followTexture()
       }
       if (styleNote !== undefined) {
         turnedOffLine = styleNote
@@ -742,10 +806,15 @@ export function renderSelectionControls(
       return index
     },
     showStyle(_effective, notes): void {
-      classesNote.textContent = notes.classes ?? ''
-      classesNote.style.display = notes.classes === null ? 'none' : ''
-      if (notes.classes === null) classesSelect.removeAttribute('aria-describedby')
-      else classesSelect.setAttribute('aria-describedby', CLASSES_NOTE_ID)
+      classesReason = notes.classes
+      if (notes.texture === TEXTURE_CLASSES_NOTE) raisedNote = TEXTURE_CLASSES_NOTE
+      showClassesNote()
+      const refusal = notes.texture === TEXTURE_CLASSES_NOTE ? null : notes.texture
+      textureInput.disabled = refusal !== null
+      textureReason.textContent = refusal ?? ''
+      textureReason.style.display = refusal === null ? 'none' : ''
+      if (refusal === null) textureInput.removeAttribute('aria-describedby')
+      else textureInput.setAttribute('aria-describedby', TEXTURE_REASON_ID)
       symmetricNote = notes.symmetric
       symmetricInput.disabled = notes.symmetric !== null
       showSymmetricReason()

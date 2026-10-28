@@ -144,6 +144,41 @@ describe('renderOverlayControls', () => {
     expectNoRunTogetherText(host, 'overlay-controls')
   })
 
+  it('a suppressed toggle is disabled but keeps its count, and shows the reason as text and title', () => {
+    const { host, handle, onToggle } = mount()
+    const reason = 'off while texture fill is on: its lines would look like the fill'
+    handle.setStatus('atBounds', { kind: 'suppressed', reason, label: '12 at bounds', title: reason })
+    const b = toggle(host, 'atBounds')
+    expect(b.disabled).toBe(true)
+    expect(b.querySelector('.overlay-count')?.textContent).toBe('12 at bounds')
+    const shown = b.querySelector('.overlay-reason') as HTMLElement
+    expect(shown.hidden).toBe(false)
+    expect(shown.textContent).toBe(reason)
+    expect(b.title).toBe(reason)
+    expect(b.getAttribute('aria-pressed')).toBe('false')
+    expect(handle.isOn('atBounds')).toBe(false)
+    b.click()
+    expect(onToggle).not.toHaveBeenCalled()
+  })
+
+  // [edge MAPX-03 restore]
+  it('gives back the user choice after a suppressed stretch, off or on', () => {
+    const { host, handle } = mount()
+    const conflictShown = { kind: 'shown' as const, label: '135° conflict: 86 observations', title: 't' }
+    handle.setStatus('atBounds', SHOWN)
+    handle.setStatus('conflict', conflictShown)
+    toggle(host, 'atBounds').click()
+    const suppressed = { kind: 'suppressed' as const, reason: 'r', label: 'kept', title: 'r' }
+    handle.setStatus('atBounds', suppressed)
+    handle.setStatus('conflict', suppressed)
+    handle.setStatus('atBounds', SHOWN)
+    handle.setStatus('conflict', conflictShown)
+    expect(handle.isOn('atBounds')).toBe(false)
+    expect(toggle(host, 'atBounds').getAttribute('aria-pressed')).toBe('false')
+    expect(handle.isOn('conflict')).toBe(true)
+    expect(toggle(host, 'conflict').getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('empties its host on dispose and ignores later calls', () => {
     const { host, handle, onToggle } = mount()
     handle.setStatus('atBounds', SHOWN)
