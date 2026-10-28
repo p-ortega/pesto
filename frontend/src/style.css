@@ -25,6 +25,9 @@
   --status-serious: #ec835a;
   --status-critical: #d03b3b;
 
+  /* How faint an unselected row or mark draws while its kind has a selection. */
+  --dim-alpha: 0.35;
+
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
@@ -45,6 +48,7 @@
   --accent: #3987e5;
   --series-1: #3987e5;
   --series-2: #d95926;
+  --dim-alpha: 0.3;
 }
 
 body {
@@ -309,7 +313,7 @@ body {
 
 .params-groups .group-header,
 .params-groups .scroll-pane {
-  min-width: 44em;
+  min-width: 50em;
 }
 
 .params-groups .scroll-pane {
@@ -402,7 +406,9 @@ body {
 .group-row > :nth-child(6),
 .group-header > :nth-child(6),
 .group-row > :nth-child(7),
-.group-header > :nth-child(7) {
+.group-header > :nth-child(7),
+.group-row > :nth-child(8),
+.group-header > :nth-child(8) {
   flex: 0 0 6.5em;
   text-align: right;
 }
@@ -531,12 +537,12 @@ body {
 
 .obs-grid-header,
 .obs-grid > .scroll-pane {
-  min-width: 56em;
+  min-width: 64em;
 }
 
 .obs-sites .obs-grid-header,
 .obs-sites .obs-grid > .scroll-pane {
-  min-width: 32em;
+  min-width: 36em;
 }
 
 .obs-grid > .scroll-pane {
@@ -940,4 +946,185 @@ body {
   justify-content: center;
   min-width: 44px;
   min-height: 44px;
+}
+
+/* Phase 11: linked selection and overlays. Every Phase 11 layout rule lives
+   here so the plans that use them never edit this file side by side. */
+
+/* An unselected row or mark while its kind has a selection: faint, never
+   hidden, still clickable. */
+.dimmed {
+  opacity: var(--dim-alpha);
+}
+
+/* The 'Selected parameters' and 'Selected sites' sections give way before the
+   tables do, take at most a share of the panel, and scroll inside. */
+.params-selected,
+.obs-selected {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 30%;
+  overflow: hidden;
+  margin-top: var(--space-sm);
+}
+
+.params-selected-title,
+.obs-selected-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  flex: 0 0 auto;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
+/* The section's grid scrolls sideways as one piece, like the group grids. */
+.params-selected > [role='grid'],
+.obs-selected > [role='grid'],
+.obs-selected .obs-grid {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+}
+
+.params-selected .scroll-pane,
+.obs-selected .scroll-pane {
+  flex: 1 1 auto;
+}
+
+.params-selected .group-header,
+.params-selected .param-header,
+.params-selected .scroll-pane,
+.obs-selected .obs-grid-header,
+.obs-selected .obs-grid > .scroll-pane {
+  min-width: 32em;
+}
+
+.params-selected [role='row'] > :first-child,
+.obs-selected [role='row'] > :first-child {
+  min-width: 10em;
+  overflow-wrap: anywhere;
+}
+
+/* Where a cell link reached: muted lines under a section title or legend. */
+.link-reach {
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The hatch swatches: lines in ink over the page plane, never a colour of
+   their own; 45 degrees at bounds, 135 degrees for a prior-data conflict. */
+.hatch-swatch,
+.conflict-mark {
+  display: inline-block;
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+  border: 1px solid var(--ink-primary);
+  background-color: var(--page-plane);
+  vertical-align: middle;
+}
+
+.hatch-swatch.at-bounds {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--ink-primary) 0,
+    var(--ink-primary) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+.hatch-swatch.conflict,
+.conflict-mark {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--ink-primary) 0,
+    var(--ink-primary) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+.conflict-mark {
+  margin-left: var(--space-xs);
+}
+
+/* The overlay toggles sit in one row at the top of the map controls; a long
+   reason wraps inside the panel instead of widening it over the map. */
+.overlay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  max-width: 22rem;
+  pointer-events: auto;
+}
+
+.overlay-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: pointer;
+}
+
+.overlay-toggle:disabled {
+  cursor: default;
+}
+
+.overlay-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.overlay-reason {
+  color: var(--ink-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A pressed toggle, lasso button, brush choice or base chip reads as pressed
+   by weight and an accent ring, not by colour alone. */
+.overlay-toggle[aria-pressed='true'],
+.lasso-button[aria-pressed='true'],
+.brush-switch button[aria-pressed='true'],
+.chip.base-chip[aria-pressed='true'] {
+  font-weight: 600;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.lasso-button {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.map-area.lasso-armed canvas {
+  cursor: crosshair;
+}
+
+/* The lasso outline draws over the map and never takes a press from it. */
+.lasso-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Which iteration the residual histogram brush selects on. */
+.brush-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+/* The base realization chip is a button that keeps the chip's look. */
+.chip.base-chip {
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink-primary);
 }
