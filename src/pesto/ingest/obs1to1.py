@@ -33,6 +33,7 @@ from pesto.ingest.obsens import load_obs_ensemble
 from pesto.ingest.obsindex import (
     FLAG_HAS_TARGET,
     FLAG_WEIGHTED,
+    SENTINEL_RULE_VERSION,
     load_obs_index,
     sentinel_mask,
     usable_mask,
@@ -426,6 +427,7 @@ def write_obs_1to1(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
 
         sidecar = {
             "cache_version": CACHE_VERSION,
+            "sentinel_rule_version": SENTINEL_RULE_VERSION,
             "first_iteration": int(first),
             "last_iteration": int(last),
             "single_iteration": single,

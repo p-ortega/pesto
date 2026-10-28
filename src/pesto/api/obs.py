@@ -39,6 +39,7 @@ from pesto.ingest.obsindex import (
     FLAG_HAS_TARGET,
     FLAG_WEIGHTED,
     SENTINEL_LIMIT,
+    SENTINEL_RULE_VERSION,
     blank_sentinels,
     sentinel_mask,
     usable_mask,
@@ -511,6 +512,16 @@ async def get_obs_1to1(request: Request, params: Annotated[ObsGroupQuery, Query(
             "the 1:1 grid does not match the observations",
             artifact="obs_1to1",
             detail="the 1:1 grid was built from a different observation table; run the ingest again",
+        )
+    if meta.get("sentinel_rule_version") != SENTINEL_RULE_VERSION:
+        return problem(
+            409,
+            "the 1:1 grid was built before simulated sentinels were left out",
+            artifact="obs_1to1",
+            detail=(
+                "this grid may count a 1e30 dry or no-flow placeholder as a value, so it is not "
+                "served; ingest the run again"
+            ),
         )
     entry = next((g for g in meta["groups"] if g["group"] == params.group), None)
     if entry is None:
