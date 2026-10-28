@@ -12,7 +12,7 @@ const srcRoot = join(testDir, '..', 'src')
 
 const SHELL = 'views/map.ts'
 // Data halves load and classify but draw nothing, so a view may use one.
-const DATA_MODULES = new Set(['views/parameter-field-source', 'views/observation-stat-source'])
+const DATA_MODULES = new Set(['views/parameter-field-source', 'views/observation-stat-source', 'views/overlay-source'])
 const PARAMS_PANEL = 'ui/params-panel'
 const OBS_PANEL = 'ui/obs-panel'
 
@@ -106,6 +106,21 @@ describe('no view imports another view', () => {
   it('lets a view import the observation stat source, which is a data module', () => {
     const fixture = { 'views/map-view.ts': "import { createObservationStatSource } from './observation-stat-source'\n" }
     expect(findViolations(fixture)).toEqual([])
+  })
+
+  it('lets the map view import the overlay source, which is a data module', () => {
+    const fixture = { 'views/map-view.ts': "import { createOverlaySource } from './overlay-source'\n" }
+    expect(findViolations(fixture)).toEqual([])
+  })
+
+  it('fails when the overlay source imports a view or another data module', () => {
+    const fixture = {
+      'views/overlay-source.ts': "import { x } from './map-view'\nimport type { Y } from './observation-stat-source'\n",
+    }
+    expect(findViolations(fixture)).toEqual([
+      'views/overlay-source.ts imports views/map-view',
+      'views/overlay-source.ts imports views/observation-stat-source',
+    ])
   })
 
   it('fails when one view imports another, and when a type import does it', () => {
