@@ -14,12 +14,19 @@ export interface Axis {
   ticks: AxisTick[]
 }
 
-export function linearAxis(domain: [number, number], range: [number, number], tickCount = 5): Axis {
+// Labels longer than this switch to '~g', so -1,000,000 prints as −1e+6.
+const LONG_LABEL = 6
+
+// The tick count follows the pixel span, about one label per 60 px; maxTicks caps it.
+export function linearAxis(domain: [number, number], range: [number, number], maxTicks = Infinity): Axis {
   const scale = scaleLinear().domain(domain).range(range)
-  const format = scale.tickFormat(tickCount)
+  const count = Math.max(2, Math.min(maxTicks, Math.floor(Math.abs(range[1] - range[0]) / 60)))
+  const values = scale.ticks(count)
+  let format = scale.tickFormat(count)
+  if (values.some((value) => format(value).length > LONG_LABEL)) format = scale.tickFormat(count, '~g')
   return {
     toPx: (value) => scale(value),
-    ticks: scale.ticks(tickCount).map((value) => ({ value, label: format(value), px: scale(value) })),
+    ticks: values.map((value) => ({ value, label: format(value), px: scale(value) })),
   }
 }
 

@@ -21,9 +21,8 @@ import {
   type SitePoints,
 } from '../data/obs'
 import type { SelectionStore } from '../state/selection'
-import { linearAxis } from './charts/axes'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
-import { densityPlotArea, drawDensity, type DensitySpec } from './charts/density'
+import { densityLayout, drawDensity, type DensitySpec } from './charts/density'
 import { drawHistogram, type Chart2D, type ChartSize, type HistogramSpec } from './charts/histogram'
 import { drawMarkers, drawRangeBars } from './charts/marks'
 import { readChartTokens, type ChartTokens } from './charts/tokens'
@@ -161,9 +160,7 @@ interface PointSet {
 
 // The points sit on the density's own pixels, and a bar that runs off the range is cut at its edge.
 function drawPointSets(ctx: Chart2D, size: ChartSize, range: [number, number], tokens: ChartTokens, sets: PointSet[]): void {
-  const area = densityPlotArea(size)
-  const xAxis = linearAxis(range, [area.left, area.left + area.width])
-  const yAxis = linearAxis(range, [area.top + area.height, area.top])
+  const { area, xAxis, yAxis } = densityLayout(ctx, size, range[0], range[1])
   ctx.save()
   ctx.beginPath()
   ctx.rect(area.left, area.top, area.width, area.height)
