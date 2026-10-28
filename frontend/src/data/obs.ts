@@ -587,6 +587,50 @@ export async function fetchObsResidHist(group: string, opts?: FetchOptions): Pro
   )
 }
 
+// ---- brushing a residual range on the histogram ----
+
+export interface ObsBrushPayload {
+  group: string
+  iteration: number
+  lo: number
+  hi: number
+  /** Site ids, ascending, with at least one observation whose residual is inside lo..hi. */
+  sites: number[]
+  n_obs_in_range: number
+  left_out: { no_target: number; sentinel: number; no_valid_realization: number }
+  /** The brushed sites' residuals in the histogram's other iteration, on the same edges; null when there is none. */
+  other: { iteration: number; counts: number[]; density: number[]; n_sites: number; n_obs: number } | null
+}
+export type ObsBrushResult = ObsFetched<ObsBrushPayload>
+
+export async function fetchObsBrush(group: string, iteration: number, lo: number, hi: number, opts?: FetchOptions): Promise<ObsBrushResult> {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { ok: false, artifact: 'obs_agg', reason: `the brushed range ${lo} to ${hi} is not two finite numbers` }
+  if (lo > hi) return { ok: false, artifact: 'obs_agg', reason: `the brushed range starts at ${lo}, past its end ${hi}` }
+  return fetchJson(
+    'obs_agg',
+    'brush',
+    ['group', 'iteration', 'lo', 'hi', 'sites', 'n_obs_in_range', 'left_out', 'other'],
+    '/api/run/obs/brush',
+    { group, iteration, lo, hi },
+    opts,
+  )
+}
+
+// ---- the observation ensemble's realization names ----
+
+export interface ObsRealsPayload {
+  iteration: number
+  /** In the order the ensemble file recorded them; column j of a series is names[j]. */
+  names: string[]
+  base_index: number[]
+  base_note: string | null
+}
+export type ObsRealsResult = ObsFetched<ObsRealsPayload>
+
+export async function fetchObsReals(iteration: number, opts?: FetchOptions): Promise<ObsRealsResult> {
+  return fetchJson(`obs_ens/${iteration}`, 'realization names', ['iteration', 'names', 'base_index', 'base_note'], '/api/run/obs/reals', { iteration }, opts)
+}
+
 // ---- one read shared by every caller ----
 
 /** One answer shared by every caller. A refused or thrown answer is forgotten, so the next call asks again. */
