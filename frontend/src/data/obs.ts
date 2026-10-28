@@ -273,13 +273,15 @@ export interface ObsTimesPayload {
   iterations: { iteration: number; available: boolean; reason: string | null }[]
   limits: { resid_mean: Limits; rmse: Limits; std: Limits; mean: Limits }
   limits_rule: string
+  /** Why no limits could be made; null when there are limits, or the statistic has no finite value. */
+  limits_refused: string | null
   refused: string | null
   notes: string[]
 }
 export type ObsTimesResult = ObsFetched<ObsTimesPayload>
 
 export async function fetchObsTimes(group: string, opts?: FetchOptions): Promise<ObsTimesResult> {
-  return fetchJson('obs_index', 'times', ['group', 'order_digest', 'times', 'n_at_time', 'iterations', 'limits', 'refused'], '/api/run/obs/times', { group }, opts)
+  return fetchJson('obs_index', 'times', ['group', 'order_digest', 'times', 'n_at_time', 'iterations', 'limits', 'limits_refused', 'refused'], '/api/run/obs/times', { group }, opts)
 }
 
 // ---- frame: one statistic of every site at one time ----

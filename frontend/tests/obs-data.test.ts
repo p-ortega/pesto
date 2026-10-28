@@ -355,7 +355,7 @@ describe('fetchObsSeries', () => {
 
 describe('the JSON routes', () => {
   it('fetchObsTimes asks for the group and returns the payload as sent', async () => {
-    const body = { group: 'a b', order_digest: 'digest-a', times: [1, 2], n_at_time: [3, 3], iterations: [], limits: {}, refused: null }
+    const body = { group: 'a b', order_digest: 'digest-a', times: [1, 2], n_at_time: [3, 3], iterations: [], limits: {}, limits_refused: null, refused: null }
     const fetchMock = stubFetch({ json: body })
 
     const result = await fetchObsTimes('a b')

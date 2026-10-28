@@ -555,6 +555,38 @@ def test_iterations_say_which_are_available_and_why_one_is_not(tmp_path, in_proc
     assert _frame(client, "g_two", 0, 2.0, "mean").status_code == 200
 
 
+def test_limits_that_cannot_be_made_come_back_with_the_reason(tmp_path, in_process, monkeypatch):
+    client, _run = open_obs_run(tmp_path, **TIME_RUN)
+    assert _times(client, "g_two")["limits_refused"] is None
+    manifest = Manifest.load(_layout(client))
+    for name in ("obs_agg/0", "obs_agg/1"):
+        manifest.mark_failed(name, "the statistics could not be written")
+    manifest.save(_layout(client))
+
+    body = _times(client, "g_two")
+
+    assert all(v is None for v in body["limits"].values())
+    assert body["limits_refused"] == obsmap.NO_LIMITS_REASON
+
+
+def test_a_failed_read_of_the_statistics_for_the_limits_is_named_not_swallowed(tmp_path, in_process, monkeypatch):
+    client, _run = open_obs_run(tmp_path, **TIME_RUN)
+    assert _frame(client, "g_two", 1, 2.0, "mean").status_code == 200
+    state = client.pesto_app.state
+    rows = next(v[1] for k, v in state.obs_memo.items() if k[1:] == ("frame_rows", "g_two"))
+    state.obs_memo.clear()
+    monkeypatch.setattr(
+        obscache,
+        "get_agg",
+        lambda *_a, **_k: obsmap.ReadFailure(name="obs_agg/1", path="", reason="the file is short"),
+    )
+
+    limits, why = obsmap._limits(state, _root(client), rows, "g_two", [0, 1])
+
+    assert all(v is None for v in limits.values())
+    assert why == "the colour limits could not be made: the file is short"
+
+
 def test_twenty_frames_open_the_index_and_the_statistics_once_each(tmp_path, in_process, monkeypatch):
     many = (SiteSpec("g_many", "oname:hds_otype:lst_usecol:many-a", tuple(float(t) for t in range(1, 21)), "time-token"),)
     client, _run = open_obs_run(tmp_path, sites=many, iterations=(0, 1), n_real=4)
