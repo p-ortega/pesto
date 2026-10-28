@@ -2,7 +2,7 @@
 // shading, the shared range, and every refusal.
 
 import { describe, expect, it } from 'vitest'
-import { densityPlotArea, drawDensity, type DensitySpec } from '../src/ui/charts/density'
+import { densityLayout, densityPlotArea, drawDensity, type DensitySpec } from '../src/ui/charts/density'
 import type { ChartTokens } from '../src/ui/charts/tokens'
 import { createRecording2d } from './support/recording-2d'
 
@@ -100,7 +100,7 @@ describe('drawDensity', () => {
   it('puts the same tick values on x and y and draws both labels as text', () => {
     const { ctx, calls } = createRecording2d()
     drawDensity(ctx, spec(), TOKENS, SIZE)
-    const area = densityPlotArea(SIZE)
+    const { area } = densityLayout(ctx, SIZE, 0, 40)
     const texts = calls.filter((c) => c.method === 'fillText').map((c) => c.args as [string, number, number])
     const onX = texts.filter(([, , y]) => y === area.top + area.height + 4).map(([t]) => t)
     const onY = texts.filter(([, x]) => x === area.left - 6).map(([t]) => t)
@@ -110,6 +110,18 @@ describe('drawDensity', () => {
     expect(words).toContain('observed')
     expect(words).toContain('simulated')
     expect(words).toContain('gw_head, iteration 3')
+  })
+
+  it('widens the left margin to fit long y labels, so none runs off the canvas', () => {
+    const { ctx, calls } = createRecording2d()
+    expect(drawDensity(ctx, spec({ lo: -1_234_567, hi: 0 }), TOKENS, SIZE)).toBe(true)
+    const { area, yAxis } = densityLayout(ctx, SIZE, -1_234_567, 0)
+    const onY = calls
+      .filter((c) => c.method === 'fillText' && c.args[1] === area.left - 6)
+      .map((c) => c.args[0] as string)
+    expect(onY).toEqual(yAxis.ticks.map((t) => t.label))
+    // The recording context measures 6 px per character; text is right-aligned at left - 6.
+    for (const label of onY) expect(area.left - 6 - label.length * 6).toBeGreaterThanOrEqual(0)
   })
 
   it('refuses, and draws nothing, when the grid or range cannot be drawn honestly', () => {

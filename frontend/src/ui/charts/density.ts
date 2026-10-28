@@ -3,7 +3,7 @@
 // panels can share it, with the 1:1 line drawn corner to corner. Counts are
 // stored row by row along y (index iy * nBins + ix); iy runs up the plot.
 
-import { linearAxis } from './axes'
+import { linearAxis, type Axis } from './axes'
 import type { ChartSize, Chart2D } from './histogram'
 import { drawDiagonal } from './marks'
 import type { ChartTokens } from './tokens'
@@ -29,16 +29,52 @@ export interface PlotArea {
 const MARGIN = { left: 52, right: 12, top: 28, bottom: 40 }
 const FONT = '12px system-ui, sans-serif'
 const TICKS = 5
+// Room between the widest y label and the axis line: the 6 px label gap plus a little air.
+const LABEL_GAP = 10
 
 // Square, so one unit on x is the same length as one unit on y.
-export function densityPlotArea(size: ChartSize): PlotArea {
+export function densityPlotArea(size: ChartSize, leftMargin = MARGIN.left): PlotArea {
   const room = Math.min(
-    size.width - MARGIN.left - MARGIN.right,
+    size.width - leftMargin - MARGIN.right,
     size.height - MARGIN.top - MARGIN.bottom,
   )
   const side = Math.max(0, room)
-  const spare = Math.max(0, size.width - MARGIN.left - MARGIN.right - side)
-  return { left: MARGIN.left + spare / 2, top: MARGIN.top, width: side, height: side }
+  const spare = Math.max(0, size.width - leftMargin - MARGIN.right - side)
+  return { left: leftMargin + spare / 2, top: MARGIN.top, width: side, height: side }
+}
+
+export interface DensityLayout {
+  area: PlotArea
+  xAxis: Axis
+  yAxis: Axis
+}
+
+function axesFor(area: PlotArea, lo: number, hi: number): DensityLayout {
+  return {
+    area,
+    xAxis: linearAxis([lo, hi], [area.left, area.left + area.width], TICKS),
+    yAxis: linearAxis([lo, hi], [area.top + area.height, area.top], TICKS),
+  }
+}
+
+// The left margin fits the widest y label, so a long label is never cut at the canvas edge.
+// Two passes, because the margin changes the side and so the ticks.
+export function densityLayout(ctx: Chart2D, size: ChartSize, lo: number, hi: number): DensityLayout {
+  // Font is set and put back by hand, not with save(), so a refused draw leaves no calls.
+  const font = ctx.font
+  ctx.font = FONT
+  const widest = (layout: DensityLayout) =>
+    Math.max(0, ...layout.yAxis.ticks.map((tick) => ctx.measureText(tick.label).width))
+  let margin = MARGIN.left
+  let layout = axesFor(densityPlotArea(size, margin), lo, hi)
+  for (let pass = 0; pass < 2; pass++) {
+    const needed = Math.ceil(widest(layout)) + LABEL_GAP
+    if (needed <= margin) break
+    margin = needed
+    layout = axesFor(densityPlotArea(size, margin), lo, hi)
+  }
+  ctx.font = font
+  return layout
 }
 
 function isValid(spec: DensitySpec): boolean {
@@ -64,14 +100,12 @@ export function drawDensity(
   size: ChartSize,
 ): boolean {
   if (!isValid(spec)) return false
-  const area = densityPlotArea(size)
+  const { area, xAxis, yAxis } = densityLayout(ctx, size, spec.lo, spec.hi)
   if (area.width <= 0) return false
   const { left, top, width, height } = area
   const right = left + width
   const bottom = top + height
 
-  const xAxis = linearAxis([spec.lo, spec.hi], [left, right], TICKS)
-  const yAxis = linearAxis([spec.lo, spec.hi], [bottom, top], TICKS)
   const cell = width / spec.nBins
   const shadeTop = Math.log1p(spec.shadeMax)
 

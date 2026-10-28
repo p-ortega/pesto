@@ -60,6 +60,29 @@ describe('axes', () => {
     expect(logAxis([Number.NaN, 100], [0, 100])).toBeNull()
   })
 
+  it('a linear axis asks for fewer ticks on a shorter span', () => {
+    const wide = linearAxis([0, 100], [0, 600])
+    const narrow = linearAxis([0, 100], [0, 130])
+    expect(narrow.ticks.length).toBeLessThan(wide.ticks.length)
+    expect(narrow.ticks.length).toBeGreaterThanOrEqual(2)
+    expect(linearAxis([0, 100], [0, 600], 3).ticks.length).toBeLessThanOrEqual(4)
+  })
+
+  it('a narrow linear axis over a large range keeps labels short enough to sit apart', () => {
+    const axis = linearAxis([-1_000_000, 0], [0, 270])
+    const labels = axis.ticks.map((t) => t.label)
+    const spacing = Math.abs(axis.ticks[1].px - axis.ticks[0].px)
+    // About 7 px per character at the 12 px chart font.
+    for (const label of labels) expect(label.length * 7).toBeLessThan(spacing)
+    expect(labels).toContain('−1e+6')
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('a linear axis over small numbers keeps its plain labels', () => {
+    const labels = linearAxis([0, 40], [0, 300]).ticks.map((t) => t.label)
+    expect(labels).toEqual(['0', '10', '20', '30', '40'])
+  })
+
   it('a linear axis over [0, 1] ticks from 0 to 1 and labels each tick', () => {
     const axis = linearAxis([0, 1], [0, 100])
     const values = axis.ticks.map((t) => t.value)
