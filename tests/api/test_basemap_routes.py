@@ -25,7 +25,7 @@ from pesto.cache.layout import CacheLayout
 from pesto.ingest.mesh import load_mesh_extent, write_grid_from_adapter
 from pesto.model.mf6 import Mf6Adapter
 
-from .basemap_images import exif_jpeg_header_bytes, jpeg_header_bytes, png_bytes, tiff_bytes, world_file_text
+from .basemap_images import exif_jpeg_header_bytes, jpeg_header_bytes, png_bytes, tiff_bytes, with_scan, world_file_text
 
 BASE_URL = "http://127.0.0.1"
 
@@ -164,19 +164,20 @@ def test_a_png_with_a_world_file_goes_through_every_route(opened):
     assert_no_path_leaked(opened)
 
 
-def test_an_image_wider_than_the_requested_size_is_served_whole_with_a_resize_target(opened):
-    image = put_png(opened.images, "wide.png", 2000, 10)
+def test_an_image_wider_than_the_requested_size_is_served_as_a_shrunk_copy(opened):
+    put_png(opened.images, "wide.png", 2000, 10)
     put_world_file(opened.images, "wide.pgw", a=0.01, e=-0.01, c=1000.0, f=2001.0)
     file_id = opened.file_id("wide.png")
     stamp = opened.post("/api/run/basemap/inspect", json={"id": file_id}).json()["stamp"]
     assert opened.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"}).status_code == 200
 
     served = opened.get("/api/run/basemap/image", params={"max": 512})
-    assert served.content == image.read_bytes()
+    assert served.headers["content-type"] == "image/png"
+    assert served.content[12:24] == b"IHDR" + (512).to_bytes(4, "big") + (3).to_bytes(4, "big")
     meta = json.loads(served.headers["x-pesto-meta"])
-    assert meta["resize_to"] == [512, 3]
-    assert (meta["served_width"], meta["served_height"]) == (2000, 10)
-    assert any("2000 × 10" in n and "512 × 3" in n for n in meta["notes"])
+    assert meta["resize_to"] is None
+    assert (meta["served_width"], meta["served_height"]) == (512, 3)
+    assert "pesto shrank the image from 2000 × 10 to 512 × 3 pixels to fit the graphics card" in meta["notes"]
     assert_no_path_leaked(opened)
 
 
@@ -336,7 +337,7 @@ def test_tiff_bytes_named_png_are_a_tiff_row_with_the_reason_and_the_note(opened
 
 
 def test_a_rotated_jpeg_is_placed_as_stored_and_inspect_says_so(opened):
-    (opened.images / "photo.jpg").write_bytes(exif_jpeg_header_bytes(40, 20, 6, "MM"))
+    (opened.images / "photo.jpg").write_bytes(with_scan(exif_jpeg_header_bytes(40, 20, 6, "MM")))
     put_world_file(opened.images, "photo.jgw", a=1.0, e=-1.0, c=1000.0, f=2000.0)
     file_id = opened.file_id("photo.jpg")
 
@@ -353,7 +354,7 @@ def test_a_rotated_jpeg_is_placed_as_stored_and_inspect_says_so(opened):
 
 
 def test_an_upright_jpeg_has_no_notes(opened):
-    (opened.images / "photo.jpg").write_bytes(exif_jpeg_header_bytes(40, 20, 1))
+    (opened.images / "photo.jpg").write_bytes(with_scan(exif_jpeg_header_bytes(40, 20, 1)))
     body = opened.post("/api/run/basemap/inspect", json={"id": opened.file_id("photo.jpg")}).json()
     assert body["notes"] == []
 

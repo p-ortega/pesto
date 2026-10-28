@@ -6,6 +6,8 @@ test in tmp_path, and HOME points into tmp_path."""
 from __future__ import annotations
 
 import io
+import json
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -16,6 +18,10 @@ from PIL import Image
 from pesto.basemap.imageinfo import ImageRefusal
 from pesto.basemap.shrink import pillow_size, shrink_copy
 from pesto.basemap.store import basemap_dir
+
+from .basemap_images import exif_jpeg_header_bytes, jpeg_header_bytes, with_scan
+from .test_basemap_routes import Opened, assert_no_path_leaked, open_run, put_world_file
+from .test_basemap_store import snapshot
 
 
 def _save(image: Image.Image, path: Path, fmt: str, **kw) -> Path:
@@ -238,3 +244,175 @@ def test_pillow_global_bomb_limit_is_left_alone(tmp_path, store_dir):
     pillow_size(source, "png")
     shrink_copy(source, _record("png", 3000, 40), 1024, store_dir)
     assert Image.MAX_IMAGE_PIXELS == before
+
+
+# ---------------------------------------------------------------------------
+# The image route and inspect
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def opened(tmp_path, monkeypatch) -> Opened:
+    return open_run(tmp_path, monkeypatch)
+
+
+def _register(opened: Opened, name: str) -> dict:
+    file_id = opened.file_id(name)
+    inspected = opened.post("/api/run/basemap/inspect", json={"id": file_id})
+    assert inspected.status_code == 200, inspected.text
+    stamp = inspected.json()["stamp"]
+    state = opened.post("/api/run/basemap", json={"id": file_id, "stamp": stamp, "by": "world_file"})
+    assert state.status_code == 200, state.text
+    return state.json()
+
+
+def _wide(opened: Opened, name: str = "wide.png", fmt: str = "PNG", size=(3000, 40)) -> Path:
+    path = _save(Image.new("RGB", size, "green"), opened.images / name, fmt)
+    put_world_file(opened.images, Path(name).stem + (".pgw" if fmt == "PNG" else ".jgw"), a=0.01, e=-0.01, c=1000.0, f=2001.0)
+    return path
+
+
+def _meta(response) -> dict:
+    return json.loads(response.headers["x-pesto-meta"])
+
+
+def _store(opened: Opened) -> Path:
+    return basemap_dir(opened.run_dir)
+
+
+def test_a_wide_png_is_served_as_a_shrunk_copy_with_a_note_and_the_copy_is_reused(opened):
+    _wide(opened)
+    state = _register(opened, "wide.png")
+
+    served = opened.get("/api/run/basemap/image", params={"max": 1024})
+
+    assert served.status_code == 200, served.text
+    assert served.headers["content-type"] == "image/png"
+    with Image.open(io.BytesIO(served.content)) as image:
+        assert (image.format, image.size) == ("PNG", (1024, 14))
+    meta = _meta(served)
+    assert meta["resize_to"] is None
+    assert (meta["width"], meta["height"]) == (3000, 40)
+    assert (meta["served_width"], meta["served_height"]) == (1024, 14)
+    assert meta["format"] == "png"
+    assert meta["tag"] == state["tag"]
+    assert "pesto shrank the image from 3000 × 40 to 1024 × 14 pixels to fit the graphics card" in meta["notes"]
+    copy = _store(opened) / f"image_{state['tag']}_1024.png"
+    first = copy.stat()
+
+    again = opened.get("/api/run/basemap/image", params={"max": 1024})
+
+    assert again.content == served.content
+    assert (copy.stat().st_mtime_ns, copy.stat().st_ino) == (first.st_mtime_ns, first.st_ino)
+    assert_no_path_leaked(opened)
+
+
+def test_an_image_that_fits_is_served_as_its_own_bytes(opened):
+    source = _wide(opened)
+    _register(opened, "wide.png")
+
+    served = opened.get("/api/run/basemap/image", params={"max": 4096})
+
+    assert served.content == source.read_bytes()
+    meta = _meta(served)
+    assert meta["resize_to"] is None
+    assert (meta["served_width"], meta["served_height"]) == (3000, 40)
+    assert not any("shrank" in n for n in meta["notes"])
+    assert not list(_store(opened).glob("image_*.png"))
+
+
+def test_the_target_is_never_above_the_texture_cap(opened):
+    _wide(opened, size=(9000, 30))
+    _register(opened, "wide.png")
+    meta = _meta(opened.get("/api/run/basemap/image", params={"max": 16384}))
+    assert (meta["served_width"], meta["served_height"]) == (8192, 27)
+
+
+def test_a_wide_jpeg_is_served_as_a_png_copy(opened):
+    _wide(opened, "wide.jpg", "JPEG")
+    _register(opened, "wide.jpg")
+    served = opened.get("/api/run/basemap/image", params={"max": 512})
+    assert served.headers["content-type"] == "image/png"
+    assert _meta(served)["format"] == "png"
+    with Image.open(io.BytesIO(served.content)) as image:
+        assert (image.format, image.size) == ("PNG", (512, 7))
+
+
+def test_a_shrink_that_fails_answers_a_problem_naming_the_reason(opened):
+    buf = io.BytesIO()
+    Image.effect_noise((3000, 40), 64).save(buf, "PNG")
+    path = opened.images / "wide.png"
+    path.write_bytes(buf.getvalue())
+    put_world_file(opened.images, "wide.pgw", a=0.01, e=-0.01, c=1000.0, f=2001.0)
+    _register(opened, "wide.png")
+    # Cut the pixels but keep the size and time the record holds, so only the decode can catch it.
+    st = path.stat()
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2] + bytes(len(data) - len(data) // 2))
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    served = opened.get("/api/run/basemap/image", params={"max": 1024})
+
+    assert served.status_code == 422
+    assert served.headers["content-type"] == "application/problem+json"
+    assert served.json()["code"] == "header"
+    assert served.json()["title"].startswith("the image could not be decoded")
+    assert not list(_store(opened).glob("image_*.png"))
+    assert_no_path_leaked(opened)
+
+
+def test_the_image_route_refuses_to_shrink_into_a_store_inside_the_cache_root(opened, tmp_path):
+    _wide(opened)
+    _register(opened, "wide.png")
+    opened.client.app.state.cache_root = str(tmp_path)
+    before = snapshot(_store(opened))
+
+    served = opened.get("/api/run/basemap/image", params={"max": 1024})
+
+    assert served.status_code == 409
+    assert served.json()["code"] == "store_inside_run"
+    assert snapshot(_store(opened)) == before
+
+
+def test_inspect_refuses_a_jpeg_whose_two_size_reads_disagree_naming_both(opened):
+    (opened.images / "two.jpg").write_bytes(with_scan(jpeg_header_bytes(40, 20), then_frame=(50, 30)))
+    put_world_file(opened.images, "two.jgw", a=1.0, e=-1.0, c=1000.0, f=2000.0)
+
+    response = opened.post("/api/run/basemap/inspect", json={"id": opened.file_id("two.jpg")})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "header"
+    assert "40 × 20" in response.json()["title"] and "50 × 30" in response.json()["title"]
+
+
+def test_inspect_refuses_a_jpeg_pillow_cannot_open(opened):
+    (opened.images / "bare.jpg").write_bytes(exif_jpeg_header_bytes(40, 20, 1))
+    put_world_file(opened.images, "bare.jgw", a=1.0, e=-1.0, c=1000.0, f=2000.0)
+
+    response = opened.post("/api/run/basemap/inspect", json={"id": opened.file_id("bare.jpg")})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "format"
+    assert response.json()["title"] == "Pillow cannot read this file as a JPEG image"
+    assert_no_path_leaked(opened)
+
+
+def test_shrinking_and_removing_touch_nothing_but_the_store(opened, tmp_path):
+    _wide(opened)
+    guarded = (opened.run_dir, opened.cache_root, opened.images)
+    before = [snapshot(f) for f in guarded]
+    state = _register(opened, "wide.png")
+
+    assert opened.get("/api/run/basemap/image", params={"max": 1024}).status_code == 200
+    assert opened.get("/api/run/basemap/image", params={"max": 512}).status_code == 200
+    assert sorted(p.name for p in _store(opened).iterdir()) == [
+        "basemap.json",
+        f"image_{state['tag']}_1024.png",
+        f"image_{state['tag']}_512.png",
+    ]
+    assert [snapshot(f) for f in guarded] == before
+
+    assert opened.post("/api/run/basemap/remove").json() == {"status": "none"}
+
+    assert list(_store(opened).iterdir()) == []
+    assert [snapshot(f) for f in guarded] == before
+    assert_no_path_leaked(opened)

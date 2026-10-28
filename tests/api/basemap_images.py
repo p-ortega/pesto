@@ -38,6 +38,19 @@ def jpeg_header_bytes(width: int, height: int, *, progressive: bool = False, app
     return b"\xff\xd8" + app0 + exif + sof + b"\xff\xd9"
 
 
+def _frame(width: int, height: int) -> bytes:
+    return _segment(0xC0, struct.pack(">BHHB", 8, height, width, 3) + b"\x01\x22\x00\x02\x11\x01\x03\x11\x01")
+
+
+def with_scan(jpeg: bytes, *, then_frame: tuple[int, int] | None = None) -> bytes:
+    """``jpeg`` with a start-of-scan segment before its EOI, which is what
+    Pillow's lazy open reads up to. ``then_frame`` puts a second frame header
+    of that size ahead of the scan: pesto reads the first, Pillow the last."""
+    scan = _segment(0xDA, b"\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00")
+    extra = _frame(*then_frame) if then_frame is not None else b""
+    return jpeg[:-2] + extra + scan + b"\xff\xd9"
+
+
 def exif_payload(orientation: int, order: str = "II") -> bytes:
     """An APP1 Exif payload whose IFD0 holds an image-width entry, then the orientation."""
     end = "<" if order == "II" else ">"
