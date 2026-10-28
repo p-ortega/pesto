@@ -19,6 +19,9 @@ const obsApi = vi.hoisted(() => ({
   fetchObsSite: vi.fn(),
   fetchObsSeries: vi.fn(),
   fetchObsTimes: vi.fn(),
+  fetchObs1to1: vi.fn(),
+  fetchObsResidHist: vi.fn(),
+  fetchObsPoints: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -90,6 +93,12 @@ beforeEach(() => {
   obsApi.fetchObsSite.mockReset()
   obsApi.fetchObsSeries.mockReset()
   obsApi.fetchObsTimes.mockReset()
+  obsApi.fetchObs1to1.mockReset()
+  obsApi.fetchObsResidHist.mockReset()
+  obsApi.fetchObsPoints.mockReset()
+  obsApi.fetchObs1to1.mockResolvedValue({ ok: false, artifact: 'obs_1to1', reason: 'no 1:1 in this test' })
+  obsApi.fetchObsResidHist.mockResolvedValue({ ok: false, artifact: 'obs_agg', reason: 'no histogram in this test' })
+  obsApi.fetchObsPoints.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no points in this test' })
   obsApi.fetchObsSites.mockResolvedValue({ ok: true, rows: [], notes: [] })
   obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('gw_head'), group('gw_date')]))
 })
@@ -685,5 +694,49 @@ describe('the spaghetti plot mounted in the panel', () => {
     store.flush()
 
     expect(obsApi.fetchObsSite).not.toHaveBeenCalled()
+  })
+})
+
+describe('the group fit mounted in the panel', () => {
+  it('sits in the .obs-fit host and stays empty until a group is chosen', async () => {
+    const { host } = mount()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
+
+    expect(host.querySelector('.obs-fit')!.children.length).toBe(0)
+    expect(obsApi.fetchObs1to1).not.toHaveBeenCalled()
+  })
+
+  it('asks for the 1:1 of a group when its row is clicked', async () => {
+    const { host } = mount()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
+
+    groupRows(host)[1].click()
+
+    await vi.waitFor(() => expect(obsApi.fetchObs1to1).toHaveBeenCalledWith('gw_date', expect.anything()))
+    expect(host.querySelector('.obs-fit')!.textContent).toContain('gw_date')
+  })
+
+  it('follows a group another view chose', async () => {
+    const { host, store } = mount()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
+
+    store.set({ obsGroups: new Set(['gw_head']) }, 'map')
+    store.flush()
+
+    await vi.waitFor(() => expect(obsApi.fetchObs1to1).toHaveBeenCalledWith('gw_head', expect.anything()))
+  })
+
+  it('fetches a group chosen while hidden only once the tab is shown', async () => {
+    const { host, handle, store } = mount({ startHidden: true })
+    handle.onShow()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
+    handle.onHide()
+
+    store.set({ obsGroups: new Set(['gw_head']) }, 'map')
+    store.flush()
+    expect(obsApi.fetchObs1to1).not.toHaveBeenCalled()
+
+    handle.onShow()
+    await vi.waitFor(() => expect(obsApi.fetchObs1to1).toHaveBeenCalledTimes(1))
   })
 })
