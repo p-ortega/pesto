@@ -9,6 +9,7 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { POINT_FLAG_AT_BOUNDS, POINT_FLAG_CONFLICT, POINT_FLAG_DIM } from '../src/data/hatch-mask'
+import { OVERLAY_SUPPRESSED_REASON, TEXTURE_DOTS_REASON } from '../src/gl/field-style'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
@@ -348,6 +349,8 @@ interface LayerDouble {
   setColormap: Mocked
   setPoints: Mocked
   setPointFlags: Mocked
+  setStyle: Mocked
+  setSurfaceColor: Mocked
   draw: Mocked
 }
 
@@ -388,6 +391,13 @@ function toggle(root: HTMLElement, kind: 'atBounds' | 'conflict'): HTMLButtonEle
 }
 
 const toggleText = (root: HTMLElement, kind: 'atBounds' | 'conflict'): string => toggle(root, kind).textContent ?? ''
+
+const textureBox = (root: HTMLElement): HTMLInputElement => root.querySelector('input[aria-label="Texture fill"]') as HTMLInputElement
+
+function setTexture(root: HTMLElement, on: boolean): void {
+  textureBox(root).checked = on
+  textureBox(root).dispatchEvent(new Event('change'))
+}
 
 // The flags on the drawn dots now, read only from calls made after the last setPoints.
 function dotFlags(layer: LayerDouble): number[] | null {
@@ -580,6 +590,81 @@ describe('the overlays on the map', () => {
       [224 / 255, 224 / 255, 224 / 255],
       [16 / 255, 16 / 255, 16 / 255],
     ])
+  })
+
+  it('reads the texture fill surface from the theme on mount and again on a theme change', async () => {
+    document.documentElement.style.setProperty('--surface', '#fcfcfb')
+    const { layer } = await mounted()
+    expect(layer.setSurfaceColor.mock.calls.at(-1)).toEqual([[252 / 255, 252 / 255, 251 / 255]])
+
+    document.documentElement.style.setProperty('--surface', '#1a1a19')
+    const theme = document.querySelector('select[aria-label="Theme"]') as HTMLSelectElement
+    theme.value = 'dark'
+    theme.dispatchEvent(new Event('change'))
+    expect(layer.setSurfaceColor.mock.calls.at(-1)).toEqual([[26 / 255, 26 / 255, 25 / 255]])
+    document.documentElement.style.removeProperty('--surface')
+  })
+
+  // [edge MAPX-03 restore]
+  it('sets both toggles aside with their counts while texture fill is on, and gives back the user choices after', async () => {
+    const { root, stub, layer } = await mounted()
+    await shown(root)
+    toggle(root, 'conflict').click()
+    expect(lastHatch(layer)).toEqual([0, 1])
+
+    setTexture(root, true)
+    expect(layer.setStyle.mock.calls.at(-1)?.[0]).toEqual({ classes: 7, symmetric: false, texture: true })
+    for (const kind of ['atBounds', 'conflict'] as const) {
+      expect(toggle(root, kind).disabled).toBe(true)
+      expect(toggle(root, kind).getAttribute('aria-pressed')).toBe('false')
+      expect(toggle(root, kind).title).toBe(OVERLAY_SUPPRESSED_REASON)
+      expect(toggleText(root, kind)).toContain(OVERLAY_SUPPRESSED_REASON)
+    }
+    expect(toggleText(root, 'atBounds')).toContain('45° at bounds: 1 parameter')
+    expect(toggleText(root, 'conflict')).toContain('135° conflict: 3 observations at 2 sites')
+
+    setTexture(root, false)
+    expect(toggle(root, 'atBounds').disabled).toBe(false)
+    expect(toggle(root, 'atBounds').getAttribute('aria-pressed')).toBe('true')
+    expect(toggle(root, 'conflict').getAttribute('aria-pressed')).toBe('false')
+    // Only p1's cell, the at-bounds bit; conflict stays as the user left it.
+    expect(lastHatch(layer)).toEqual([0, 1])
+
+    await settle()
+    expect(stub.atBounds.length).toBe(1)
+    expect(stub.pdc.length).toBe(1)
+  })
+
+  it('rebuilds the overlays on a texture flip alone, with nothing else moved', async () => {
+    const { root, layer } = await mounted()
+    await shown(root)
+    layer.setHatch.mockClear()
+
+    setTexture(root, true)
+    expect(toggle(root, 'atBounds').disabled).toBe(true)
+    expect(layer.setHatch).toHaveBeenCalled()
+    setTexture(root, false)
+    expect(toggle(root, 'atBounds').disabled).toBe(false)
+    expect(lastHatch(layer)).toEqual([2, 3])
+  })
+
+  it('refuses texture fill on a group drawn as dots, with the reason, and still steps the dots', async () => {
+    const { root, stub, layer } = await mounted()
+    await shown(root)
+    setTexture(root, true)
+
+    const picker = root.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+    picker.value = 'k'
+    picker.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(stub.atBounds.at(-1)).toEqual({ iteration: '3', group: 'k' }))
+    await vi.waitFor(() => expect(dotFlags(layer)).toEqual([0, POINT_FLAG_AT_BOUNDS]))
+
+    const box = textureBox(root)
+    expect(box.disabled).toBe(true)
+    expect((root.querySelector('#texture-reason') as HTMLElement).textContent).toBe(TEXTURE_DOTS_REASON)
+    expect(layer.setStyle.mock.calls.at(-1)?.[0]).toEqual({ classes: 7, symmetric: false, texture: false })
+    // No texture is drawn, so the overlays stay as they were.
+    expect(toggle(root, 'atBounds').disabled).toBe(false)
   })
 
   it('never touches the values, limits or colormap to show or change an overlay', async () => {

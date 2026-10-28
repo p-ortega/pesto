@@ -30,6 +30,7 @@ import { MeshLayer, type MeshData } from '../gl/mesh-layer'
 import {
   CONTINUOUS,
   DEFAULT_STYLE,
+  OVERLAY_SUPPRESSED_REASON,
   SYMMETRIC_TURNED_OFF_PREFIX,
   classLabel,
   followLimits,
@@ -46,7 +47,7 @@ import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } fro
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
-import { renderOverlayControls, type OverlayControlsHandle } from '../ui/overlay-controls'
+import { renderOverlayControls, type OverlayControlsHandle, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
 import { renderTimeSlider, type TimeSliderHandle } from '../ui/time-slider'
@@ -544,9 +545,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     // While an iteration's tables load, the held cells are the old iteration's.
     const loading = loadingIteration !== null
+    // Texture fill's lines would look like the hatch, so the toggles step aside while it is drawn (D-14).
+    const textured = !obsActive && drawnStyle.texture
     const from = loading
       ? 'loading'
-      : `${overlayAnswers}|${asked}|${committed.layer}|${obsActive}|${obsAllLayers}|${obsGroupInUse}|${pointsSerial}`
+      : `${overlayAnswers}|${asked}|${committed.layer}|${obsActive}|${obsAllLayers}|${obsGroupInUse}|${pointsSerial}|${textured}`
     if (from === overlayBuiltFrom) return false
     overlayBuiltFrom = from
     let mask: Uint8Array | null = null
@@ -559,8 +562,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       const inputs = overlayInputs(mesh.nCells)
       // Built once for the words, then again only when the user has one of the toggles off.
       let build = overlaySource.build(inputs, { atBounds: true, conflict: true })
-      controls.setStatus('atBounds', build.atBounds)
-      controls.setStatus('conflict', build.conflict)
+      const shownAs = (status: OverlayStatus): OverlayStatus =>
+        textured && status.kind === 'shown'
+          ? { kind: 'suppressed', reason: OVERLAY_SUPPRESSED_REASON, label: status.label, title: OVERLAY_SUPPRESSED_REASON }
+          : status
+      controls.setStatus('atBounds', shownAs(build.atBounds))
+      controls.setStatus('conflict', shownAs(build.conflict))
       const enabled = { atBounds: controls.isOn('atBounds'), conflict: controls.isOn('conflict') }
       if (!enabled.atBounds || !enabled.conflict) build = overlaySource.build(inputs, enabled)
       mask = build.mask
@@ -1139,6 +1146,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
     layer?.setPointRingColor([pr, pg, pb])
     layer?.setHatchColors([ir, ig, ib], [pr, pg, pb])
+    const [sr, sg, sb] = readColorToken('--surface')
+    layer?.setSurfaceColor([sr, sg, sb])
     try {
       layer?.setDimAlpha(readNumberToken('--dim-alpha'))
     } catch (error) {
