@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { Camera } from '../src/gl/camera'
 import { scaleLimits } from '../src/gl/colormap'
-import { ONE_CLASS_EMPTY, ONE_CLASS_EQUAL, type EffectiveStyle } from '../src/gl/field-style'
+import { CONTINUOUS, ONE_CLASS_EMPTY, ONE_CLASS_EQUAL, TEXTURE_CLASSES_NOTE, type EffectiveStyle } from '../src/gl/field-style'
 import { MeshLayer } from '../src/gl/mesh-layer'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
@@ -277,6 +277,53 @@ describe('the Classes control on the map', () => {
 
     const label = (root.querySelector('select[aria-label="Colour classes"]') as HTMLElement).closest('label')
     expect(label?.getAttribute('data-colour-source')).toBe('par')
+  })
+})
+
+describe('the Texture fill switch on the map', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    field = new Float32Array([10, 20])
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  const box = (root: HTMLElement) => root.querySelector('input[aria-label="Texture fill"]') as HTMLInputElement
+
+  function setTexture(root: HTMLElement, on: boolean): void {
+    box(root).checked = on
+    box(root).dispatchEvent(new Event('change'))
+  }
+
+  it('draws a cell group in 7 texture classes from the held field, with line swatches in the legend', async () => {
+    const { root } = await mounted()
+    const before = valueFetches
+
+    setTexture(root, true)
+
+    expect(lastStyle()).toEqual({ classes: 7, symmetric: false, texture: true })
+    const swatches = [...legend(root).querySelectorAll('.legend-class')] as HTMLElement[]
+    expect(swatches).toHaveLength(7)
+    for (const swatch of swatches) expect(swatch.style.background).toContain('repeating-linear-gradient(')
+    expect((root.querySelector('#classes-note') as HTMLElement).textContent).toBe(TEXTURE_CLASSES_NOTE)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(valueFetches).toBe(before)
+  })
+
+  it('draws the observation look with no texture, keeps the row parameter-only, and draws texture again on return', async () => {
+    const { root, store } = await mounted()
+    setTexture(root, true)
+    expect(lastStyle().texture).toBe(true)
+
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'test')
+    await vi.waitFor(() => expect(lastStyle()).toEqual(CONTINUOUS))
+    expect(box(root).closest('label')?.getAttribute('data-colour-source')).toBe('par')
+
+    store.set({ colour: { source: 'par', stat: 'value' } }, 'test')
+    await vi.waitFor(() => expect(lastStyle()).toEqual({ classes: 7, symmetric: false, texture: true }))
   })
 })
 
