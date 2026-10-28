@@ -415,6 +415,29 @@ describe('the x axis', () => {
   })
 })
 
+describe('a site with a very long record', () => {
+  it('is drawn, however many observations it has', async () => {
+    const n = 300_000
+    const fill = <T>(v: T): T[] => new Array<T>(n).fill(v)
+    answerSite(
+      sitePayload({
+        n_obs: n,
+        time: Array.from({ length: n }, (_, i) => 19000 + i),
+        obsval: fill(1),
+        no_value: fill(false),
+        sentinel: fill(false),
+        weighted: fill(true),
+      }),
+      () => ({ count: n, nReal: 1 }),
+    )
+    const { store, gl } = mount()
+    select(store, [7])
+
+    await vi.waitFor(() => expect(count(gl, 'drawElements')).toBe(2))
+    expect(count(gl, 'drawElements')).toBe(2)
+  })
+})
+
 describe('the counts and the legend', () => {
   it('gives each iteration its own realization count', async () => {
     answerSite(sitePayload(), (iteration) => ({ nReal: iteration === 0 ? 4 : 3 }))
