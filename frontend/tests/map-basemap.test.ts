@@ -673,3 +673,116 @@ describe('adding, placing and removing a basemap', () => {
     expect(await basemapLayers()).toHaveLength(0)
   })
 })
+
+const BLENDED = 'blended — colours approximate'
+
+function setOpacity(root: HTMLElement, percent: number): void {
+  const range = controls(root).querySelector('input[aria-label="Field opacity"]') as HTMLInputElement
+  range.value = String(percent)
+  range.dispatchEvent(new Event('input'))
+}
+
+function legendText(root: HTMLElement): string {
+  return root.querySelector('.floating-bottom-left')?.textContent ?? ''
+}
+
+async function openWithBasemap(): Promise<HTMLElement> {
+  serveReady()
+  const root = await openMap()
+  await vi.waitFor(() => expect(view(root)).toBe('ready'))
+  return root
+}
+
+describe('basemap colour, field opacity and the blended legend line', () => {
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--ink-secondary')
+  })
+
+  it('starts grey and shows its colours when Colour is checked', async () => {
+    const root = await openWithBasemap()
+    const [basemap] = await basemapLayers()
+    expect(basemap.setSaturation).toHaveBeenLastCalledWith(0)
+    basemap.draw.mockClear()
+
+    const colour = controls(root).querySelector('input[aria-label="Colour"]') as HTMLInputElement
+    expect(colour.checked).toBe(false)
+    colour.checked = true
+    colour.dispatchEvent(new Event('change'))
+
+    expect(basemap.setSaturation).toHaveBeenLastCalledWith(1)
+    expect(basemap.draw).toHaveBeenCalled()
+  })
+
+  it('blends the field down to outlines only and says so in the legend', async () => {
+    const root = await openWithBasemap()
+    const mesh = await meshLayer()
+    expect(legendText(root)).not.toContain(BLENDED)
+
+    setOpacity(root, 40)
+    expect(mesh.setFieldOpacity).toHaveBeenLastCalledWith(0.4)
+    expect(mesh.setGridLines).toHaveBeenLastCalledWith(false)
+    expect(legendText(root)).toContain(BLENDED)
+    expect(controls(root).textContent).toContain('40%')
+
+    setOpacity(root, 0)
+    expect(mesh.setFieldOpacity).toHaveBeenLastCalledWith(0)
+    expect(mesh.setGridLines).toHaveBeenLastCalledWith(true)
+    expect(controls(root).textContent).toContain('outlines only')
+
+    setOpacity(root, 100)
+    expect(mesh.setFieldOpacity).toHaveBeenLastCalledWith(1)
+    expect(mesh.setGridLines).toHaveBeenLastCalledWith(false)
+    expect(legendText(root)).not.toContain(BLENDED)
+  })
+
+  it('draws the field opaque again once the basemap is removed', async () => {
+    const root = await openWithBasemap()
+    const mesh = await meshLayer()
+    setOpacity(root, 0)
+    basemapRoutes['POST /api/run/basemap/remove'] = () => ({ status: 200, body: { status: 'none' } })
+    click(controls(root), 'Remove basemap')
+    await vi.waitFor(() => expect(view(root)).toBe('none'))
+    expect(mesh.setFieldOpacity).toHaveBeenLastCalledWith(1)
+    expect(mesh.setGridLines).toHaveBeenLastCalledWith(false)
+    expect(legendText(root)).not.toContain(BLENDED)
+  })
+
+  it('colours the grid lines from --ink-secondary at half strength and reads it again', async () => {
+    document.documentElement.style.setProperty('--ink-secondary', '#336699')
+    await openWithBasemap()
+    const mesh = await meshLayer()
+    expect(mesh.setGridLineColor).toHaveBeenLastCalledWith([0x33 / 255, 0x66 / 255, 0x99 / 255, 0.5])
+
+    document.documentElement.style.setProperty('--ink-secondary', '#ffffff')
+    const { createContext } = await import('../src/gl/context')
+    const context = vi.mocked(createContext).mock.results[0].value as { onRestored: Mock }
+    ;(context.onRestored.mock.calls[0][0] as () => void)()
+    expect(mesh.setGridLineColor).toHaveBeenLastCalledWith([1, 1, 1, 0.5])
+  })
+
+  it('keeps colour and opacity through a layer change in the session and never saves them', async () => {
+    const root = await openWithBasemap()
+    const mesh = await meshLayer()
+    const colour = controls(root).querySelector('input[aria-label="Colour"]') as HTMLInputElement
+    colour.checked = true
+    colour.dispatchEvent(new Event('change'))
+    setOpacity(root, 40)
+
+    const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    layerInput.value = '1'
+    layerInput.dispatchEvent(new Event('input'))
+
+    const puts = () =>
+      fetchCalls('/api/run/view')
+        .filter(([, init]) => init?.method === 'PUT')
+        .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>)
+    await vi.waitFor(() => expect(puts().length).toBeGreaterThan(0), { timeout: 3000 })
+    for (const body of puts()) {
+      expect(Object.keys(body).filter((key) => /opacity|colour|saturation|basemap/i.test(key))).toEqual([])
+    }
+    expect(mesh.setFieldOpacity).toHaveBeenLastCalledWith(0.4)
+    expect(legendText(root)).toContain(BLENDED)
+    expect((controls(root).querySelector('input[aria-label="Colour"]') as HTMLInputElement).checked).toBe(true)
+    expect((controls(root).querySelector('input[aria-label="Field opacity"]') as HTMLInputElement).value).toBe('40')
+  })
+})
