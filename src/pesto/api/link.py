@@ -1,9 +1,11 @@
 """The link routes: what a clicked set of cells holds, so the map can hand the Params and
 Obs tabs one answer.
 
-All read the cache, never a run directory. Cells and the layer arrive as query text and
-are checked against the cached grid's own counts; parameters come back by ``parnme`` and
-sites by ``site_id``, both read from the cached tables, never by row position.
+All read the cache; the one run-directory read is a pilot-point group's text factor
+file, opened for reading only, at the path the cached pp_factors index records. Cells and
+the layer arrive as query text and are checked against the cached grid's own counts;
+parameters come back by ``parnme`` and sites by ``site_id``, both read from the cached
+tables, never by row position.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from fastapi import APIRouter, Query, Request
 from starlette.responses import JSONResponse, Response
 
 from pesto.api import obscache
-from pesto.api.linkcache import RING_RULE, cell_neighbours
+from pesto.api.linkcache import RING_RULE, cell_neighbours, pp_factor_index
 from pesto.api.obsmap import _cell_centres, _reason
 from pesto.api.pp import _shape
 from pesto.api.problem import problem, problem_from_failure
@@ -25,7 +27,7 @@ from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.parcell import load_par_cell
-from pesto.ingest.ppfactors import load_pp_index
+from pesto.ingest.ppfactors import PpGroup, load_pp_index
 
 router = APIRouter(prefix="/api/run")
 
@@ -35,6 +37,8 @@ SITES_CAP = 50
 PARS_CAP = 500
 
 DIRECT_RULE = "sets this cell (par_cell)"
+FACTOR_RULE = "pilot-point factor on this cell"
+NO_RUN_DIR = "the run directory is not open, so pilot-point factors cannot be read"
 NO_PAR_PLACEMENT = "no parameter placement was ingested for this run"
 NO_SITE_PLACEMENT = "no observation placement was ingested for this run"
 
@@ -65,18 +69,23 @@ def _these(cells: list[int]) -> str:
     return "this cell" if len(cells) == 1 else "these cells"
 
 
-def _pilot_point_names(layout: CacheLayout, manifest: Manifest) -> tuple[set[str], list[str]]:
-    """Every pilot-point parameter name, and a note when the index is recorded but unreadable.
+def _pilot_groups(layout: CacheLayout, manifest: Manifest) -> tuple[tuple[PpGroup, ...], list[str]]:
+    """Every pilot-point group, and a note when the index is recorded but unreadable.
 
     A run that recorded no pp_factors has no pilot points, so no note is due."""
     recorded = manifest.artifacts.get("pp_factors")
     if recorded is None:
-        return set(), []
+        return (), []
     index = load_pp_index(layout)
     if isinstance(index, ReadFailure):
         reason = recorded.reason if recorded.state != "ok" and recorded.reason else _reason(index)
-        return set(), [f"pp_factors could not be read: {reason}, so pilot points are listed as plain parameters"]
-    return {name for group in index.groups for name in group.parnames}, []
+        return (), [f"pp_factors could not be read: {reason}, so pilot points are listed as plain parameters"]
+    return index.groups, []
+
+
+def _weight(w) -> float:
+    # The float32 weight's shortest text, so 0.3 goes out as 0.3 and not 0.30000001192092896.
+    return float(str(np.float32(w)))
 
 
 def _direct_pars(placed, layer: int, cells: list[int], pilot: set[str]) -> list[dict]:
@@ -95,6 +104,68 @@ def _direct_pars(placed, layer: int, cells: list[int], pilot: set[str]) -> list[
             }
         )
     return rows
+
+
+def _factor_weights(state, cache_root, run_dir, groups, layer: int, cells: list[int]):
+    """Every pilot point with a non-zero factor on a clicked cell, with one weight per cell,
+    from the groups on ``layer``; a note for each group whose factors cannot be read."""
+    found: dict[str, tuple[PpGroup, list[dict]]] = {}
+    notes: list[str] = []
+    for group in groups:
+        if group.layer != layer:
+            continue
+        if run_dir is None:
+            notes.append(f"group {group.group}: {NO_RUN_DIR}")
+            continue
+        index = pp_factor_index(state, cache_root, run_dir, group)
+        if isinstance(index, ReadFailure):
+            notes.append(f"group {group.group}: {_reason(index)}")
+            continue
+        for cell in cells:
+            points, weights = index.points_on(cell)
+            for p, w in zip(points.tolist(), weights.tolist()):
+                name = group.parnames[p]
+                found.setdefault(name, (group, []))[1].append({"cell": cell, "weight": _weight(w)})
+    return found, notes
+
+
+def _cell_pars(placed, groups, factors: dict, layer: int, cells: list[int]) -> list[dict]:
+    """Direct rows and pilot-point rows as one list, grouped by pargp in the order the
+    groups first appear in the control file; in each group the direct rows in control
+    order, then the points reached only by a factor, largest weight first."""
+    pilot = {name for group in groups for name in group.parnames}
+    rows = _direct_pars(placed, layer, cells, pilot)
+    order = {name: i for i, name in enumerate(placed.parnme)}
+    by_name = {row["parnme"]: row for row in rows}
+    extra = []
+    for name, (group, weights) in factors.items():
+        row = by_name.get(name)
+        if row is not None:
+            row["weights"] = weights
+            row["rule"] = f"{DIRECT_RULE}; {FACTOR_RULE}"
+            continue
+        i = order.get(name)
+        pargp = placed.pargp[i] if i is not None else None
+        extra.append(
+            {
+                "parnme": name,
+                "pargp": pargp if pargp is not None else group.group,
+                "kind": "pilot_point",
+                "cell": int(placed.cell[i]) if i is not None else -1,
+                "weights": weights,
+                "rule": FACTOR_RULE,
+            }
+        )
+    last = len(order)
+    extra.sort(key=lambda r: (-max(w["weight"] for w in r["weights"]), order.get(r["parnme"], last), r["parnme"]))
+    every = rows + extra
+    first_seen: dict = {}
+    for row in every:
+        at = order.get(row["parnme"], last)
+        first_seen[row["pargp"]] = min(first_seen.get(row["pargp"], at), at)
+    rank = {gp: k for k, gp in enumerate(sorted(first_seen, key=lambda gp: (first_seen[gp], str(gp))))}
+    # A stable sort keeps direct-then-factor and each part's own order within a group.
+    return sorted(every, key=lambda r: rank[r["pargp"]])
 
 
 def _site_points(table, centres) -> tuple[np.ndarray, np.ndarray]:
@@ -198,13 +269,17 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
         placed = load_par_cell(layout)
         if isinstance(placed, ReadFailure):
             return problem_from_failure(404, placed)
-        pilot, par_notes = _pilot_point_names(layout, manifest)
-        pars = _direct_pars(placed, layer, cells, pilot)
+        groups, par_notes = _pilot_groups(layout, manifest)
+        run_dir = getattr(state, "initial_run_dir", None)
+        factors, factor_notes = _factor_weights(state, cache_root, run_dir, groups, layer, cells)
+        par_notes += factor_notes
+        pars = _cell_pars(placed, groups, factors, layer, cells)
         pars_total = len(pars)
         if pars_total > PARS_CAP:
             par_notes.append(
-                f"{pars_total} parameters set {these} on layer {layer}; the first {PARS_CAP} "
-                "in control-file order are listed"
+                f"{pars_total} parameters set {these} on layer {layer}; the first {PARS_CAP} are "
+                "listed, by parameter group, direct parameters in control-file order and then "
+                "pilot points by largest factor"
             )
             pars = pars[:PARS_CAP]
         pars_reason = f"no parameter sets {these} on layer {layer}"
