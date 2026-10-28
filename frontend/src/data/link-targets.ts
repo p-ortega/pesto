@@ -29,8 +29,13 @@ export interface ParLink {
   reason: string | null
 }
 
-/** notAsked counts the names past MAX_LINK_PARS that were left out of the request. */
-export type ParLinkResult = { ok: true; pars: ParLink[]; unknown: string[]; notAsked: number } | Refused
+/**
+ * notAsked counts the names past MAX_LINK_PARS that were left out of the request. reason is why no
+ * name could be looked up (every asked name is then in unknown); notes are the server's side notes.
+ */
+export type ParLinkResult =
+  | { ok: true; pars: ParLink[]; unknown: string[]; notAsked: number; reason: string | null; notes: string[] }
+  | Refused
 
 export interface SiteWhere {
   siteId: number
@@ -47,7 +52,17 @@ export interface SiteWhere {
 
 /** notAsked counts the ids past MAX_LINK_SITES that were left out of the request. */
 export type SitesWhereResult =
-  | { ok: true; iteration: number; sites: SiteWhere[]; unknown: number[]; valueRule: string; valueReason: string | null; notAsked: number }
+  | {
+      ok: true
+      iteration: number
+      sites: SiteWhere[]
+      unknown: number[]
+      valueRule: string
+      valueReason: string | null
+      notAsked: number
+      reason: string | null
+      notes: string[]
+    }
   | Refused
 
 function readParLink(value: unknown, where: string): ParLink {
@@ -77,7 +92,14 @@ export async function fetchLinkPar(names: readonly string[], opts?: FetchOptions
     const where = '/link/par answer'
     const o = objectOf(payload, where)
     const pars = list(o, 'pars', where).map((row, i) => readParLink(row, `${where}'s pars[${i}]`))
-    return { ok: true as const, pars, unknown: texts(o, 'unknown', where), notAsked }
+    return {
+      ok: true as const,
+      pars,
+      unknown: texts(o, 'unknown', where),
+      notAsked,
+      reason: textOrNull(o, 'reason', where),
+      notes: texts(o, 'notes', where),
+    }
   })
 }
 
@@ -111,6 +133,8 @@ export async function fetchLinkSites(siteIds: readonly number[], iteration: numb
       valueRule: text(o, 'value_rule', where),
       valueReason: textOrNull(o, 'value_reason', where),
       notAsked,
+      reason: textOrNull(o, 'reason', where),
+      notes: texts(o, 'notes', where),
     }
   })
 }

@@ -309,6 +309,8 @@ function stubEnvironment(): Stub {
               unknown: ids,
               value_rule: 'a site has a valid observation when one of its observations has a measured value',
               value_reason: null,
+              reason: null,
+              notes: [],
             },
           })
         }

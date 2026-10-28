@@ -46,6 +46,10 @@ export interface ParameterRings {
   reachCapped: number
   unknown: number
   notAsked: number
+  /** Why no parameter could be looked up at all (every unknown name is then this reason's); null otherwise. */
+  lookupReason: string | null
+  /** The server's side notes, as written. */
+  notes: string[]
 }
 
 /** The union of the cells the answered parameters set on `layer`, and a count of every one left out. */
@@ -80,6 +84,8 @@ export function parameterRingCells(answer: ParLinkAnswer, layer: number): Parame
     reachCapped,
     unknown: answer.unknown.length,
     notAsked: answer.notAsked,
+    lookupReason: answer.reason,
+    notes: answer.notes,
   }
 }
 
@@ -99,8 +105,15 @@ export function parameterLines(rings: ParameterRings): string[] {
   if (rings.reachCapped > 0) {
     lines.push(`${cellsAre(rings.reachCapped)} not outlined: the server lists a pilot point's reach only up to its cap`)
   }
-  if (rings.unknown > 0) lines.push(`${selected(rings.unknown, 'parameter', 'is')} not in this run's parameter table`)
+  if (rings.unknown > 0) {
+    lines.push(
+      rings.lookupReason !== null
+        ? `${selected(rings.unknown, 'parameter', 'is')} not looked up: ${rings.lookupReason}`
+        : `${selected(rings.unknown, 'parameter', 'is')} not in this run's parameter table`,
+    )
+  }
   if (rings.notAsked > 0) lines.push(`${selected(rings.notAsked, 'parameter', 'is')} not looked up: only the first ${MAX_LINK_PARS} are`)
+  lines.push(...rings.notes)
   return lines
 }
 
@@ -116,7 +129,9 @@ export interface DrawnSites {
 export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[] {
   if (drawn.colourSource === 'par') {
     const total = answer.sites.length + answer.unknown.length + answer.notAsked
-    return total === 0 ? [] : [`${selected(total, 'site', 'is')} not drawn: the map is coloured by parameters`]
+    const lines = total === 0 ? [] : [`${selected(total, 'site', 'is')} not drawn: the map is coloured by parameters`]
+    if (answer.reason !== null) lines.push(`${selected(answer.unknown.length, 'site', 'is')} not looked up: ${answer.reason}`)
+    return [...lines, ...answer.notes]
   }
   const otherLayer = new Map<number, number>()
   let otherGroup = 0
@@ -137,8 +152,15 @@ export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[
     lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer; turn on all layers to see ${unknownLayer === 1 ? 'it' : 'them'}`)
   }
   if (notPlaced > 0) lines.push(`${selected(notPlaced, 'site', 'is')} not placed`)
-  if (answer.unknown.length > 0) lines.push(`${selected(answer.unknown.length, 'site', 'is')} not in this run's index`)
+  if (answer.unknown.length > 0) {
+    lines.push(
+      answer.reason !== null
+        ? `${selected(answer.unknown.length, 'site', 'is')} not looked up: ${answer.reason}`
+        : `${selected(answer.unknown.length, 'site', 'is')} not in this run's index`,
+    )
+  }
   if (answer.notAsked > 0) lines.push(`${selected(answer.notAsked, 'site', 'is')} not checked: only the first ${MAX_LINK_SITES} are`)
+  lines.push(...answer.notes)
   return lines
 }
 
