@@ -499,7 +499,7 @@ describe('the site list', () => {
     expect(cell(b, 'layer').textContent).toBe('unknown')
     expect(cell(b, 'placement').textContent).toBe('not placed')
     expect(cell(b, 'placement').title).toBe('no x or y in the file')
-    expect(host.querySelector('.obs-sites-title')?.textContent).toBe('gw_head: 2 sites')
+    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('gw_head: 2 sites')
   })
 
   it('shows the site by name and keys it by site_id, never by position', async () => {
@@ -593,7 +593,7 @@ describe('the site list', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     expect(siteRows(host).map((r) => cell(r, 'site').textContent)).toEqual(['date_a'])
-    expect(host.querySelector('.obs-sites-title')?.textContent).toBe('gw_date: 1 site')
+    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('gw_date: 1 site')
   })
 
   it('shows the reason in place of the list when the sites are refused', async () => {
@@ -669,6 +669,143 @@ describe('the site list', () => {
 
     expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
     expect(groupRows(host)[1].getAttribute('aria-selected')).toBe('false')
+  })
+})
+
+describe('picking sites with modifiers', () => {
+  beforeEach(() => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(2, 's2'), site(3, 's3'), site(4, 's4')]))
+  })
+
+  async function openSites(over: Partial<ObsPanelOptions> = {}) {
+    const view = await openWithGroups(over)
+    groupRows(view.host)[0].click()
+    await vi.waitFor(() => expect(siteRows(view.host).length).toBe(3))
+    return view
+  }
+
+  function rowOf(host: HTMLElement, id: number): HTMLElement {
+    return siteRows(host).find((r) => r.dataset.siteId === String(id))!
+  }
+
+  function clickRow(host: HTMLElement, id: number, init: MouseEventInit = {}): void {
+    rowOf(host, id).dispatchEvent(new MouseEvent('click', { bubbles: true, ...init }))
+  }
+
+  it('replaces on a plain click, adds on shift and removes on alt, always with the origin obs', async () => {
+    const store = makeStore()
+    const heard: { sites: number[]; origins: string[] }[] = []
+    store.subscribe(
+      (s) => s.sites,
+      (next, _prev, origins) => heard.push({ sites: [...next.sites].sort(), origins: [...origins] }),
+    )
+    const { host } = await openSites({ store })
+
+    clickRow(host, 2)
+    store.flush()
+    clickRow(host, 3, { shiftKey: true })
+    store.flush()
+    clickRow(host, 2, { altKey: true })
+    store.flush()
+
+    expect(heard).toEqual([
+      { sites: [2], origins: ['obs'] },
+      { sites: [2, 3], origins: ['obs'] },
+      { sites: [3], origins: ['obs'] },
+    ])
+  })
+
+  it('treats Enter and shift+Enter like a click and a shift-click', async () => {
+    const { host, store } = await openSites()
+
+    rowOf(host, 2).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    rowOf(host, 4).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }))
+
+    expect([...store.get().sites].sort()).toEqual([2, 4])
+  })
+
+  it('marks the sites another view chose and dims the rest, and dims nothing with no site chosen', async () => {
+    const { host, store } = await openSites()
+
+    store.set({ sites: new Set([3]) }, 'map')
+    store.flush()
+    expect(rowOf(host, 3).getAttribute('aria-selected')).toBe('true')
+    expect(rowOf(host, 3).classList.contains('dimmed')).toBe(false)
+    expect(rowOf(host, 2).classList.contains('dimmed')).toBe(true)
+    expect(rowOf(host, 4).classList.contains('dimmed')).toBe(true)
+
+    store.set({ sites: new Set() }, 'map')
+    store.flush()
+    expect(siteRows(host).some((r) => r.classList.contains('dimmed'))).toBe(false)
+  })
+
+  it('keeps every row in its place whatever is chosen', async () => {
+    const { host, store } = await openSites()
+    sortButton(host, 'Group').click()
+    sortButton(host, 'Group').click()
+    const groupsBefore = names(host)
+
+    store.set({ sites: new Set([4]) }, 'map')
+    store.flush()
+    clickRow(host, 3, { shiftKey: true })
+    store.flush()
+
+    expect(siteRows(host).map((r) => r.dataset.siteId)).toEqual(['2', '3', '4'])
+    expect(names(host)).toEqual(groupsBefore)
+    expect(heading(host, 'Group').getAttribute('aria-sort')).toBe('descending')
+  })
+
+  it('leaves the group rows alone when the sites change', async () => {
+    const { host, store } = await openSites()
+    const groupsSelected = groupRows(host).map((r) => r.getAttribute('aria-selected'))
+
+    store.set({ sites: new Set([2]) }, 'map')
+    store.flush()
+
+    expect(groupRows(host).map((r) => r.getAttribute('aria-selected'))).toEqual(groupsSelected)
+    expect(groupRows(host).some((r) => r.classList.contains('dimmed'))).toBe(false)
+    expect([...store.get().obsGroups]).toEqual(['gw_head'])
+  })
+})
+
+describe("the site list's 'Show selected' button", () => {
+  function showButton(host: HTMLElement): HTMLButtonElement {
+    return host.querySelector<HTMLButtonElement>('.obs-sites-title button')!
+  }
+
+  it('scrolls to the first chosen site in list order', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer(Array.from({ length: 9086 }, (_, i) => site(i, `site_${i}`))))
+    const { host, store } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBeGreaterThan(0))
+
+    store.set({ sites: new Set([8000, 7000]) }, 'map')
+    store.flush()
+    expect(showButton(host).disabled).toBe(false)
+    showButton(host).click()
+
+    const pane = host.querySelector<HTMLElement>('.obs-sites .obs-grid > .scroll-pane')!
+    expect(pane.scrollTop).toBe(7000 * 24)
+    expect(siteRows(host).map((r) => r.dataset.siteId)).toContain('7000')
+  })
+
+  it('is disabled with the reason when no chosen site is in this group', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(2, 's2'), site(3, 's3')]))
+    const { host, store } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    expect(showButton(host).textContent).toBe('Show selected')
+    expect(showButton(host).disabled).toBe(true)
+    expect(showButton(host).title).toBe('no selected site is in this group')
+
+    store.set({ sites: new Set([99]) }, 'map')
+    store.flush()
+    expect(showButton(host).disabled).toBe(true)
+
+    store.set({ sites: new Set([3]) }, 'map')
+    store.flush()
+    expect(showButton(host).disabled).toBe(false)
   })
 })
 
