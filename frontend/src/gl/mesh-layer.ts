@@ -185,16 +185,21 @@ void main() {
 // pixels so they stay the same on screen at any zoom. The ring keeps a dot
 // readable on any fill. A NaN value is discarded, never drawn at a ramp end,
 // unless u_missingStyle is 1: then it draws as a ring with no fill (absence).
+// Each dot also carries a flag bit set: a hatch swatch inside the dot so an
+// overlay still reads under it (D-25, D-29), and dimming (D-02).
 const POINTS_VERTEX = `#version 300 es
 in vec2 a_pos;
 in float a_value;
+in float a_flags;
 uniform mat3 u_matrix;
 uniform vec2 u_limits;
 uniform float u_size;
 flat out float v_norm;
 flat out float v_missing;
+flat out float v_flags;
 
 void main() {
+  v_flags = a_flags;
   v_missing = (isnan(a_value) || isinf(a_value)) ? 1.0 : 0.0;
   v_norm = clamp((a_value - u_limits.x) / max(u_limits.y - u_limits.x, 1e-20), 0.0, 1.0);
   gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
@@ -205,10 +210,19 @@ const POINTS_FRAGMENT = `#version 300 es
 precision highp float;
 flat in float v_norm;
 flat in float v_missing;
+flat in float v_flags;
 uniform sampler2D u_ramp;
 uniform vec3 u_ringColor;
 uniform float u_missingStyle;
+uniform vec3 u_ink;
+uniform float u_dimAlpha;
 out vec4 fragColor;
+
+// One swatch line family across the dot; d is in point-coordinate units.
+float swatch(float d) {
+  float m = mod(d, 0.5);
+  return step(min(m, 0.5 - m), 0.09);
+}
 
 void main() {
   bool missing = v_missing > 0.5;
@@ -217,7 +231,18 @@ void main() {
   float r = length(d);
   if (r > 0.5) discard;
   if (missing && r <= 0.36) discard;
-  fragColor = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
+  vec4 color = r > 0.36 ? vec4(u_ringColor, 1.0) : texture(u_ramp, vec2(v_norm, 0.5));
+  // Bits as named in data/hatch-mask.ts: 1 at-bounds swatch, 2 conflict swatch, 4 dim.
+  int flags = int(v_flags + 0.5);
+  if (r <= 0.36) {
+    // gl_PointCoord runs downward, so x + y is constant along a 45-degree line.
+    float s = 0.0;
+    if ((flags & 1) != 0) s = max(s, swatch(gl_PointCoord.x + gl_PointCoord.y));
+    if ((flags & 2) != 0) s = max(s, swatch(gl_PointCoord.x - gl_PointCoord.y));
+    if (s > 0.5) color = vec4(u_ink, 1.0);
+  }
+  if ((flags & 4) != 0) color.a *= u_dimAlpha;
+  fragColor = color;
 }`
 
 export interface MeshData {
@@ -315,11 +340,15 @@ export class MeshLayer {
   private pointsVao!: WebGLVertexArrayObject
   private pointsPosBuffer!: WebGLBuffer
   private pointsValueBuffer!: WebGLBuffer
+  private pointsFlagBuffer!: WebGLBuffer
   private pointCount = 0
   private lastPointXy: Float32Array | null = null
   private lastPointValues: Float32Array | null = null
+  private lastPointFlags: Float32Array | null = null
   private pointRingColor: [number, number, number] = [0, 0, 0]
-  private selectedPoint: number | null = null
+  private selectedPoints: number[] = []
+  private droppedPoints = 0
+  private dimAlpha = 0.35
   private missingStyle: 'discard' | 'ring' = 'discard'
 
   private limits: [number, number] = [0, 1]
@@ -490,6 +519,11 @@ export class MeshLayer {
     const pointsValueLoc = gl.getAttribLocation(this.pointsProgram, 'a_value')
     gl.enableVertexAttribArray(pointsValueLoc)
     gl.vertexAttribPointer(pointsValueLoc, 1, gl.FLOAT, false, 0, 0)
+    this.pointsFlagBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsFlagBuffer)
+    const pointsFlagLoc = gl.getAttribLocation(this.pointsProgram, 'a_flags')
+    gl.enableVertexAttribArray(pointsFlagLoc)
+    gl.vertexAttribPointer(pointsFlagLoc, 1, gl.FLOAT, false, 0, 0)
     gl.bindVertexArray(null)
 
     this.valuesTex = gl.createTexture()!
@@ -519,7 +553,8 @@ export class MeshLayer {
     // The mask goes up before the field, so the field stays the latest upload.
     if (this.lastHatch) this.setHatch(this.lastHatch)
     if (this.lastValues) this.setValues(this.lastValues)
-    if (this.lastPointXy && this.lastPointValues) this.setPoints(this.lastPointXy, this.lastPointValues)
+    // Not setPoints: that would clear the flags and selected dots being restored.
+    if (this.lastPointXy && this.lastPointValues) this.uploadPoints()
   }
 
   /** Uploads `values` to the value texture, forcing every contested cell
@@ -756,7 +791,9 @@ export class MeshLayer {
   }
 
   /** `xy` is x, y pairs in the same coordinates as the mesh; `values` is
-   *  one already-scaled value per point. An empty `xy` clears the points. */
+   *  one already-scaled value per point. An empty `xy` clears the points.
+   *  New dots clear the flags and the selected dots: both name dots by
+   *  index, so the caller re-applies them for the new set. */
   setPoints(xy: Float32Array, values: Float32Array): void {
     if (values.length * 2 !== xy.length) {
       throw new Error(
@@ -765,13 +802,47 @@ export class MeshLayer {
     }
     this.lastPointXy = xy
     this.lastPointValues = values
+    this.lastPointFlags = null
+    this.selectedPoints = []
+    this.droppedPoints = 0
+    this.uploadPoints()
+  }
+
+  private uploadPoints(): void {
+    const xy = this.lastPointXy ?? new Float32Array(0)
+    const values = this.lastPointValues ?? new Float32Array(0)
     this.pointCount = values.length
     const { gl } = this
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsPosBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, xy, gl.DYNAMIC_DRAW)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsValueBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW)
-    if (this.selectedPoint !== null && this.selectedPoint >= this.pointCount) this.selectedPoint = null
+    this.uploadPointFlags()
+  }
+
+  // With no flags set the attribute still gets zeros, so it always has data.
+  private uploadPointFlags(): void {
+    const { gl } = this
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointsFlagBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, this.lastPointFlags ?? new Float32Array(this.pointCount), gl.DYNAMIC_DRAW)
+  }
+
+  /** One flag bit set per dot: 1 draws a 45-degree swatch, 2 a 135-degree
+   *  swatch, 4 dims the dot to the dim alpha. `null` clears every flag. A
+   *  flags array of another length than the point count is refused. */
+  setPointFlags(flags: Float32Array | null): void {
+    if (flags !== null && flags.length !== this.pointCount) {
+      throw new Error(
+        `point flags need one entry per point, got ${flags.length} flags for ${this.pointCount} points`,
+      )
+    }
+    this.lastPointFlags = flags === null ? null : flags.slice()
+    this.uploadPointFlags()
+  }
+
+  /** The alpha a dot flagged dim (bit 4) draws at, read by the caller from the theme. */
+  setDimAlpha(alpha: number): void {
+    this.dimAlpha = alpha
   }
 
   /** Replaces the point values only; the dots do not move. The length must match the point count. */
@@ -798,7 +869,25 @@ export class MeshLayer {
 
   /** The point drawn larger with an accent ring; `null` removes it. */
   setSelectedPoint(index: number | null): void {
-    this.selectedPoint = index
+    this.setSelectedPoints(index === null ? [] : [index])
+  }
+
+  /** The dots drawn larger with an accent ring. An index that is not a
+   *  drawn dot is dropped and counted in selectedPointsDropped(). */
+  setSelectedPoints(indices: readonly number[]): void {
+    const kept = new Set<number>()
+    let dropped = 0
+    for (const i of indices) {
+      if (Number.isInteger(i) && i >= 0 && i < this.pointCount) kept.add(i)
+      else dropped += 1
+    }
+    this.selectedPoints = [...kept].sort((a, b) => a - b)
+    this.droppedPoints = dropped
+  }
+
+  /** How many indices the last setSelectedPoints call dropped. */
+  selectedPointsDropped(): number {
+    return this.droppedPoints
   }
 
   private drawPoints(): void {
@@ -817,14 +906,24 @@ export class MeshLayer {
     const ring = this.pointRingColor
     gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), ring[0], ring[1], ring[2])
     gl.uniform1f(gl.getUniformLocation(program, 'u_missingStyle'), this.missingStyle === 'ring' ? 1 : 0)
+    const ink = this.hatchInk
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ink'), ink[0], ink[1], ink[2])
+    gl.uniform1f(gl.getUniformLocation(program, 'u_dimAlpha'), this.dimAlpha)
+    // Blend colour only; alpha stays 1 so a dimmed dot never makes the canvas see-through.
+    const wasBlending = gl.isEnabled(gl.BLEND)
+    gl.enable(gl.BLEND)
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.drawArrays(gl.POINTS, 0, this.pointCount)
 
-    if (this.selectedPoint !== null && this.selectedPoint < this.pointCount) {
+    if (this.selectedPoints.length > 0) {
       const accent = this.accentColor
       gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 9 * dpr)
       gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), accent[0], accent[1], accent[2])
-      gl.drawArrays(gl.POINTS, this.selectedPoint, 1)
+      for (const index of this.selectedPoints) {
+        if (index < this.pointCount) gl.drawArrays(gl.POINTS, index, 1)
+      }
     }
+    if (!wasBlending) gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
   }
 
@@ -1017,6 +1116,7 @@ export class MeshLayer {
     gl.deleteBuffer(this.footprintElements)
     gl.deleteBuffer(this.pointsPosBuffer)
     gl.deleteBuffer(this.pointsValueBuffer)
+    gl.deleteBuffer(this.pointsFlagBuffer)
     gl.deleteTexture(this.valuesTex)
     gl.deleteTexture(this.rampTex)
   }

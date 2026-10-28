@@ -54,6 +54,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     SCISSOR_TEST: 'SCISSOR_TEST',
     SRC_ALPHA: 'SRC_ALPHA',
     ONE_MINUS_SRC_ALPHA: 'ONE_MINUS_SRC_ALPHA',
+    ONE: 'ONE',
   }
 
   const gl = {
@@ -117,6 +118,7 @@ export function createRecordingGl(): { gl: WebGL2RenderingContext; calls: Record
     enable: record('enable'),
     disable: record('disable'),
     blendFunc: record('blendFunc'),
+    blendFuncSeparate: record('blendFuncSeparate'),
     drawElements: record('drawElements'),
     drawArrays: record('drawArrays'),
     deleteProgram: record('deleteProgram'),
