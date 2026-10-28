@@ -1032,3 +1032,113 @@ describe('brushing the residual histogram', () => {
     expect(obsApi.fetchObsBrush).not.toHaveBeenCalled()
   })
 })
+
+// ---- dimmed 1:1 points and clicking a point ----
+
+function click(canvas: HTMLCanvasElement, x: number, y: number, init: MouseEventInit = {}): void {
+  canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true, ...init }))
+}
+
+function fitCanvas(host: HTMLElement): HTMLCanvasElement {
+  return host.querySelector('.obs-fit-1to1 canvas') as HTMLCanvasElement
+}
+
+describe('dimmed 1:1 points', () => {
+  it('draws outlying points of unselected sites at the dim alpha and the selected site at full alpha, all of them drawn', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([sitePoints(1, 'well A')]))
+    const m = mount({ store: makeStore([1]) })
+    await drawn(m)
+    await vi.waitFor(() => expect(markers(lastDraw(m.calls, 1), 'arc').length).toBe(2))
+
+    const squares = markers(lastDraw(m.calls, 1), 'rect')
+    // Two outlying sites with two points each: every point is still drawn.
+    expect(squares.length).toBe(4)
+    expect(squares.map((s) => s.call.state.globalAlpha).sort()).toEqual([0.3, 0.3, 1, 1])
+    const dimmedX = squares.filter((s) => s.call.state.globalAlpha === 0.3).map((s) => s.call.args[0])
+    const fullX = squares.filter((s) => s.call.state.globalAlpha === 1).map((s) => s.call.args[0])
+    expect(dimmedX).toEqual(fullX)
+    expect(markers(lastDraw(m.calls, 1), 'arc').every((c) => c.call.state.globalAlpha === 1)).toBe(true)
+    expect(legendText(m.host)).toContain('outlying sites and their RMSE of the ensemble-mean residual: well A 2.5, well B 2.5')
+  })
+
+  it('dims nothing when no site is selected', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    const m = mount()
+    await drawn(m)
+
+    const squares = markers(lastDraw(m.calls, 1), 'rect')
+    expect(squares.length).toBe(4)
+    expect(squares.every((s) => s.call.state.globalAlpha === 1)).toBe(true)
+  })
+
+  it('redraws the dimming when another view changes the sites', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount()
+    await drawn(m)
+
+    m.store.set({ sites: new Set([2]) }, 'map')
+    m.store.flush()
+
+    await vi.waitFor(() =>
+      expect(markers(lastDraw(m.calls, 1), 'rect').map((s) => s.call.state.globalAlpha)).toEqual([0.3, 0.3, 1, 1]),
+    )
+  })
+})
+
+describe('clicking a 1:1 point', () => {
+  it('selects the site of the point under the click, with origin obs-fit', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const store = makeStore([9])
+    const origins: string[][] = []
+    store.subscribe(
+      (s) => s.sites,
+      (_n, _p, o) => origins.push([...o]),
+    )
+    const m = mount({ store })
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(2) + 3, py(3) - 2)
+
+    expect([...store.get().sites]).toEqual([1])
+    store.flush()
+    expect(origins).toEqual([['obs-fit']])
+  })
+
+  it('adds with shift and removes with alt', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount({ store: makeStore([9]) })
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(2), py(3), { shiftKey: true })
+    expect([...m.store.get().sites].sort()).toEqual([1, 9])
+    click(fitCanvas(m.host), px(2), py(3), { altKey: true })
+    expect([...m.store.get().sites]).toEqual([9])
+  })
+
+  it('selects every site with a point in reach, never one of them silently', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A'), sitePoints(2, 'well B')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount()
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(2), py(3))
+
+    expect([...m.store.get().sites].sort()).toEqual([1, 2])
+  })
+
+  it('does nothing on empty plot space or beyond 6 px of a point', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount({ store: makeStore([9]) })
+    await drawn(m)
+
+    click(fitCanvas(m.host), px(10), py(0))
+    click(fitCanvas(m.host), px(2) + 7, py(3))
+
+    expect([...m.store.get().sites]).toEqual([9])
+  })
+})
