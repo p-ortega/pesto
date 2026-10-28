@@ -537,7 +537,12 @@ body {
 
 .obs-grid-header,
 .obs-grid > .scroll-pane {
-  min-width: 64em;
+  min-width: 70em;
+}
+
+/* The rows never scroll sideways on their own, or they would slide out of step with the header. */
+.obs-grid > .scroll-pane {
+  overflow-x: hidden;
 }
 
 .obs-sites .obs-grid-header,
