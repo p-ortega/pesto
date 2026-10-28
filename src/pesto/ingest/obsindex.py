@@ -45,6 +45,32 @@ TIME_TOKEN_PATTERN = r"_(?:datetime|time):[^_]*"
 _TOKEN_CAPTURE_PATTERN = r"_(?P<kind>datetime|time):(?P<value>[^_]*)"
 
 SENTINEL_LIMIT = 1e20
+
+
+def sentinel_mask(values) -> np.ndarray:
+    """True where a value is a placeholder, not a number: MODFLOW's 1e30 for a dry or
+    no-flow cell, or any obsval of ``SENTINEL_LIMIT`` or more. Infinity counts too."""
+    with np.errstate(invalid="ignore"):
+        return np.abs(values) >= SENTINEL_LIMIT
+
+
+def usable_mask(values) -> np.ndarray:
+    """True where a value may feed a range, a statistic, a frame or a bin: finite and not a sentinel."""
+    return np.isfinite(values) & ~sentinel_mask(values)
+
+
+def blank_sentinels(values: np.ndarray) -> tuple[np.ndarray, int]:
+    """``values`` with each finite sentinel set to NaN, and how many there were; the input is
+    returned as it is when it holds none. Infinity is left for the non-finite counts."""
+    hit = sentinel_mask(values) & np.isfinite(values)
+    n = int(np.count_nonzero(hit))
+    if n == 0:
+        return values, 0
+    out = np.array(values, copy=True)
+    out[hit] = np.nan
+    return out, n
+
+
 # The same tags pyemu applies to the lower-cased group name.
 LESS_TAGS = ("l_", "less", ">@")
 GREATER_TAGS = ("g_", "greater", "<@")

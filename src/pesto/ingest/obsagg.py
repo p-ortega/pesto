@@ -40,6 +40,7 @@ from pesto.ingest.obsindex import (
     FLAG_LESS,
     SENTINEL_LIMIT,
     ObsIndex,
+    blank_sentinels,
     load_obs_index,
 )
 from pesto.ingest.tables import load_control_table
@@ -200,13 +201,14 @@ def write_obs_agg(
         n_stats = len(OBS_STATS)
         step = max(int(block_rows), 1)
         summary_notes: list[str] = []
-        counted = {"no_valid": 0}
+        counted = {"no_valid": 0, "sim_sentinel": 0}
 
         def _write_payload(fileobj) -> int:
             fileobj.truncate(n_stats * n_obs * 4)
             for start in range(0, n_obs, step):
                 stop = min(start + step, n_obs)
-                block = np.asarray(stored.values[start:stop])
+                block, n_sim_sentinel = blank_sentinels(np.asarray(stored.values[start:stop]))
+                counted["sim_sentinel"] += n_sim_sentinel
                 block_names = _block_names(names, index.order[start:stop])
                 summary, notes = summarise(block.T, block_names, noun="observation")
                 summary_notes.extend(notes)
@@ -236,6 +238,12 @@ def write_obs_agg(
                 f"residuals are missing; for example "
                 f"{_examples(names, index.order, np.flatnonzero(sentinel))}"
             )
+        if counted["sim_sentinel"]:
+            notes.append(
+                f"{counted['sim_sentinel']} simulated value(s) are {SENTINEL_LIMIT:g} or more (a "
+                "dry or no-flow placeholder, not a head); they are left out of every statistic "
+                "and residual of their observation"
+            )
         if int(no_value.sum()):
             notes.append(
                 f"{int(no_value.sum())} observation(s) have no numeric obsval; their "
@@ -255,6 +263,7 @@ def write_obs_agg(
             "n_with_target": int(has_target.sum()),
             "n_sentinel": int(sentinel.sum()),
             "n_no_value": int(no_value.sum()),
+            "n_simulated_sentinel": counted["sim_sentinel"],
             "n_inequality": int(inequality.sum()),
             "n_no_valid_realizations": counted["no_valid"],
         }
