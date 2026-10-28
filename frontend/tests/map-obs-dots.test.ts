@@ -814,6 +814,19 @@ describe('colouring the map by observations', () => {
       await vi.waitFor(() => expect(readoutText(root)).toContain('the observed value could not be read: obs_index: the index has no such site'))
     })
 
+    it('asks again on the next click when the read of a site failed', async () => {
+      const { root } = await mounted()
+      await enterObservations(root)
+      const canvas = root.querySelector('canvas') as HTMLCanvasElement
+      refuseSite = 103
+      clickAtWorld(canvas, 0.75, 0.6)
+      await vi.waitFor(() => expect(readoutText(root)).toContain('the observed value could not be read'))
+      refuseSite = null
+      clickAtWorld(canvas, 0.75, 0.6)
+      await vi.waitFor(() => expect(readoutText(root)).toContain('observed 7.500 — zero weight: a model output, not fitted'))
+      expect(readoutText(root)).not.toContain('could not be read')
+    })
+
     it('reads the last of two observations at one time and says there are two', async () => {
       const { root } = await mounted()
       await enterObservations(root)
