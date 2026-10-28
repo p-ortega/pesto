@@ -234,6 +234,25 @@ def load_mesh_origin(layout: CacheLayout) -> "tuple[float, float] | ReadFailure"
         )
 
 
+def load_mesh_extent(layout: CacheLayout) -> "tuple[float, float, float, float] | ReadFailure":
+    """``(xmin, xmax, ymin, ymax)`` of the mesh in world coordinates, in
+    float64: the stored bounds plus the origin. A missing origin or bounds is
+    a failure, never zeros."""
+    raw = _read_sidecar(layout)
+    if isinstance(raw, ReadFailure):
+        return raw
+    try:
+        ox, oy = _parse_origin(raw["origin"])
+        xmin, xmax, ymin, ymax = (float(v) for v in raw["bounds"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReadFailure(
+            name="grid",
+            path=str(layout.grid / "mesh.json"),
+            reason=f"mesh.json has an unexpected shape: {exc}",
+        )
+    return (xmin + ox, xmax + ox, ymin + oy, ymax + oy)
+
+
 def load_idomain(layout: CacheLayout) -> "np.ndarray | None | ReadFailure":
     """The cached idomain, or ``None`` when ``mesh.json`` names none."""
     raw = _read_sidecar(layout)
