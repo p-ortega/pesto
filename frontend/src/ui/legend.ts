@@ -4,7 +4,16 @@
 // reaches the DOM through textContent alone, so a group name carrying
 // markup renders as text.
 
-import { classColour, classEdges, ramp, type ColormapName, type LimitsMode, type ValueScale } from '../gl/colormap'
+import {
+  classColour,
+  classEdges,
+  ramp,
+  swatchCssAngle,
+  textureAngles,
+  type ColormapName,
+  type LimitsMode,
+  type ValueScale,
+} from '../gl/colormap'
 import { formatEdge, type EffectiveStyle, type StyleNotes } from '../gl/field-style'
 
 export interface LegendOptions {
@@ -55,7 +64,7 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
   const table = ramp(opts.colormap, opts.reverse)
   const classes = opts.style?.classes ?? 0
   if (classes > 0) {
-    renderClasses(el, table, classes, opts.limits)
+    renderClasses(el, table, classes, opts.limits, opts.style?.texture ?? false)
   } else {
     renderRamp(el, table, opts.limits)
   }
@@ -64,19 +73,29 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
 
 // One swatch per class from classColour, the function the shader's texel
 // indices come from, and one edge value per class boundary (D-06, D-07).
-function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [number, number]): void {
+// Under texture fill each swatch is ink lines at its class angle over the surface (D-15).
+function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [number, number], texture: boolean): void {
   const swatches = document.createElement('div')
   swatches.setAttribute('aria-hidden', 'true')
   swatches.style.display = 'flex'
   swatches.style.width = '128px'
+  const angles = textureAngles(n)
   for (let k = 0; k < n; k++) {
-    const [r, g, b] = classColour(k, n, table)
     const swatch = document.createElement('span')
     swatch.classList.add('legend-class')
     swatch.style.display = 'inline-block'
     swatch.style.width = `${128 / n}px`
-    swatch.style.height = '8px'
-    swatch.style.background = `rgb(${r}, ${g}, ${b})`
+    if (texture) {
+      swatch.style.height = '12px'
+      swatch.style.boxSizing = 'border-box'
+      swatch.style.border = '1px solid var(--hairline)'
+      swatch.style.background =
+        `repeating-linear-gradient(${swatchCssAngle(angles[k])}deg, var(--ink-primary) 0 1px, transparent 1px 4px), var(--surface)`
+    } else {
+      const [r, g, b] = classColour(k, n, table)
+      swatch.style.height = '8px'
+      swatch.style.background = `rgb(${r}, ${g}, ${b})`
+    }
     swatches.appendChild(swatch)
   }
   el.appendChild(swatches)
