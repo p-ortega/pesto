@@ -18,7 +18,7 @@ function atBounds(iteration: number, extra: Partial<AtBoundsAnswer> = {}): AtBou
       iteration,
       firstIteration: 0,
       lastIteration: 3,
-      rule: 'near a bound by pestpp rule',
+      rule: 'at least 10% of realizations near a bound by pestpp rule',
       caveat: 'can be one high against pcs.csv',
       groups: [{ group: 'hk', nPar: 6, nCounted: 5, nAtBounds: 4, nExcluded: { fixed: 1, tied: 0 } }],
       names: ['hk_a', 'hk_b', 'hk_c', 'hk_gone'],
@@ -190,7 +190,7 @@ describe('the at-bounds overlay', () => {
     expect([...mask].map((v) => v & HATCH_AT_BOUNDS)).toEqual([1, 1, 0, 0, 0, 0])
     expect(label(built.atBounds)).toBe('45° at bounds: 4 parameters')
     const t = title(built.atBounds)
-    expect(t).toContain('near a bound by pestpp rule')
+    expect(t).toContain('at least 10% of realizations near a bound by pestpp rule')
     expect(t).toContain('can be one high against pcs.csv')
     expect(t).toContain('1 fixed')
     expect(t).not.toContain('0 tied')

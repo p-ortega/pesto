@@ -1517,7 +1517,7 @@ describe('the Selected parameters section in the panel', () => {
 // ---------------------------------------------------------------------------
 
 describe('the at-bounds column in the group table', () => {
-  const RULE = 'A parameter is at its bounds when pestpp counts it near a bound in at least one realization.'
+  const RULE = 'A parameter is at its bounds when it has at least 10% of realizations near a bound by the pestpp rule.'
   const CAVEAT = 'Counts from the float32 cache can be one high against pcs.csv.'
 
   function atBoundsAnswer(iteration: number, groups: { group: string; n: number; excluded?: Record<string, number> }[]) {

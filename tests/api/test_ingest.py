@@ -92,6 +92,17 @@ def _mark_ok_with_file(manifest: Manifest, layout: CacheLayout, name: str, *, so
         # The state route also asks whether config.json carries the current facts version.
         content = json.dumps({"facts_version": FACTS_VERSION, "facts": []}).encode()
         file_name = layout.config.name
+    if name == "par_change":
+        # The state route also asks whether par_change carries the near-bound realization counts.
+        import io
+
+        import pandas as pd
+
+        buffer = io.BytesIO()
+        pd.DataFrame({"near_n_first": [1], "near_n_last": [1]}).to_parquet(buffer, index=False)
+        content = buffer.getvalue()
+        file_name = str(layout.par_change.relative_to(layout.root))
+        layout.par_change.parent.mkdir(parents=True, exist_ok=True)
     (layout.root / file_name).write_bytes(content)
     manifest.mark_ok(
         name, sources=list(sources), files=(CacheFile(path=file_name, bytes=len(content)),), seconds=seconds

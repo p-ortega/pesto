@@ -63,7 +63,7 @@ class Moments:
     """Per-parameter figures in control-file order. ``n_valid`` is the number of
     realizations that held a number; ``n_nonpositive`` counts the values a log
     parameter cannot take the logarithm of. The near-bound arrays are filled only
-    when bounds were given."""
+    when bounds were given; ``near_n`` is the realizations those counts are out of."""
 
     mean: np.ndarray
     sd: np.ndarray
@@ -72,6 +72,7 @@ class Moments:
     near_lower: np.ndarray | None = None
     near_upper: np.ndarray | None = None
     near_missing: np.ndarray | None = None
+    near_n: np.ndarray | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -140,11 +141,12 @@ def parameter_moments(
     n_valid = np.zeros(n_par, dtype=np.int64)
     n_nonpositive = np.zeros(n_par, dtype=np.int64)
     log_mask = np.asarray(log_mask, dtype=bool)
-    near_lower = near_upper = near_missing = None
+    near_lower = near_upper = near_missing = near_n = None
     if near_bounds is not None:
         lower, upper, adjustable = near_bounds
         near_lower = np.zeros(n_par, dtype=np.int64)
         near_upper = np.zeros(n_par, dtype=np.int64)
+        near_n = np.zeros(n_par, dtype=np.int64)
         near_missing = np.ones(n_par, dtype=bool)
 
     for control, block in _control_chunks(stored):
@@ -172,7 +174,7 @@ def parameter_moments(
         if near_bounds is not None:
             # The function's own notes are left out: the writer states each
             # kind of loss once, with a count, rather than once per chunk.
-            n_low, n_up, _n, missing, _notes = near_bound_counts(
+            n_low, n_up, n_held, missing, _notes = near_bound_counts(
                 block,
                 lower[control],
                 upper[control],
@@ -181,6 +183,7 @@ def parameter_moments(
             )
             near_lower[control] = n_low
             near_upper[control] = n_up
+            near_n[control] = n_held
             near_missing[control] = missing
     return Moments(
         mean=mean,
@@ -190,6 +193,7 @@ def parameter_moments(
         near_lower=near_lower,
         near_upper=near_upper,
         near_missing=near_missing,
+        near_n=near_n,
     )
 
 
@@ -431,6 +435,8 @@ def write_par_change(
                 "near_upper_first": _counts(moments_first.near_upper, moments_first.near_missing),
                 "near_lower_last": _counts(moments_last.near_lower, moments_last.near_missing),
                 "near_upper_last": _counts(moments_last.near_upper, moments_last.near_missing),
+                "near_n_first": _counts(moments_first.near_n, moments_first.near_missing),
+                "near_n_last": _counts(moments_last.near_n, moments_last.near_missing),
             }
         )
         payload_bytes = _write_parquet_atomic(frame, payload_path)
@@ -574,6 +580,22 @@ def _read_json(name: str, path: Path) -> dict | ReadFailure:
             f"this reader expects {CACHE_VERSION}",
         )
     return raw
+
+
+# The realization counts the at-bounds share is taken out of; a table without them predates it.
+NEAR_SHARE_COLUMNS = ("near_n_first", "near_n_last")
+
+
+def par_change_outdated(layout: CacheLayout) -> bool:
+    """Whether the cached ``par_change`` table lacks the near-bound realization counts, or
+    cannot be read to tell; such a table is rebuilt on the next ingest."""
+    import pyarrow.parquet as pq
+
+    try:
+        names = set(pq.read_schema(layout.par_change).names)
+    except (OSError, ValueError):
+        return True
+    return not set(NEAR_SHARE_COLUMNS) <= names
 
 
 def load_par_change(layout: CacheLayout) -> tuple[pd.DataFrame, dict] | ReadFailure:

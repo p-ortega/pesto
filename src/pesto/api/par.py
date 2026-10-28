@@ -33,6 +33,7 @@ from pesto.ingest.parhist import load_par_hist, shared_edge_histogram
 from pesto.ingest.parview import (
     DRILL_DOWN_MAX_PARAMS,
     NEAR_BOUND_NOTE,
+    NEAR_SHARE_COLUMNS,
     drill_down_offer,
     load_par_change,
     load_par_groups,
@@ -40,9 +41,11 @@ from pesto.ingest.parview import (
 
 router = APIRouter(prefix="/api/run")
 
+# A whole percent so the threshold test stays in integers and exactly 10% counts.
+AT_BOUNDS_MIN_PERCENT = 10
 AT_BOUNDS_RULE = (
-    "A parameter is at its bounds when at least one realization of the shown iteration is "
-    "near a bound by pestpp's own rule. " + NEAR_BOUND_NOTE
+    "A parameter is at its bounds in the shown iteration when it has at least "
+    f"{AT_BOUNDS_MIN_PERCENT}% of realizations near a bound, by pestpp's own rule. " + NEAR_BOUND_NOTE
 )
 AT_BOUNDS_CAVEAT = (
     "counts from the float32 cache can be one high against pestpp's pcs.csv on a few groups, "
@@ -356,11 +359,23 @@ def _build_at_bounds(layout: CacheLayout, iteration: int) -> AtBounds | ReadFail
         reason = f"near-bound counts exist for {where} only"
         return AtBounds(first=first, last=last, known=known, reason=reason, groups=[], names={})
 
+    absent = [c for c in NEAR_SHARE_COLUMNS if c not in frame.columns]
+    if absent:
+        return ReadFailure(
+            name="par_change",
+            path=str(layout.par_change),
+            reason=(
+                f"par_change: the cached change table has no {', '.join(absent)} column, so the "
+                "share of realizations near a bound cannot be told; ingest the run again"
+            ),
+        )
     # Nullable Int64 throughout: a missing count stays missing, never 0 and never a float.
     lower = frame[f"near_lower_{suffix}"].astype("Int64")
     upper = frame[f"near_upper_{suffix}"].astype("Int64")
-    counted = (lower.notna() & upper.notna()).to_numpy(dtype=bool)
-    at = ((lower + upper) >= 1).fillna(False).to_numpy(dtype=bool) & counted
+    held = frame[f"near_n_{suffix}"].astype("Int64")
+    counted = (lower.notna() & upper.notna() & held.notna() & (held > 0)).fillna(False).to_numpy(dtype=bool)
+    near = (lower + upper) * 100 >= held * AT_BOUNDS_MIN_PERCENT
+    at = near.fillna(False).to_numpy(dtype=bool) & counted
     kinds = frame["excluded_kind"].map(lambda k: k if isinstance(k, str) and k else NOT_COUNTED)
 
     work = pd.DataFrame({"group": pargp, "counted": counted, "at": at})
@@ -388,8 +403,9 @@ def _build_at_bounds(layout: CacheLayout, iteration: int) -> AtBounds | ReadFail
 
 @router.get("/par/at_bounds")
 async def get_par_at_bounds(request: Request, params: Annotated[AtBoundsQuery, Query()]) -> Response:
-    """How many parameters of each group are at their bounds in one iteration, by the
-    near-bound counts pestpp's rule gave; with ``group``, every at-bounds name of it.
+    """How many parameters of each group are at their bounds in one iteration: at least
+    ``AT_BOUNDS_MIN_PERCENT``% of realizations near a bound by pestpp's rule; with ``group``,
+    every at-bounds name of it.
     No drill-down limit: the map needs every name to hatch every cell."""
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
