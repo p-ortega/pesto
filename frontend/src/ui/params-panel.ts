@@ -22,6 +22,9 @@ import {
   type ParHistResult,
   type ParValuesResult,
 } from '../data/par'
+import { isDimmed } from '../data/dim'
+import { modeOf } from '../state/modifiers'
+import { selectPars } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import type { UnmappedGroup } from './group-picker'
@@ -206,15 +209,27 @@ function appendRowCells(rowEl: HTMLElement, row: ParamRow, change: ChangeCells):
 //
 // Returns `redraw`, the same windowing the scroll handler runs, so the panel
 // can recompute the window when it is shown again at its real height.
+const NO_SELECTED_HERE = 'no selected parameter is in this group'
+
 function renderTable(
   host: HTMLElement,
   rows: ParamRow[],
   isHidden: () => boolean,
   changeFor: (parnme: string) => ChangeRowState,
-  selected: () => string | null,
-  pick: (parnme: string) => void,
+  selected: () => ReadonlySet<string>,
+  pick: (parnme: string, event: MouseEvent | KeyboardEvent) => void,
 ): () => void {
   host.textContent = ''
+
+  // Selected rows stay where the sort put them (D-03), so this is the way to reach one.
+  const showSelected = document.createElement('button')
+  showSelected.type = 'button'
+  showSelected.classList.add('label', 'show-selected')
+  showSelected.textContent = 'Show selected'
+  showSelected.style.flex = 'none'
+  showSelected.style.alignSelf = 'flex-start'
+  showSelected.style.marginBottom = 'var(--space-xs)'
+  host.appendChild(showSelected)
 
   // One header row above the windowed table, with the same column rule as
   // every data row (style.css `.param-header`), so the labels line up.
@@ -243,8 +258,17 @@ function renderTable(
   const rowsHost = document.createElement('div')
   spacer.appendChild(rowsHost)
 
+  function firstSelectedIndex(chosen: ReadonlySet<string>): number {
+    if (chosen.size === 0) return -1
+    return rows.findIndex((row) => chosen.has(row.parnme))
+  }
+
   function renderVisible(): void {
     rowsHost.textContent = ''
+    const chosen = selected()
+    const first = firstSelectedIndex(chosen)
+    showSelected.disabled = first < 0
+    showSelected.title = first < 0 ? NO_SELECTED_HERE : 'scroll to the first selected parameter'
     const scrollTop = scrollPane.scrollTop
     const viewportHeight = scrollPane.clientHeight || VIEWPORT_HEIGHT
     const firstIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
@@ -262,14 +286,15 @@ function renderTable(
       rowEl.style.gap = 'var(--space-sm)'
       rowEl.tabIndex = 0
       rowEl.dataset.parameter = rows[i].parnme
-      rowEl.setAttribute('aria-selected', String(rows[i].parnme === selected()))
-      appendRowCells(rowEl, rows[i], changeCellsFor(changeFor(rows[i].parnme)))
       const name = rows[i].parnme
-      rowEl.addEventListener('click', () => pick(name))
+      rowEl.setAttribute('aria-selected', String(chosen.has(name)))
+      if (isDimmed(chosen, name)) rowEl.classList.add('dimmed')
+      appendRowCells(rowEl, rows[i], changeCellsFor(changeFor(name)))
+      rowEl.addEventListener('click', (event) => pick(name, event))
       rowEl.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
-          pick(name)
+          pick(name, event)
         }
       })
       rowsHost.appendChild(rowEl)
@@ -279,6 +304,12 @@ function renderTable(
   // A hidden panel draws nothing; showing it again redraws once.
   scrollPane.addEventListener('scroll', () => {
     if (!isHidden()) renderVisible()
+  })
+  showSelected.addEventListener('click', () => {
+    const first = firstSelectedIndex(selected())
+    if (first < 0) return
+    scrollPane.scrollTop = first * ROW_HEIGHT
+    renderVisible()
   })
   renderVisible()
   host.appendChild(scrollPane)
@@ -734,7 +765,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       return
     }
     const shown = rows.filter((row) => chosen.has(row.pargp))
-    redrawTable = renderTable(tableHost, shown, () => hidden, changeFor, () => selectedParameter, pickParameter)
+    redrawTable = renderTable(tableHost, shown, () => hidden, changeFor, () => opts.store.get().pars, pickParameter)
   }
 
   function changeFor(parnme: string): ChangeRowState {
@@ -858,10 +889,33 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     parameterHandle = renderParameterDetail(parameterHost, { parameter, values, isHidden: () => hidden })
   }
 
-  function pickParameter(parameter: string): void {
+  // The parameter the detail should follow after a click, given the pars it leaves.
+  function detailAfter(clicked: string, pars: ReadonlySet<string>): string | null {
+    if (pars.has(clicked)) return clicked
+    if (selectedParameter !== null && pars.has(selectedParameter)) return selectedParameter
+    if (rows === null || pars.size === 0) return null
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (pars.has(rows[i].parnme)) return rows[i].parnme
+    }
+    return null
+  }
+
+  // Every parameter click, in the table or the selected list, goes through the one modifier rule (D-01).
+  function pickParameter(parameter: string, event: MouseEvent | KeyboardEvent): void {
+    const next = selectPars(opts.store.get(), [parameter], modeOf(event))
+    opts.store.set({ pars: next.pars }, 'params')
+    const follow = detailAfter(parameter, next.pars)
+    if (!hidden) redrawTable?.()
+    if (follow === null) {
+      dropParameter()
+      return
+    }
+    if (follow !== selectedParameter) showParameter(follow)
+  }
+
+  function showParameter(parameter: string): void {
     if (blocked !== null) return
     selectedParameter = parameter
-    if (!hidden) redrawTable?.()
     parameterHandle?.destroy()
     parameterHandle = null
     parameterHost.textContent = ''
@@ -911,6 +965,14 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
   )
 
+  // Any view's pars change only redraws the marks; drawing never writes back.
+  const unsubscribePars = opts.store.subscribe(
+    (selection) => selection.pars,
+    () => {
+      if (!hidden) redrawTable?.()
+    },
+  )
+
   renderUnmappedSection(el, opts.unmapped)
   renderNotesSection(el, opts.artifactNotes)
 
@@ -937,6 +999,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
     dispose() {
       unsubscribe()
+      unsubscribePars()
       histSlot.cancel()
       changeSlot.cancel()
       valuesSlot.cancel()

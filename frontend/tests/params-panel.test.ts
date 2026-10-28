@@ -1224,3 +1224,204 @@ describe('the change columns and the one-parameter drill-down', () => {
     expect(parApi.fetchParChange).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Phase 11: the parameter rows read and write the shared `pars` (D-01, D-02,
+// D-03, D-08). A row click selects; another view's choice marks and dims.
+// ---------------------------------------------------------------------------
+
+describe('the parameter rows and the shared pars selection', () => {
+  const SIX = {
+    parnme: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+    pargp: ['G', 'G', 'G', 'G', 'G', 'G'],
+    parlbnd: [0, 0, 0, 0, 0, 0],
+    parubnd: [1, 1, 1, 1, 1, 1],
+    partrans: ['none', 'none', 'none', 'none', 'none', 'none'],
+  }
+
+  beforeEach(() => {
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('G')]))
+    parApi.fetchParValues.mockImplementation(async (name: string) => ({ ok: false, artifact: 'par_values', reason: `no values for ${name}` }))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  async function mountSix(columns: Record<string, unknown[]> = SIX) {
+    const store = makeStore(['G'])
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, parTable: Promise.resolve(parTableBuffer(columns)) }))
+    await vi.waitFor(() => expect(el.querySelectorAll('.params-table .param-row').length).toBeGreaterThan(0))
+    return { el, store, handle }
+  }
+
+  function row(el: HTMLElement, name: string): HTMLElement {
+    return el.querySelector(`.params-table .param-row[data-parameter="${name}"]`) as HTMLElement
+  }
+
+  function tableNames(el: HTMLElement): string[] {
+    return [...el.querySelectorAll<HTMLElement>('.params-table .param-row')].map((r) => r.dataset.parameter ?? '')
+  }
+
+  function click(target: HTMLElement, mods: { shiftKey?: boolean; altKey?: boolean } = {}): void {
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, ...mods }))
+  }
+
+  function lastValuesAsked(): string | undefined {
+    const calls = parApi.fetchParValues.mock.calls
+    return calls.length === 0 ? undefined : calls[calls.length - 1][0]
+  }
+
+  it('a plain click replaces, shift adds and alt removes, each written to pars with origin "params"', async () => {
+    const { el, store } = await mountSix()
+    const heard: { pars: string[]; origins: string[] }[] = []
+    store.subscribe(
+      (s) => s.pars,
+      (next, _prev, origins) => heard.push({ pars: [...next.pars], origins: [...origins] }),
+    )
+
+    click(row(el, 'p2'))
+    store.flush()
+    expect([...store.get().pars]).toEqual(['p2'])
+    expect(lastValuesAsked()).toBe('p2')
+
+    click(row(el, 'p3'), { shiftKey: true })
+    store.flush()
+    expect(new Set(store.get().pars)).toEqual(new Set(['p2', 'p3']))
+    expect(lastValuesAsked()).toBe('p3')
+
+    click(row(el, 'p2'), { altKey: true })
+    store.flush()
+    expect([...store.get().pars]).toEqual(['p3'])
+    expect(lastValuesAsked()).toBe('p3')
+
+    expect(heard.every((entry) => entry.origins.length === 1 && entry.origins[0] === 'params')).toBe(true)
+    expect(heard.length).toBe(3)
+  })
+
+  it('moves the detail to the last remaining selected parameter, and closes it when nothing is left', async () => {
+    const { el, store } = await mountSix()
+    click(row(el, 'p2'))
+    click(row(el, 'p4'), { shiftKey: true })
+    click(row(el, 'p5'), { shiftKey: true })
+    store.flush()
+    expect(lastValuesAsked()).toBe('p5')
+
+    click(row(el, 'p5'), { altKey: true })
+    store.flush()
+    expect(lastValuesAsked()).toBe('p4')
+
+    click(row(el, 'p4'), { altKey: true })
+    click(row(el, 'p2'), { altKey: true })
+    store.flush()
+    expect(store.get().pars.size).toBe(0)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(el.textContent).not.toContain('Loading distribution')
+    expect(el.textContent).not.toContain('no values for p2')
+  })
+
+  it('treats Enter as a plain click and shift+Enter as a shift-click', async () => {
+    const { el, store } = await mountSix()
+
+    row(el, 'p1').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    row(el, 'p6').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }))
+    store.flush()
+
+    expect(new Set(store.get().pars)).toEqual(new Set(['p1', 'p6']))
+  })
+
+  it('marks and dims rows for pars another view wrote, with no request and no detail change', async () => {
+    const { el, store } = await mountSix()
+
+    store.set({ pars: new Set(['p5']) }, 'map')
+    store.flush()
+
+    expect(row(el, 'p5').getAttribute('aria-selected')).toBe('true')
+    expect(row(el, 'p5').classList.contains('dimmed')).toBe(false)
+    for (const name of ['p1', 'p2', 'p3', 'p4', 'p6']) {
+      expect(row(el, name).getAttribute('aria-selected')).toBe('false')
+      expect(row(el, name).classList.contains('dimmed')).toBe(true)
+    }
+    expect(parApi.fetchParValues).not.toHaveBeenCalled()
+    expect(el.textContent).not.toContain('Loading distribution')
+  })
+
+  it('dims nothing when pars is empty', async () => {
+    const { el, store } = await mountSix()
+    store.set({ pars: new Set(['p5']) }, 'map')
+    store.flush()
+    store.set({ pars: new Set() }, 'map')
+    store.flush()
+
+    expect(el.querySelectorAll('.params-table .param-row.dimmed').length).toBe(0)
+    expect(el.querySelectorAll('.params-table .param-row[aria-selected="true"]').length).toBe(0)
+  })
+
+  it('keeps every row in its place whatever is selected', async () => {
+    const { el, store } = await mountSix()
+    const before = tableNames(el)
+
+    store.set({ pars: new Set(['p6', 'p1']) }, 'map')
+    store.flush()
+    expect(tableNames(el)).toEqual(before)
+
+    click(row(el, 'p3'), { shiftKey: true })
+    store.flush()
+    expect(tableNames(el)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6'])
+  })
+
+  it('"Show selected" scrolls to the first selected row in table order', async () => {
+    const n = 300
+    const columns = {
+      parnme: Array.from({ length: n }, (_, i) => `p${i}`),
+      pargp: Array.from({ length: n }, () => 'G'),
+      parlbnd: Array.from({ length: n }, () => 0),
+      parubnd: Array.from({ length: n }, () => 1),
+      partrans: Array.from({ length: n }, () => 'none'),
+    }
+    const { el, store } = await mountSix(columns)
+    const button = el.querySelector<HTMLButtonElement>('.params-table button.show-selected')!
+    expect(button.disabled).toBe(true)
+    expect(button.title).toBe('no selected parameter is in this group')
+
+    store.set({ pars: new Set(['p250', 'p180']) }, 'map')
+    store.flush()
+    expect(button.disabled).toBe(false)
+    button.click()
+
+    const pane = el.querySelector<HTMLElement>('.params-table .scroll-pane')!
+    expect(pane.scrollTop).toBe(180 * 24)
+    expect(tableNames(el)).toContain('p180')
+  })
+
+  it('disables "Show selected" when no selected parameter is in the shown group', async () => {
+    const { el, store } = await mountSix()
+    store.set({ pars: new Set(['not-in-this-group']) }, 'map')
+    store.flush()
+
+    const button = el.querySelector<HTMLButtonElement>('.params-table button.show-selected')!
+    expect(button.disabled).toBe(true)
+    expect(button.title).toBe('no selected parameter is in this group')
+  })
+
+  it('never writes parGroups from a row click, whatever the modifier', async () => {
+    const { el, store } = await mountSix()
+    const groupWrites: string[][] = []
+    store.subscribe(
+      (s) => s.parGroups,
+      (next) => groupWrites.push([...next.parGroups]),
+    )
+
+    click(row(el, 'p1'))
+    click(row(el, 'p2'), { shiftKey: true })
+    click(row(el, 'p1'), { altKey: true })
+    row(el, 'p3').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    store.flush()
+
+    expect(groupWrites).toEqual([])
+    expect([...store.get().parGroups]).toEqual(['G'])
+  })
+})
