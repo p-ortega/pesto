@@ -1,6 +1,7 @@
 // What the Obs tab shows for the chosen group: its 1:1 plot as one density
 // panel per iteration on shared axes, with the most outlying sites and the
-// selected sites drawn on top, and every count of what was left out. Every string that came from a run goes in
+// selected sites drawn on top, then its residual histogram, and every count of
+// what was left out. Every string that came from a run goes in
 // through textContent. A hidden tab fetches and draws nothing, and a group
 // change while an answer is out draws only the newest group.
 
@@ -9,18 +10,21 @@ import { LatestWins } from '../data/latest-wins'
 import {
   fetchObs1to1,
   fetchObsPoints,
+  fetchObsResidHist,
   MAX_POINT_SITES,
   TABLE_RMSE_LABEL,
   type Obs1to1Payload,
   type Obs1to1Result,
   type ObsPointsResult,
+  type ObsResidHistPayload,
+  type ObsResidHistResult,
   type SitePoints,
 } from '../data/obs'
 import type { SelectionStore } from '../state/selection'
 import { linearAxis } from './charts/axes'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
 import { densityPlotArea, drawDensity, type DensitySpec } from './charts/density'
-import type { Chart2D, ChartSize } from './charts/histogram'
+import { drawHistogram, type Chart2D, type ChartSize, type HistogramSpec } from './charts/histogram'
 import { drawMarkers, drawRangeBars } from './charts/marks'
 import { readChartTokens, type ChartTokens } from './charts/tokens'
 import { renderNotice } from './chrome'
@@ -41,6 +45,7 @@ export interface GroupFitHandle {
 }
 
 const PANEL_HEIGHT = 280
+const HIST_HEIGHT = 220
 const MARKER_RADIUS = 3
 const BAR_WIDTH = 1.5
 
@@ -49,6 +54,11 @@ interface SelectedState {
   answer: ObsPointsResult | { ok: false; artifact: string; reason: string }
   notAsked: number
 }
+
+type HistState =
+  | { kind: 'loading' }
+  | { kind: 'failed'; artifact: string; reason: string }
+  | { kind: 'answered'; payload: ObsResidHistPayload }
 
 type FitState =
   | { kind: 'loading' }
@@ -247,25 +257,123 @@ function fitLegend(payload: Obs1to1Payload, panels: Panel[], selected: SelectedS
   return lines
 }
 
+function count(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
+type DrawableHist = ObsResidHistPayload & { first: NonNullable<ObsResidHistPayload['first']> }
+
+function drawableHist(payload: ObsResidHistPayload): payload is DrawableHist {
+  return payload.refused === null && payload.edges.length >= 2 && payload.first !== null
+}
+
+function histSpec(payload: DrawableHist): HistogramSpec {
+  const series =
+    payload.last === null
+      ? [{ label: `iteration ${payload.first.iteration}`, density: payload.first.density }]
+      : [
+          { label: `first, iteration ${payload.first.iteration}`, density: payload.first.density },
+          { label: `last, iteration ${payload.last.iteration}`, density: payload.last.density },
+        ]
+  return { space: 'native', edges: payload.edges, series, xLabel: 'residual: simulated minus observed' }
+}
+
+// What the histogram's legend says besides the colours: the sign, the zero-weight count and every count left out.
+function histLegend(payload: ObsResidHistPayload): string[] {
+  const lines = ['residual: simulated minus observed']
+  lines.push(`zero weight included: ${count(payload.n_zero_weight)}`)
+  const { no_value, sentinel, no_valid_realization } = payload.left_out
+  const single = payload.last === null
+  const noValid = single ? no_valid_realization.first : no_valid_realization.last
+  const where = single && payload.first !== null ? `at iteration ${payload.first.iteration}` : 'at the last iteration'
+  lines.push(`left out: ${count(no_value)} no measured value, ${count(sentinel)} sentinel, ${count(noValid)} with no valid realization ${where}`)
+  if (!single && no_valid_realization.first > 0) {
+    lines.push(`${count(no_valid_realization.first)} with no valid realization at the first iteration`)
+  }
+  if (payload.first !== null) {
+    const first = single ? `iteration ${payload.first.iteration}` : `first, iteration ${payload.first.iteration}`
+    lines.push(`${first}: ${count(payload.n_outside.first)} outside the drawn range`)
+  }
+  if (payload.last !== null) lines.push(`last, iteration ${payload.last.iteration}: ${count(payload.n_outside.last)} outside the drawn range`)
+  if (payload.inequality_note !== null) lines.push(payload.inequality_note)
+  return lines
+}
+
 export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupFitHandle {
   let hidden = opts.startHidden === true
   let group: string | null = null
   // A group chosen while hidden is loaded by the next onShow.
   let pendingLoad = false
   let fit: FitState = { kind: 'loading' }
+  let hist: HistState = { kind: 'loading' }
   let selected: SelectedState | null = null
   // A sites change while hidden is followed by the next onShow.
   let pointsStale = false
   let fitHosts: CanvasHost[] = []
+  let histHost: CanvasHost | null = null
+  const histSlot = new LatestWins<ObsResidHistResult>()
   const fitSlot = new LatestWins<Obs1to1Result>()
   const pointsSlot = new LatestWins<ObsPointsResult>()
 
   let titleEl: HTMLElement | null = null
   let fitSection: HTMLElement | null = null
+  let histSection: HTMLElement | null = null
 
   function destroyFitHosts(): void {
     for (const canvas of fitHosts) canvas.destroy()
     fitHosts = []
+  }
+
+  function destroyHistHost(): void {
+    histHost?.destroy()
+    histHost = null
+  }
+
+  function renderHist(): void {
+    if (histSection === null) return
+    destroyHistHost()
+    const section = histSection
+    section.textContent = ''
+    if (hist.kind === 'loading') {
+      line(section, 'Loading the residual histogram…', true)
+      return
+    }
+    if (hist.kind === 'failed') {
+      notice(section, 'The residual histogram could not be read', `${hist.artifact}: ${hist.reason}`)
+      return
+    }
+    const payload = hist.payload
+    if (payload.group !== group) {
+      notice(section, 'The residual histogram could not be read', `the server answered for group ${payload.group}, not ${group}`)
+      return
+    }
+    if (drawableHist(payload)) {
+      const spec = histSpec(payload)
+      const box = document.createElement('div')
+      box.style.height = `${HIST_HEIGHT}px`
+      section.appendChild(box)
+      const failure = line(section, '')
+      failure.style.color = 'var(--status-warning)'
+      failure.hidden = true
+      histHost = createCanvasHost(box, {
+        label: `Residual histogram of group ${payload.group}, simulated minus observed, as densities`,
+        context: opts.context2d,
+        draw: (ctx, size) => {
+          const ok = drawHistogram(ctx, spec, readChartTokens(document.documentElement), size)
+          failure.hidden = ok
+          failure.textContent = ok ? '' : 'The histogram could not be drawn: its bin edges or densities were not usable.'
+        },
+      })
+      if (hidden) histHost.onHide()
+      else histHost.redraw()
+    } else {
+      notice(section, 'No residual histogram for this group', payload.refused ?? 'the server sent no bin edges and gave no reason')
+    }
+    const legend = document.createElement('div')
+    legend.classList.add('obs-fit-legend')
+    section.appendChild(legend)
+    for (const text of histLegend(payload)) line(legend, text)
+    for (const note of payload.notes) line(legend, note, true)
   }
 
   function mountPanel(row: HTMLElement, spec: DensitySpec, label: string, sets: PointSet[]): void {
@@ -364,14 +472,20 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     fitSection = document.createElement('div')
     fitSection.classList.add('obs-fit-1to1')
     host.appendChild(fitSection)
+    histSection = document.createElement('div')
+    histSection.classList.add('obs-fit-resid')
+    host.appendChild(histSection)
   }
 
   function clear(): void {
     fitSlot.cancel()
     pointsSlot.cancel()
+    histSlot.cancel()
     selected = null
     destroyFitHosts()
+    destroyHistHost()
     fitSection = null
+    histSection = null
     titleEl = null
     host.textContent = ''
   }
@@ -423,12 +537,31 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     )
   }
 
+  function loadHist(name: string): void {
+    hist = { kind: 'loading' }
+    renderHist()
+    void histSlot.run(name, (signal) => fetchObsResidHist(name, { signal })).then(
+      (answer) => {
+        if (answer.stale) return
+        hist = answer.value.ok
+          ? { kind: 'answered', payload: answer.value.payload }
+          : { kind: 'failed', artifact: answer.value.artifact, reason: answer.value.reason }
+        renderHist()
+      },
+      (error: unknown) => {
+        hist = { kind: 'failed', ...describeFailure(error, 'obs_agg') }
+        renderHist()
+      },
+    )
+  }
+
   function load(): void {
     if (group === null) return
     pendingLoad = false
     selected = null
     buildSkeleton()
     loadFit(group)
+    loadHist(group)
     loadSelected()
   }
 
@@ -456,12 +589,14 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     onShow() {
       hidden = false
       for (const canvas of fitHosts) canvas.onShow()
+      histHost?.onShow()
       if (pendingLoad) load()
       else if (pointsStale) loadSelected()
     },
     onHide() {
       hidden = true
       for (const canvas of fitHosts) canvas.onHide()
+      histHost?.onHide()
     },
     dispose() {
       unsubscribeSites()
