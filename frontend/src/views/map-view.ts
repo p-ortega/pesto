@@ -373,6 +373,33 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     pendingCells = null
   }
 
+  // The cells last handed to the layer as rings, so a write that changes nothing draws nothing.
+  let ringedKey: string | null = null
+  // Cells of parameters picked outside the map, on the drawn layer.
+  let parRingCells: readonly number[] = []
+
+  // Rings the cell set of an unanswered click when there is one, else the store's cells, plus the
+  // picked parameters' cells. Says whether the rings changed, so the caller redraws once.
+  function refreshRings(): boolean {
+    if (!layer) return false
+    const ring = new Set(pendingCells ?? store.get().cells)
+    for (const cell of parRingCells) ring.add(cell)
+    const ids = [...ring].sort((a, b) => a - b)
+    const key = ids.join(',')
+    if (key === ringedKey) return false
+    ringedKey = key
+    // setSelected is the one-element form of setSelectedCells.
+    if (ids.length <= 1) layer.setSelected(ids[0] ?? null)
+    else layer.setSelectedCells(ids)
+    return true
+  }
+
+  // Everything the map marks from the shared selection, then one redraw if any of it changed.
+  function refreshMarks(draw = true): void {
+    const changed = refreshRings()
+    if (changed && draw) redraw()
+  }
+
   // MAP-08: true from webglcontextlost until webglcontextrestored (or the
   // unrecoverable fallback fires). Guards redraw() so nothing calls into a
   // context the browser has already taken away. The selection, camera and
@@ -541,10 +568,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function clearSelection(publish = true): void {
     selectedCellId = null
     selectedPointRow = null
-    layer?.setSelected(null)
     layer?.setSelectedPoint(null)
     dropPendingLink()
-    if (publish) store.set({ cells: new Set(), pars: new Set() }, 'map')
+    if (!publish) return
+    store.set({ cells: new Set(), pars: new Set() }, 'map')
+    refreshMarks()
   }
 
   function activeMaskFor(layerIndex: number): Uint8Array {
@@ -775,6 +803,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       const pars = name === undefined ? new Set<string>() : new Set([name])
       // A miss on the site dots still takes the sites away, as it did before cells were linked.
       store.set(obsActive ? { cells: new Set(), pars, sites: new Set() } : { cells: new Set(), pars }, 'map')
+      refreshMarks()
       return
     }
     const cellId = pickAtWorld(meshGeom, wx, wy)
@@ -786,15 +815,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       redraw()
       updateReadout()
       store.set({ cells: new Set(), sites: new Set(), pars: new Set() }, 'map')
+      refreshMarks()
       return
     }
     takeAwaySitePick()
     selectedPointRow = null
     layer?.setSelectedPoint(null)
-    // The map rings only the cell just clicked; a removed cell loses its ring.
+    // The readout describes the cell just clicked; the rings follow the whole cell set.
     selectedCellId = mode === 'remove' ? null : cellId
-    layer?.setSelected(selectedCellId)
-    redraw()
     updateReadout()
     if (selectedCellId !== null && currentClasses[selectedCellId]?.kind === 'interpolated') {
       fetchContributors(selectedCellId)
@@ -807,9 +835,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       // Parameters and sites stay: a tab or lasso may have written them since.
       dropPendingLink()
       store.set({ cells: new Set() }, 'map')
-      return
+    } else {
+      askLinkCell(committed.layer, next)
     }
-    askLinkCell(committed.layer, next)
+    refreshRings()
+    redraw()
   }
 
   // A miss on the site dots takes their ring and readout away; the store hears with the cell write.
@@ -827,8 +857,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const settle = (write: () => void): void => {
       if (pendingCells === cells) pendingCells = null
       // Another view moved the cells while this was out, so this answer is no longer the selection's.
-      if (!sameSet(store.get().cells, storeCells)) return
-      write()
+      if (sameSet(store.get().cells, storeCells)) write()
+      refreshMarks()
     }
     const failed = (artifact: string, reason: string): void => {
       store.set({ cells: new Set(cells) }, 'map')
@@ -2111,7 +2141,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (dots === null || data === null) return
     const rows = hits.map((i) => dots.rows[i])
     selectedCellId = null
-    layer?.setSelected(null)
     obsPickedRows = rows
     obsPick = sitesPick(rows)
     layer?.setSelectedPoint(hits[0])
@@ -2120,6 +2149,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     readObservedValues(rows)
     dropPendingLink()
     store.set({ sites: new Set(rows.map((row) => data.rows[row].siteId)), cells: new Set(), pars: new Set() }, 'map')
+    refreshMarks()
   }
 
   async function drawObservations(): Promise<void> {
@@ -2736,6 +2766,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       (selection) => selection.colour,
       (next) => followColour(next),
     )
+    // Drawing rings writes nothing, so following every origin cannot loop.
+    store.subscribe(
+      (selection) => selection.cells,
+      () => refreshMarks(),
+    )
+    refreshMarks()
     store.subscribe(
       (selection) => selection.obsGroups,
       (next) => followObsGroup(next),
