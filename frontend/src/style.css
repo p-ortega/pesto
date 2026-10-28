@@ -313,11 +313,12 @@ body {
 
 .params-groups .group-header,
 .params-groups .scroll-pane {
-  min-width: 50em;
+  min-width: 53em;
 }
 
 .params-groups .scroll-pane {
   flex: 1 1 auto;
+  overflow-x: hidden;
 }
 
 .group-header,
@@ -1003,10 +1004,17 @@ body {
 
 .params-selected .group-header,
 .params-selected .param-header,
-.params-selected .scroll-pane,
+.params-selected .scroll-pane {
+  min-width: 32em;
+}
+
 .obs-selected .obs-grid-header,
 .obs-selected .obs-grid > .scroll-pane {
-  min-width: 32em;
+  min-width: 33em;
+}
+
+.obs-selected .scroll-pane {
+  overflow-x: hidden;
 }
 
 .params-selected [role='row'] > :first-child,

@@ -513,6 +513,17 @@ describe('the narrow-panel layout', () => {
     expect(rule('.obs-grid > .scroll-pane')).toMatch(/overflow-x:\s*hidden/)
   })
 
+  it('keeps the Params group table and the Selected sites grid as wide as their columns', () => {
+    // Params: 8 + 4 + 4.5 + 5.5 + 4 x 6.5em, seven 8px gaps and 4px padding each side.
+    const params = Number(/\.params-groups \.group-header,\s*\.params-groups \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)em/.exec(css)?.[1])
+    expect(params).toBeGreaterThanOrEqual(8 + 4 + 4.5 + 5.5 + 4 * 6.5 + (7 * 8 + 8) / 16)
+    // Selected sites: two 10em name columns, two 5.5em columns and three 8px gaps.
+    const selected = Number(/\.obs-selected \.obs-grid-header,\s*\.obs-selected \.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)em/.exec(css)?.[1])
+    expect(selected).toBeGreaterThanOrEqual(2 * 10 + 2 * 5.5 + (3 * 8) / 16)
+    expect(rule('.params-groups .scroll-pane')).toMatch(/overflow-x:\s*hidden/)
+    expect(rule('.obs-selected .scroll-pane')).toMatch(/overflow-x:\s*hidden/)
+  })
+
   it('lets the lists below the table shrink while the table keeps a floor', () => {
     expect(rule('.obs-sites')).toMatch(/flex:\s*0 1 auto/)
     expect(rule('.obs-sites')).toMatch(/max-height/)
