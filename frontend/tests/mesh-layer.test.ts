@@ -740,8 +740,10 @@ describe('MeshLayer hatch pass', () => {
     const { gl, calls } = createRecordingGl()
     const layer = new MeshLayer(gl, threeCellMesh())
     const storage = calls.filter((c) => c.method === 'texStorage2D')
-    expect(storage).toHaveLength(2)
+    // Values, the overlay mask and the texture-mode class mask.
+    expect(storage).toHaveLength(3)
     expect(storage[1].args).toEqual(storage[0].args)
+    expect(storage[2].args).toEqual(storage[0].args)
     expect(storage[1].args[2]).toBe('R32F')
 
     layer.setValues(new Float32Array([0, 0.5, 1]))
@@ -1014,5 +1016,168 @@ describe('MeshLayer classes', () => {
     const upload = calls.filter((c) => c.method === 'texSubImage2D').pop()!
     const staging = upload.args[8] as Float32Array
     expect(Array.from(staging.slice(0, 3)).every(Number.isNaN)).toBe(true)
+  })
+})
+
+// The value, hatch and class textures, read from the texStorage2D calls a fresh layer makes.
+function layerTextures(calls: Call[]): { values: unknown; hatch: unknown; cls: unknown } {
+  const at = calls.map((c, i) => (c.method === 'texStorage2D' ? i : -1)).filter((i) => i >= 0)
+  return { values: boundBefore(calls, at[0]), hatch: boundBefore(calls, at[1]), cls: boundBefore(calls, at[2]) }
+}
+
+// The arguments after the location of the call made right after looking up `name` on `program`.
+function uniformOn(calls: Call[], program: unknown, name: string): unknown[][] {
+  return calls.flatMap((c, i) =>
+    c.method === 'getUniformLocation' && c.args[0] === program && c.args[1] === name ? [calls[i + 1].args.slice(1)] : [],
+  )
+}
+
+const programOf = (calls: Call[], uniform: string) =>
+  calls.find((c) => c.method === 'getUniformLocation' && c.args[1] === uniform)?.args[0]
+
+describe('MeshLayer texture fill', () => {
+  const textured = { classes: 7, symmetric: false, texture: true }
+  const plain = { classes: 7, symmetric: false, texture: false }
+
+  function texturedLayer() {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    const tex = layerTextures(calls)
+    layer.setStyle(textured)
+    layer.setLimits([0, 7])
+    layer.setValues(new Float32Array([0.5, Number.NaN, 6.5]))
+    layer.setSurfaceColor([0.8, 0.7, 0.6])
+    return { gl, calls, layer, tex }
+  }
+
+  const uploads = (calls: Call[]) => calls.filter((c) => c.method === 'texSubImage2D')
+
+  it('gives the fill a flat surface switch and the hatch program a mode and a class count', () => {
+    const { gl, calls } = createRecordingGl()
+    new MeshLayer(gl, threeCellMesh())
+    const sources = calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string)
+    const fill = sources.find((s) => s.includes('flat in float v_norm') && !s.includes('v_flags') && s.includes('fragColor'))!
+    expect(fill).toContain('uniform float u_flat;')
+    expect(fill).toContain('uniform vec3 u_surface;')
+    const hatch = sources.find((s) => s.includes('u_angle0'))!
+    expect(hatch).toContain('uniform float u_mode;')
+    expect(hatch).toContain('uniform float u_classes;')
+    // Class k is drawn at k times 180 / N degrees, so the angle grows with magnitude.
+    expect(hatch).toMatch(/int\(v_mask \+ 0\.5\) - 1/)
+    expect(hatch).toMatch(/float\(k\) \* 3\.14159265 \/ u_classes/)
+  })
+
+  it('uploads class + 1 per valued cell to its own texture, 0 for a cell with no value', () => {
+    const { calls, layer, tex } = texturedLayer()
+    calls.length = 0
+    layer.draw()
+    const up = uploads(calls)
+    expect(up).toHaveLength(1)
+    expect(up[0].args[6]).toBe('RED')
+    expect(up[0].args[7]).toBe('FLOAT')
+    expect(Array.from((up[0].args[8] as Float32Array).slice(0, 3))).toEqual([1, 0, 7])
+    expect(boundBefore(calls, calls.indexOf(up[0]))).toBe(tex.cls)
+    expect(tex.cls).toBeDefined()
+    expect(tex.cls).not.toBe(tex.hatch)
+    expect(tex.cls).not.toBe(tex.values)
+  })
+
+  it('draws the fill in the flat surface colour and the hatch in class mode with no overlay mask set', () => {
+    const { calls, layer, tex } = texturedLayer()
+    calls.length = 0
+    layer.draw()
+    const fill = programOf(calls, 'u_values')
+    expect(uniformOn(calls, fill, 'u_flat')).toEqual([[1]])
+    expect(uniformOn(calls, fill, 'u_surface')).toEqual([[0.8, 0.7, 0.6]])
+    const hatch = programOf(calls, 'u_angle0')
+    expect(hatch).toBeDefined()
+    expect(uniformOn(calls, hatch, 'u_mode')).toEqual([[1]])
+    expect(uniformOn(calls, hatch, 'u_classes')).toEqual([[7]])
+    const order = allDraws(calls)
+    expect(order).toHaveLength(2)
+    const hatchDraw = calls.indexOf(order[1])
+    expect(boundBefore(calls, hatchDraw)).toBe(tex.cls)
+    let bind = hatchDraw
+    while (calls[bind].method !== 'bindTexture') bind -= 1
+    expect(calls[bind - 1]).toEqual({ method: 'activeTexture', args: [2] })
+  })
+
+  it('gives a contested cell no class, whatever value the caller passed for it', () => {
+    const { calls, layer } = texturedLayer()
+    layer.setValues(new Float32Array([0.5, 3.5, 6.5]))
+    layer.setContested(new Uint8Array([0, 1, 0]))
+    calls.length = 0
+    layer.draw()
+    expect(Array.from((uploads(calls)[0].args[8] as Float32Array).slice(0, 3))).toEqual([1, 0, 7])
+  })
+
+  it('rebuilds the class mask once after the limits move, and not on a draw with nothing changed', () => {
+    const { calls, layer } = texturedLayer()
+    calls.length = 0
+    layer.draw()
+    layer.draw()
+    expect(uploads(calls)).toHaveLength(1)
+
+    calls.length = 0
+    layer.setLimits([0, 14])
+    layer.draw()
+    layer.draw()
+    const up = uploads(calls)
+    expect(up).toHaveLength(1)
+    expect(Array.from((up[0].args[8] as Float32Array).slice(0, 3))).toEqual([1, 0, 4])
+  })
+
+  it('keeps the overlay mask aside while texture is on and draws it again when texture goes off', () => {
+    const { calls, layer, tex } = texturedLayer()
+    calls.length = 0
+    layer.setHatch(new Uint8Array([1, 2, 0]))
+    const overlayUpload = uploads(calls)
+    expect(overlayUpload).toHaveLength(1)
+    expect(boundBefore(calls, calls.indexOf(overlayUpload[0]))).toBe(tex.hatch)
+    expect(Array.from((overlayUpload[0].args[8] as Float32Array).slice(0, 3))).toEqual([1, 2, 0])
+
+    calls.length = 0
+    layer.draw()
+    expect(boundBefore(calls, calls.indexOf(allDraws(calls)[1]))).toBe(tex.cls)
+
+    layer.setStyle(plain)
+    calls.length = 0
+    layer.draw()
+    expect(uploads(calls)).toHaveLength(0)
+    const hatch = programOf(calls, 'u_angle0')
+    expect(uniformOn(calls, hatch, 'u_mode')).toEqual([[0]])
+    expect(boundBefore(calls, calls.indexOf(allDraws(calls)[1]))).toBe(tex.hatch)
+  })
+
+  it('draws the ramp and no hatch when texture is off and no overlay is set', () => {
+    const { calls, layer } = texturedLayer()
+    layer.setStyle(plain)
+    calls.length = 0
+    layer.draw()
+    expect(uniformOn(calls, programOf(calls, 'u_values'), 'u_flat')).toEqual([[0]])
+    expect(allDraws(calls)).toHaveLength(1)
+    expect(programOf(calls, 'u_angle0')).toBeUndefined()
+  })
+
+  it('creates the class texture again after a context restore and uploads the mask again', () => {
+    const { calls, layer } = texturedLayer()
+    layer.draw()
+    calls.length = 0
+    layer.reupload()
+    expect(calls.filter((c) => c.method === 'texStorage2D')).toHaveLength(3)
+    const tex = layerTextures(calls)
+    calls.length = 0
+    layer.draw()
+    const up = uploads(calls)
+    expect(up).toHaveLength(1)
+    expect(boundBefore(calls, calls.indexOf(up[0]))).toBe(tex.cls)
+    expect(Array.from((up[0].args[8] as Float32Array).slice(0, 3))).toEqual([1, 0, 7])
+  })
+
+  it('deletes the class texture on dispose', () => {
+    const { calls, layer, tex } = texturedLayer()
+    calls.length = 0
+    layer.dispose()
+    expect(calls.filter((c) => c.method === 'deleteTexture').map((c) => c.args[0])).toContain(tex.cls)
   })
 })
