@@ -7,6 +7,7 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
+import { Camera } from '../src/gl/camera'
 import { ONE_CLASS_EMPTY, ONE_CLASS_EQUAL } from '../src/gl/field-style'
 import { MeshLayer } from '../src/gl/mesh-layer'
 import { emptySelection } from '../src/state/rules'
@@ -162,6 +163,16 @@ function chooseClasses(root: HTMLElement, value: string): void {
 }
 
 const legend = (root: HTMLElement): HTMLElement => root.querySelector('.floating-bottom-left') as HTMLElement
+const readout = (root: HTMLElement): string => root.querySelector('.floating-bottom-right')?.textContent ?? ''
+
+function clickAtWorld(canvas: HTMLCanvasElement, wx: number, wy: number): void {
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+  const camera = new Camera(canvas.width, canvas.height)
+  camera.fit([0, 2, 0, 1])
+  const [x0, y0] = camera.screenToWorld(0, 0)
+  const [x1, y1] = camera.screenToWorld(1, 1)
+  canvas.dispatchEvent(new MouseEvent('click', { clientX: (wx - x0) / (x1 - x0), clientY: (wy - y0) / (y1 - y0) }))
+}
 
 describe('the Classes control on the map', () => {
   beforeEach(() => {
@@ -222,6 +233,23 @@ describe('the Classes control on the map', () => {
 
     expect(lastStyle().classes).toBe(1)
     expect(legend(root).textContent).toContain(ONE_CLASS_EMPTY)
+  })
+
+  it('names the clicked cell class from the drawn log10 field, not from the raw value', async () => {
+    field = new Float32Array([10, 1000])
+    const { root } = await mounted()
+    const scale = root.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement
+    scale.value = 'log10'
+    scale.dispatchEvent(new Event('change'))
+    chooseClasses(root, '9')
+
+    clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 0.5, 0.5)
+    await vi.waitFor(() => expect(readout(root)).toContain('class '))
+    // log10 of 10 is 1, the lower limit; the raw 10 would sit beyond the upper limit of 3.
+    expect(readout(root)).toContain('class 1 of 9 (log₁₀ 1 to 1.22)')
+
+    chooseClasses(root, '0')
+    expect(readout(root)).not.toContain('class ')
   })
 
   it('draws the observation look continuous and hides the Classes row there', async () => {

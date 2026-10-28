@@ -3,7 +3,7 @@
 // controls all read the one effective object, so the legend can never show
 // steps the map does not draw (D-02).
 
-import type { LimitsMode, ValueScale } from './colormap'
+import { classEdges, classOf, type LimitsMode, type ValueScale } from './colormap'
 
 export const CLASS_CHOICES = [0, 7, 9, 11] as const
 export type ClassCount = (typeof CLASS_CHOICES)[number]
@@ -73,4 +73,18 @@ export function resolveStyle(requested: FieldStyle, ctx: StyleContext): { effect
 export function formatEdge(value: number): string {
   if (!Number.isFinite(value)) return '—'
   return String(Number(value.toPrecision(3)))
+}
+
+/**
+ * The readout's class line, such as "class 4 of 9 (1.2 to 3.4)", or null when
+ * the field is continuous or the value is missing. The value and the limits
+ * are in the drawn scale, so on log10 the bracket says so.
+ */
+export function classLabel(value: number, limits: [number, number], effective: EffectiveStyle, scale: ValueScale): string | null {
+  const n = effective.classes
+  if (n <= 0 || !Number.isFinite(value)) return null
+  const k = classOf(value, limits, n)
+  const edges = classEdges(limits, n)
+  const prefix = scale === 'log10' ? 'log₁₀ ' : ''
+  return `class ${k + 1} of ${n} (${prefix}${formatEdge(edges[k])} to ${formatEdge(edges[k + 1])})`
 }

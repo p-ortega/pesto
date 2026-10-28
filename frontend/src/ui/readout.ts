@@ -63,6 +63,8 @@ export interface ReadoutOptions {
    *  the field and the contributors route. `contributors` is `null` while
    *  that route has not answered, `'failed'` when it could not. */
   interpolated?: { value: number; nPoints: number; contributors: Contributor[] | null | { failed: string } }
+  /** The class the value is drawn in, from classLabel; null or absent while continuous. */
+  classLine?: string | null
 }
 
 function formatValue(value: number): string {
@@ -89,6 +91,10 @@ function appendRow(el: HTMLElement, row: number, joined: Array<ParIdentity | nul
       : `${identity.parnme} (${identity.pargp}): ${formatValue(field[row])}`
   const line = appendLine(el, text, 'body', 'truncate')
   line.title = text
+}
+
+function appendClassLine(el: HTMLElement, classLine: string | null | undefined): void {
+  if (classLine) appendLine(el, classLine, 'label', 'tabular-nums')
 }
 
 function appendFooter(el: HTMLElement, layer: number, cellId: number, selectionLabel: string): void {
@@ -149,6 +155,7 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   if (opts.pick.kind === 'point') {
     const { row, layer, x, y, selectionLabel } = opts.pick
     appendRow(el, row, opts.joined, opts.field)
+    appendClassLine(el, opts.classLine)
     // x and y reach this module in world coordinates; the map view adds the mesh origin back.
     appendLine(el, `x ${x.toFixed(0)}, y ${y.toFixed(0)} · layer ${layer} · ${selectionLabel}`, 'label')
     return
@@ -172,6 +179,7 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
 
   if (classification.kind === 'valued') {
     appendRow(el, classification.row, opts.joined, opts.field)
+    appendClassLine(el, opts.classLine)
     appendFooter(el, layer, cellId, selectionLabel)
     return
   }
@@ -180,6 +188,7 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
     const info = opts.interpolated ?? { value: opts.field[cellId] ?? Number.NaN, nPoints: 0, contributors: null }
     const { value, nPoints, contributors } = info
     appendLine(el, `${opts.group}: ${formatValue(value)}`, 'body')
+    appendClassLine(el, opts.classLine)
     appendFooter(el, layer, cellId, selectionLabel)
     appendLine(el, `Interpolated from ${nPoints} pilot point${nPoints === 1 ? '' : 's'}`, 'label')
     if (contributors === null) {

@@ -8,6 +8,7 @@ import {
   DEFAULT_STYLE,
   ONE_CLASS_EMPTY,
   ONE_CLASS_EQUAL,
+  classLabel,
   isClassCount,
   resolveStyle,
   type StyleContext,
@@ -140,11 +141,32 @@ describe('resolveStyle', () => {
     expect(notes.classes).toBe(ONE_CLASS_EMPTY)
   })
 
-  it('never adds a note while continuous', () => {
+  it('never adds a note while continuous, whatever the limits', () => {
     for (const c of [ctx, { ...ctx, limits: [5, 5] as [number, number] }, { ...ctx, valued: false }]) {
       const { effective, notes } = resolveStyle(DEFAULT_STYLE, c)
       expect(effective.classes).toBe(0)
       expect(notes).toEqual({ classes: null, symmetric: null, texture: null })
     }
+  })
+})
+
+describe('classLabel', () => {
+  const nine = { classes: 9, symmetric: false, texture: false }
+
+  it('names the class and its edges', () => {
+    expect(classLabel(2.5, [0, 9], nine, 'linear')).toBe('class 3 of 9 (2 to 3)')
+  })
+
+  it('says the edges are log10 numbers on a log10 scale', () => {
+    expect(classLabel(0.5, [-1, 2], { ...nine, classes: 3 }, 'log10')).toBe('class 2 of 3 (log₁₀ 0 to 1)')
+  })
+
+  it('gives nothing while continuous or for a value that is not finite', () => {
+    expect(classLabel(2.5, [0, 9], { ...nine, classes: 0 }, 'linear')).toBeNull()
+    expect(classLabel(Number.NaN, [0, 9], nine, 'linear')).toBeNull()
+  })
+
+  it('names the one class by the limits', () => {
+    expect(classLabel(5, [5, 5], { ...nine, classes: 1 }, 'linear')).toBe('class 1 of 1 (5 to 5)')
   })
 })

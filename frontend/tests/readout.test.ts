@@ -284,3 +284,56 @@ describe('renderReadout', () => {
     })
   })
 })
+
+describe('renderReadout class line', () => {
+  const LINE = 'class 4 of 9 (1.2 to 3.4)'
+  const lines = (el: HTMLElement): string[] => [...el.children].map((c) => c.textContent ?? '')
+
+  it('puts the class right after the value row of a valued cell', () => {
+    const el = mount()
+    const pick: ReadoutPick = { kind: 'cell', cellId: 3, layer: 1, selectionLabel: 'r001', classification: { kind: 'valued', row: 0 } }
+    renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([2]), classLine: LINE })
+    expect(lines(el)).toEqual(['par_one (G1): 2.000', LINE, 'layer 1, cell 3 · r001'])
+  })
+
+  it('puts the class right after the value row of a dot and of an interpolated cell', () => {
+    const el = mount()
+    renderReadout(el, {
+      pick: { kind: 'point', row: 0, layer: 0, x: 1, y: 2, selectionLabel: 'base' },
+      group: 'G1',
+      joined: [G1],
+      field: new Float32Array([2]),
+      classLine: LINE,
+    })
+    expect(lines(el).slice(0, 2)).toEqual(['par_one (G1): 2.000', LINE])
+
+    renderReadout(el, {
+      pick: { kind: 'cell', cellId: 4, layer: 0, selectionLabel: 'base', classification: { kind: 'interpolated' } },
+      group: 'pp',
+      joined: [],
+      field: new Float32Array(0),
+      interpolated: { value: 1.5, nPoints: 2, contributors: [] },
+      classLine: LINE,
+    })
+    expect(lines(el).slice(0, 2)).toEqual(['pp: 1.500', LINE])
+  })
+
+  it('shows no class line when there is none', () => {
+    const el = mount()
+    const pick: ReadoutPick = { kind: 'cell', cellId: 3, layer: 1, selectionLabel: 'r001', classification: { kind: 'valued', row: 0 } }
+    renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([2]), classLine: null })
+    expect(el.textContent).not.toContain('class ')
+    renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([2]) })
+    expect(el.textContent).not.toContain('class ')
+  })
+
+  it('never shows a class for a contested or empty cell', () => {
+    const el = mount()
+    const contested: ReadoutPick = { kind: 'cell', cellId: 0, layer: 0, selectionLabel: 'base', classification: { kind: 'contested', rows: [0, 1] } }
+    renderReadout(el, { pick: contested, group: 'G1', joined: [G1, G1B], field: new Float32Array([1, 2]), classLine: LINE })
+    expect(el.textContent).not.toContain(LINE)
+    const empty: ReadoutPick = { kind: 'cell', cellId: 0, layer: 0, selectionLabel: 'base', classification: { kind: 'no-parameter' } }
+    renderReadout(el, { pick: empty, group: 'G1', joined: [], field: new Float32Array(0), classLine: LINE })
+    expect(el.textContent).not.toContain(LINE)
+  })
+})
