@@ -107,6 +107,7 @@ def list_images(request: Request, directory_id: str = Query(..., alias="id")) ->
     folders: list[dict[str, object]] = []
     files: list[dict[str, object]] = []
     skipped = {"other_files": 0, "not_checked": 0, "unreadable": 0}
+    sniffed = 0
     for entry in entries:
         try:
             inside = _resolves_inside(parent, Path(entry.path))
@@ -129,6 +130,10 @@ def list_images(request: Request, directory_id: str = Query(..., alias="id")) ->
         if not is_file:
             skipped["other_files"] += 1
             continue
+        if sniffed >= imageinfo.SNIFF_CAP:
+            skipped["not_checked"] += 1
+            continue
+        sniffed += 1
         try:
             kind = imageinfo.sniff(imageinfo.read_head(Path(entry.path)))
         except OSError:
@@ -303,7 +308,13 @@ def _inspect(request: Request, file_id: str) -> _Inspection | JSONResponse:
     except OSError as exc:
         return _refuse(403, "unreadable", "that file cannot be read", detail=str(exc))
 
-    notes = [n for n in (imageinfo.extension_note(path.name, kind),) if n]
+    notes = [imageinfo.extension_note(path.name, kind)]
+    if kind == "jpeg":
+        try:
+            notes.append(imageinfo.orientation_note(imageinfo.jpeg_orientation(path)))
+        except OSError:
+            pass  # The flag only adds a note; the size read above already proved the file opens.
+    notes = [n for n in notes if n]
 
     model_extent = load_mesh_extent(layout)
     if isinstance(model_extent, ReadFailure):

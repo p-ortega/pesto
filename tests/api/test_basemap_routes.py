@@ -17,6 +17,7 @@ from model.fixtures import _VERTICES, write_disv_grb
 from pesto.api.app import create_app
 from pesto.api.basemap import NO_OVERLAP_REASON
 from pesto.api.fs import _issue_id
+from pesto.basemap import imageinfo
 from pesto.basemap.imageinfo import TIFF_REASON
 from pesto.basemap.store import read_registration
 from pesto.basemap.worldfile import ROTATED_REASON
@@ -24,7 +25,7 @@ from pesto.cache.layout import CacheLayout
 from pesto.ingest.mesh import load_mesh_extent, write_grid_from_adapter
 from pesto.model.mf6 import Mf6Adapter
 
-from .basemap_images import jpeg_header_bytes, png_bytes, tiff_bytes, world_file_text
+from .basemap_images import exif_jpeg_header_bytes, jpeg_header_bytes, png_bytes, tiff_bytes, world_file_text
 
 BASE_URL = "http://127.0.0.1"
 
@@ -314,11 +315,84 @@ def test_a_link_that_resolves_outside_the_folder_is_listed_with_a_reason_and_an_
     assert inspected.json()["code"] == "gone"
 
 
-def test_a_misnamed_image_carries_a_note(opened):
+def test_a_misnamed_image_carries_a_note_in_the_listing_and_at_inspect(opened):
     put_png(opened.images, "photo.jpg", 4, 4)
     rows = opened.get("/api/fs/images", params={"id": opened.folder_id(opened.images)}).json()["entries"]
     assert rows[0]["kind"] == "png"
-    assert rows[0]["note"] == "the name ends in .jpg but the bytes are PNG"
+    assert rows[0]["note"] == "named .jpg but the bytes are PNG"
+    assert rows[0]["reason"] is None
+
+    inspected = opened.post("/api/run/basemap/inspect", json={"id": rows[0]["id"]}).json()
+    assert inspected["format"] == "png"
+    assert inspected["notes"] == ["named .jpg but the bytes are PNG"]
+
+
+def test_tiff_bytes_named_png_are_a_tiff_row_with_the_reason_and_the_note(opened):
+    (opened.images / "scan.png").write_bytes(tiff_bytes("II"))
+    rows = opened.get("/api/fs/images", params={"id": opened.folder_id(opened.images)}).json()["entries"]
+    assert [(r["kind"], r["reason"], r["note"]) for r in rows] == [
+        ("tiff", TIFF_REASON, "named .png but the bytes are TIFF")
+    ]
+
+
+def test_a_rotated_jpeg_is_placed_as_stored_and_inspect_says_so(opened):
+    (opened.images / "photo.jpg").write_bytes(exif_jpeg_header_bytes(40, 20, 6, "MM"))
+    put_world_file(opened.images, "photo.jgw", a=1.0, e=-1.0, c=1000.0, f=2000.0)
+    file_id = opened.file_id("photo.jpg")
+
+    body = opened.post("/api/run/basemap/inspect", json={"id": file_id}).json()
+
+    assert (body["width"], body["height"]) == (40, 20)
+    assert body["notes"] == [
+        "the file's rotation flag (EXIF orientation 6) is ignored; "
+        "the image is placed as stored, which is what the world file describes"
+    ]
+    assert body["placement"]["extent"] == [999.5, 1039.5, 1980.5, 2000.5]
+    state = opened.post("/api/run/basemap", json={"id": file_id, "stamp": body["stamp"], "by": "world_file"}).json()
+    assert state["notes"] == body["notes"]
+
+
+def test_an_upright_jpeg_has_no_notes(opened):
+    (opened.images / "photo.jpg").write_bytes(exif_jpeg_header_bytes(40, 20, 1))
+    body = opened.post("/api/run/basemap/inspect", json={"id": opened.file_id("photo.jpg")}).json()
+    assert body["notes"] == []
+
+
+def _six_pngs(folder: Path) -> None:
+    for i in range(6):
+        put_png(folder, f"map{i}.png", 2, 2)
+    (folder / "sub").mkdir()
+
+
+def test_the_listing_stops_sniffing_at_the_cap_and_counts_the_rest(opened, monkeypatch):
+    _six_pngs(opened.images)
+    monkeypatch.setattr(imageinfo, "SNIFF_CAP", 3)
+
+    listing = opened.get("/api/fs/images", params={"id": opened.folder_id(opened.images)}).json()
+
+    assert [r["name"] for r in listing["entries"]] == ["sub", "map0.png", "map1.png", "map2.png"]
+    assert listing["skipped"] == {"other_files": 0, "not_checked": 3, "unreadable": 0}
+
+
+def test_under_the_real_cap_every_file_is_checked(opened):
+    _six_pngs(opened.images)
+    listing = opened.get("/api/fs/images", params={"id": opened.folder_id(opened.images)}).json()
+    assert len([r for r in listing["entries"] if r["kind"] == "png"]) == 6
+    assert listing["skipped"]["not_checked"] == 0
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses permission bits")
+def test_a_file_that_cannot_be_opened_is_counted_unreadable_and_gets_no_id(opened):
+    put_png(opened.images, "fine.png", 2, 2)
+    locked = put_png(opened.images, "locked.png", 2, 2)
+    locked.chmod(0o000)
+    try:
+        listing = opened.get("/api/fs/images", params={"id": opened.folder_id(opened.images)}).json()
+    finally:
+        locked.chmod(0o600)
+    assert [r["name"] for r in listing["entries"]] == ["fine.png"]
+    assert listing["skipped"]["unreadable"] == 1
+    assert locked.resolve() not in opened.client.app.state.fs_ids.values()
 
 
 def test_a_mesh_with_no_origin_is_a_read_failure_not_a_mesh_at_zero(opened):
