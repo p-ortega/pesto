@@ -37,6 +37,8 @@ const METHODS = [
   'save',
   'restore',
   'setTransform',
+  'translate',
+  'rotate',
 ] as const
 
 export function createRecording2d(): { ctx: Chart2D; calls: RecordedCall[] } {

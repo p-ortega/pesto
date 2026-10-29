@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { Camera } from '../src/gl/camera'
 import { SectionCamera } from '../src/gl/section-camera'
+import { axesInset } from '../src/ui/section-axes'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
@@ -375,9 +376,11 @@ function worldAtClient(canvas: HTMLCanvasElement, [cx, cy]: [number, number]): [
   return [wx + ORIGIN[0], wy + ORIGIN[1]]
 }
 
-// Section distance and elevation to client pixels, through a camera fitted as the section fits.
+// Section distance and elevation to client pixels, through a camera fitted as the section fits,
+// clear of the axes.
 function clientAtSection(canvas: HTMLCanvasElement, s: number, z: number): [number, number] {
   const camera = new SectionCamera(canvas.width, canvas.height)
+  camera.setInset(axesInset(1))
   camera.fit([0, 3.5, 0, 10])
   return camera.worldToScreen(s, z)
 }
@@ -637,9 +640,9 @@ describe('the section behaves like the map it replaces', () => {
     // The scales are untouched, so they span less clip space on a larger canvas.
     expect(after[0] / before[0]).toBeCloseTo(0.8, 5)
     expect(after[4] / before[4]).toBeCloseTo(0.8, 5)
-    // The reference sits at the view centre, so it still maps to the middle of the canvas.
-    expect(after[6]).toBeCloseTo(before[6], 5)
-    expect(after[7]).toBeCloseTo(before[7], 5)
+    // The world point at the middle of the canvas, relative to the reference, stays in the middle.
+    expect(-after[6] / after[0]).toBeCloseTo(-before[6] / before[0], 5)
+    expect(-after[7] / after[4]).toBeCloseTo(-before[7] / before[4], 5)
   })
 
   it('re-uploads the section from held copies on a restored context, with the theme colours and no request', async () => {
