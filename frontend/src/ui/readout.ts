@@ -178,6 +178,15 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
     if (absence !== null) {
       appendLine(el, absence, 'body')
       appendFooter(el, layer, cellId, selectionLabel)
+    } else if (classification?.kind === 'points') {
+      // The section draws no dots, so the plan's "click a dot" would ask for something impossible here.
+      const n = classification.rows.length
+      const said =
+        n === 1
+          ? `1 parameter of ${opts.group} sits in this cell; it is drawn as a dot on the plan, and the section shows no value for it.`
+          : `${n} parameters of ${opts.group} sit in this cell; they are drawn as dots on the plan, and the section shows no value for them.`
+      appendLine(el, said, 'body', 'wrap-note')
+      appendFooter(el, layer, cellId, selectionLabel)
     } else if (classification !== null) {
       renderCell(el, opts, { cellId, layer, selectionLabel, classification })
     } else {
