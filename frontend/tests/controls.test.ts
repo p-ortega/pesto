@@ -10,6 +10,8 @@ import { STOPS, type ColormapName } from '../src/gl/colormap'
 import { renderSelectionControls, STATISTICS } from '../src/ui/controls'
 import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
 
+const noteText = (line: Element | null | undefined): string => line?.querySelector('.note-text')?.textContent ?? ''
+
 function mount(realNames: RealNamesResult, nlay = 3, partrans: string | null = null) {
   const el = document.createElement('div')
   const onSelectionChange = vi.fn()
@@ -193,6 +195,16 @@ describe('renderSelectionControls', () => {
     expect(scaleValue(null)).toBe('linear')
   })
 
+  it('names the limits options with an en dash, as the legend does, and keeps their values', () => {
+    const { el } = mount(THREE_NAMES)
+    const select = el.querySelector('select[aria-label="Limits"]') as HTMLSelectElement
+    expect([...select.options].map((o) => [o.value, o.textContent])).toEqual([
+      ['robust', 'Robust 2–98%'],
+      ['minmax', 'Min–max'],
+      ['manual', 'Manual'],
+    ])
+  })
+
   it('disables log10 with the named count, aria-describedby and a forced linear value when the field forbids it', () => {
     const { el, handle } = mount(THREE_NAMES, 3, 'log')
     const select = el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement
@@ -205,7 +217,8 @@ describe('renderSelectionControls', () => {
     expect(select.value).toBe('linear')
     expect(select.getAttribute('aria-describedby')).toBeTruthy()
     const warningEl = el.querySelector(`#${select.getAttribute('aria-describedby')}`)
-    expect(warningEl?.textContent).toBe('Log₁₀ unavailable — 3 cells are zero or negative. Showing linear.')
+    expect(noteText(warningEl)).toBe('Log₁₀ unavailable — 3 cells are zero or negative. Showing linear.')
+    expect(warningEl?.textContent?.startsWith('⚠ ')).toBe(true)
 
     handle.setLogUsability(0)
     expect(logOption.disabled).toBe(false)
@@ -331,20 +344,35 @@ describe('renderSelectionControls', () => {
     expect(onSelectionChange).not.toHaveBeenCalled()
   })
 
-  describe('the Classes select', () => {
-    const classes = (el: HTMLElement) => el.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
+  describe('the Colour steps select', () => {
+    const classes = (el: HTMLElement) => el.querySelector('select[aria-label="Colour steps"]') as HTMLSelectElement
 
-    it('lists Continuous, 7, 9 and 11 in that order, as a parameter-only row', () => {
+    it('lists Smooth, 7 steps, 9 steps and 11 steps in that order, as a parameter-only row', () => {
       const { el } = mount(THREE_NAMES)
       const select = classes(el)
       expect([...select.options].map((o) => [o.value, o.textContent])).toEqual([
-        ['0', 'Continuous'],
-        ['7', '7'],
-        ['9', '9'],
-        ['11', '11'],
+        ['0', 'Smooth'],
+        ['7', '7 steps'],
+        ['9', '9 steps'],
+        ['11', '11 steps'],
       ])
       expect(select.value).toBe('0')
       expect(select.closest('label')?.getAttribute('data-colour-source')).toBe('par')
+    })
+
+    it('is labelled Colour steps, says what it does on hover, and has a hint under it', () => {
+      const { el } = mount(THREE_NAMES)
+      const select = classes(el)
+      const label = select.closest('label') as HTMLElement
+      expect(label.firstChild?.textContent).toBe('Colour steps')
+      expect(select.title).toBe('Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.')
+      expect(label.title).toBe('Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.')
+      const hint = label.nextElementSibling as HTMLElement
+      expect(hint.classList.contains('card-hint')).toBe(true)
+      expect(hint.classList.contains('wrap-note')).toBe(true)
+      expect(hint.textContent).toBe('Bands values like a contour map.')
+      expect(hint.style.color).toBe('var(--ink-secondary)')
+      expect(hint.getAttribute('data-colour-source')).toBe('par')
     })
 
     it('starts at the initial style and emits the picked count', () => {
@@ -396,7 +424,8 @@ describe('renderSelectionControls', () => {
       expect(note.style.display).toBe('none')
       handle.showStyle({ classes: 1, symmetric: false, texture: false }, { classes: 'the limits are equal', symmetric: null, texture: null })
       expect(note.style.display).toBe('')
-      expect(note.textContent).toBe('the limits are equal')
+      expect(noteText(note)).toBe('the limits are equal')
+      expect(note.textContent).toBe('⚠ the limits are equal')
       expect(classes(el).getAttribute('aria-describedby')).toBe('classes-note')
       handle.showStyle({ classes: 9, symmetric: false, texture: false }, { classes: null, symmetric: null, texture: null })
       expect(note.style.display).toBe('none')
@@ -404,8 +433,8 @@ describe('renderSelectionControls', () => {
     })
   })
 
-  describe('the Symmetric about 0 switch', () => {
-    const box = (el: HTMLElement) => el.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
+  describe('the Centre on zero switch', () => {
+    const box = (el: HTMLElement) => el.querySelector('input[aria-label="Centre on zero"]') as HTMLInputElement
     const reason = (el: HTMLElement) => el.querySelector('#symmetric-reason') as HTMLElement
     const NO_NOTES = { classes: null, symmetric: null, texture: null }
     const LINEAR = { classes: 0, symmetric: false, texture: false }
@@ -415,15 +444,26 @@ describe('renderSelectionControls', () => {
       select.dispatchEvent(new Event('change'))
     }
 
-    it('is a parameter-only checkbox after the Classes select, with its reason line hidden', () => {
+    it('is labelled Centre on zero, says what it does on hover, and has a hint under it', () => {
+      const { el } = mount(THREE_NAMES)
+      const label = box(el).closest('label') as HTMLElement
+      expect(label.textContent).toBe('Centre on zero')
+      expect(box(el).title).toBe('Puts zero in the middle of the colour ramp, so values above and below zero get matching colours.')
+      expect(label.title).toBe('Puts zero in the middle of the colour ramp, so values above and below zero get matching colours.')
+      const hint = label.nextElementSibling as HTMLElement
+      expect(hint.classList.contains('card-hint')).toBe(true)
+      expect(hint.textContent).toBe('For changes and residuals.')
+    })
+
+    it('is a parameter-only checkbox after the Colour steps select, with its reason line hidden', () => {
       const { el } = mount(THREE_NAMES)
       const input = box(el)
       expect(input.type).toBe('checkbox')
       expect(input.checked).toBe(false)
       const label = input.closest('label') as HTMLElement
-      expect(label.textContent).toContain('Symmetric about 0')
+      expect(label.textContent).toContain('Centre on zero')
       expect(label.getAttribute('data-colour-source')).toBe('par')
-      const classesLabel = (el.querySelector('select[aria-label="Colour classes"]') as HTMLElement).closest('label') as HTMLElement
+      const classesLabel = (el.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('label') as HTMLElement
       expect(classesLabel.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(reason(el).style.display).toBe('none')
     })
@@ -447,7 +487,10 @@ describe('renderSelectionControls', () => {
         expect.objectContaining({ scale: 'log10', style: { classes: 0, symmetric: false, texture: false } }),
       )
       expect(box(el).checked).toBe(false)
-      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+      expect(noteText(reason(el))).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+      expect(reason(el).textContent).toBe('⚠ centre on zero was turned off: a log scale has no zero to centre on')
+      expect((reason(el).querySelector('span[aria-hidden="true"]') as HTMLElement).style.color).toBe('var(--status-warning)')
+      expect((reason(el).querySelector('.note-text') as HTMLElement).style.color).toBe('var(--ink-primary)')
       expect(reason(el).style.display).toBe('')
     })
 
@@ -460,24 +503,28 @@ describe('renderSelectionControls', () => {
       expect(onSelectionChange).toHaveBeenLastCalledWith(
         expect.objectContaining({ limitsMode: 'manual', style: { classes: 0, symmetric: false, texture: false } }),
       )
-      expect(reason(el).textContent).toBe('centre on zero was turned off: manual limits are used as typed')
+      expect(noteText(reason(el))).toBe('centre on zero was turned off: manual limits are used as typed')
     })
 
     it('gives only the plain reason, not a turned-off line, when the scale moves while symmetric is off', () => {
       const { el } = mount(THREE_NAMES)
       pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'log10')
       expect(box(el).disabled).toBe(true)
-      expect(reason(el).textContent).toBe('a log scale has no zero to centre on')
+      expect(reason(el).textContent).toBe('ℹ a log scale has no zero to centre on')
+      expect((reason(el).querySelector('.note-text') as HTMLElement).style.color).toBe('var(--ink-secondary)')
+      expect(box(el).title).toBe('a log scale has no zero to centre on')
+      expect(box(el).getAttribute('aria-describedby')).toBe('symmetric-reason')
       pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'linear')
       expect(box(el).disabled).toBe(false)
-      expect(reason(el).textContent).toBe('')
+      expect(noteText(reason(el))).toBe('')
+      expect(box(el).title).toBe('Puts zero in the middle of the colour ramp, so values above and below zero get matching colours.')
     })
 
     it('is disabled with the reason showStyle gives, and enabled again when there is none', () => {
       const { el, handle } = mount(THREE_NAMES)
       handle.showStyle(LINEAR, { ...NO_NOTES, symmetric: 'a log scale has no zero to centre on' })
       expect(box(el).disabled).toBe(true)
-      expect(reason(el).textContent).toBe('a log scale has no zero to centre on')
+      expect(noteText(reason(el))).toBe('a log scale has no zero to centre on')
       expect(reason(el).style.display).toBe('')
       expect(box(el).getAttribute('aria-describedby')).toBe('symmetric-reason')
 
@@ -493,11 +540,11 @@ describe('renderSelectionControls', () => {
       box(el).dispatchEvent(new Event('change'))
       pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'log10')
       handle.showStyle(LINEAR, { ...NO_NOTES, symmetric: 'a log scale has no zero to centre on' })
-      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+      expect(noteText(reason(el))).toBe('centre on zero was turned off: a log scale has no zero to centre on')
       // The view drew linear after all (log refused for non-positive cells): the trace stays.
       handle.showStyle(LINEAR, NO_NOTES)
       expect(box(el).disabled).toBe(false)
-      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+      expect(noteText(reason(el))).toBe('centre on zero was turned off: a log scale has no zero to centre on')
 
       box(el).checked = true
       box(el).dispatchEvent(new Event('change'))
@@ -511,7 +558,7 @@ describe('renderSelectionControls', () => {
       const scale = el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement
       pick(scale, 'log10')
       pick(scale, 'linear')
-      expect(reason(el).textContent).toBe('')
+      expect(noteText(reason(el))).toBe('')
       expect(box(el).checked).toBe(false)
     })
 
@@ -531,7 +578,7 @@ describe('renderSelectionControls', () => {
         'centre on zero was turned off: a log scale has no zero to centre on',
       )
       expect(box(el).checked).toBe(false)
-      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+      expect(noteText(reason(el))).toBe('centre on zero was turned off: a log scale has no zero to centre on')
       expect(onSelectionChange).not.toHaveBeenCalled()
     })
 
@@ -556,13 +603,13 @@ describe('renderSelectionControls', () => {
         onFitToExtent: vi.fn(),
       })
       expect(box(el).checked).toBe(true)
-      expect(reason(el).textContent).toBe('centre on zero was turned off: manual limits are used as typed')
+      expect(noteText(reason(el))).toBe('centre on zero was turned off: manual limits are used as typed')
     })
   })
 
-  describe('the Texture fill switch', () => {
-    const box = (el: HTMLElement) => el.querySelector('input[aria-label="Texture fill"]') as HTMLInputElement
-    const classesSelect = (el: HTMLElement) => el.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
+  describe('the Patterns switch', () => {
+    const box = (el: HTMLElement) => el.querySelector('input[aria-label="Patterns instead of colours"]') as HTMLInputElement
+    const classesSelect = (el: HTMLElement) => el.querySelector('select[aria-label="Colour steps"]') as HTMLSelectElement
     const continuous = (el: HTMLElement) => classesSelect(el).querySelector('option[value="0"]') as HTMLOptionElement
     const note = (el: HTMLElement) => el.querySelector('#classes-note') as HTMLElement
     const reason = (el: HTMLElement) => el.querySelector('#texture-reason') as HTMLElement
@@ -573,22 +620,33 @@ describe('renderSelectionControls', () => {
       box(el).dispatchEvent(new Event('change'))
     }
 
-    it('is a parameter-only checkbox after the Symmetric row, with its reason line hidden', () => {
+    it('is labelled Patterns instead of colours, says what it does on hover, and has a hint under it', () => {
+      const { el } = mount(THREE_NAMES)
+      const label = box(el).closest('label') as HTMLElement
+      expect(label.textContent).toBe('Patterns instead of colours')
+      expect(box(el).title).toBe('Draws each colour step as its own line pattern, for black-and-white printing, colour-blind readers, or seeing a basemap through the field. Uses colour steps.')
+      expect(label.title).toBe('Draws each colour step as its own line pattern, for black-and-white printing, colour-blind readers, or seeing a basemap through the field. Uses colour steps.')
+      const hint = label.nextElementSibling as HTMLElement
+      expect(hint.classList.contains('card-hint')).toBe(true)
+      expect(hint.textContent).toBe('For print, colour-blind readers, or a basemap underneath.')
+    })
+
+    it('is a parameter-only checkbox after the Centre on zero row, with its reason line hidden', () => {
       const { el } = mount(THREE_NAMES)
       const input = box(el)
       expect(input.type).toBe('checkbox')
       expect(input.checked).toBe(false)
       const label = input.closest('label') as HTMLElement
-      expect(label.textContent).toContain('Texture fill')
+      expect(label.textContent).toContain('Patterns instead of colours')
       expect(label.getAttribute('data-colour-source')).toBe('par')
-      const symmetricLabel = (el.querySelector('input[aria-label="Symmetric about 0"]') as HTMLElement).closest('label') as HTMLElement
+      const symmetricLabel = (el.querySelector('input[aria-label="Centre on zero"]') as HTMLElement).closest('label') as HTMLElement
       expect(symmetricLabel.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(reason(el).style.display).toBe('none')
       expect(reason(el).getAttribute('data-colour-source')).toBe('par')
     })
 
     // [edge MAPX-03 continuous]
-    it('raises Continuous to 7 when checked, emits once, says so, and keeps Continuous off the list while on', () => {
+    it('raises Smooth to 7 steps when checked, emits once, says so, and keeps Smooth off the list while on', () => {
       const { el, onSelectionChange } = mount(THREE_NAMES)
       onSelectionChange.mockClear()
       check(el, true)
@@ -597,7 +655,8 @@ describe('renderSelectionControls', () => {
       expect(onSelectionChange).toHaveBeenLastCalledWith(
         expect.objectContaining({ style: { classes: 7, symmetric: false, texture: true } }),
       )
-      expect(note(el).textContent).toBe('patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
+      expect(noteText(note(el))).toBe('patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
+      expect(note(el).textContent).toBe('⚠ patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
       expect(note(el).style.display).toBe('')
       expect(continuous(el).disabled).toBe(true)
 
@@ -614,7 +673,7 @@ describe('renderSelectionControls', () => {
       const { el, handle } = mount(THREE_NAMES)
       check(el, true)
       handle.showStyle({ classes: 7, symmetric: false, texture: true }, NO_NOTES)
-      expect(note(el).textContent).toBe('patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
+      expect(noteText(note(el))).toBe('patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
       classesSelect(el).value = '9'
       classesSelect(el).dispatchEvent(new Event('change'))
       expect(note(el).style.display).toBe('none')
@@ -636,15 +695,18 @@ describe('renderSelectionControls', () => {
       const dots = 'patterns apply to cell fields; this group is drawn as dots'
       handle.showStyle({ classes: 7, symmetric: false, texture: false }, { ...NO_NOTES, texture: dots })
       expect(box(el).disabled).toBe(true)
-      expect(reason(el).textContent).toBe(dots)
+      expect(noteText(reason(el))).toBe(dots)
+      expect(reason(el).textContent).toBe(`ℹ ${dots}`)
+      expect(box(el).title).toBe(dots)
       expect(reason(el).style.display).toBe('')
       expect(box(el).getAttribute('aria-describedby')).toBe('texture-reason')
       handle.showStyle({ classes: 7, symmetric: false, texture: false }, NO_NOTES)
       expect(box(el).disabled).toBe(false)
+      expect(box(el).title).toBe('Draws each colour step as its own line pattern, for black-and-white printing, colour-blind readers, or seeing a basemap through the field. Uses colour steps.')
       expect(reason(el).style.display).toBe('none')
     })
 
-    it('moves with sync without emitting, and disables Continuous while texture is on', () => {
+    it('moves with sync without emitting, and disables Smooth while patterns are on', () => {
       const { el, handle, onSelectionChange } = mount(THREE_NAMES)
       handle.sync({
         colormap: 'viridis',
@@ -753,7 +815,8 @@ describe('renderSelectionControls', () => {
       expect(onSelectionChange).not.toHaveBeenCalled()
       expect(slider(el).value).toBe('0')
       expect(slider(el).nextElementSibling?.textContent).toBe('base')
-      expect(refusal(el)?.textContent).toBe('realization "1" is not in iteration 0')
+      expect(noteText(refusal(el))).toBe('realization "1" is not in iteration 0')
+      expect(refusal(el)?.textContent).toBe('⚠ realization "1" is not in iteration 0')
     })
 
     it('marks the box invalid and ties it to a status line', () => {
@@ -772,7 +835,7 @@ describe('renderSelectionControls', () => {
       commit(el, typed)
 
       expect(onSelectionChange).not.toHaveBeenCalled()
-      expect(refusal(el)?.textContent).toBe(`realization "${typed}" is not in iteration 0`)
+      expect(noteText(refusal(el))).toBe(`realization "${typed}" is not in iteration 0`)
     })
 
     it('treats an empty box as nothing to do and clears an earlier refusal', () => {
@@ -783,7 +846,7 @@ describe('renderSelectionControls', () => {
       commit(el, '')
 
       expect(onSelectionChange).not.toHaveBeenCalled()
-      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(noteText(refusal(el)) ?? '').toBe('')
       expect(goBox(el).hasAttribute('aria-invalid')).toBe(false)
     })
 
@@ -792,17 +855,17 @@ describe('renderSelectionControls', () => {
 
       commit(el, 'zzz')
       commit(el, 'r001')
-      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(noteText(refusal(el)) ?? '').toBe('')
       expect(goBox(el).hasAttribute('aria-invalid')).toBe(false)
 
       commit(el, 'zzz')
       slider(el).value = '2'
       slider(el).dispatchEvent(new Event('input'))
-      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(noteText(refusal(el)) ?? '').toBe('')
 
       commit(el, 'zzz')
       slider(el).click()
-      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(noteText(refusal(el)) ?? '').toBe('')
       expect(goBox(el).hasAttribute('aria-invalid')).toBe(false)
     })
 
@@ -814,9 +877,9 @@ describe('renderSelectionControls', () => {
       handle.setRealizations({ ok: true, names: ['r017', 'base'] }, 'base')
 
       expect(listValues(el)).toEqual(['r017', 'base'])
-      expect(refusal(el)?.textContent ?? '').toBe('')
+      expect(noteText(refusal(el)) ?? '').toBe('')
       commit(el, 'r001')
-      expect(refusal(el)?.textContent).toBe('realization "r001" is not in iteration 3')
+      expect(noteText(refusal(el))).toBe('realization "r001" is not in iteration 3')
     })
 
     it('lets a name that only the new iteration holds be picked', () => {
@@ -945,9 +1008,12 @@ describe('renderSelectionControls', () => {
       expect(realInput(el).disabled).toBe(true)
       expect(labelOf(el)).toBe('—')
       expect(el.textContent).toContain("Realization names weren't recorded for iteration 3")
+      expect(el.textContent).toContain("ℹ Realization names weren't recorded for iteration 3")
+      expect(realInput(el).title).toBe("Realization names weren't recorded for iteration 3, so a realization can't be named.")
 
       handle.setRealizations({ ok: true, names: ['base', 'r001'] }, 'base')
       expect(el.textContent).not.toContain("weren't recorded")
+      expect(realInput(el).hasAttribute('title')).toBe(false)
     })
 
     it('setIteration changes the iteration every later selection carries, and emits nothing', () => {
