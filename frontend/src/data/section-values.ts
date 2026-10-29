@@ -93,6 +93,8 @@ export function sectionValues(answer: SectionAnswer, plan: SectionValuesInput): 
     if (!plan.drawsAsPoints) {
       for (let q = 0; q < n; q++) {
         const c = cell[Math.floor(q / nlay)]
+        // A cell id the plan does not hold would alias another layer's key.
+        if (c < 0 || c >= nCells) continue
         const row = rowAt.get((q % nlay) * nCells + c) ?? NONE
         if (row === CONTESTED) contestedMask[q] = 1
         else if (row !== NONE) raw[q] = field[row]
