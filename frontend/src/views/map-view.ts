@@ -60,6 +60,8 @@ import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
 import { renderLasso, type LassoKeys } from '../ui/lasso'
+import { renderSectionTool } from '../ui/section-tool'
+import { createSectionView } from '../ui/section-view'
 import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
@@ -75,6 +77,7 @@ import {
   renderObsColourControls,
   renderObsLegend,
   type ObsColourControlsHandle,
+  type ObsLegendOptions,
 } from '../ui/obs-colour-controls'
 import {
   prefersReducedMotion,
@@ -403,7 +406,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   obsNoticeEl.setAttribute('data-testid', 'obs-notices')
   obsNoticeEl.setAttribute('role', 'status')
   mapNotice.appendChild(obsNoticeEl)
+  // The plan / section toggle sits top-right (D-06).
+  const topRightEl = document.createElement('div')
+  topRightEl.classList.add('floating-top-right')
   mapCanvasArea.appendChild(topLeftEl)
+  mapCanvasArea.appendChild(topRightEl)
   mapCanvasArea.appendChild(canvas)
   mapCanvasArea.appendChild(legendEl)
   mapCanvasArea.appendChild(readoutEl)
@@ -484,6 +491,62 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     worldToScreen,
     onRelease: lassoRelease,
     onTooSmall: () => lassoEmpty(),
+  })
+  // The section (SECT-01, SECT-02): the line tool on the plan and the view that replaces the plan.
+  const SECTION_TOOL_ON_PLAN = 'switch to the plan view to draw a section line'
+  const sectionView = createSectionView({
+    area: mapCanvasArea,
+    canvas,
+    controlsHost: topRightEl,
+    runId: opts.state.runId ?? null,
+    gl: () => ctx?.gl ?? null,
+    plan: () => ({
+      fullField,
+      limits: drawnLimits,
+      style: drawnStyle,
+      colormap: committed.colormap,
+      reverse: committed.reverseColormap,
+      fieldKind,
+      drawnGroup,
+      ppLayer: interpolatedEntry(drawnGroup)?.layer ?? null,
+      joined,
+      cellArray,
+      layerArray,
+      nCells: mesh?.nCells ?? 0,
+      drawsAsPoints: drawsAsPoints(),
+      obsActive,
+      hasIdomain: mesh?.hasIdomain ?? false,
+      meshNotes: mesh?.notes ?? [],
+      referenced: idomain === null && mesh !== null ? activeMaskFor(0) : null,
+      selectionLabel: selectionLabel(committed),
+    }),
+    paintColours: (target) => {
+      paintLayerColours(target)
+    },
+    onShownChange: (shown) => {
+      mapCanvasArea.classList.toggle('showing-section', shown)
+      sectionTool.disarm()
+      // A line is drawn on the plan, so the tool waits while the section shows.
+      sectionTool.setAvailable(shown ? { ok: false, reason: SECTION_TOOL_ON_PLAN } : { ok: true })
+      updateReadout()
+      repaintLegend()
+    },
+    onPick: () => updateReadout(),
+    requestRedraw: () => redraw(),
+    repaintLegend: () => repaintLegend(),
+  })
+  // The ends are kept in world coordinates: the plan point plus the mesh origin, in doubles (D-02).
+  const sectionTool = renderSectionTool({
+    area: mapCanvasArea,
+    canvas,
+    buttonHost: topLeftEl,
+    canvasPoint,
+    screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
+    worldToScreen,
+    onLine: (a, b) => {
+      const [ox, oy] = mesh?.origin ?? [0, 0]
+      sectionView.setLine([a[0] + ox, a[1] + oy], [b[0] + ox, b[1] + oy])
+    },
   })
   let lassoIndex: { key: string; xy: Float32Array; tree: Flatbush | null } | null = null
   let lassoAvailable = false
@@ -1073,7 +1136,36 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   function paintLegend(legend: LegendOptions | null): void {
     shownLegend = legend
+    if (sectionView.shown()) {
+      repaintLegend()
+      return
+    }
     renderLegend(legendEl, legend === null ? null : { ...legend, blended: fieldAlpha() < 1 })
+  }
+
+  // The observation legend last asked for, so the plan gets it back after the section.
+  let obsLegendKept: ObsLegendOptions | null = null
+
+  function showObsLegend(legend: ObsLegendOptions | null): void {
+    obsLegendKept = legend
+    if (!sectionView.shown()) renderObsLegend(legendEl, legend)
+  }
+
+  // The legend for whichever view shows: the section's lines after the plan legend, or alone when
+  // the map is coloured by observations or holds no plan legend; on the plan, the legend last kept.
+  function repaintLegend(): void {
+    if (sectionView.shown()) {
+      if (obsActive || shownLegend === null) {
+        sectionView.paintLegendOnly(legendEl)
+      } else {
+        // No basemap is drawn under the section, so its fill is never blended.
+        renderLegend(legendEl, { ...shownLegend, blended: false })
+        sectionView.appendLegendLines(legendEl)
+      }
+      return
+    }
+    if (obsActive) renderObsLegend(legendEl, obsLegendKept)
+    else renderLegend(legendEl, shownLegend === null ? null : { ...shownLegend, blended: fieldAlpha() < 1 })
   }
 
   // The base name landed for the shown iteration: every label that names the drawn realization follows.
@@ -1145,8 +1237,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function redraw(): void {
     if (contextLost) return
     clearCanvas()
-    basemapLayer?.draw()
-    layer?.draw()
+    // The section replaces the plan in the same area; the plan's layers wait untouched (D-07).
+    if (sectionView.shown()) {
+      sectionView.draw()
+    } else {
+      basemapLayer?.draw()
+      layer?.draw()
+    }
     if (frameLogInstalled()) {
       // finish() makes the stamp wait for the GPU, so the delay covers the drawn frame.
       ctx?.gl.finish()
@@ -1168,6 +1265,23 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // selection ring (--accent) resolve exactly like the hairline: read once
   // at mount, and again on every theme change, never cached across one.
   function applyThemeColors(): void {
+    const section = sectionView.meshLayer()
+    const planFailed = layer ? paintLayerColours(layer) : null
+    const sectionFailed = section ? paintLayerColours(section) : null
+    const failed = planFailed ?? sectionFailed
+    if (failed !== null) {
+      addNotice(mapNotice, {
+        title: 'The dim strength could not be read from the theme',
+        detail: `${failed} Unselected dots dim at the map's own default.`,
+        tone: 'warning',
+      })
+    }
+  }
+
+  // The theme colours on one mesh layer: the plan's, or the section's, which shares its code.
+  // Gives the reason when the dim strength could not be read, so the caller says so once.
+  function paintLayerColours(target: MeshLayer): string | null {
+    target.setHairlineColor(readColorToken('--model-edge'))
     // --ink-primary, --gridline and --accent carry no alpha of their own
     // (WINDOWS.md #12 confirmed this by reading style.css) -- only their
     // RGB is needed here, so the resolved alpha is dropped explicitly by
@@ -1175,36 +1289,37 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const [ir, ig, ib] = readColorToken('--ink-primary')
     const [gr, gg, gb] = readColorToken('--gridline')
     const [ar, ag, ab] = readColorToken('--accent')
-    layer?.setContestedColors([ir, ig, ib], [gr, gg, gb])
+    target.setContestedColors([ir, ig, ib], [gr, gg, gb])
     // --surface is lighter than --page-plane in the light theme, so it would not show as a shade there.
-    layer?.setFootprintColor([gr, gg, gb])
+    target.setFootprintColor([gr, gg, gb])
     // The selection halo is whichever of page and ink is lighter, so it is near-white in both themes.
     const [pr, pg, pb] = readColorToken('--page-plane')
     const halo: [number, number, number] = pr + pg + pb > ir + ig + ib ? [pr, pg, pb] : [ir, ig, ib]
-    layer?.setAccentColor([ar, ag, ab], halo)
+    target.setAccentColor([ar, ag, ab], halo)
     // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
-    layer?.setPointRingColor([pr, pg, pb])
-    layer?.setHatchColors([ir, ig, ib], [pr, pg, pb])
+    target.setPointRingColor([pr, pg, pb])
+    target.setHatchColors([ir, ig, ib], [pr, pg, pb])
     const [sr, sg, sb] = readColorToken('--surface')
-    layer?.setSurfaceColor([sr, sg, sb])
+    target.setSurfaceColor([sr, sg, sb])
     // Half strength, so the outlines-only grid reads over a basemap without hiding it.
     const [kr, kg, kb] = readColorToken('--ink-secondary')
-    layer?.setGridLineColor([kr, kg, kb, 0.5])
+    target.setGridLineColor([kr, kg, kb, 0.5])
     try {
-      layer?.setDimAlpha(readNumberToken('--dim-alpha'))
+      target.setDimAlpha(readNumberToken('--dim-alpha'))
     } catch (error) {
-      addNotice(mapNotice, {
-        title: 'The dim strength could not be read from the theme',
-        detail: `${describeError(error)} Unselected dots dim at the map's own default.`,
-        tone: 'warning',
-      })
+      return describeError(error)
     }
+    return null
   }
 
   // Resolves synchronously from currentClasses/rawFullField -- the client
   // already holds the field and the D-05 join, so there is no fetch and no
   // loading state here (D-08).
   function updateReadout(): void {
+    if (sectionView.shown()) {
+      sectionView.paintReadout(readoutEl)
+      return
+    }
     if (obsPick !== null) {
       renderReadout(readoutEl, { pick: obsPick, group: obsGroupInUse ?? '', joined, field: new Float32Array(0) })
       return
@@ -1276,8 +1391,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function handleCanvasClick(event: MouseEvent): void {
     // The click that ends a lasso drag or a pan selects nothing.
     if (lasso.consumeClick()) return
+    if (sectionTool.consumeClick()) return
     if (gestureWasDrag) {
       gestureWasDrag = false
+      return
+    }
+    if (sectionView.shown()) {
+      const [x, y] = canvasPoint(event)
+      sectionView.click(x, y, modeOf(event))
       return
     }
     if (!camera || !meshGeom || loadingIteration !== null) return
@@ -1420,6 +1541,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     basemapLayer?.setMatrix(camera.matrix())
     redraw()
     lasso.redraw()
+    sectionTool.redraw()
     renderWhere()
   }
 
@@ -1431,6 +1553,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // No map to draw on: the lasso's button and outline canvas go with it.
   function removeCanvas(): void {
     lasso.dispose()
+    sectionTool.dispose()
+    sectionView.dispose()
     canvas.remove()
   }
 
@@ -1447,6 +1571,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (width === canvas.width && height === canvas.height) return
     canvas.width = width
     canvas.height = height
+    sectionView.resize(width, height)
     if (camera) {
       camera.resize(width, height)
       redrawFromCamera()
@@ -1466,6 +1591,33 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     camera.fitAnimated(mesh.bounds, redrawFromCamera, { reduced: prefersReducedMotion() })
   }
 
+  // Home and the fit button act on whichever view is shown (D-21).
+  function fitShownView(): void {
+    if (sectionView.shown()) sectionView.fit()
+    else fitToExtent()
+  }
+
+  // A drag, wheel or key moves the camera of the view that is shown, never the other one.
+  function panShown(dx: number, dy: number): void {
+    if (sectionView.shown()) {
+      sectionView.pan(dx, dy)
+      return
+    }
+    if (!camera) return
+    camera.pan(dx, dy)
+    redrawFromCamera()
+  }
+
+  function zoomShown(x: number, y: number, factor: number): void {
+    if (sectionView.shown()) {
+      sectionView.zoomAt(x, y, factor)
+      return
+    }
+    if (!camera) return
+    camera.zoomAt(x, y, factor)
+    redrawFromCamera()
+  }
+
   // Pointer drag-to-pan (D-15): the delta between two consecutive pointer
   // positions, in the canvas's own pixel space, fed straight to
   // camera.pan -- the same "grab and move" a drag on any map surface uses.
@@ -1477,8 +1629,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let gestureWasDrag = false
 
   canvas.addEventListener('pointerdown', (event) => {
-    // An armed lasso owns the drag; the map must not pan under it.
-    if (lasso.armed()) return
+    // An armed lasso or section tool owns the press; the map must not pan under it.
+    if (lasso.armed() || sectionTool.armed()) return
     if (!camera || event.button !== 0) return
     // Ignore a second finger, but not a press that follows a lost release: the
     // same pointer again, or another one after the first lost capture.
@@ -1507,9 +1659,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       gestureWasDrag = true
     }
     const point = canvasPoint(event)
-    camera.pan(point[0] - dragLast[0], point[1] - dragLast[1])
+    const [dx, dy] = [point[0] - dragLast[0], point[1] - dragLast[1]]
     dragLast = point
-    redrawFromCamera()
+    panShown(dx, dy)
   })
 
   function endDrag(event: PointerEvent): void {
@@ -1540,8 +1692,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       const factor = wheelZoomFactor(event, pageHeight)
       if (factor === null) return
       const [x, y] = canvasPoint(event)
-      camera.zoomAt(x, y, factor)
-      redrawFromCamera()
+      zoomShown(x, y, factor)
     },
     { passive: false },
   )
@@ -1560,39 +1711,33 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     switch (event.key) {
       case 'ArrowLeft':
         event.preventDefault()
-        camera.pan(PAN_STEP, 0)
-        redrawFromCamera()
+        panShown(PAN_STEP, 0)
         break
       case 'ArrowRight':
         event.preventDefault()
-        camera.pan(-PAN_STEP, 0)
-        redrawFromCamera()
+        panShown(-PAN_STEP, 0)
         break
       case 'ArrowUp':
         event.preventDefault()
-        camera.pan(0, PAN_STEP)
-        redrawFromCamera()
+        panShown(0, PAN_STEP)
         break
       case 'ArrowDown':
         event.preventDefault()
-        camera.pan(0, -PAN_STEP)
-        redrawFromCamera()
+        panShown(0, -PAN_STEP)
         break
       case '+':
       case '=':
         event.preventDefault()
-        camera.zoomAt(canvas.width / 2, canvas.height / 2, ZOOM_FACTOR)
-        redrawFromCamera()
+        zoomShown(canvas.width / 2, canvas.height / 2, ZOOM_FACTOR)
         break
       case '-':
       case '_':
         event.preventDefault()
-        camera.zoomAt(canvas.width / 2, canvas.height / 2, 1 / ZOOM_FACTOR)
-        redrawFromCamera()
+        zoomShown(canvas.width / 2, canvas.height / 2, 1 / ZOOM_FACTOR)
         break
       case 'Home':
         event.preventDefault()
-        fitToExtent()
+        fitShownView()
         break
       default:
         break
@@ -1726,7 +1871,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         paintHeader()
         // --model-edge resolves differently under each data-theme value, so
         // it is re-read here exactly like --page-plane is, never cached.
-        layer?.setHairlineColor(readColorToken('--model-edge'))
         applyThemeColors()
         redraw()
       },
@@ -1779,10 +1923,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     contextLost = false
     layer?.reupload()
     basemapLayer?.reupload()
+    // Rebuilt from the copies the section layer holds; nothing is fetched (Pitfall 11).
+    sectionView.reupload()
     const waiting = pendingBasemap
     pendingBasemap = null
     if (waiting !== null) void drawBasemap(waiting)
-    layer?.setHairlineColor(readColorToken('--model-edge'))
     applyThemeColors()
     if (camera) {
       layer?.setMatrix(camera.matrix())
@@ -1833,6 +1978,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // class (valued -> contested, say) -- the readout re-derives from
     // whatever currentClasses now says, never a stale copy.
     updateReadout()
+    sectionView.planLayerChanged(committed.layer)
     return { contested, noValue }
   }
 
@@ -1972,6 +2118,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       style: effective,
       styleNotes: notes,
     })
+    sectionView.refresh()
   }
 
   // Stops at the first finite value, so a normal field costs one look. A
@@ -2564,7 +2711,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsDotsKey = ''
     obsDrawnIndex = null
     selectedPointRow = null
-    if (fresh) renderObsLegend(legendEl, null)
+    if (fresh) showObsLegend(null)
+    sectionView.refresh()
   }
 
   // Nothing is drawn as a dot: a failure or an empty group says so, and no stale dot stays.
@@ -2576,7 +2724,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsPickedRows = []
     obsDrawnIndex = null
     putPoints(new Float32Array(0), new Float32Array(0))
-    renderObsLegend(legendEl, null)
+    showObsLegend(null)
     refreshMarks(false)
     redraw()
     updateReadout()
@@ -2611,6 +2759,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       refreshMarks(false)
       redraw()
     }
+    sectionView.refresh()
     updateReadout()
   }
 
@@ -2944,7 +3093,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const dots = obsDots
     if (data === null || dots === null) return
     const times = data.times.times
-    renderObsLegend(legendEl, {
+    showObsLegend({
       group: data.group,
       stat: obsStat,
       iteration: obsIteration,
@@ -3233,13 +3382,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     layer = new MeshLayer(gl.gl, meshGeom)
     layer.setColormap('viridis')
     layer.setInactive(drawnInactiveMask())
-    layer.setHairlineColor(readColorToken('--model-edge'))
     applyThemeColors()
 
     fitCanvasToFrame()
     camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)
     layer.setMatrix(camera.matrix())
+    sectionTool.setAvailable({ ok: true })
 
     // A run whose realization names were never recorded can still show an
     // aggregate statistic, which needs no realization name -- 'value'
@@ -3321,7 +3470,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       },
       styleNote: restoredStyle.turnedOff === null ? null : SYMMETRIC_TURNED_OFF_PREFIX + restoredStyle.turnedOff,
       onSelectionChange: handleSelectionChange,
-      onFitToExtent: fitToExtent,
+      onFitToExtent: fitShownView,
     })
     controlsHandle.setLayer(committed.layer)
 

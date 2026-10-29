@@ -109,4 +109,19 @@ describe('ingestState observation capabilities', () => {
     expect(none.capabilities.obs1to1).toBeUndefined()
     expect(Object.keys(none.capabilities).sort()).toEqual(['chips', 'map', 'stats'])
   })
+
+  it('reads section from the state it already holds, and leaves it absent when the server sends none', async () => {
+    const blocked = [{ artifact: 'elev', reason: 'this cache predates the section view; it is added on the next ingest' }]
+    stubState({ map: OK, stats: OK, chips: OK, section: { available: false, blocked_by: blocked } })
+    const sent = await ingestState()
+    expect(sent.capabilities.section).toEqual({ available: false, blockedBy: blocked })
+
+    stubState({ map: OK, stats: OK, chips: OK, section: OK })
+    expect((await ingestState()).capabilities.section).toEqual({ available: true, blockedBy: [] })
+
+    stubState({ map: OK, stats: OK, chips: OK })
+    const none = await ingestState()
+    expect(none.capabilities.section).toBeUndefined()
+    expect('section' in none.capabilities).toBe(false)
+  })
 })
