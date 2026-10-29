@@ -24,7 +24,7 @@ describe('renderReadout', () => {
     const el = mount()
     renderReadout(el, { pick: { kind: 'none' }, group: 'G1', joined: [], field: new Float32Array(0) })
 
-    expect(el.textContent).toBe('Click a cell to see its value.')
+    expect(el.textContent).toBe('Click a cell to see its value. The Params and Obs tabs then list what sets it.')
     expect(el.querySelector('div')?.style.color).toBe('var(--ink-muted)')
     expect(el.querySelectorAll('svg, img').length).toBe(0)
   })
@@ -36,7 +36,7 @@ describe('renderReadout', () => {
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([42.5]) })
 
     expect(el.textContent).toContain('par_one (G1): 42.50')
-    expect(el.textContent).toContain('layer 1, cell 3 · r001')
+    expect(el.textContent).toContain('layer 2 (index 1), cell 3 · r001')
   })
 
   it('a contested cell renders the title and one row per parameter', () => {
@@ -140,7 +140,7 @@ describe('renderReadout', () => {
     })
     const text = el.textContent ?? ''
     expect(text).toContain('npfklayer1pp: 1.500')
-    expect(text).toContain('layer 0, cell 4 · base')
+    expect(text).toContain('layer 1 (index 0), cell 4 · base')
     expect(text).toContain('Interpolated from 20 pilot points')
     expect(text).toContain('a (weight 0.50)')
     expect(text).not.toContain('d (weight')
@@ -176,7 +176,7 @@ describe('renderReadout', () => {
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([42.5]) })
 
     expect(el.textContent).toContain('par_one (G1): 42.50')
-    expect(el.textContent).toContain('x 10, y 0 · layer 0 · base')
+    expect(el.textContent).toContain('x 10, y 0 · layer 1 (index 0) · base')
   })
 
   it('a point pick prints world coordinates at a large northing without losing the metre', () => {
@@ -184,7 +184,7 @@ describe('renderReadout', () => {
     const pick: ReadoutPick = { kind: 'point', row: 0, layer: 0, x: 712345.25, y: 7019873.75, selectionLabel: 'base' }
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([42.5]) })
 
-    expect(el.textContent).toContain('x 712345, y 7019874 · layer 0 · base')
+    expect(el.textContent).toContain('x 712345, y 7019874 · layer 1 (index 0) · base')
   })
 
   describe('sites', () => {
@@ -216,7 +216,7 @@ describe('renderReadout', () => {
       expect(el.textContent).toContain('well_b (heads)')
       expect(el.textContent).toContain('x 512300, y 7020100 (own coordinates)')
       expect(el.textContent).toContain("x 512300, y 7020100 (centre of the cell's vertices)")
-      expect(el.textContent).toContain('layer 3, cell 42 · placed by mf6-obs')
+      expect(el.textContent).toContain('layer 4 (index 3), cell 42 · placed by mf6-obs')
       expect(el.textContent).toContain('layer unknown, cell 42 · placed by mf6-obs')
       expect(el.textContent).toContain('day 120')
       expect(el.textContent).toContain('observed 12.50')
@@ -293,7 +293,7 @@ describe('renderReadout class line', () => {
     const el = mount()
     const pick: ReadoutPick = { kind: 'cell', cellId: 3, layer: 1, selectionLabel: 'r001', classification: { kind: 'valued', row: 0 } }
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([2]), classLine: LINE })
-    expect(lines(el)).toEqual(['par_one (G1): 2.000', LINE, 'layer 1, cell 3 · r001'])
+    expect(lines(el)).toEqual(['par_one (G1): 2.000', LINE, 'layer 2 (index 1), cell 3 · r001'])
   })
 
   it('puts the class right after the value row of a dot and of an interpolated cell', () => {
@@ -360,7 +360,7 @@ describe('renderReadout section pick', () => {
       field: new Float32Array([2]),
       classLine: LINE,
     })
-    expect(lines(el)).toEqual(['inactive (idomain 0)', 'layer 1, cell 3 · r001', ...SECTION_LINES])
+    expect(lines(el)).toEqual(['inactive (idomain 0)', 'layer 2 (index 1), cell 3 · r001', ...SECTION_LINES])
   })
 
   it('reads a classified quad exactly as the plan reads the same cell, then the lines', () => {
@@ -386,7 +386,7 @@ describe('renderReadout section pick', () => {
     ] as Array<[number[], string]>) {
       const el = mount()
       renderReadout(el, { pick: sectionPick({ kind: 'points', rows }), group: 'G1', joined: [G1, G1B], field: new Float32Array([2, 3]), classLine: LINE })
-      expect(lines(el)).toEqual([said, 'layer 1, cell 3 · r001', ...SECTION_LINES])
+      expect(lines(el)).toEqual([said, 'layer 2 (index 1), cell 3 · r001', ...SECTION_LINES])
       expect(el.textContent).not.toContain('Click a dot')
     }
   })
@@ -418,7 +418,7 @@ describe('renderReadout section pick', () => {
   it('with nothing to classify against shows the footer and the lines', () => {
     const el = mount()
     renderReadout(el, { pick: sectionPick(null), group: '', joined: [], field: new Float32Array(0), classLine: LINE })
-    expect(lines(el)).toEqual(['layer 1, cell 3 · r001', ...SECTION_LINES])
+    expect(lines(el)).toEqual(['layer 2 (index 1), cell 3 · r001', ...SECTION_LINES])
   })
 
   it('writes a reason carrying markup as plain text', () => {

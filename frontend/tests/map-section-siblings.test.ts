@@ -372,7 +372,7 @@ describe('a section stacked from sibling groups', () => {
     await showSection(m)
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 2.5))
     await vi.waitFor(() => expect(readoutText(m.root)).toContain('b3 (kblayer2): 40.00'))
-    expect(readoutText(m.root)).toContain('layer 1, cell 0')
+    expect(readoutText(m.root)).toContain('layer 2 (index 1), cell 0')
 
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5))
     await vi.waitFor(() => expect(readoutText(m.root)).toContain('b0 (kblayer1): 10.00'))

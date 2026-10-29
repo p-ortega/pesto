@@ -518,12 +518,12 @@ describe('the section tracer on the map', () => {
     await showSection(m)
 
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5))
-    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 0')
     expect(readoutText(m.root)).toContain('distance from A: 1 model units')
     expect(readoutText(m.root)).not.toContain('inactive')
 
     clickAt(m.canvas, clientAtSection(m.canvas, 2.0, 2.5))
-    expect(readoutText(m.root)).toContain('layer 1, cell 1')
+    expect(readoutText(m.root)).toContain('layer 2 (index 1), cell 1')
     expect(readoutText(m.root)).toContain('inactive (idomain 0)')
     expect(readoutText(m.root)).toContain('top 5, bottom 0 model units')
     // The active quad asks what its cell holds; the absent one asks nothing (map-section-click covers the rest).
