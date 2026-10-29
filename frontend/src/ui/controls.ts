@@ -302,9 +302,24 @@ export function renderSelectionControls(
     realInput.setAttribute('aria-valuetext', name ?? (realNames.length === 0 ? 'names not recorded' : 'none picked'))
   }
 
+  // A disabled control says why (UI-SPEC); a run of one realization has nothing to step through.
+  let singleLine: HTMLElement | null = null
   function updateRealDisabled(): void {
     realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
     goInput.disabled = realInput.disabled
+    if (realNames.length === 1) {
+      const text = `Only one realization, ${realNames[0]}, so there is nothing to step through.`
+      if (singleLine === null) {
+        singleLine = noteLine()
+        refusalLine.after(singleLine)
+      }
+      paintNote(singleLine, { kind: 'reason', text })
+      realInput.title = text
+    } else if (singleLine !== null) {
+      singleLine.remove()
+      singleLine = null
+      realInput.removeAttribute('title')
+    }
   }
 
   // An aggregate statistic draws no one realization, so the row has nothing to say.
@@ -747,6 +762,7 @@ export function renderSelectionControls(
 
   const realControl = dataRows.realization.control
   realControl.append(realInput, realValue, goLabel, namesList, refusalLine)
+  if (singleLine !== null) refusalLine.after(singleLine)
   if (warningLine) {
     realControl.appendChild(warningLine)
   }

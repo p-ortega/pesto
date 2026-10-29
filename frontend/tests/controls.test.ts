@@ -28,6 +28,19 @@ function mount(realNames: RealNamesResult, nlay = 3, partrans: string | null = n
 const THREE_NAMES: RealNamesResult = { ok: true, names: ['base', 'r001', 'r002'] }
 
 describe('renderSelectionControls', () => {
+  it('says why the realization slider is greyed out on a run of one realization, and drops it once there are more', () => {
+    const { el, handle } = mount({ ok: true, names: ['base'] })
+    const slider = el.querySelector('input[aria-label="Realization"]') as HTMLInputElement
+    expect(slider.disabled).toBe(true)
+    expect(slider.title).toBe('Only one realization, base, so there is nothing to step through.')
+    expect(el.textContent).toContain('Only one realization, base, so there is nothing to step through.')
+
+    handle.setRealizations(THREE_NAMES, null)
+    expect(slider.disabled).toBe(false)
+    expect(slider.title).toBe('')
+    expect(el.textContent).not.toContain('Only one realization')
+  })
+
   it('offers exactly the eight servable statistics and nothing else', () => {
     const { el } = mount(THREE_NAMES)
     const select = el.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement
