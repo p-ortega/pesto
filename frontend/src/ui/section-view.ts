@@ -1,10 +1,11 @@
 // The section controller: holds the line, fetches its answer once when it is first shown (D-26),
 // draws it with its own camera in place of the plan (D-06, D-07), and picks from the answer's
 // pieces on a click (D-25). The map view calls it from a few narrow hooks and hands it the plan's
-// state through getters, so this module computes no limits or style of its own.
+// state through getters, so this module computes no limits or style of its own (D-10).
 
 import { fetchSection, sectionKey, type SectionAnswer, type SectionResult } from '../data/section'
 import { pickSection, type SectionHit } from '../data/section-pick'
+import { layersSetLine, sectionValues, type SectionValues } from '../data/section-values'
 import { LatestWins } from '../data/latest-wins'
 import type { ParIdentity } from '../data/parmap'
 import type { ColormapName } from '../gl/colormap'
@@ -99,6 +100,42 @@ function appendLine(el: HTMLElement, text: string, ...classes: string[]): HTMLEl
   return line
 }
 
+const OBS_LINE = 'the section colours parameter fields only'
+const DOTS_LINE = 'this group is drawn as dots; the section shows no values for it'
+const NO_IDOMAIN_NOTE = 'the grid file records no idomain'
+
+// "1 section cell holds ... is" against "2 section cells hold ... are".
+function cells(count: number): string {
+  return count === 1 ? '1 section cell' : `${count} section cells`
+}
+
+function countLines(out: SectionValues): string[] {
+  const one = (count: number, singular: string, plural: string) =>
+    `${cells(count)} ${count === 1 ? singular : plural}`
+  const lines: string[] = []
+  if (out.contested > 0) lines.push(one(out.contested, 'is contested; no value drawn', 'are contested; no value drawn'))
+  if (out.beyondLimits > 0) lines.push(`${cells(out.beyondLimits)} beyond the limits`)
+  if (out.inactiveWithValue > 0) {
+    lines.push(
+      one(
+        out.inactiveWithValue,
+        'holds a value but is inactive in idomain; drawn as absence',
+        'hold a value but are inactive in idomain; drawn as absence',
+      ),
+    )
+  }
+  if (out.absentWithValue > 0) {
+    lines.push(
+      one(
+        out.absentWithValue,
+        'holds a value but has no usable thickness or lies outside the model; drawn as absence',
+        'hold a value but have no usable thickness or lie outside the model; drawn as absence',
+      ),
+    )
+  }
+  return lines
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -118,6 +155,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   let picked: SectionReadout | null = null
   // Kept for the layer band a later plan draws (D-19).
   let planLayer = 0
+  // What the last paint drew, so the legend describes the colours on screen.
+  let painted: { out: SectionValues; plan: SectionPlanState } | null = null
 
   const controls = renderSectionControls(opts.controlsHost, {
     onPlan: () => show(false),
@@ -132,6 +171,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     sectionLayer = null
     fitted = false
     picked = null
+    painted = null
   }
 
   function setLine(a: [number, number], b: [number, number]): void {
@@ -190,7 +230,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       }
       sectionLayer = new SectionLayer(gl, answer)
       opts.paintColours(sectionLayer.layer)
-      paintGeometry()
+      paint()
     }
     if (!fitted) {
       camera.fit(fitBounds(answer))
@@ -240,27 +280,31 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     return [0, held.line.length, zMin, zMax]
   }
 
-  // Geometry only: active quads in the quiet footprint fill, absence as the hairline outline (D-16, D-36).
-  function paintGeometry(): void {
+  // The plan's own colormap, limits and style object, as given, with values read only for the
+  // quads in the answer (D-08, D-10, D-27). Absence keeps the hairline, no value the footprint (D-36).
+  function paint(): void {
     if (sectionLayer === null || answer === null) return
-    const { status } = answer
-    const n = status.length
-    const footprint = new Uint8Array(n)
-    const inactive = new Uint8Array(n)
-    for (let q = 0; q < n; q++) {
-      footprint[q] = status[q] === 0 ? 1 : 0
-      inactive[q] = status[q] === 0 ? 0 : 1
-    }
+    const plan = opts.plan()
+    const out = sectionValues(answer, plan)
     const target = sectionLayer.layer
-    target.setValues(new Float32Array(n).fill(Number.NaN))
-    target.setFootprint(footprint)
-    target.setInactive(inactive)
+    target.setColormap(plan.colormap, plan.reverse)
+    target.setLimits(plan.limits)
+    target.setStyle(plan.style)
+    target.setContested(out.contestedMask)
+    target.setValues(out.values)
+    target.setFootprint(out.noValue)
+    target.setInactive(out.absence)
+    painted = { out, plan }
   }
 
+  // Recolours from the held answer and the plan's held field; never a new request (D-26).
   function refresh(): void {
     if (sectionLayer === null) return
-    paintGeometry()
-    if (isShown) opts.requestRedraw()
+    paint()
+    if (isShown) {
+      opts.repaintLegend()
+      opts.requestRedraw()
+    }
   }
 
   function units(): string {
@@ -299,7 +343,20 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function legendLines(): string[] {
     if (answer === null || !fitted) return []
-    return [`vertical exaggeration ${formatVe(camera.ve())}× (fitted)`]
+    const lines = [`vertical exaggeration ${formatVe(camera.ve())}× (fitted)`]
+    if (painted !== null) {
+      const { out, plan } = painted
+      if (plan.obsActive) lines.push(OBS_LINE)
+      else if (plan.drawsAsPoints) lines.push(DOTS_LINE)
+      else if (plan.drawnGroup !== null) {
+        const layers = layersSetLine(plan.drawnGroup, out.layersSet, answer.nlay)
+        if (layers !== null) lines.push(layers)
+      }
+      lines.push(...countLines(out))
+      if (!plan.hasIdomain) lines.push(...plan.meshNotes.filter((note) => note.startsWith(NO_IDOMAIN_NOTE)))
+    }
+    lines.push(...answer.notes)
+    return lines
   }
 
   function appendLegendLines(el: HTMLElement): void {
