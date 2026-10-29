@@ -67,7 +67,7 @@ import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } fro
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
-import { isShortMap, renderFold, type FoldHandle } from '../ui/fold'
+import { foldOthersToFit, isShortMap, renderFold, settleStack, type FoldHandle, type FoldOptions } from '../ui/fold'
 import { dataSummary, renderDataCard } from '../ui/data-card'
 import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
@@ -397,6 +397,29 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // stack holds the Data, Colours, Overlays and Basemap cards and nothing else (UI-SPEC, LD-2).
   const topLeftEl = document.createElement('div')
   topLeftEl.classList.add('floating-top-left')
+  // The stack's cards, top to bottom, for the rules that keep every card in sight (LD-3).
+  const stackCards: FoldHandle[] = []
+  const stackOverflows = (): boolean => topLeftEl.scrollHeight > topLeftEl.clientHeight
+  // Scrolls the stack alone, as scrollIntoView with block 'nearest' would, but never an ancestor of it.
+  function scrollIntoStack(el: HTMLElement): void {
+    const top = el.offsetTop
+    const bottom = top + el.offsetHeight
+    if (top < topLeftEl.scrollTop) topLeftEl.scrollTop = top
+    else if (bottom > topLeftEl.scrollTop + topLeftEl.clientHeight) topLeftEl.scrollTop = Math.min(top, bottom - topLeftEl.clientHeight)
+  }
+  // Opening a card that no longer fits folds the others, then brings it into view; the map never moves (LD-4).
+  function stackFold(options: Omit<FoldOptions, 'onUserToggle'>): FoldHandle {
+    const fold = renderFold({
+      ...options,
+      onUserToggle: (folded) => {
+        if (folded) return
+        foldOthersToFit(fold, stackCards, stackOverflows)
+        scrollIntoStack(fold.el)
+      },
+    })
+    stackCards.push(fold)
+    return fold
+  }
   // The legend folds to its ramp and drawn group; its lines are redrawn into the body on every draw.
   const legendFold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })
   legendFold.el.classList.add('floating-bottom-left')
@@ -3872,9 +3895,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // order, both visually and in tab order (LD-2).
     // On a short map the two cards would cover most of it, so they start folded unless the viewer chose.
     const startFolded = isShortMap(mapCanvasArea.clientHeight)
-    const dataCard = renderFold({ key: 'data', name: 'Data', startFolded })
+    const dataCard = stackFold({ key: 'data', name: 'Data', startFolded })
     dataFold = dataCard
-    const coloursFold = renderFold({ key: 'colours', name: 'Colours', startFolded })
+    const coloursFold = stackFold({ key: 'colours', name: 'Colours', startFolded })
     topLeftEl.insertBefore(dataCard.el, topLeftEl.firstChild)
     dataCard.el.after(coloursFold.el)
     const rows = renderDataCard(dataCard.body)
@@ -4004,7 +4027,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
 
     // D-22: the overlay toggles come right after the Colours card; they ask nothing until the first field draws.
-    const overlayFold = renderFold({ key: 'overlays', name: 'Overlays' })
+    const overlayFold = stackFold({ key: 'overlays', name: 'Overlays' })
     coloursFold.el.after(overlayFold.el)
     overlayControls = renderOverlayControls(overlayFold.body, {
       onToggle: () => {
@@ -4031,13 +4054,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     pending = committed
     await performFetch(committed)
     mountBasemap()
+    // First look: what would not fit starts folded, unless the viewer chose; nothing is stored.
+    settleStack(stackCards, stackOverflows)
     if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
     if (store.get().colour.source === 'obs') void drawObservations()
   }
 
   // MAPX-04: mounted and read after the first draw, so a run without a basemap opens as fast as before.
   function mountBasemap(): void {
-    basemapFold = renderFold({ key: 'basemap', name: 'Basemap' })
+    basemapFold = stackFold({ key: 'basemap', name: 'Basemap' })
     topLeftEl.appendChild(basemapFold.el)
     basemapControls = renderBasemapControls(basemapFold.body, {
       onAdd: addBasemap,

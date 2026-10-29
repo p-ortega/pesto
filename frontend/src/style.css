@@ -837,7 +837,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  max-width: 22rem;
+  max-width: 100%;
 }
 
 .time-slider[hidden],
@@ -863,7 +863,7 @@ body {
 
 /* A long group name must not widen the panel over the map. */
 .obs-colour select {
-  max-width: 22rem;
+  max-width: 100%;
 }
 
 /* A header chip: one fact in its own small surface, so the run's
@@ -1150,7 +1150,7 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-sm);
-  max-width: 22rem;
+  max-width: 100%;
   pointer-events: auto;
 }
 
@@ -1396,7 +1396,7 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-xs);
-  max-width: 22rem;
+  max-width: 100%;
   background: var(--surface);
   border: 1px solid var(--hairline);
   padding: var(--space-sm);
@@ -1462,18 +1462,44 @@ body {
   gap: var(--space-sm);
 }
 
-/* A foldable card: the button sits top-right, and the folded line takes the body's place. */
+/* A foldable card: the title or folded line at the top left, the button at the top right, and the
+   body on its own row under them. */
 .fold-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   column-gap: var(--space-sm);
+  row-gap: var(--space-sm);
 }
 
-.fold-summary,
-.fold-body {
+.fold-summary {
   grid-area: 1 / 1;
   min-width: 0;
+  align-self: center;
+}
+
+.fold-body {
+  grid-area: 2 / 1 / 3 / 3;
+  min-width: 0;
+}
+
+/* An open card's name is its title (UI-SPEC Typography, Card title). */
+.fold-card[data-folded='false'] > .fold-summary {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink-primary);
+}
+
+/* The left band has one width: an open card is 256px, a folded one as wide as its line up to that. */
+.floating-top-left > .fold-card,
+.floating-bottom-left {
+  box-sizing: border-box;
+  max-width: 256px;
+}
+
+.floating-top-left > .fold-card[data-folded='false'] {
+  width: 256px;
 }
 
 .fold-button {
@@ -1501,9 +1527,13 @@ body {
   padding: 0;
 }
 
-.fold-card[data-fold-mode='card'][data-folded='false'] > .fold-summary,
-.fold-card[data-fold-mode='lines'] > .fold-summary {
+/* The folded legend keeps its ramp and group name, which say what it is, so it drops its title. */
+.fold-card[data-fold-mode='lines'][data-folded='true'] > .fold-summary {
   display: none;
+}
+
+.fold-card[data-fold-mode='lines'][data-folded='true'] > .fold-body {
+  grid-area: 1 / 1;
 }
 
 /* !important because the controls set their own display inline. */
@@ -1599,9 +1629,10 @@ body {
   display: none;
 }
 
-/* Long legend lines wrap inside the card instead of running past its edge. */
+/* Long legend lines wrap inside the 256px card instead of running past its edge. */
 .floating-bottom-left .fold-body .label {
-  max-width: 22rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .section-legend-line {
