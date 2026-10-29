@@ -89,6 +89,17 @@ describe('renderLegend', () => {
 describe('renderLegend with classes', () => {
   const NO_NOTES = { classes: null, symmetric: null, texture: null }
 
+  it('centres each edge number on the boundary between its two swatches', () => {
+    const el = document.createElement('div')
+    renderLegend(el, { ...BASE_OPTIONS, limits: [0, 7], style: { classes: 7, symmetric: false, texture: false } })
+    const swatches = [...el.querySelectorAll('.legend-class')] as HTMLElement[]
+    const edges = [...el.querySelectorAll('.legend-edge')] as HTMLElement[]
+    expect(edges).toHaveLength(swatches.length + 1)
+    // Edge j spans half-columns 2j+1..2j+2 so its centre is grid line 2j+2, where swatch j starts.
+    swatches.forEach((swatch, k) => expect(swatch.style.gridColumn).toBe(`${2 * k + 2} / span 2`))
+    edges.forEach((edge, j) => expect(edge.style.gridColumn).toBe(`${2 * j + 1} / span 2`))
+  })
+
   it('shows one swatch per class in the shader colour and one edge per boundary', () => {
     const el = document.createElement('div')
     renderLegend(el, { ...BASE_OPTIONS, limits: [0, 9], style: { classes: 9, symmetric: false, texture: false }, styleNotes: NO_NOTES })
