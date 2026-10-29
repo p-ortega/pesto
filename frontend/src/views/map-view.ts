@@ -613,6 +613,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     requestRedraw: () => redraw(),
     repaintLegend: () => repaintLegend(),
     refreshReadout: () => updateReadout(),
+    leftBand: leftBandCss,
   })
   // The ends are kept in world coordinates: the plan point plus the mesh origin, in doubles (D-02).
   const sectionTool = renderSectionTool({
