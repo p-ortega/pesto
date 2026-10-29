@@ -30,6 +30,22 @@ ELEV_PREDATES = "this cache predates the section view; it is added on the next i
 
 _NAME = "elev"
 _NO_ELEVATIONS = "the grid file records no layer elevations"
+# flopy's words for a DIS and a DISV grid; a DISU grid's cells have no shared layer stack.
+_SECTION_GRID_TYPES = ("structured", "vertex")
+
+
+def _grid_type_refusal(grid_type: str | None) -> str | None:
+    if grid_type in _SECTION_GRID_TYPES:
+        return None
+    if grid_type is None:
+        return (
+            "the grid file does not say which grid type it is; "
+            "the section reads MODFLOW 6 DIS and DISV grids only"
+        )
+    return (
+        f"this run's grid is of type {grid_type!r}; "
+        "the section reads MODFLOW 6 DIS and DISV grids only"
+    )
 
 
 @dataclass(frozen=True)
@@ -177,6 +193,15 @@ def write_elev_from_adapter(
     if isinstance(geometry, ReadFailure):
         return geometry
 
+    # Both refusals come before any write: a missing elevation is never filled.
+    grid_type = getattr(geometry, "grid_type", None)
+    refusal = _grid_type_refusal(grid_type)
+    if refusal is not None:
+        return ReadFailure(name=_NAME, path=str(layout.grid), reason=refusal)
+    if geometry.top is None or geometry.botm is None:
+        reason = getattr(geometry, "elevation_note", None) or _NO_ELEVATIONS
+        return ReadFailure(name=_NAME, path=str(layout.grid), reason=reason)
+
     origin = load_mesh_origin(layout)
     if isinstance(origin, ReadFailure):
         return ReadFailure(
@@ -184,8 +209,6 @@ def write_elev_from_adapter(
             path=origin.path,
             reason=f"the grid artifact's origin could not be read: {origin.reason}",
         )
-    if geometry.top is None or geometry.botm is None:
-        return ReadFailure(name=_NAME, path=str(layout.grid), reason=_NO_ELEVATIONS)
 
     ncpl = int(np.asarray(geometry.top).reshape(-1).shape[0])
     starts = _ring_starts(geometry.cell_index, ncpl)
@@ -199,7 +222,7 @@ def write_elev_from_adapter(
         ring_start=starts,
         top=geometry.top,
         botm=geometry.botm,
-        grid_type=getattr(geometry, "grid_type", None),
+        grid_type=grid_type,
         origin=origin,
         layout=layout,
     )

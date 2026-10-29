@@ -116,6 +116,35 @@ def _grid_type(grid: Any) -> str | None:
     return None if value is None else str(value)
 
 
+def _elevations(
+    grid: Any, ncpl: int
+) -> tuple[np.ndarray | None, np.ndarray | None, str | None]:
+    """The grid's top and bottoms as float64, or both ``None`` with the reason.
+    Both go together: a top with no bottoms places nothing and draws nothing."""
+    top = getattr(grid, "top", None)
+    botm = getattr(grid, "botm", None)
+    if top is None:
+        return None, None, "the grid file records no top elevations"
+    if botm is None:
+        return None, None, "the grid file records no layer bottoms"
+    top_arr = np.asarray(top, dtype=np.float64).reshape(-1)
+    if top_arr.shape[0] != ncpl:
+        return None, None, f"the grid file's top holds {top_arr.shape[0]} values, not ncpl = {ncpl}"
+    nlay = int(grid.nlay)
+    botm_flat = np.asarray(botm, dtype=np.float64).reshape(-1)
+    if nlay <= 0 or botm_flat.size % nlay:
+        return None, None, (
+            f"the grid file's bottoms hold {botm_flat.size} values, which do not split "
+            f"into {nlay} layers of ncpl = {ncpl}"
+        )
+    botm_arr = botm_flat.reshape(nlay, -1)
+    if botm_arr.shape[1] != ncpl:
+        return None, None, (
+            f"the grid file's bottoms hold {botm_arr.shape[1]} values per layer, not ncpl = {ncpl}"
+        )
+    return top_arr, botm_arr, None
+
+
 class Mf6Adapter:
     """The spatial adapter for a MODFLOW 6 run, built from its binary grid
     file (``.grb``). ``model_dir`` is the run folder; when given, sites the
@@ -223,27 +252,16 @@ class Mf6Adapter:
 
     def geometry(self) -> Geometry | ReadFailure:
         """The fanned mesh plus the grid's elevations. ``top``/``botm`` come
-        back ``None`` when flopy's grid carries none, which places nothing by
-        ``z`` rather than guessing a layer."""
+        back ``None`` when flopy's grid carries none or they do not fit the
+        grid, which places nothing by ``z`` rather than guessing a layer;
+        ``elevation_note`` then says which."""
         grid = self._grid_or_failure()
         if isinstance(grid, ReadFailure):
             return grid
         mesh = self.grid_mesh()
         if isinstance(mesh, ReadFailure):
             return mesh
-        top = getattr(grid, "top", None)
-        botm = getattr(grid, "botm", None)
-        ncpl = mesh.n_cells
-        top_arr = None if top is None else np.asarray(top, dtype=np.float64).reshape(-1)
-        botm_arr = (
-            None
-            if botm is None
-            else np.asarray(botm, dtype=np.float64).reshape(int(grid.nlay), -1)
-        )
-        if top_arr is not None and top_arr.shape[0] != ncpl:
-            top_arr, botm_arr = None, None
-        if botm_arr is not None and botm_arr.shape[1] != ncpl:
-            top_arr, botm_arr = None, None
+        top_arr, botm_arr, elevation_note = _elevations(grid, mesh.n_cells)
         # The render mesh is float32, which moves an edge by up to half a metre
         # at real northings; placement uses the grid's own float64 vertices,
         # copied per cell in the same order fan_polygons uses.
@@ -259,6 +277,7 @@ class Mf6Adapter:
             yoff=float(grid.yoffset or 0.0),
             angrot=float(grid.angrot or 0.0),
             grid_type=_grid_type(grid),
+            elevation_note=elevation_note,
         )
 
     def locate_par(self, par: pd.DataFrame) -> ParCells | ReadFailure:

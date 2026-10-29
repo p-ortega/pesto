@@ -82,6 +82,8 @@ class Geometry:
     angrot: float = 0.0
     # flopy's own word, "structured" or "vertex"; None from a stand-in that does not say.
     grid_type: str | None = None
+    # Why top and botm are None, in words a page can show; None when they are present.
+    elevation_note: str | None = None
 
 
 @dataclass(frozen=True)
