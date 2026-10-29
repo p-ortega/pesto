@@ -1077,10 +1077,10 @@ export class MeshLayer {
     gl.useProgram(program)
     gl.bindVertexArray(this.siteRingVao)
     gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
-    // In device pixels: a 1.5 ink band at radius 4 to 5.5, a 1 halo band each side, 15 across.
-    gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 15 * dpr)
-    gl.uniform1f(gl.getUniformLocation(program, 'u_inkInner'), 4 * dpr)
-    gl.uniform1f(gl.getUniformLocation(program, 'u_inkOuter'), 5.5 * dpr)
+    // CSS px times dpr: ink at radius 8 to 9.5 with a 1 halo each side, so the inner edge at 7 clears a 14 px selected dot.
+    gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 22 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_inkInner'), 8 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_inkOuter'), 9.5 * dpr)
     gl.uniform1f(gl.getUniformLocation(program, 'u_haloWidth'), 1 * dpr)
     const ink = this.hatchInk
     const halo = this.hatchHalo
@@ -1125,7 +1125,7 @@ export class MeshLayer {
     gl.uniform1i(gl.getUniformLocation(program, 'u_ramp'), 1)
     gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
     gl.uniform2f(gl.getUniformLocation(program, 'u_limits'), this.limits[0], this.limits[1])
-    gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 7 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 10 * dpr)
     const ring = this.pointRingColor
     gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), ring[0], ring[1], ring[2])
     gl.uniform1f(gl.getUniformLocation(program, 'u_missingStyle'), this.missingStyle === 'ring' ? 1 : 0)
@@ -1141,7 +1141,7 @@ export class MeshLayer {
 
     if (this.selectedPoints.length > 0) {
       const accent = this.accentColor
-      gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 9 * dpr)
+      gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 14 * dpr)
       gl.uniform3f(gl.getUniformLocation(program, 'u_ringColor'), accent[0], accent[1], accent[2])
       for (const index of this.selectedPoints) {
         if (index < this.pointCount) gl.drawArrays(gl.POINTS, index, 1)

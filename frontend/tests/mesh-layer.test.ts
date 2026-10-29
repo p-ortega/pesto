@@ -4,7 +4,7 @@
 // WebGL2RenderingContext -- these tests assert the calls made, never
 // pixels; the screenshot in tests/visual/mesh.spec.ts is what proves those.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { classTexelIndices, ramp, scaleLimits, STOPS, hexToRgb } from '../src/gl/colormap'
 import { MeshLayer, type MeshData } from '../src/gl/mesh-layer'
 import { createRecordingGl } from './support/recording-gl'
@@ -342,7 +342,7 @@ describe('MeshLayer points pass', () => {
     const sizes = calls
       .filter((c, i) => c.method === 'uniform1f' && calls[i - 1]?.args[1] === 'u_size')
       .map((c) => c.args[1])
-    expect(sizes).toEqual([7, 9])
+    expect(sizes).toEqual([10, 14])
   })
 })
 
@@ -501,8 +501,28 @@ describe('MeshLayer many selected dots and dot flags', () => {
       ['POINTS', 2, 1],
       ['POINTS', 5, 1],
     ])
-    expect(uniformAfter(calls, 'u_size', 'uniform1f').map((a) => a[0])).toEqual([7, 9])
+    expect(uniformAfter(calls, 'u_size', 'uniform1f').map((a) => a[0])).toEqual([10, 14])
     expect(uniformAfter(calls, 'u_ringColor', 'uniform3f').at(-1)).toEqual([0.2, 0.4, 0.6])
+  })
+
+  it('sizes dots in CSS pixels: 10 across, 14 selected, doubled at a device ratio of 2', () => {
+    vi.stubGlobal('devicePixelRatio', 2)
+    try {
+      const { layer, calls } = withSixDots()
+      layer.setSelectedPoints([1])
+      calls.length = 0
+      layer.draw()
+      expect(uniformAfter(calls, 'u_size', 'uniform1f').map((a) => a[0])).toEqual([20, 28])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps the ring band as the outer 28% of the dot radius', () => {
+    const { calls } = withSixDots()
+    const fragment = pointsFragment(calls)
+    expect(fragment).toContain('if (r > 0.5) discard;')
+    expect(fragment).toContain('r > 0.36 ? vec4(u_ringColor, 1.0)')
   })
 
   it('setSelectedPoint(2) draws exactly what setSelectedPoints([2]) draws', () => {
@@ -1383,6 +1403,26 @@ describe('MeshLayer picked-site rings', () => {
     calls.length = 0
     layer.draw()
     expect(pointDraws(calls)).toEqual([['POINTS', 0, 2]])
+  })
+
+  it('draws the ring 22 across with its ink band at radius 8 to 9.5, clear of a 14 px selected dot', () => {
+    for (const dpr of [1, 2]) {
+      vi.stubGlobal('devicePixelRatio', dpr)
+      try {
+        const { gl, calls } = createRecordingGl()
+        const layer = new MeshLayer(gl, threeCellMesh())
+        layer.setSiteRings(new Float32Array([0.5, 0.5]))
+        calls.length = 0
+        layer.draw()
+        const one = (name: string) => uniformAfter(calls, name, 'uniform1f').map((a) => a[0])
+        expect(one('u_size')).toEqual([22 * dpr])
+        expect(one('u_inkInner')).toEqual([8 * dpr])
+        expect(one('u_inkOuter')).toEqual([9.5 * dpr])
+        expect(one('u_haloWidth')).toEqual([1 * dpr])
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    }
   })
 
   it('draws a ring with no fill, so the cell value shows inside it', () => {
