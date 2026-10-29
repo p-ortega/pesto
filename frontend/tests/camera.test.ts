@@ -651,6 +651,54 @@ describe('Camera.fitAnimated', () => {
   })
 })
 
+describe('the folding map cards', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  // jsdom lays nothing out, so the map's height is given here.
+  function stubMapHeight(height: number): void {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('map-area') ? height : 0
+    })
+  }
+
+  const foldButton = (root: HTMLElement, key: string): HTMLButtonElement | null =>
+    root.querySelector(`[data-fold="${key}"] > .fold-button`)
+
+  it('gives the controls, overlays and legend each a fold button that names the card', async () => {
+    const root = await mountReady()
+    expect(foldButton(root, 'controls')?.getAttribute('aria-label')).toBe('Controls')
+    expect(foldButton(root, 'overlays')?.getAttribute('aria-label')).toBe('Overlays')
+    expect(foldButton(root, 'legend')?.getAttribute('aria-label')).toBe('Legend')
+    expect(root.querySelector('.floating-bottom-left')?.getAttribute('data-fold')).toBe('legend')
+  })
+
+  it('starts the controls folded on a short map, still naming them, and unfolds them on a click', async () => {
+    stubMapHeight(536)
+    const root = await mountReady()
+    const button = foldButton(root, 'controls') as HTMLButtonElement
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(root.querySelector('[data-fold="controls"] > .fold-summary')?.textContent).toBe('Controls')
+    // Only the controls start folded; the smaller cards stay open.
+    expect(foldButton(root, 'overlays')?.getAttribute('aria-expanded')).toBe('true')
+    button.click()
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('starts the controls open on a tall map', async () => {
+    stubMapHeight(900)
+    const root = await mountReady()
+    expect(foldButton(root, 'controls')?.getAttribute('aria-expanded')).toBe('true')
+  })
+})
+
 describe('Camera.resize', () => {
   it('keeps the world point at the centre where it is and does not zoom when the canvas changes size', () => {
     const camera = new Camera(800, 480)

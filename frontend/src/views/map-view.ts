@@ -44,7 +44,7 @@ import {
   type RegisterRequest,
 } from '../data/basemap'
 import { openBasemapPicker, type BasemapPickerHandle } from '../ui/basemap-picker'
-import { renderBasemapControls, type BasemapControlsHandle, type BasemapView } from '../ui/basemap-controls'
+import { basemapSummary, renderBasemapControls, type BasemapControlsHandle, type BasemapView } from '../ui/basemap-controls'
 import {
   CONTINUOUS,
   DEFAULT_STYLE,
@@ -67,6 +67,7 @@ import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } fro
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
+import { isShortMap, renderFold, type FoldHandle } from '../ui/fold'
 import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
@@ -381,8 +382,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // it's a selection control too and has no other place the contract names.
   const topLeftEl = document.createElement('div')
   topLeftEl.classList.add('floating-top-left')
-  const legendEl = document.createElement('div')
-  legendEl.classList.add('floating-bottom-left')
+  // The legend folds to its ramp and drawn group; its lines are redrawn into the body on every draw.
+  const legendFold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })
+  legendFold.el.classList.add('floating-bottom-left')
+  const legendEl = legendFold.body
   const pickerEl = document.createElement('div')
   // Hidden by the .colour-obs rules while the map is coloured by observations.
   pickerEl.setAttribute('data-colour-source', 'par')
@@ -413,7 +416,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   mapCanvasArea.appendChild(topLeftEl)
   mapCanvasArea.appendChild(topRightEl)
   mapCanvasArea.appendChild(canvas)
-  mapCanvasArea.appendChild(legendEl)
+  mapCanvasArea.appendChild(legendFold.el)
   mapCanvasArea.appendChild(readoutEl)
   host.appendChild(mapCanvasArea)
   host.appendChild(mapNotice)
@@ -427,6 +430,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // A basemap read while the graphics context was lost, drawn when it is back.
   let pendingBasemap: ReadyState | null = null
   let basemapControls: BasemapControlsHandle | null = null
+  let basemapFold: FoldHandle | null = null
   let basemapPicker: BasemapPickerHandle | null = null
   // What the controls show for the registration when no add is under way.
   let basemapBase: { view: BasemapView; quiet: string | null } = { view: { kind: 'none' }, quiet: null }
@@ -3565,8 +3569,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // Placed before pickerEl, not appended at the end: the controls come
     // first in the top-left cluster, both visually (flex column) and in
     // tab order, with the group picker stacked under them.
-    const controlsEl = document.createElement('div')
-    topLeftEl.insertBefore(controlsEl, pickerEl)
+    // On a short map the controls would cover most of it, so they start folded unless the viewer chose.
+    const controlsFold = renderFold({ key: 'controls', name: 'Controls', startFolded: isShortMap(mapCanvasArea.clientHeight) })
+    topLeftEl.insertBefore(controlsFold.el, pickerEl)
+    const controlsEl = controlsFold.body
     // WINDOWS.md #8: `committed` already carries the restored colormap,
     // reverse, scale and limits state (or the fresh-run defaults, when
     // there is none) -- passed straight through so the checkbox and
@@ -3690,14 +3696,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
 
     // D-22: the overlay toggles lead the map controls; they ask nothing until the first field draws.
-    const overlayEl = document.createElement('div')
-    topLeftEl.insertBefore(overlayEl, topLeftEl.firstChild)
-    overlayControls = renderOverlayControls(overlayEl, {
+    const overlayFold = renderFold({ key: 'overlays', name: 'Overlays' })
+    topLeftEl.insertBefore(overlayFold.el, topLeftEl.firstChild)
+    overlayControls = renderOverlayControls(overlayFold.body, {
       onToggle: () => {
         overlayBuiltFrom = null
         redrawOverlays()
       },
+      onChange: () => {
+        if (overlayControls !== null) overlayFold.setSummary(overlayControls.summary())
+      },
     })
+    overlayFold.setSummary(overlayControls.summary())
     store.subscribe(
       (selection) => selection.runId,
       () => {
@@ -3719,9 +3729,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   // MAPX-04: mounted and read after the first draw, so a run without a basemap opens as fast as before.
   function mountBasemap(): void {
-    const basemapEl = document.createElement('div')
-    topLeftEl.insertBefore(basemapEl, pickerEl)
-    basemapControls = renderBasemapControls(basemapEl, {
+    basemapFold = renderFold({ key: 'basemap', name: 'Basemap' })
+    topLeftEl.insertBefore(basemapFold.el, pickerEl)
+    basemapControls = renderBasemapControls(basemapFold.body, {
       onAdd: addBasemap,
       onConfirm: confirmBasemap,
       onSubmitNumbers: placeByNumbers,
@@ -3730,12 +3740,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       onColourChange: setBasemapColour,
       onOpacityChange: setFieldOpacity,
     })
+    // The controls open on their own 'none' view.
+    basemapFold.setSummary(basemapSummary({ kind: 'none' }))
     void readTheBasemap()
   }
 
   // A quiet line under the view, cleared by the next show since show() empties the controls.
   function showBasemap(view: BasemapView, quiet: string | null = null): void {
     basemapShown = { view, quiet }
+    basemapFold?.setSummary(basemapSummary(view))
     if (basemapControls === null) return
     basemapControls.show(view.kind === 'ready' ? { ...view, colour: basemapColour, opacity: fieldOpacity } : view)
     if (quiet !== null) {
