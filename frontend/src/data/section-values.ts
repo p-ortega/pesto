@@ -4,6 +4,7 @@
 
 import type { CellClass, ParIdentity } from './parmap'
 import type { SectionAnswer } from './section'
+import { layerRangeWords, layerWords } from './layer-words'
 
 export interface SectionValues {
   /** One per quad; NaN draws no fill. */
@@ -273,11 +274,6 @@ export function classifyQuad(
   return Number.isFinite(field[c]) ? { kind: 'interpolated' } : { kind: 'no-parameter' }
 }
 
-function joinList(items: number[]): string {
-  if (items.length === 1) return String(items[0])
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
-}
-
 /** Says which layers one group sets, or null when it sets every layer or none (D-09). */
 export function layersSetLine(group: string, layers: number[], nlay: number): string | null {
   const distinct = Array.from(new Set(layers)).sort((x, y) => x - y)
@@ -290,6 +286,6 @@ export function layersSetLine(group: string, layers: number[], nlay: number): st
     }
   }
   if (every) return null
-  const which = distinct.length === 1 ? `layer ${distinct[0]} only` : `layers ${joinList(distinct)}`
+  const which = distinct.length === 1 ? `${layerWords(distinct[0])} only` : layerRangeWords(distinct)
   return `group ${group} sets ${which}; other layers have no value from this group`
 }

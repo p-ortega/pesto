@@ -3,6 +3,7 @@
 // sibling; the layer each one fills is read from the data, never from those digits.
 
 import type { PpIndex } from './fields'
+import { layerRangeWords, layerWords } from './layer-words'
 import type { ParIdentity } from './parmap'
 
 const LAYER_DIGITS = /layer(\d+)/gi
@@ -98,32 +99,13 @@ export function planSiblings(picked: string, input: SiblingInput): SiblingPlan |
     const inside = named.filter((l) => Number.isInteger(l) && l >= 0 && l < input.nlay)
     const outside = named.filter((l) => !inside.includes(l))
     if (outside.length > 0) {
-      notes.push(`group ${group} names ${layerWords(outside)}, which this grid of ${input.nlay} layers does not have`)
+      notes.push(`group ${group} names ${layerRangeWords(outside)}, which this grid of ${input.nlay} layers does not have`)
     }
     if (inside.length === 0) continue
     members.push({ group, kind, layers: inside })
     for (const l of inside) fillers[l].push(group)
   }
   return { key, members, fillers, notes }
-}
-
-/** "3", "0–16", "0–3, 5 and 7–16": consecutive layers written as one run. */
-export function layerRanges(layers: readonly number[]): string {
-  const sorted = Array.from(new Set(layers)).sort((a, b) => a - b)
-  const runs: string[] = []
-  for (let i = 0; i < sorted.length; ) {
-    let j = i
-    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j += 1
-    runs.push(j === i ? String(sorted[i]) : `${sorted[i]}–${sorted[j]}`)
-    i = j + 1
-  }
-  if (runs.length <= 1) return runs.join('')
-  return `${runs.slice(0, -1).join(', ')} and ${runs[runs.length - 1]}`
-}
-
-function layerWords(layers: readonly number[]): string {
-  const single = layers.length === 1
-  return `${single ? 'layer' : 'layers'} ${layerRanges(layers)}`
 }
 
 function groupWords(groups: readonly string[]): string {
@@ -133,7 +115,7 @@ function groupWords(groups: readonly string[]): string {
 
 /** The line for a layer two or more siblings fill; neither is picked. */
 export function contestedLine(layer: number, groups: readonly string[]): string {
-  return `layer ${layer} is contested: ${groupWords(groups)} ${groups.length === 2 ? 'both' : 'all'} fill it; no value drawn`
+  return `${layerWords(layer)} is contested: ${groupWords(groups)} ${groups.length === 2 ? 'both' : 'all'} fill it; no value drawn`
 }
 
 export interface LegendEntry {
@@ -158,27 +140,27 @@ export function stackLegend(plan: SiblingPlan, status: StackStatus): LegendEntry
     const groups = plan.fillers[l]
     if (groups.length === 0) unfilled.push(l)
     else filled.push(l)
-    if (groups.length === 1) mapping.push(`layer ${l}: ${groups[0]}`)
-    else if (groups.length > 1) mapping.push(`layer ${l}: ${groups.join(' and ')} (contested)`)
-    else mapping.push(`layer ${l}: no group`)
+    if (groups.length === 1) mapping.push(`${layerWords(l)}: ${groups[0]}`)
+    else if (groups.length > 1) mapping.push(`${layerWords(l)}: ${groups.join(' and ')} (contested)`)
+    else mapping.push(`${layerWords(l)}: no group`)
   }
   const n = plan.members.length
   const entries: LegendEntry[] = []
   if (filled.length > 0) {
     entries.push({
-      text: `${plan.key}: ${layerWords(filled)} from ${n} ${n === 1 ? 'group' : 'groups'}`,
+      text: `${plan.key}: ${layerRangeWords(filled)} from ${n} ${n === 1 ? 'group' : 'groups'}`,
       title: mapping.join('\n'),
     })
   }
-  if (unfilled.length > 0) entries.push({ text: `no group of ${plan.key} fills ${layerWords(unfilled)}` })
+  if (unfilled.length > 0) entries.push({ text: `no group of ${plan.key} fills ${layerRangeWords(unfilled)}` })
   for (let l = 0; l < nlay; l++) {
     const groups = plan.fillers[l]
     if (groups.length > 1) entries.push({ text: contestedLine(l, groups) })
   }
-  if (status.loading.length > 0) entries.push({ text: `reading ${layerWords(status.loading)}…` })
+  if (status.loading.length > 0) entries.push({ text: `reading ${layerRangeWords(status.loading)}…` })
   for (const f of status.failed) {
-    const verb = f.layers.length === 1 ? 'is' : 'are'
-    entries.push({ text: `${f.group} could not be read, so ${layerWords(f.layers)} ${verb} drawn with no value: ${f.reason}` })
+    const verb = new Set(f.layers).size === 1 ? 'is' : 'are'
+    entries.push({ text: `${f.group} could not be read, so ${layerRangeWords(f.layers)} ${verb} drawn with no value: ${f.reason}` })
   }
   for (const note of plan.notes) entries.push({ text: note })
   return entries
