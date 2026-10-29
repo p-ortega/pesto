@@ -73,6 +73,8 @@ export interface ParameterFieldSource {
   fetchField(request: FieldRequest): Promise<FieldAnswer>
   /** Aborts the field fetch that is out, if any; its answer comes back stale. */
   cancelField(): void
+  /** The same request as fetchField, outside its one slot, so the section can read sibling groups beside the plan. */
+  loadField(request: FieldRequest, signal?: AbortSignal): Promise<Float32Array>
   /** The parmap and the parameter table are requested together, in that order. */
   loadParameterTables(iteration: number, signal?: AbortSignal): Promise<ParameterTables>
   /**
@@ -100,17 +102,17 @@ export function createParameterFieldSource(opts: { runId: string | null }): Para
   const slot = new LatestWins<Float32Array>()
   const iterationSlot = new LatestWins<IterationData>()
 
-  async function fetchField(request: FieldRequest): Promise<FieldAnswer> {
-    const key = fetchKey(opts.runId, request.iteration, request.group, request.kind, request.stat, request.realization)
+  function loadField(request: FieldRequest, signal?: AbortSignal): Promise<Float32Array> {
     const query: GridValuesQuery =
       request.stat === 'value'
         ? { iteration: request.iteration, realization: request.realization ?? undefined }
         : { iteration: request.iteration, stat: request.stat }
-    const answer = await slot.run(key, (signal) =>
-      request.kind === 'cell'
-        ? gridField({ ...query, group: request.group }, { signal })
-        : gridValues(query, { signal }),
-    )
+    return request.kind === 'cell' ? gridField({ ...query, group: request.group }, { signal }) : gridValues(query, { signal })
+  }
+
+  async function fetchField(request: FieldRequest): Promise<FieldAnswer> {
+    const key = fetchKey(opts.runId, request.iteration, request.group, request.kind, request.stat, request.realization)
+    const answer = await slot.run(key, (signal) => loadField(request, signal))
     return answer.stale ? { stale: true } : { stale: false, field: answer.value, request }
   }
 
@@ -170,7 +172,7 @@ export function createParameterFieldSource(opts: { runId: string | null }): Para
     slot.cancel()
   }
 
-  return { fetchField, cancelField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
+  return { fetchField, cancelField, loadField, loadParameterTables, loadPpIndex, loadCells, loadPointXy, loadRealNames, loadIteration }
 }
 
 export interface UnmappedEntry {

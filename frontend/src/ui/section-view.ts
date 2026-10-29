@@ -5,10 +5,23 @@
 
 import { fetchSection, sectionKey, type SectionAnswer, type SectionResult } from '../data/section'
 import { pickSection, pinchedLayers, type SectionHit } from '../data/section-pick'
-import { classifyQuad, layersSetLine, sectionValues, type SectionValues } from '../data/section-values'
+import { classifyQuad, layersSetLine, sectionValues, type LayerFill, type SectionValues } from '../data/section-values'
+import {
+  contestedLine,
+  planSiblings,
+  SiblingFields,
+  siblingKey,
+  stackLegend,
+  type LegendEntry,
+  type SiblingFieldRequest,
+  type SiblingPlan,
+  type StackStatus,
+} from '../data/section-siblings'
+import type { PpIndex } from '../data/fields'
 import { LatestWins } from '../data/latest-wins'
 import type { ParIdentity } from '../data/parmap'
-import type { ColormapName, ValueScale } from '../gl/colormap'
+import { isPointGroup } from '../data/points'
+import { applyScale, type ColormapName, type ValueScale } from '../gl/colormap'
 import { classLabel, type EffectiveStyle } from '../gl/field-style'
 import type { MeshLayer } from '../gl/mesh-layer'
 import { SectionCamera } from '../gl/section-camera'
@@ -43,6 +56,13 @@ export interface SectionPlanState {
   /** The active mask the plan uses when the grid has no idomain, else null. */
   referenced: Uint8Array | null
   selectionLabel: string
+  /** The pilot-point index, which gives each interpolated sibling its layer. */
+  ppIndex: PpIndex
+  /** Every parameter's identity, from which the sibling groups are found. */
+  identities: readonly ParIdentity[]
+  pointXy: Float32Array | null
+  /** The iteration, statistic and realization of the field the plan holds; siblings are read with the same. */
+  heldChoice: { iteration: number; stat: string; realization: string | null } | null
 }
 
 export interface SectionViewOptions {
@@ -52,12 +72,16 @@ export interface SectionViewOptions {
   runId: string | null
   gl(): WebGL2RenderingContext | null
   plan(): SectionPlanState
+  /** Reads one sibling group's field the way the plan reads its own. */
+  loadField(request: SiblingFieldRequest, signal: AbortSignal): Promise<Float32Array>
   /** Applies the theme colours to a layer, the same way the plan layer gets them. */
   paintColours(layer: MeshLayer): void
   onShownChange(shown: boolean): void
   onPick(hit: SectionHit | null, mode: SelectMode): void
   requestRedraw(): void
   repaintLegend(): void
+  /** A sibling field landed or failed, so a readout on its layer may now say more. */
+  refreshReadout(): void
 }
 
 export type SectionReadoutPick = Extract<ReadoutPick, { kind: 'section' }>
@@ -78,6 +102,11 @@ export interface SectionViewHandle {
   readoutPick(): SectionReadoutPick | null
   /** The class the picked value is drawn in, or null while continuous or with no value. */
   readoutClassLine(): string | null
+  /**
+   * The sibling group the last click's layer is filled by, when that is not the plan's group, and
+   * its unscaled field; a null field means the plan's own block field holds it.
+   */
+  readoutSource(): { group: string; field: Float32Array | null } | null
   /** Rings every layer of each selected cell's pieces (D-22, D-33). */
   selectionChanged(cells: ReadonlySet<number>): void
   refresh(): void
@@ -148,6 +177,19 @@ function countLines(out: SectionValues): string[] {
   return lines
 }
 
+function noLogLine(count: number): string | null {
+  if (count === 0) return null
+  const verb = count === 1 ? 'holds a sibling value' : 'hold sibling values'
+  return `${cells(count)} ${verb} of zero or less, which log10 cannot draw; drawn with no value`
+}
+
+interface Stack {
+  siblings: SiblingPlan
+  fills: LayerFill[]
+  status: StackStatus
+  requests: SiblingFieldRequest[]
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -173,7 +215,13 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   // The plan's layer, outlined across the section by the frame (D-19).
   let planLayer = 0
   // What the last paint drew, so the legend describes the colours on screen.
-  let painted: { out: SectionValues; plan: SectionPlanState } | null = null
+  let painted: { out: SectionValues; plan: SectionPlanState; stack: Stack | null } | null = null
+  const siblingFields = new SiblingFields(opts.loadField, () => {
+    refresh()
+    if (picked !== null) opts.refreshReadout()
+  })
+  let siblingMemo: { inputs: unknown[]; plan: SiblingPlan | null } | null = null
+  const scaledMemo = new WeakMap<Float32Array, { scale: ValueScale; scaled: Float32Array }>()
 
   const frame = renderSectionAxes({ area: opts.area })
 
@@ -285,7 +333,6 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
         return
       }
       opts.paintColours(sectionLayer.layer)
-      paint()
       ring()
     }
     if (!fitted) {
@@ -294,6 +341,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       fitted = true
     }
     isShown = true
+    paint()
     frame.setVisible(true)
     controls.setShown(true)
     opts.onShownChange(true)
@@ -303,6 +351,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function hide(): void {
     isShown = false
+    // Siblings are read only while the section shows; what has not landed is asked for again next time.
+    siblingFields.stop()
     frame.setVisible(false)
     controls.setShown(false)
     opts.onShownChange(false)
@@ -343,12 +393,81 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     return [0, held.line.length, zMin, zMax]
   }
 
+  function siblingPlanFor(plan: SectionPlanState, nlay: number): SiblingPlan | null {
+    const inputs = [plan.drawnGroup, plan.joined, plan.cellArray, plan.layerArray, plan.ppIndex, plan.identities, plan.pointXy, nlay]
+    if (siblingMemo !== null && siblingMemo.inputs.every((v, i) => v === inputs[i])) return siblingMemo.plan
+    const groups = new Set<string>()
+    for (const identity of plan.identities) groups.add(identity.pargp)
+    for (const entry of plan.ppIndex.groups) groups.add(entry.group)
+    const interpolated = new Set(plan.ppIndex.groups.map((g) => g.group))
+    const found =
+      plan.drawnGroup === null
+        ? null
+        : planSiblings(plan.drawnGroup, {
+            groups: Array.from(groups),
+            ppIndex: plan.ppIndex,
+            joined: plan.joined,
+            cellArray: plan.cellArray,
+            layerArray: plan.layerArray,
+            nlay,
+            isPointGroup: (g) => !interpolated.has(g) && isPointGroup(plan.joined, plan.pointXy, g),
+          })
+    siblingMemo = { inputs, plan: found }
+    return found
+  }
+
+  function scaled(raw: Float32Array, scale: ValueScale): Float32Array {
+    const held = scaledMemo.get(raw)
+    if (held !== undefined && held.scale === scale) return held.scaled
+    const out = applyScale(raw, scale)
+    scaledMemo.set(raw, { scale, scaled: out })
+    return out
+  }
+
+  // The layer-by-layer fill when the drawn group has siblings; reads only fields already held.
+  function stackFor(plan: SectionPlanState): Stack | null {
+    if (answer === null || plan.obsActive || plan.drawsAsPoints || plan.fullField === null || plan.heldChoice === null) return null
+    const siblings = siblingPlanFor(plan, answer.nlay)
+    if (siblings === null) return null
+    const field = plan.fullField
+    const choice = plan.heldChoice
+    const members = new Map(siblings.members.map((m) => [m.group, m]))
+    const requests: SiblingFieldRequest[] = []
+    const loading: number[] = []
+    const failed = new Map<string, { group: string; layers: number[]; reason: string }>()
+    const fills = siblings.fillers.map((groups, k): LayerFill => {
+      if (groups.length === 0) return { kind: 'none' }
+      if (groups.length > 1) return { kind: 'contested', groups }
+      const member = members.get(groups[0])!
+      if (member.group === plan.drawnGroup) return { kind: plan.fieldKind, group: member.group, field, raw: null }
+      // A block field holds every group, so the plan's own one already answers a block sibling.
+      if (member.kind === 'block' && plan.fieldKind === 'block') return { kind: 'block', group: member.group, field, raw: null }
+      const request: SiblingFieldRequest = { kind: member.kind, group: member.group, ...choice }
+      requests.push(request)
+      const state = siblingFields.get(request)
+      if (state === undefined || state.state === 'loading') {
+        loading.push(k)
+        return { kind: 'loading', group: member.group }
+      }
+      if (state.state === 'failed') {
+        const held = failed.get(member.group) ?? { group: member.group, layers: [], reason: state.reason }
+        held.layers.push(k)
+        failed.set(member.group, held)
+        return { kind: 'failed', group: member.group }
+      }
+      return { kind: member.kind, group: member.group, field: scaled(state.raw, plan.scale), raw: state.raw }
+    })
+    return { siblings, fills, status: { loading, failed: Array.from(failed.values()) }, requests }
+  }
+
   // The plan's own colormap, limits and style object, as given, with values read only for the
   // quads in the answer (D-08, D-10, D-27). Absence keeps the hairline, no value the footprint (D-36).
   function paint(): void {
     if (sectionLayer === null || answer === null) return
     const plan = opts.plan()
-    const out = sectionValues(answer, plan)
+    const stack = stackFor(plan)
+    if (isShown) siblingFields.want(stack?.requests ?? [])
+    const out = sectionValues(answer, plan, stack?.fills ?? null)
     const target = sectionLayer.layer
     target.setColormap(plan.colormap, plan.reverse)
     target.setLimits(plan.limits)
@@ -357,7 +476,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     target.setValues(out.values)
     target.setFootprint(out.noValue)
     target.setInactive(out.absence)
-    painted = { out, plan }
+    painted = { out, plan, stack }
   }
 
   // Recolours from the held answer and the plan's held field; never a new request (D-26).
@@ -392,6 +511,22 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     return answer.statusText.get(hit.status) ?? `status ${hit.status}`
   }
 
+  // What fills the clicked layer when the section is stacked, else null.
+  function pickedFill(plan: SectionPlanState): { stack: Stack; fill: LayerFill } | null {
+    if (picked === null) return null
+    const stack = stackFor(plan)
+    const fill = stack?.fills[picked.layer]
+    return stack === null || fill === undefined ? null : { stack, fill }
+  }
+
+  function fillLine(stack: Stack, fill: LayerFill, layer: number): string | null {
+    if (fill.kind === 'contested') return contestedLine(layer, fill.groups)
+    if (fill.kind === 'loading') return `${fill.group} is still being read for layer ${layer}`
+    if (fill.kind === 'failed') return `${fill.group} could not be read, so layer ${layer} has no value`
+    if (fill.kind === 'none') return `no group of ${stack.siblings.key} fills layer ${layer}`
+    return null
+  }
+
   function readoutPick(): SectionReadoutPick | null {
     if (picked === null || answer === null) return null
     const hit = picked
@@ -400,15 +535,31 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     const lines = [`distance from A: ${formatNumber(hit.s)} ${u}`, `top ${formatNumber(hit.top)}, bottom ${formatNumber(hit.bottom)} ${u}`]
     const pinched = pinchedLine(pinchedLayers(answer, hit.piece))
     if (pinched !== null) lines.push(pinched)
+    const absence = absenceReason(hit, plan.nCells)
+    const stacked = pickedFill(plan)
+    if (stacked !== null && absence === null) {
+      const said = fillLine(stacked.stack, stacked.fill, hit.layer)
+      if (said !== null) lines.unshift(said)
+    }
     return {
       kind: 'section',
       cellId: hit.cell,
       layer: hit.layer,
       selectionLabel: plan.selectionLabel,
-      classification: classifyQuad(answer, plan, hit.piece * answer.nlay + hit.layer),
-      absence: absenceReason(hit, plan.nCells),
+      classification: classifyQuad(answer, plan, hit.piece * answer.nlay + hit.layer, stacked?.stack.fills ?? null),
+      absence,
       lines,
     }
+  }
+
+  function readoutSource(): { group: string; field: Float32Array | null } | null {
+    const plan = opts.plan()
+    const stacked = pickedFill(plan)
+    if (stacked === null) return null
+    const { fill, stack } = stacked
+    if (fill.kind === 'none') return { group: stack.siblings.key, field: null }
+    if (fill.kind === 'contested' || fill.group === plan.drawnGroup) return null
+    return { group: fill.group, field: fill.kind === 'block' || fill.kind === 'cell' ? fill.raw : null }
   }
 
   // The class lives in the drawn scale, so it is read from the plan's scaled field.
@@ -420,7 +571,9 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     const c = pick.classification
     const index = c.kind === 'valued' ? c.row : c.kind === 'interpolated' ? pick.cellId : null
     if (index === null) return null
-    return classLabel(plan.fullField[index] ?? Number.NaN, plan.limits, plan.style, plan.scale)
+    const fill = pickedFill(plan)?.fill
+    const field = fill !== undefined && (fill.kind === 'block' || fill.kind === 'cell') ? fill.field : plan.fullField
+    return classLabel(field[index] ?? Number.NaN, plan.limits, plan.style, plan.scale)
   }
 
   // Every layer of every piece on a selected cell: the whole column (D-33).
@@ -443,29 +596,42 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     if (ring() && isShown) opts.requestRedraw()
   }
 
-  function legendLines(): string[] {
+  function legendEntries(): LegendEntry[] {
     if (answer === null || !fitted) return []
-    const lines = [camera.veText()]
+    const entries: LegendEntry[] = [{ text: camera.veText() }]
+    const push = (...texts: string[]) => entries.push(...texts.map((text) => ({ text })))
     if (painted !== null) {
-      const { out, plan } = painted
-      if (plan.obsActive) lines.push(OBS_LINE)
-      else if (plan.drawsAsPoints) lines.push(DOTS_LINE)
+      const { out, plan, stack } = painted
+      if (plan.obsActive) push(OBS_LINE)
+      else if (plan.drawsAsPoints) push(DOTS_LINE)
+      else if (stack !== null) entries.push(...stackLegend(stack.siblings, stack.status))
       else if (plan.drawnGroup !== null) {
         const layers = layersSetLine(plan.drawnGroup, out.layersSet, answer.nlay)
-        if (layers !== null) lines.push(layers)
+        if (layers !== null) push(layers)
+        const key = siblingKey(plan.drawnGroup)
+        if (key.key === null && key.reason !== null) push(key.reason)
       }
-      lines.push(...countLines(out))
-      if (!plan.hasIdomain) lines.push(...plan.meshNotes.filter((note) => note.startsWith(NO_IDOMAIN_NOTE)))
+      push(...countLines(out))
+      const noLog = noLogLine(out.noLogValue)
+      if (noLog !== null) push(noLog)
+      if (!plan.hasIdomain) push(...plan.meshNotes.filter((note) => note.startsWith(NO_IDOMAIN_NOTE)))
     }
-    lines.push(...answer.notes)
-    return lines
+    push(...answer.notes)
+    return entries
+  }
+
+  function legendLines(): string[] {
+    return legendEntries().map((e) => e.text)
   }
 
   function appendLegendLines(el: HTMLElement): void {
-    const lines = legendLines()
-    if (lines.length === 0) return
+    const entries = legendEntries()
+    if (entries.length === 0) return
     el.classList.add('floating')
-    for (const text of lines) appendLine(el, text, 'label', 'section-legend-line')
+    for (const { text, title } of entries) {
+      const line = appendLine(el, text, 'label', 'section-legend-line')
+      if (title !== undefined) line.title = title
+    }
   }
 
   return {
@@ -513,6 +679,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     click,
     readoutPick,
     readoutClassLine,
+    readoutSource,
     selectionChanged,
     refresh,
     // Moves the band only; the section's colours do not depend on the plan's layer.
@@ -532,6 +699,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     },
     controls: () => controls,
     dispose() {
+      siblingFields.clear()
       dropAnswer()
       frame.dispose()
       controls.dispose()
