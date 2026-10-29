@@ -37,6 +37,8 @@ export interface ObsPanelOptions {
 }
 
 export interface ObsPanelHandle {
+  /** The right end of the heading row, for controls that act on the Obs plots, such as Select base. */
+  headingActions: HTMLElement
   /** Fetches the group summary the first time and redraws the windowed lists at their real height. */
   onShow(): void
   /** Remembers the scroll positions and stops scroll-driven redraws. */
@@ -416,10 +418,16 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   // A browser drops the scroll offset of a box that is not displayed, so the offsets are kept here while hidden.
   const savedScroll = new Map<Element, number>()
 
+  const headingRow = document.createElement('div')
+  headingRow.classList.add('obs-heading-row')
   const title = document.createElement('div')
   title.classList.add('heading')
   title.textContent = 'Obs'
-  host.appendChild(title)
+  const headingActions = document.createElement('div')
+  headingActions.classList.add('obs-heading-actions')
+  headingRow.appendChild(title)
+  headingRow.appendChild(headingActions)
+  host.appendChild(headingRow)
 
   const noticesHost = document.createElement('div')
   noticesHost.classList.add('obs-notices')
@@ -833,6 +841,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   )
 
   return {
+    headingActions,
     onShow() {
       hidden = false
       spaghetti.onShow()

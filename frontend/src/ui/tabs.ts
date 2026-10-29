@@ -25,6 +25,8 @@ export interface TabsHandle {
   select(id: string): void
   current(): string
   panel(id: string): HTMLElement
+  /** Shows ` · {count}` after the tab's label with `title`; zero or null shows no count. An unknown id is ignored. */
+  setCount(id: string, count: number | null, title: string): void
 }
 
 const TAB_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End'])
@@ -45,6 +47,7 @@ export function renderTabs(host: HTMLElement, opts: TabsOptions): TabsHandle {
   host.appendChild(tablist)
 
   const buttons = new Map<string, HTMLButtonElement>()
+  const counts = new Map<string, { el: HTMLSpanElement; gap: Text }>()
   const panels = new Map<string, HTMLElement>()
   const ids = opts.tabs.map((tab) => tab.id)
   let currentId = ids.includes(opts.initial) ? opts.initial : ids[0]
@@ -56,7 +59,16 @@ export function renderTabs(host: HTMLElement, opts: TabsOptions): TabsHandle {
     button.id = `tab-${spec.id}`
     button.setAttribute('role', 'tab')
     button.setAttribute('aria-controls', `panel-${spec.id}`)
-    button.textContent = spec.label
+    const name = document.createElement('span')
+    name.classList.add('tab-name')
+    name.textContent = spec.label
+    // Not accent: the count is a fact, and accent marks only the selected tab's underline.
+    const count = document.createElement('span')
+    count.classList.add('tab-count', 'tabular-nums')
+    button.appendChild(name)
+    button.appendChild(count)
+    // A real space between the parts, present only with a count, so an empty tab reads just its label.
+    counts.set(spec.id, { el: count, gap: document.createTextNode(' ') })
     button.addEventListener('click', () => choose(spec.id))
     tablist.appendChild(button)
     buttons.set(spec.id, button)
@@ -121,6 +133,20 @@ export function renderTabs(host: HTMLElement, opts: TabsOptions): TabsHandle {
       const panel = panels.get(id)
       if (!panel) throw new Error(`no tab panel named ${id}`)
       return panel
+    },
+    setCount(id, count, title) {
+      const parts = counts.get(id)
+      if (!parts) return
+      const { el, gap } = parts
+      if (count === null || !(count > 0)) {
+        gap.remove()
+        el.textContent = ''
+        el.removeAttribute('title')
+        return
+      }
+      if (!gap.isConnected) el.before(gap)
+      el.textContent = `· ${count}`
+      el.title = title
     },
   }
 }
