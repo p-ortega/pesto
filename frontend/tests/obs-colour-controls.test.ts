@@ -9,6 +9,7 @@ import { OBS_STATS, OBS_STAT_LABEL } from '../src/data/obs'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import { renderSelectionControls } from '../src/ui/controls'
+import { renderDataCard } from '../src/ui/data-card'
 import {
   OBS_RAMP,
   renderObsColourControls,
@@ -197,6 +198,71 @@ describe('all layers', () => {
     store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'x')
     store.flush()
     expect(button(host, 'Observations').getAttribute('aria-pressed')).toBe('false')
+  })
+})
+
+describe('the controls laid into the Data card rows', () => {
+  function mountRows(store: SelectionStore, loadGroups = vi.fn(async () => GROUPS)) {
+    const body = document.createElement('div')
+    document.body.appendChild(body)
+    const rows = renderDataCard(body)
+    const handle = renderObsColourControls(rows, { store, loadGroups })
+    return { body, rows, handle }
+  }
+
+  it('puts the switch, group, statistic and all layers each in its own row, and nothing floats', () => {
+    const { body, rows } = mountRows(manualStore())
+    expect(rows.colourBy.control.querySelector('[role="group"][aria-label="Colour by"]')).not.toBeNull()
+    expect(rows.group.control.querySelector('select[aria-label="Observation group"]')).not.toBeNull()
+    expect(rows.statistic.control.querySelector('select[aria-label="Observation statistic"]')).not.toBeNull()
+    expect(rows.allLayers.control.querySelector('input[aria-label="All layers"]')).not.toBeNull()
+    expect(rows.iteration.control.childNodes.length).toBe(0)
+    expect(rows.time.control.childNodes.length).toBe(0)
+    expect(body.querySelector('.floating')).toBeNull()
+    expect(body.querySelector('.obs-colour-rows')).toBeNull()
+  })
+
+  it('tags the observation group and statistic so the map hides them while it draws parameters', () => {
+    const { rows } = mountRows(manualStore())
+    const group = rows.group.control.querySelector('select[aria-label="Observation group"]') as HTMLElement
+    const stat = rows.statistic.control.querySelector('select[aria-label="Observation statistic"]') as HTMLElement
+    expect(group.closest('[data-colour-source]')?.getAttribute('data-colour-source')).toBe('obs')
+    expect(stat.closest('[data-colour-source]')?.getAttribute('data-colour-source')).toBe('obs')
+    expect(rows.colourBy.control.closest('[data-colour-source]')).toBeNull()
+  })
+
+  it('hides the observation parts until Observations is chosen, then shows them', () => {
+    const { rows } = mountRows(manualStore())
+    const parts = [
+      rows.group.control.querySelector('.obs-colour') as HTMLElement,
+      rows.statistic.control.querySelector('select[aria-label="Observation statistic"]') as HTMLElement,
+      rows.allLayers.control.querySelector('label') as HTMLElement,
+    ]
+    expect(parts.map((el) => el.hidden)).toEqual([true, true, true])
+    button(rows.colourBy.control, 'Observations').click()
+    expect(parts.map((el) => el.hidden)).toEqual([false, false, false])
+  })
+
+  it('draws a refused group list as a warning line under the group select', async () => {
+    const { rows } = mountRows(manualStore(), vi.fn(async () => ({ ok: false as const, artifact: 'obs_index', reason: 'not recorded' })))
+    button(rows.colourBy.control, 'Observations').click()
+    const note = rows.group.control.querySelector('[role="status"]') as HTMLElement
+    await vi.waitFor(() => expect(note.textContent).toBe('⚠ obs_index: not recorded'))
+    const [glyph, , text] = Array.from(note.childNodes) as HTMLElement[]
+    expect(glyph.style.color).toBe('var(--status-warning)')
+    expect(text.style.color).toBe('var(--ink-primary)')
+  })
+})
+
+describe('the observation group note', () => {
+  it('is a warning line with ink-primary text in the one-host layout too, and stays out of sight when empty', async () => {
+    const { host } = mount(manualStore(), vi.fn(async () => ({ ok: false as const, artifact: 'obs_index', reason: 'not recorded' })))
+    const note = host.querySelector('[role="status"]') as HTMLElement
+    expect(note.style.display).toBe('none')
+    button(host, 'Observations').click()
+    await vi.waitFor(() => expect(note.textContent).toBe('⚠ obs_index: not recorded'))
+    expect(note.style.color).toBe('')
+    expect((note.querySelector('.note-text') as HTMLElement).style.color).toBe('var(--ink-primary)')
   })
 })
 

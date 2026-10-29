@@ -393,22 +393,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   canvas.setAttribute('aria-label', 'Model grid map: drag to pan, scroll to zoom, arrow keys pan, + and - zoom, Home fits to extent')
   const mapNotice = document.createElement('div')
   mapNotice.setAttribute('data-testid', 'map-notices')
-  // Visual contract §6: controls top-left, legend bottom-left, readout
-  // bottom-right. The group picker isn't in that diagram -- it rides in
-  // the same top-left cluster as the controls, stacked under them, since
-  // it's a selection control too and has no other place the contract names.
+  // Visual contract §6: controls top-left, legend bottom-left, readout bottom-right. The top-left
+  // stack holds the Data, Colours, Overlays and Basemap cards and nothing else (UI-SPEC, LD-2).
   const topLeftEl = document.createElement('div')
   topLeftEl.classList.add('floating-top-left')
   // The legend folds to its ramp and drawn group; its lines are redrawn into the body on every draw.
   const legendFold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })
   legendFold.el.classList.add('floating-bottom-left')
   const legendEl = legendFold.body
+  // The parameter group picker, placed in the Data card's Group row once that card is made.
   const pickerEl = document.createElement('div')
   // Hidden by the .colour-obs rules while the map is coloured by observations.
   pickerEl.setAttribute('data-colour-source', 'par')
   const readoutEl = document.createElement('div')
   readoutEl.classList.add('floating-bottom-right')
-  topLeftEl.appendChild(pickerEl)
   // Two notices about the shown iteration. Each is replaced on every switch,
   // never stacked: the drawn realization or group is missing (D-04), and how
   // many selected realizations are missing (D-03).
@@ -2139,7 +2137,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   function paintPicker(state: GroupPickerState): void {
     paintedPicker = state
-    renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange })
+    renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange, bare: true })
   }
 
   // A group change re-runs classifyCells (via applyLayer, which reads
@@ -3849,6 +3847,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     dataFold.el.after(coloursFold.el)
     const rows = renderDataCard(dataFold.body)
     dataCardRows = rows
+    rows.group.control.appendChild(pickerEl)
     // WINDOWS.md #8: `committed` already carries the restored colormap,
     // reverse, scale and limits state (or the fresh-run defaults, when
     // there is none) -- passed straight through so the checkbox and
@@ -3877,14 +3876,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     controlsHandle.setLayer(committed.layer)
     coloursFold.setSummary(controlsHandle.coloursSummary())
 
-    // D-01, D-02: one button per ingested iteration, right after the controls; absent below two.
+    // D-01, D-02: one button per ingested iteration, in the Data card's Iteration row; absent below two.
     const iterations = iterationsFrom(opts.state)
     if (iterations.length >= 2) {
       const toggleEl = document.createElement('div')
-      topLeftEl.insertBefore(toggleEl, pickerEl)
+      rows.iteration.control.appendChild(toggleEl)
       toggleHandle = renderIterationToggle(toggleEl, {
         iterations,
         current: iteration,
+        bare: true,
         onChange: (next) => {
           store.set({ iteration: next }, 'iteration-toggle')
           toggleHandle?.setCurrent(next)
@@ -3896,11 +3896,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const obsCapability = opts.state.capabilities.obs
     if (obsCapability !== undefined && obsCapability.available) {
       const sliderEl = document.createElement('div')
-      topLeftEl.insertBefore(sliderEl, pickerEl)
-      obsSlider = renderTimeSlider(sliderEl, { onChange: stepObsTime })
-      const colourEl = document.createElement('div')
-      topLeftEl.insertBefore(colourEl, sliderEl)
-      obsControls = renderObsColourControls(colourEl, {
+      rows.time.control.appendChild(sliderEl)
+      obsSlider = renderTimeSlider(sliderEl, { onChange: stepObsTime, bare: true })
+      obsControls = renderObsColourControls(rows, {
         store,
         loadGroups: loadObsGroups,
         onAllLayersChange: (on) => {
@@ -4008,7 +4006,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // MAPX-04: mounted and read after the first draw, so a run without a basemap opens as fast as before.
   function mountBasemap(): void {
     basemapFold = renderFold({ key: 'basemap', name: 'Basemap' })
-    topLeftEl.insertBefore(basemapFold.el, pickerEl)
+    topLeftEl.appendChild(basemapFold.el)
     basemapControls = renderBasemapControls(basemapFold.body, {
       onAdd: addBasemap,
       onConfirm: confirmBasemap,
