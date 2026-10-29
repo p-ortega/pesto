@@ -4,6 +4,7 @@
 // that nothing it is given reaches the page as markup.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { formatTimeValue } from '../src/ui/charts/time-axis'
 import { renderTimeSlider, type TimeSliderHandle } from '../src/ui/time-slider'
 
 let host: HTMLElement
@@ -122,5 +123,56 @@ describe('renderTimeSlider', () => {
     handle.refuse('<s>reason</s>')
     expect(host.querySelector('s')).toBeNull()
     expect(host.textContent).toContain('<s>reason</s>')
+  })
+})
+
+describe('renderTimeSlider as a card row', () => {
+  it('drops the floating card and its own Time word, and keeps its class and the range name', () => {
+    const bareHost = document.createElement('div')
+    const bare = renderTimeSlider(bareHost, { onChange: vi.fn(), bare: true })
+    bare.show([10, 20, 30], 'numeric', 'time', 0, null, 'heads')
+
+    expect(bareHost.classList.contains('floating')).toBe(false)
+    expect(bareHost.classList.contains('time-slider')).toBe(true)
+    expect(bareHost.textContent).not.toContain('Time')
+    expect(bareHost.querySelector('input[type="range"]')!.getAttribute('aria-label')).toBe('Observation time of heads')
+  })
+
+  it('without bare keeps its floating card and its Time word', () => {
+    handle.show([10, 20, 30], 'numeric', 'time', 0, null, 'heads')
+    expect(host.classList.contains('floating')).toBe(true)
+    expect(host.querySelector('label > span')?.textContent).toBe('Time')
+  })
+})
+
+describe('the time the slider shows', () => {
+  const days = [19000, 19001, 19002, 19003, 19004]
+
+  it('is null before anything is shown', () => {
+    expect(handle.currentText()).toBeNull()
+  })
+
+  it('is the shown time alone, without its place among the times', () => {
+    handle.show(days, 'datetime', 'time', 2, null)
+    expect(handle.currentText()).toBe(formatTimeValue('datetime', 19002))
+    expect(handle.currentText()).not.toContain('of 5')
+  })
+
+  it('follows setIndex and the range', () => {
+    handle.show(days, 'datetime', 'time', 2, null)
+    handle.setIndex(4)
+    expect(handle.currentText()).toBe(formatTimeValue('datetime', 19004))
+    range()!.value = '0'
+    range()!.dispatchEvent(new Event('input'))
+    expect(handle.currentText()).toBe(formatTimeValue('datetime', 19000))
+  })
+
+  it('is null after hide and after a refusal', () => {
+    handle.show(days, 'datetime', 'time', 2, null)
+    handle.hide()
+    expect(handle.currentText()).toBeNull()
+    handle.show(days, 'datetime', 'time', 2, null)
+    handle.refuse('times of two kinds')
+    expect(handle.currentText()).toBeNull()
   })
 })

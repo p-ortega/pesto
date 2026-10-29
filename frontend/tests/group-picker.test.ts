@@ -193,3 +193,36 @@ describe('renderGroupPicker', () => {
     ])
   })
 })
+
+describe('renderGroupPicker as a card row', () => {
+  const states: GroupPickerState[] = [
+    { kind: 'loading' },
+    { kind: 'none-drawable', unmapped: [{ group: 'G3', note: null }] },
+    { kind: 'ready', interpolated: [], drawable: ['G1'], unmapped: [{ group: 'G3', note: null }], selected: 'G1' },
+  ]
+
+  it('never adds the floating card', () => {
+    for (const state of [...states, { kind: 'failed' } as GroupPickerState]) {
+      const el = mount()
+      renderGroupPicker(el, { state, onGroupChange: vi.fn(), bare: true })
+      expect(el.classList.contains('floating'), state.kind).toBe(false)
+    }
+  })
+
+  it('keeps the select and its name', () => {
+    const el = mount()
+    renderGroupPicker(el, { state: states[2], onGroupChange: vi.fn(), bare: true })
+    expect(el.querySelector('select[aria-label="Parameter group"]')).not.toBeNull()
+  })
+
+  it('without bare adds the floating card for every state but failed', () => {
+    for (const state of states) {
+      const el = mount()
+      renderGroupPicker(el, { state, onGroupChange: vi.fn() })
+      expect(el.classList.contains('floating'), state.kind).toBe(true)
+    }
+    const failed = mount()
+    renderGroupPicker(failed, { state: { kind: 'failed' }, onGroupChange: vi.fn() })
+    expect(failed.classList.contains('floating')).toBe(false)
+  })
+})
