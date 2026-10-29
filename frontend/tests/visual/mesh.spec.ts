@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..')
+// The map's own canvas; the lasso and section overlays are canvases too.
+const MAP_CANVAS = 'canvas[tabindex="0"]'
 const BUILT_INDEX = path.join(REPO_ROOT, 'src', 'pesto', 'static', 'index.html')
 
 interface Launched {
@@ -113,7 +115,7 @@ interface CellLayout {
 }
 
 async function cellLayout(page: Page): Promise<CellLayout> {
-  const box = await page.locator('canvas').boundingBox()
+  const box = await page.locator(MAP_CANVAS).boundingBox()
   if (!box) throw new Error('no canvas on the page')
   const width = Math.round(box.width)
   const height = Math.round(box.height)
@@ -191,7 +193,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('[role="separator"][aria-label="Resize panel"]')).toBeAttached()
     await expect(page.locator('button', { hasText: 'Fit to extent' })).toBeAttached()
 
-    await expect(page.locator('canvas')).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
+    await expect(page.locator(MAP_CANVAS)).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
   })
 
   // Regression for WINDOWS.md #3: the four overlays used to all resolve to
@@ -290,7 +292,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
     const layout = await cellLayout(page)
-    const png = await page.locator('canvas').screenshot()
+    const png = await page.locator(MAP_CANVAS).screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
     const background = await pixelAt(page, dataUrl, ...layout.clear)
@@ -326,7 +328,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
     const layout = await cellLayout(page)
-    const png = await page.locator('canvas').screenshot()
+    const png = await page.locator(MAP_CANVAS).screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
     const background = await pixelAt(page, dataUrl, ...layout.clear)
@@ -356,7 +358,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(bodyBeforeClick).toContain('Click a cell to see its value.')
 
     const layout = await cellLayout(page)
-    await page.locator('canvas').click({ position: { x: layout.centreX(0), y: layout.midY } })
+    await page.locator(MAP_CANVAS).click({ position: { x: layout.centreX(0), y: layout.midY } })
 
     const bodyText = (await page.textContent('body')) ?? ''
     expect(bodyText).toContain('Contested cell')
@@ -372,7 +374,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
 
     const layout = await cellLayout(page)
-    await page.locator('canvas').click({ position: { x: layout.centreX(4), y: layout.midY } })
+    await page.locator(MAP_CANVAS).click({ position: { x: layout.centreX(4), y: layout.midY } })
 
     const bodyText = (await page.textContent('body')) ?? ''
     expect(bodyText).toContain('No parameter of G1 sits on this cell.')
@@ -402,7 +404,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(bodyText).toMatch(/4 cells no value/)
 
     const layout = await cellLayout(page)
-    const png = await page.locator('canvas').screenshot()
+    const png = await page.locator(MAP_CANVAS).screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
 
     const background = await pixelAt(page, dataUrl, ...layout.clear)
@@ -423,7 +425,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('.floating-bottom-left')).toContainText('G4layer1 · interpolated')
 
     const layout = await cellLayout(page)
-    const png = await page.locator('canvas').screenshot()
+    const png = await page.locator(MAP_CANVAS).screenshot()
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`
     const first = await pixelAt(page, dataUrl, layout.centreX(0), layout.midY)
     const middle = await pixelAt(page, dataUrl, layout.centreX(2), layout.midY)
@@ -432,7 +434,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(middle).not.toEqual(first)
     expect(middle).not.toEqual(last)
 
-    await page.locator('canvas').click({ position: { x: layout.centreX(2), y: layout.midY } })
+    await page.locator(MAP_CANVAS).click({ position: { x: layout.centreX(2), y: layout.midY } })
     await expect(page.locator('.floating-bottom-right')).toContainText('Interpolated from 2 pilot points')
     await expect(page.locator('.floating-bottom-right')).toContainText('p8 (weight 0.50)')
   })
@@ -450,7 +452,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
 
     const layout = await cellLayout(page)
     const dotX = Math.round(layout.width / 2 + layout.cell * (2.75 - 3))
-    await page.locator('canvas').click({ position: { x: dotX, y: layout.midY } })
+    await page.locator(MAP_CANVAS).click({ position: { x: dotX, y: layout.midY } })
     await expect(page.locator('.floating-bottom-right')).toContainText('p11')
     await expect(page.locator('.floating-bottom-right')).toContainText('x 3, y 1 · layer 0')
   })
@@ -496,7 +498,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     const readout = page.locator('.floating-bottom-right')
     const readoutBefore = await readout.innerText()
     const layout = await cellLayout(page)
-    const box = (await page.locator('canvas').boundingBox())!
+    const box = (await page.locator(MAP_CANVAS).boundingBox())!
 
     // One cell to the right: pressed over cell 1, released over cell 2.
     const startX = box.x + layout.centreX(1)
@@ -520,7 +522,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await installCameraHook(page)
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
-    const box = (await page.locator('canvas').boundingBox())!
+    const box = (await page.locator(MAP_CANVAS).boundingBox())!
     const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
 
     const start = await drawnMatrix(page)
