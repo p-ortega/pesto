@@ -1,12 +1,14 @@
 // The 'Selected parameters' section of the Params tab (D-05, D-07): what `pars` holds,
-// grouped by pargp. When `pars` came from a cell click it also names the cells and layer,
-// each pilot point's factor on them, and every group the answer could not list.
+// grouped by pargp. It is always shown, with a hint when empty. When `pars` came from a cell
+// click it also names the cells and layer, each pilot point's factor on them, and every group
+// the answer could not list.
 
 import { layerWords } from '../data/layer-words'
 import { recentCellLink, type CellLinkAnswer, type CellLinkPar } from '../data/link'
 import { sameSet } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable } from './chrome'
+import { paintNote } from './note-line'
 
 /** Fixed row height in px, shared with the parameter table so both window the same way. */
 export const ROW_HEIGHT = 24
@@ -15,6 +17,9 @@ const VIEWPORT_HEIGHT = 240
 
 const NOT_IN_TABLE = 'not in the parameter table'
 const NO_GROUP = 'no group recorded'
+const TITLE = 'Selected parameters'
+const EMPTY_HINT = 'Click a cell on the map to list the parameters that set it, or pick rows in the table below.'
+const PICKED_LINE = 'Picked in the table or a plot'
 
 export interface SelectedParamsOptions {
   store: SelectionStore
@@ -137,14 +142,28 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
     }
   }
 
-  function drawTitle(heading: string, count: string | null): void {
+  // One fixed name, so the section reads the same as the tab count and the messages.
+  function drawTitle(count: number | null): void {
     const title = document.createElement('div')
     title.classList.add('params-selected-title')
-    const headingEl = span(heading, ['body'])
+    const headingEl = span(TITLE, ['body'])
     headingEl.style.fontWeight = '600'
     title.appendChild(headingEl)
-    if (count !== null) title.appendChild(span(count, ['label', 'tabular-nums']))
+    if (count !== null) {
+      title.appendChild(document.createTextNode(' '))
+      const countEl = span(`· ${count}`, ['body', 'tabular-nums'])
+      countEl.style.fontWeight = '600'
+      title.appendChild(countEl)
+    }
     host.appendChild(title)
+  }
+
+  function drawLine(text: string, classes: string[] = []): HTMLElement {
+    const line = document.createElement('div')
+    line.classList.add('label', 'params-selected-line', ...classes)
+    line.textContent = text
+    host.appendChild(line)
+    return line
   }
 
   function drawNotes(notes: readonly string[]): void {
@@ -195,29 +214,24 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
     const found = matchingAnswer(pars, cells)
 
     if (found !== null && found.pars.length === 0) {
-      // A cell nothing sets: the reason is the section, never an empty heading (D-07).
-      if (found.reasons.pars === null && found.parNotes.length === 0) {
-        host.style.display = 'none'
-        return
-      }
-      host.style.display = ''
-      drawTitle(found.reasons.pars ?? `no parameter listed for ${cellsText(found.cells)} on ${layerWords(found.layer)}`, null)
+      // A cell nothing sets: the reason is the line, never an empty heading (D-07).
+      drawTitle(0)
+      drawLine(found.reasons.pars ?? `no parameter listed for ${cellsText(found.cells)} on ${layerWords(found.layer)}`)
       drawNotes(found.parNotes)
       return
     }
 
     if (found === null && pars.size === 0) {
-      host.style.display = 'none'
+      drawTitle(null)
+      paintNote(drawLine(''), { kind: 'reason', text: EMPTY_HINT })
       return
     }
-    host.style.display = ''
 
     if (found !== null) {
       const shown = found.pars.length
-      drawTitle(
-        `Parameters that set ${cellsText(found.cells)} on ${layerWords(found.layer)}`,
-        found.parsTotal > shown ? `${shown} of ${found.parsTotal} shown` : shown === 1 ? '1 parameter' : `${shown} parameters`,
-      )
+      drawTitle(shown)
+      drawLine(`Parameters that set ${cellsText(found.cells)} on ${layerWords(found.layer)}`)
+      if (found.parsTotal > shown) drawLine(`${shown} of ${found.parsTotal} shown`, ['tabular-nums'])
       drawNotes(found.parNotes)
       const groups = grouped(found.pars, (p) => p.pargp ?? opts.pargpOf(p.parnme) ?? NO_GROUP)
       drawGrid(
@@ -228,7 +242,8 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
       return
     }
 
-    drawTitle('Selected parameters', pars.size === 1 ? '1 selected' : `${pars.size} selected`)
+    drawTitle(pars.size)
+    drawLine(PICKED_LINE)
     const groups = grouped([...pars], (name) => opts.pargpOf(name) ?? NOT_IN_TABLE)
     drawGrid(
       flatten(groups, (name) => ({ kind: 'par', name, detail: '', title: '' })),
