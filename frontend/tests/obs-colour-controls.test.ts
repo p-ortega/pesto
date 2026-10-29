@@ -210,14 +210,12 @@ describe('the parameter-only rows of the selection controls', () => {
       realNames: { ok: true, names: ['base', 'r1'] },
       partrans: null,
       onSelectionChange: () => {},
-      onFitToExtent: () => {},
     })
     const marked = [...host.querySelectorAll('[data-colour-source="par"]')].map((el) => el.textContent ?? '')
     for (const word of ['Statistic', 'Realization', 'Colormap', 'Reverse', 'Value scale', 'Limits']) {
       expect(marked.some((text) => text.includes(word)), word).toBe(true)
     }
     expect((host.querySelector('input[aria-label="Layer"]') as HTMLElement).closest('[data-colour-source]')).toBeNull()
-    expect(button(host, 'Fit to extent').closest('[data-colour-source]')).toBeNull()
   })
 })
 

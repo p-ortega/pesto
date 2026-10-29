@@ -408,13 +408,13 @@ function buttonByText(root: HTMLElement, text: string): HTMLButtonElement {
 }
 
 const toolButton = (root: HTMLElement): HTMLButtonElement =>
-  root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement
-const toolCard = (root: HTMLElement): string => root.querySelector('.section-tool')?.textContent ?? ''
+  root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
+const toolCard = (root: HTMLElement): string => root.querySelector('#section-tool-reason')?.textContent ?? ''
 const lassoButton = (root: HTMLElement): HTMLButtonElement => root.querySelector('.lasso-button') as HTMLButtonElement
-const lassoCard = (root: HTMLElement): string => root.querySelector('.lasso-control')?.textContent ?? ''
+const lassoCard = (root: HTMLElement): string => root.querySelector('#lasso-reason')?.textContent ?? ''
 const sectionToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Section view')
 const planToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Plan view')
-const controlsCard = (root: HTMLElement): string => root.querySelector('.section-controls')?.textContent ?? ''
+const controlsCard = (root: HTMLElement): string => root.querySelector('#section-view-reason')?.textContent ?? ''
 
 function drawLine(m: Mounted, a: [number, number] = [0.25, 0.5], b: [number, number] = [1.75, 0.5]): void {
   toolButton(m.root).click()

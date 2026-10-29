@@ -1,8 +1,10 @@
-// The plan / section toggle at the map's top right (D-06). "Section view" stays disabled, with the
-// reason as text, while the run cannot have a section, while the server refuses the line, and
-// until a line exists, in that order. Every word reaches the DOM through textContent.
+// The tools card at the map's top right (D-06, LD-1): the plan / section toggle, then the map tools.
+// "Section view" stays disabled, with the reason as text, while the run cannot have a section,
+// while the server refuses the line, and until a line exists, in that order. Every word reaches
+// the DOM through textContent.
 
 import type { VeMode } from '../gl/section-camera'
+import { paintNote } from './note-line'
 
 export interface SectionControlsOptions {
   onPlan(): void
@@ -20,11 +22,17 @@ export interface SectionControlsHandle {
   setFailure(reason: string | null): void
   /** Why this run can have no section at all, or null when it can; it wins over any other reason. */
   setCapability(reason: string | null): void
+  /** The row the map's tools go in: Draw section line, Lasso sites, Fit to extent. */
+  toolsRow: HTMLElement
+  /** The box under the card's rows for one reason line per disabled button, in button order. */
+  reasons: HTMLElement
   dispose(): void
 }
 
 export const NO_LINE_REASON = 'draw a section line on the plan first'
 export const LOADING_TEXT = 'loading the section'
+export const SECTION_VIEW_NAME = 'Section view'
+export const SECTION_VIEW_REASON_ID = 'section-view-reason'
 export const VE_LABEL = 'Vertical exaggeration'
 export const VE_CHOICES: readonly VeMode[] = ['fitted', 1, 2, 5, 10, 20, 50, 100]
 
@@ -40,11 +48,20 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   const sectionButton = document.createElement('button')
   sectionButton.type = 'button'
   sectionButton.classList.add('section-toggle')
-  sectionButton.textContent = 'Section view'
+  sectionButton.textContent = SECTION_VIEW_NAME
   row.appendChild(planButton)
   row.appendChild(sectionButton)
+  const toolsRow = document.createElement('div')
+  toolsRow.classList.add('tools-row')
+  toolsRow.setAttribute('data-testid', 'map-tools')
+  toolsRow.setAttribute('role', 'group')
+  toolsRow.setAttribute('aria-label', 'Map tools')
+  const reasons = document.createElement('div')
+  reasons.classList.add('tools-reasons')
   const reasonEl = document.createElement('div')
+  reasonEl.id = SECTION_VIEW_REASON_ID
   reasonEl.classList.add('label', 'wrap-note')
+  reasons.appendChild(reasonEl)
   const veRow = document.createElement('label')
   veRow.classList.add('section-ve-row', 'label')
   const veText = document.createElement('span')
@@ -61,8 +78,9 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   veRow.appendChild(veText)
   veRow.appendChild(veSelect)
   wrap.appendChild(row)
+  wrap.appendChild(toolsRow)
   wrap.appendChild(veRow)
-  wrap.appendChild(reasonEl)
+  wrap.appendChild(reasons)
   host.appendChild(wrap)
 
   let hasLine = false
@@ -78,9 +96,17 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     const blocked = capability ?? refusal ?? (hasLine ? null : NO_LINE_REASON)
     sectionButton.disabled = blocked !== null
     sectionButton.title = blocked ?? 'Show the section along the line'
-    const text = blocked ?? (loading ? LOADING_TEXT : (failure ?? ''))
-    reasonEl.textContent = text
-    reasonEl.hidden = text === ''
+    // A reason and a failure name their button, since the card shows several buttons' lines together.
+    if (blocked !== null) paintNote(reasonEl, { kind: 'reason', text: `${SECTION_VIEW_NAME}: ${blocked}` })
+    else if (loading) {
+      reasonEl.textContent = LOADING_TEXT
+      reasonEl.style.display = ''
+    } else if (failure) paintNote(reasonEl, { kind: 'warning', text: `${SECTION_VIEW_NAME}: ${failure}` })
+    else paintNote(reasonEl, null)
+    const showing = blocked !== null || loading || Boolean(failure)
+    reasonEl.hidden = !showing
+    if (showing) sectionButton.setAttribute('aria-describedby', SECTION_VIEW_REASON_ID)
+    else sectionButton.removeAttribute('aria-describedby')
     veRow.hidden = !shown
   }
   paint()
@@ -122,6 +148,8 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
       capability = reason
       paint()
     },
+    toolsRow,
+    reasons,
     dispose() {
       planButton.removeEventListener('click', onPlanClick)
       sectionButton.removeEventListener('click', onSectionClick)

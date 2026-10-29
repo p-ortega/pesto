@@ -505,27 +505,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const whereEl = document.createElement('div')
   whereEl.setAttribute('data-testid', 'selection-where')
   whereEl.setAttribute('role', 'status')
-  whereEl.classList.add('floating')
+  whereEl.classList.add('floating', 'where-notice')
   whereEl.hidden = true
+  // The notice sits directly above the readout, whose height changes with what it says.
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+      mapCanvasArea.style.setProperty('--readout-height', `${readoutEl.offsetHeight}px`)
+    }).observe(readoutEl)
+  }
 
   // D-11 to D-13: the lasso picks only the site dots drawn now, through one index per drawn set.
   const LASSO_NO_DOTS = 'no observation site dots are drawn; colour the map by observations'
   const LASSO_EMPTY = 'no site dots inside the region; the selection is unchanged'
-  const lasso = renderLasso({
-    area: mapCanvasArea,
-    canvas,
-    buttonHost: topLeftEl,
-    canvasPoint,
-    screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
-    worldToScreen,
-    onRelease: lassoRelease,
-    onTooSmall: () => lassoEmpty(),
-    // D-01: one armed tool at a time. An armed tool takes the pointer moves, so the hand goes now.
-    onArm: () => {
-      sectionTool.disarm()
-      mapCanvasArea.classList.remove('dot-hover')
-    },
-  })
   // The section (SECT-01, SECT-02): the line tool on the plan and the view that replaces the plan.
   // D-22: the line tool and the lasso draw on the plan, and the overlays hatch it.
   const TOOLS_ON_PLAN = 'switch to the plan view to draw on the plan'
@@ -604,10 +595,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const sectionTool = renderSectionTool({
     area: mapCanvasArea,
     canvas,
-    buttonHost: topLeftEl,
+    buttonHost: sectionView.controls().toolsRow,
+    reasonHost: sectionView.controls().reasons,
     canvasPoint,
     screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
     worldToScreen,
+    // D-01: one armed tool at a time. The lasso is made after this tool, but arming needs a click.
     onArm: () => {
       lasso.disarm()
       mapCanvasArea.classList.remove('dot-hover')
@@ -617,6 +610,30 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       sectionView.setLine([a[0] + ox, a[1] + oy], [b[0] + ox, b[1] + oy])
     },
   })
+  const lasso = renderLasso({
+    area: mapCanvasArea,
+    canvas,
+    buttonHost: sectionView.controls().toolsRow,
+    reasonHost: sectionView.controls().reasons,
+    canvasPoint,
+    screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
+    worldToScreen,
+    onRelease: lassoRelease,
+    onTooSmall: () => lassoEmpty(),
+    // An armed tool takes the pointer moves, so the hand goes now.
+    onArm: () => {
+      sectionTool.disarm()
+      mapCanvasArea.classList.remove('dot-hover')
+    },
+  })
+  // MAP-11/D-15: the same fit the Home key calls, on whichever view is shown.
+  const fitButton = document.createElement('button')
+  fitButton.type = 'button'
+  fitButton.classList.add('fit-button')
+  fitButton.textContent = 'Fit to extent'
+  fitButton.title = 'Fit the model into the space the cards leave free. Same as the Home key.'
+  fitButton.addEventListener('click', () => fitShownView())
+  sectionView.controls().toolsRow.appendChild(fitButton)
   sectionView.controls().setCapability(sectionBlocked)
 
   function sectionToolState(): SectionToolAvailability {
@@ -644,7 +661,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let lassoTold = LASSO_NO_DOTS
   // The sites the lasso last wrote: a sites change to anything else takes its outline away.
   let lassoSites: ReadonlySet<number> | null = null
-  topLeftEl.appendChild(whereEl)
+  mapCanvasArea.appendChild(whereEl)
   let whereText = ''
 
   // Rings the cell set of an unanswered click when there is one, else the store's cells, plus the
@@ -3848,7 +3865,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       },
       styleNote: restoredStyle.turnedOff === null ? null : SYMMETRIC_TURNED_OFF_PREFIX + restoredStyle.turnedOff,
       onSelectionChange: handleSelectionChange,
-      onFitToExtent: fitShownView,
     })
     controlsHandle.setLayer(committed.layer)
 

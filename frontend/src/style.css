@@ -763,6 +763,25 @@ body {
   gap: var(--space-sm);
 }
 
+/* The tools card (LD-1): never wider than 320px, so its tools row wraps instead of growing. */
+.section-controls {
+  max-width: 320px;
+  box-sizing: border-box;
+}
+
+.tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+/* One reason line per disabled button, under every row of the card. The margin sits on each
+   line, so a box whose lines are all hidden takes no room. */
+.tools-reasons > * {
+  margin-top: var(--space-sm);
+}
+
 /* The exaggeration choice sits under the toggle, and only while the section shows. */
 .section-ve-row {
   display: flex;
@@ -948,6 +967,15 @@ body {
   position: absolute;
   bottom: var(--space-md);
   right: var(--space-md);
+}
+
+/* The selection-where notice sits directly above the readout it explains. */
+.where-notice {
+  position: absolute;
+  right: var(--space-md);
+  bottom: calc(2 * var(--space-md) + var(--readout-height, 0px));
+  max-width: 320px;
+  box-sizing: border-box;
 }
 
 /* Two figures sitting side by side with no label between them (the
@@ -1157,6 +1185,7 @@ body {
 
 .lasso-button,
 .section-button,
+.fit-button,
 .section-toggle {
   pointer-events: auto;
   cursor: pointer;
@@ -1201,7 +1230,8 @@ body {
 .map-area.showing-section > .floating-top-left,
 .map-area.showing-section > .floating-top-right,
 .map-area.showing-section > .floating-bottom-left,
-.map-area.showing-section > .floating-bottom-right {
+.map-area.showing-section > .floating-bottom-right,
+.map-area.showing-section > .where-notice {
   z-index: 1;
 }
 

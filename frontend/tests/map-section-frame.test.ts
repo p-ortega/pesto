@@ -272,7 +272,7 @@ function buttonByText(root: HTMLElement, text: string): HTMLButtonElement {
 }
 
 const toolButton = (root: HTMLElement): HTMLButtonElement =>
-  root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement
+  root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
 const sectionToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Section view')
 const planToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Plan view')
 const legendText = (root: HTMLElement): string => root.querySelector('.floating-bottom-left')?.textContent ?? ''
