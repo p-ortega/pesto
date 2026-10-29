@@ -705,8 +705,11 @@ def place_sites(
             extra = ""
         if placed:
             if outcome[0] == "ok" and (first != cell[row] or (layer[row] >= 0 and second >= 0 and second != layer[row])):
+                # The control file's column holds an index, so it is shown as one; MF6 writes its layer one-based.
+                held = int(layer[row])
+                column_layer = f"layer index {held}" if held >= 0 else layer_words(held)
                 text = (
-                    f"columns say cell {int(cell[row])} {layer_words(int(layer[row]))}, "
+                    f"columns say cell {int(cell[row])} {column_layer}, "
                     f"{entry.name} in {entry.file} says cell {first} {layer_words(second)}"
                 )
                 disagree.append(f"{site!r}: {text}")

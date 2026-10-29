@@ -347,20 +347,34 @@ def test_a_site_placed_by_its_columns_keeps_that_cell_and_a_disagreement_is_coun
     assert note.startswith("1 site(s)") and "'w'" in note and "'v'" not in note
     assert _note(cells, "w") == (
         "the control file's columns were kept; "
-        "columns say cell 0 layer 1 (index 0), W in m.obs says cell 2 layer 1 (index 0)"
+        "columns say cell 0 layer index 0, W in m.obs says cell 2 layer 1 (index 0)"
     )
 
 
-def test_a_disagreement_names_both_layers_one_based_with_the_index_and_keeps_cell_numbers():
+def test_a_disagreement_shows_the_control_file_layer_as_the_index_it_holds_and_the_mf6_layer_one_based():
     entry = ObsEntry("obs1", "HEAD", ("2", "6"), "model.obs", "model")
     obs = ObsInput({"obs1": (entry,)}, ("model",), (), (), True)
     shape = GridShape(ncpl=10, nlay=3, nrow=None, ncol=None)
 
     placed = place_sites(["s"], ["obs1"], obs, shape, np.array([4], np.int32), np.array([0], np.int32))
 
+    # The control file's column holds 0, so it is never shown as layer 1.
     assert placed.site_note[0] == (
         "the control file's columns were kept; "
-        "columns say cell 4 layer 1 (index 0), obs1 in model.obs says cell 5 layer 2 (index 1)"
+        "columns say cell 4 layer index 0, obs1 in model.obs says cell 5 layer 2 (index 1)"
+    )
+
+
+def test_a_disagreement_with_no_control_file_layer_says_layer_unknown():
+    entry = ObsEntry("obs1", "HEAD", ("2", "6"), "model.obs", "model")
+    obs = ObsInput({"obs1": (entry,)}, ("model",), (), (), True)
+    shape = GridShape(ncpl=10, nlay=3, nrow=None, ncol=None)
+
+    placed = place_sites(["s"], ["obs1"], obs, shape, np.array([4], np.int32), np.array([-1], np.int32))
+
+    assert placed.site_note[0] == (
+        "the control file's columns were kept; "
+        "columns say cell 4 layer unknown, obs1 in model.obs says cell 5 layer 2 (index 1)"
     )
 
 
