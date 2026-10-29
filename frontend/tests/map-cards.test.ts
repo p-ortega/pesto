@@ -179,6 +179,36 @@ describe('the Data and Colours cards', () => {
     expect(foldButton(root, 'colours').getAttribute('aria-label')).toBe('Colours')
   })
 
+  it('holds the Data, Colours, Overlays and Basemap cards in the left stack and nothing else', async () => {
+    const root = await mountReady()
+    const stack = root.querySelector('.floating-top-left') as HTMLElement
+    await vi.waitFor(() => expect(stack.querySelector(':scope > [data-fold="basemap"]')).not.toBeNull())
+    expect(Array.from(stack.children).map((el) => el.getAttribute('data-fold'))).toEqual(['data', 'colours', 'overlays', 'basemap'])
+  })
+
+  it("puts the parameter group select in the Data card's Group row, with no card of its own", async () => {
+    const root = await mountReady()
+    const data = card(root, 'data').querySelector('.fold-body') as HTMLElement
+    await vi.waitFor(() => expect(data.querySelector('select[aria-label="Parameter group"]:not([disabled])')).not.toBeNull())
+    const select = data.querySelector('select[aria-label="Parameter group"]') as HTMLSelectElement
+    const row = select.closest('.card-row') as HTMLElement
+    expect(row.querySelector('.card-row-label')?.textContent).toBe('Group')
+    const picker = select.closest('[data-colour-source="par"]') as HTMLElement
+    expect(picker.classList.contains('floating')).toBe(false)
+  })
+
+  it('leaves the Iteration row empty with one iteration and the Colour by row empty with no observations', async () => {
+    const root = await mountReady()
+    const data = card(root, 'data').querySelector('.fold-body') as HTMLElement
+    const control = (label: string) =>
+      Array.from(data.querySelectorAll(':scope > .card-row')).find((row) => row.querySelector('.card-row-label')?.textContent === label)!
+        .querySelector('.card-row-control') as HTMLElement
+    expect(control('Iteration').childNodes.length).toBe(0)
+    expect(control('Colour by').childNodes.length).toBe(0)
+    expect(control('Time').childNodes.length).toBe(0)
+    expect(root.querySelector('.iteration-toggle')).toBeNull()
+  })
+
   it('puts the layer, statistic and realization rows in Data and the six colour rows in Colours', async () => {
     const root = await mountReady()
     const data = card(root, 'data').querySelector('.fold-body') as HTMLElement

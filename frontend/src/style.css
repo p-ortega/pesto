@@ -1541,6 +1541,16 @@ body {
   display: none;
 }
 
+/* The time slider hides itself until a group has times, and its row goes with it. */
+.card-row:has(> .card-row-control > [hidden]:only-child) {
+  display: none;
+}
+
+/* Beats the inline-flex given to labels below, so a hidden All layers box stays hidden. */
+.card-row-control > [hidden] {
+  display: none;
+}
+
 .card-row-control {
   min-width: 0;
   display: flex;

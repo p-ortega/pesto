@@ -362,12 +362,19 @@ describe('switching the iteration', () => {
     expect(stub.valuesCalls.length).toBe(1)
   })
 
-  it('puts the toggle in the top-left cluster with the first iteration pressed', async () => {
+  it("puts the toggle in the Data card's Iteration row with the first iteration pressed", async () => {
     const { root } = await mountedWith(manualStore())
-    const buttons = Array.from((root.querySelector('[aria-label="Iteration"]') as HTMLElement).querySelectorAll('button'))
+    const toggle = root.querySelector('[aria-label="Iteration"]') as HTMLElement
+    const buttons = Array.from(toggle.querySelectorAll('button'))
     expect(buttons.map((b) => b.textContent)).toEqual(['0', '3'])
     expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
     expect(root.querySelector('.floating-top-left')?.contains(buttons[0])).toBe(true)
+    const row = toggle.closest('.card-row') as HTMLElement
+    expect(row.closest('[data-fold]')?.getAttribute('data-fold')).toBe('data')
+    expect(row.querySelector('.card-row-label')?.textContent).toBe('Iteration')
+    // The row's label says Iteration, so the toggle neither floats nor says it again.
+    expect(toggle.classList.contains('floating')).toBe(false)
+    expect(Array.from(toggle.querySelectorAll('span')).map((s) => s.textContent)).not.toContain('Iteration')
     expectNoRunTogetherText(root.querySelector('.floating-top-left') as HTMLElement, 'map controls with toggle')
   })
 

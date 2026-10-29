@@ -66,6 +66,8 @@ interface GroupSpec {
   kind: string
   stepsBy: 'time' | 'position'
   refused: string | null
+  /** Why this group has no statistics for iteration 0; absent, it has them. */
+  noStats?: string
 }
 
 const range = (n: number, step = 10): number[] => Array.from({ length: n }, (_, i) => (i + 1) * step)
@@ -81,6 +83,7 @@ const GROUPS: Record<string, GroupSpec> = {
   dates: { times: [19000, 19001, 19002], kind: 'datetime', stepsBy: 'time', refused: null },
   one: { times: [7], kind: 'numeric', stepsBy: 'time', refused: null },
   mixed: { times: [], kind: 'ordinal (mixed time kinds)', stepsBy: 'position', refused: 'the sites of this group mix time kinds, so one slider cannot step through them' },
+  parked: { times: [1, 2], kind: 'numeric', stepsBy: 'time', refused: null, noStats: 'not recorded' },
 }
 
 // Row 2 has no value at odd positions, so the legend count changes from one step to the next.
@@ -239,7 +242,7 @@ function stubFetch(): void {
               times: spec.times,
               n_at_time: spec.times.map(() => ROWS),
               n_sites: ROWS,
-              iterations: [{ iteration: 0, available: true, reason: null }],
+              iterations: [{ iteration: 0, available: spec.noStats === undefined, reason: spec.noStats ?? null }],
               limits: { resid_mean: [-1, 1], rmse: [0, 2], std: [0, 1], mean: [9, 11] },
               limits_rule: 'pooled over the first and last iteration',
               limits_refused: null,
@@ -684,6 +687,48 @@ describe('the time slider on the observation map', () => {
       switchButton(root, 'Parameters').click()
       await vi.waitFor(() => expect(window.__pestoFrames!.length).toBeGreaterThan(during))
       expect(window.__pestoFrames!.slice(during).every((s) => s.timeIdx === undefined)).toBe(true)
+    })
+  })
+
+  describe('in the Data card', () => {
+    const dataRow = (root: HTMLElement, label: string): HTMLElement =>
+      Array.from(root.querySelectorAll('[data-fold="data"] .card-row')).find(
+        (row) => row.querySelector('.card-row-label')?.textContent === label,
+      ) as HTMLElement
+
+    it('puts the switch in the Colour by row and the slider in the Time row, with no card or word of their own', async () => {
+      const { root } = await mounted()
+      await enterObservations(root)
+      expect(dataRow(root, 'Colour by').querySelector('[role="group"][aria-label="Colour by"]')).not.toBeNull()
+      expect(dataRow(root, 'Group').querySelector('select[aria-label="Observation group"]')).not.toBeNull()
+      expect(dataRow(root, 'Statistic').querySelector('select[aria-label="Observation statistic"]')).not.toBeNull()
+      expect(dataRow(root, '').querySelector('input[aria-label="All layers"]')).not.toBeNull()
+      const slider = sliderEl(root)
+      expect(dataRow(root, 'Time').contains(slider)).toBe(true)
+      expect(slider.classList.contains('floating')).toBe(false)
+      expect(Array.from(slider.querySelectorAll('label > span')).map((s) => s.textContent)).not.toContain('Time')
+      const stack = root.querySelector('.floating-top-left') as HTMLElement
+      expect(Array.from(stack.children).every((el) => el.hasAttribute('data-fold'))).toBe(true)
+    })
+
+    // Parked, the map draws a parameter field, so the card shows the parameter group and statistic
+    // and tucks the observation ones away; the warning notice says why nothing is drawn as dots.
+    it('shows the parameter rows and hides the observation group and statistic while parked', async () => {
+      const { root } = await mounted()
+      await enterObservations(root)
+      const area = root.querySelector('.map-area') as HTMLElement
+      expect(area.classList.contains('colour-obs')).toBe(true)
+      chooseGroup(root, 'parked')
+      await vi.waitFor(() => expect(root.querySelector('[data-testid="obs-notices"]')?.textContent).toContain('No observation statistics for iteration 0'))
+      expect(area.classList.contains('colour-obs')).toBe(false)
+      expect(switchButton(root, 'Observations').getAttribute('aria-pressed')).toBe('true')
+      const source = (el: Element | null) => el?.closest('[data-colour-source]')?.getAttribute('data-colour-source')
+      expect(source(dataRow(root, 'Group').querySelector('select[aria-label="Observation group"]'))).toBe('obs')
+      expect(source(dataRow(root, 'Statistic').querySelector('select[aria-label="Observation statistic"]'))).toBe('obs')
+      expect(source(dataRow(root, 'Group').querySelector('select[aria-label="Parameter group"]'))).toBe('par')
+      expect(source(dataRow(root, 'Statistic').querySelector('select[aria-label="Statistic"]'))).toBe('par')
+      // The switch is never tagged, so the way back to Parameters stays in sight.
+      expect(source(dataRow(root, 'Colour by').querySelector('[aria-label="Colour by"]'))).toBeUndefined()
     })
   })
 })
