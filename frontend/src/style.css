@@ -804,6 +804,11 @@ body {
   display: none !important;
 }
 
+/* The observation-only rows and lines give way the same way while the map is coloured by parameters. */
+.map-area:not(.colour-obs) [data-colour-source='obs'] {
+  display: none !important;
+}
+
 .obs-colour,
 .obs-colour-rows {
   display: flex;
@@ -1509,6 +1514,55 @@ body {
 /* The folded legend keeps its ramp, end values and drawn group name. */
 .fold-card[data-fold-mode='lines'][data-folded='true'] .fold-body .label:not(.legend-name) {
   display: none;
+}
+
+/* The Data and Colours cards: one label-and-control row per setting (UI-SPEC, 88px + 8px + 144px). */
+.card-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.card-row {
+  display: grid;
+  grid-template-columns: 88px 144px;
+  column-gap: var(--space-sm);
+  row-gap: var(--space-xs);
+  align-items: center;
+  min-height: 32px;
+}
+
+.card-row[hidden] {
+  display: none;
+}
+
+/* A row whose control has not been rendered yet shows nothing, not a bare label. */
+.card-row:has(> .card-row-control:empty) {
+  display: none;
+}
+
+.card-row-control {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+/* Hint, reason and warning lines, the Go to box and the manual pair each take the cell's full width. */
+.card-row-control > .wrap-note,
+.card-row-control > .card-row-full {
+  flex-basis: 100%;
+}
+
+/* The slider shares its line with the value beside it. */
+.card-row-control > input[type='range'] {
+  flex: 1 1 64px;
+  min-width: 0;
+}
+
+.card-row-control select {
+  max-width: 100%;
 }
 
 /* A card with nothing drawn in it, such as the legend before the first field, shows nothing. */
