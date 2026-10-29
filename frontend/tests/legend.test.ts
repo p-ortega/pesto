@@ -25,7 +25,7 @@ describe('renderLegend', () => {
     expect(el.textContent).toContain('hk1')
     expect(el.textContent).toContain('3 cells contested')
     expect(el.textContent).toContain('12 cells no value')
-    expect(el.textContent).toContain('Robust 2-98%')
+    expect(el.textContent).toContain('Robust 2–98%')
 
     const numberSpans = Array.from(el.querySelectorAll('.tabular-nums'))
     expect(numberSpans.length).toBeGreaterThanOrEqual(2)
@@ -143,23 +143,23 @@ describe('renderLegend with classes', () => {
     expect(note).toBeDefined()
   })
 
-  it('says symmetric about 0 only when the drawn limits are symmetric, and leaves the ramp alone', () => {
+  it('says centred on zero only when the drawn limits are symmetric, and leaves the ramp alone', () => {
     const on = document.createElement('div')
     renderLegend(on, { ...BASE_OPTIONS, limits: [-5, 5], style: { classes: 0, symmetric: true, texture: false }, styleNotes: NO_NOTES })
     const off = document.createElement('div')
     renderLegend(off, { ...BASE_OPTIONS, limits: [-5, 5], style: { classes: 0, symmetric: false, texture: false }, styleNotes: NO_NOTES })
 
-    const line = (el: HTMLElement) => [...el.querySelectorAll('div.label')].find((d) => d.textContent === 'symmetric about 0')
+    const line = (el: HTMLElement) => [...el.querySelectorAll('div.label')].find((d) => d.textContent === 'centred on zero')
     expect(line(on)).toBeDefined()
     expect(line(off)).toBeUndefined()
     const gradient = (el: HTMLElement) => [...el.querySelectorAll('div')].find((d) => d.style.background.includes('linear-gradient'))
     expect(gradient(on)?.style.background).toBe(gradient(off)?.style.background)
   })
 
-  it('still says symmetric about 0 for zero limits', () => {
+  it('still says centred on zero for zero limits', () => {
     const el = document.createElement('div')
     renderLegend(el, { ...BASE_OPTIONS, limits: [0, 0], style: { classes: 0, symmetric: true, texture: false }, styleNotes: NO_NOTES })
-    expect([...el.querySelectorAll('div.label')].some((d) => d.textContent === 'symmetric about 0')).toBe(true)
+    expect([...el.querySelectorAll('div.label')].some((d) => d.textContent === 'centred on zero')).toBe(true)
   })
 
   it('draws each class as lines at its angle over the surface, with the edges, when texture is on', () => {
@@ -208,7 +208,7 @@ describe('renderLegend over a basemap', () => {
     renderLegend(el, { ...BASE_OPTIONS, blended: true })
     const lines = labels(el)
     expect(lines.filter((l) => l === BLENDED)).toHaveLength(1)
-    expect(lines.indexOf(BLENDED)).toBeGreaterThan(lines.indexOf('Limits: Robust 2-98%'))
+    expect(lines.indexOf(BLENDED)).toBeGreaterThan(lines.indexOf('Limits: Robust 2–98%'))
     expect(lines.indexOf(BLENDED)).toBeGreaterThan(lines.findIndex((l) => l?.startsWith('Scale:')))
   })
 

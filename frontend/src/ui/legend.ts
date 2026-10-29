@@ -40,8 +40,8 @@ export interface LegendOptions {
 }
 
 const LIMITS_LABEL: Record<LimitsMode, string> = {
-  robust: 'Robust 2-98%',
-  minmax: 'Min-max',
+  robust: 'Robust 2–98%',
+  minmax: 'Min–max',
   manual: 'Manual',
 }
 
@@ -75,7 +75,7 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
 
 // One swatch per class from classColour, the function the shader's texel
 // indices come from, and one edge value per class boundary (D-06, D-07).
-// Under texture fill each swatch is ink lines at its class angle over the surface (D-15).
+// Under patterns each swatch is ink lines at its step angle over the surface (D-15).
 function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [number, number], texture: boolean): void {
   // One grid of half-columns with a spare at each end: edge j is centred on line 2j+3, where swatch j starts.
   // Edges alternate between two rows, so each number gets two swatches of width and the ramp fits the card.
@@ -174,7 +174,7 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
   if (opts.style?.symmetric) {
     const symmetricLine = document.createElement('div')
     symmetricLine.classList.add('label')
-    symmetricLine.textContent = 'symmetric about 0'
+    symmetricLine.textContent = 'centred on zero'
     el.appendChild(symmetricLine)
   }
 

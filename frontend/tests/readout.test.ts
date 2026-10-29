@@ -286,7 +286,7 @@ describe('renderReadout', () => {
 })
 
 describe('renderReadout class line', () => {
-  const LINE = 'class 4 of 9 (1.2 to 3.4)'
+  const LINE = 'step 4 of 9 (1.2 to 3.4)'
   const lines = (el: HTMLElement): string[] => [...el.children].map((c) => c.textContent ?? '')
 
   it('puts the class right after the value row of a valued cell', () => {
@@ -322,9 +322,9 @@ describe('renderReadout class line', () => {
     const el = mount()
     const pick: ReadoutPick = { kind: 'cell', cellId: 3, layer: 1, selectionLabel: 'r001', classification: { kind: 'valued', row: 0 } }
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([2]), classLine: null })
-    expect(el.textContent).not.toContain('class ')
+    expect(el.textContent).not.toContain('step ')
     renderReadout(el, { pick, group: 'G1', joined: [G1], field: new Float32Array([2]) })
-    expect(el.textContent).not.toContain('class ')
+    expect(el.textContent).not.toContain('step ')
   })
 
   it('never shows a class for a contested or empty cell', () => {
@@ -339,7 +339,7 @@ describe('renderReadout class line', () => {
 })
 
 describe('renderReadout section pick', () => {
-  const LINE = 'class 4 of 9 (1.2 to 3.4)'
+  const LINE = 'step 4 of 9 (1.2 to 3.4)'
   const SECTION_LINES = ['distance from A: 2 model units', 'top 10, bottom 5 model units']
   const lines = (el: HTMLElement): string[] => [...el.children].map((c) => c.textContent ?? '')
 

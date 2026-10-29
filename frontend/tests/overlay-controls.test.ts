@@ -146,7 +146,7 @@ describe('renderOverlayControls', () => {
 
   it('a suppressed toggle is disabled but keeps its count, and shows the reason as text and title', () => {
     const { host, handle, onToggle } = mount()
-    const reason = 'off while texture fill is on: its lines would look like the fill'
+    const reason = 'off while patterns are on: the hatching would look like the patterns'
     handle.setStatus('atBounds', { kind: 'suppressed', reason, label: '12 at bounds', title: reason })
     const b = toggle(host, 'atBounds')
     expect(b.disabled).toBe(true)
