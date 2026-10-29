@@ -129,6 +129,26 @@ describe('a foldable card', () => {
     expect(getComputedStyle(summary(fold.el)).display).toBe('none')
   })
 
+  it('leaves a zero count out of the folded legend but shows it open', () => {
+    loadRealStylesheet()
+    const fold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })
+    document.body.appendChild(fold.el)
+    const counts = document.createElement('div')
+    counts.classList.add('label', 'legend-figures', 'legend-keep')
+    const zero = document.createElement('span')
+    zero.classList.add('legend-zero')
+    zero.textContent = '0 cells contested'
+    const some = document.createElement('span')
+    some.textContent = '16626 cells no value'
+    counts.append(zero, some)
+    fold.body.append(counts)
+    expect(getComputedStyle(zero).display).not.toBe('none')
+
+    button(fold.el).click()
+    expect(getComputedStyle(zero).display).toBe('none')
+    expect(getComputedStyle(some).display).not.toBe('none')
+  })
+
   it('shows nothing while its body is empty, such as the legend before the first field', () => {
     loadRealStylesheet()
     const fold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })

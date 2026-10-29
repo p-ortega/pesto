@@ -1609,6 +1609,10 @@ body {
   display: none;
 }
 
+.fold-card[data-fold-mode='lines'][data-folded='true'] .legend-zero {
+  display: none;
+}
+
 /* The Data and Colours cards: one label-and-control row per setting (UI-SPEC, 88px + 8px + 144px). */
 .card-rows {
   display: flex;
