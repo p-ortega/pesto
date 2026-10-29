@@ -46,17 +46,17 @@ export interface StyleContext {
 export const DEFAULT_STYLE: FieldStyle = { classes: 0, symmetric: false, texture: false }
 export const CONTINUOUS: EffectiveStyle = { classes: 0, symmetric: false, texture: false }
 
-export const ONE_CLASS_EQUAL = 'the limits are equal, so every value falls in one class'
-export const ONE_CLASS_EMPTY = 'no cell has a value, so there is nothing to class'
+export const ONE_CLASS_EQUAL = 'the limits are equal, so every value falls in one step'
+export const ONE_CLASS_EMPTY = 'no cell has a value, so there is nothing to put in steps'
 
 export const SYMMETRIC_LOG_REASON = 'a log scale has no zero to centre on'
 export const SYMMETRIC_MANUAL_REASON = 'manual limits are used as typed'
-export const SYMMETRIC_TURNED_OFF_PREFIX = 'symmetric was turned off: '
+export const SYMMETRIC_TURNED_OFF_PREFIX = 'centre on zero was turned off: '
 
-export const TEXTURE_CLASSES_NOTE = 'texture fill uses 7 classes; pick 9 or 11 here'
-export const TEXTURE_DOTS_REASON = 'texture fill applies to cell fields; this group is drawn as dots'
-export const OVERLAY_SUPPRESSED_REASON = 'off while texture fill is on: its lines would look like the fill'
-/** The classes texture fill takes when the request is continuous (D-13). */
+export const TEXTURE_CLASSES_NOTE = 'patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here'
+export const TEXTURE_DOTS_REASON = 'patterns apply to cell fields; this group is drawn as dots'
+export const OVERLAY_SUPPRESSED_REASON = 'off while patterns are on: the hatching would look like the patterns'
+/** The colour steps patterns take when the request is smooth (D-13). */
 export const TEXTURE_DEFAULT_CLASSES = 7
 
 /** Why the symmetric switch cannot apply under this scale and limits mode, or null when it can (D-09, D-10). */
@@ -113,7 +113,7 @@ export function formatEdge(value: number): string {
 }
 
 /**
- * The readout's class line, such as "class 4 of 9 (1.2 to 3.4)", or null when
+ * The readout's class line, such as "step 4 of 9 (1.2 to 3.4)", or null when
  * the field is continuous or the value is missing. The value and the limits
  * are in the drawn scale, so on log10 the bracket says so.
  */
@@ -123,5 +123,5 @@ export function classLabel(value: number, limits: [number, number], effective: E
   const k = classOf(value, limits, n)
   const edges = classEdges(limits, n)
   const prefix = scale === 'log10' ? 'log₁₀ ' : ''
-  return `class ${k + 1} of ${n} (${prefix}${formatEdge(edges[k])} to ${formatEdge(edges[k + 1])})`
+  return `step ${k + 1} of ${n} (${prefix}${formatEdge(edges[k])} to ${formatEdge(edges[k + 1])})`
 }

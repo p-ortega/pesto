@@ -261,12 +261,12 @@ describe('the Classes control on the map', () => {
     chooseClasses(root, '9')
 
     clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 0.5, 0.5)
-    await vi.waitFor(() => expect(readout(root)).toContain('class '))
+    await vi.waitFor(() => expect(readout(root)).toContain('step '))
     // log10 of 10 is 1, the lower limit; the raw 10 would sit beyond the upper limit of 3.
-    expect(readout(root)).toContain('class 1 of 9 (log₁₀ 1 to 1.22)')
+    expect(readout(root)).toContain('step 1 of 9 (log₁₀ 1 to 1.22)')
 
     chooseClasses(root, '0')
-    expect(readout(root)).not.toContain('class ')
+    expect(readout(root)).not.toContain('step ')
   })
 
   it('draws the observation look continuous and hides the Classes row there', async () => {
@@ -343,7 +343,7 @@ describe('the Symmetric about 0 switch on the map', () => {
   const box = (root: HTMLElement) => root.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
   const reason = (root: HTMLElement) => root.querySelector('#symmetric-reason') as HTMLElement
   const symmetricLine = (root: HTMLElement) =>
-    [...legend(root).querySelectorAll('div.label')].some((d) => d.textContent === 'symmetric about 0')
+    [...legend(root).querySelectorAll('div.label')].some((d) => d.textContent === 'centred on zero')
 
   function setSymmetric(root: HTMLElement, on: boolean): void {
     box(root).checked = on
@@ -372,7 +372,7 @@ describe('the Symmetric about 0 switch on the map', () => {
     expect(vi.mocked(scaleLimits).mock.calls.length).toBe(computed)
   })
 
-  it('draws zero limits as [0, 0] and still says symmetric about 0', async () => {
+  it('draws zero limits as [0, 0] and still says centred on zero', async () => {
     field = new Float32Array([0, 0])
     const { root } = await mounted()
     setSymmetric(root, true)
@@ -396,7 +396,7 @@ describe('the Symmetric about 0 switch on the map', () => {
     expect(lastStyle().symmetric).toBe(false)
     expect(box(root).checked).toBe(false)
     expect(box(root).disabled).toBe(true)
-    expect(reason(root).textContent).toBe('symmetric was turned off: manual limits are used as typed')
+    expect(reason(root).textContent).toBe('centre on zero was turned off: manual limits are used as typed')
     expect(symmetricLine(root)).toBe(false)
   })
 
@@ -408,7 +408,7 @@ describe('the Symmetric about 0 switch on the map', () => {
 
     expect(lastStyle().symmetric).toBe(false)
     expect(box(root).disabled).toBe(true)
-    expect(reason(root).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+    expect(reason(root).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
     expect(symmetricLine(root)).toBe(false)
   })
 
@@ -424,7 +424,7 @@ describe('the Symmetric about 0 switch on the map', () => {
     await vi.waitFor(() => expect(lastStyle().symmetric).toBe(false))
     expect(box(root).checked).toBe(false)
     expect(box(root).disabled).toBe(true)
-    expect(reason(root).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+    expect(reason(root).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
   })
 
   it('keeps symmetric on when the inferred log10 is refused and the group is drawn linear', async () => {

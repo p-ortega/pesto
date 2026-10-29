@@ -447,7 +447,7 @@ describe('renderSelectionControls', () => {
         expect.objectContaining({ scale: 'log10', style: { classes: 0, symmetric: false, texture: false } }),
       )
       expect(box(el).checked).toBe(false)
-      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
       expect(reason(el).style.display).toBe('')
     })
 
@@ -460,7 +460,7 @@ describe('renderSelectionControls', () => {
       expect(onSelectionChange).toHaveBeenLastCalledWith(
         expect.objectContaining({ limitsMode: 'manual', style: { classes: 0, symmetric: false, texture: false } }),
       )
-      expect(reason(el).textContent).toBe('symmetric was turned off: manual limits are used as typed')
+      expect(reason(el).textContent).toBe('centre on zero was turned off: manual limits are used as typed')
     })
 
     it('gives only the plain reason, not a turned-off line, when the scale moves while symmetric is off', () => {
@@ -493,11 +493,11 @@ describe('renderSelectionControls', () => {
       box(el).dispatchEvent(new Event('change'))
       pick(el.querySelector('select[aria-label="Value scale"]') as HTMLSelectElement, 'log10')
       handle.showStyle(LINEAR, { ...NO_NOTES, symmetric: 'a log scale has no zero to centre on' })
-      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
       // The view drew linear after all (log refused for non-positive cells): the trace stays.
       handle.showStyle(LINEAR, NO_NOTES)
       expect(box(el).disabled).toBe(false)
-      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
 
       box(el).checked = true
       box(el).dispatchEvent(new Event('change'))
@@ -528,10 +528,10 @@ describe('renderSelectionControls', () => {
           manualLimits: null,
           style: { classes: 0, symmetric: false, texture: false },
         },
-        'symmetric was turned off: a log scale has no zero to centre on',
+        'centre on zero was turned off: a log scale has no zero to centre on',
       )
       expect(box(el).checked).toBe(false)
-      expect(reason(el).textContent).toBe('symmetric was turned off: a log scale has no zero to centre on')
+      expect(reason(el).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
       expect(onSelectionChange).not.toHaveBeenCalled()
     })
 
@@ -551,12 +551,12 @@ describe('renderSelectionControls', () => {
           manualLimits: null,
           style: { classes: 0, symmetric: true, texture: false },
         },
-        styleNote: 'symmetric was turned off: manual limits are used as typed',
+        styleNote: 'centre on zero was turned off: manual limits are used as typed',
         onSelectionChange: vi.fn(),
         onFitToExtent: vi.fn(),
       })
       expect(box(el).checked).toBe(true)
-      expect(reason(el).textContent).toBe('symmetric was turned off: manual limits are used as typed')
+      expect(reason(el).textContent).toBe('centre on zero was turned off: manual limits are used as typed')
     })
   })
 
@@ -597,7 +597,7 @@ describe('renderSelectionControls', () => {
       expect(onSelectionChange).toHaveBeenLastCalledWith(
         expect.objectContaining({ style: { classes: 7, symmetric: false, texture: true } }),
       )
-      expect(note(el).textContent).toBe('texture fill uses 7 classes; pick 9 or 11 here')
+      expect(note(el).textContent).toBe('patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
       expect(note(el).style.display).toBe('')
       expect(continuous(el).disabled).toBe(true)
 
@@ -614,7 +614,7 @@ describe('renderSelectionControls', () => {
       const { el, handle } = mount(THREE_NAMES)
       check(el, true)
       handle.showStyle({ classes: 7, symmetric: false, texture: true }, NO_NOTES)
-      expect(note(el).textContent).toBe('texture fill uses 7 classes; pick 9 or 11 here')
+      expect(note(el).textContent).toBe('patterns need colour steps, so 7 steps are drawn; pick 9 or 11 here')
       classesSelect(el).value = '9'
       classesSelect(el).dispatchEvent(new Event('change'))
       expect(note(el).style.display).toBe('none')
@@ -633,7 +633,7 @@ describe('renderSelectionControls', () => {
 
     it('is disabled with the reason showStyle gives for a dot group, and enabled again without it', () => {
       const { el, handle } = mount(THREE_NAMES)
-      const dots = 'texture fill applies to cell fields; this group is drawn as dots'
+      const dots = 'patterns apply to cell fields; this group is drawn as dots'
       handle.showStyle({ classes: 7, symmetric: false, texture: false }, { ...NO_NOTES, texture: dots })
       expect(box(el).disabled).toBe(true)
       expect(reason(el).textContent).toBe(dots)

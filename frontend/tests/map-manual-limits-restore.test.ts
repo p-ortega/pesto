@@ -162,7 +162,7 @@ describe('a restored manual limits mode with no persisted pair (WINDOWS.md #11)'
       expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
     })
 
-    expect(root.textContent).toMatch(/Limits: Robust 2-98%/)
+    expect(root.textContent).toMatch(/Limits: Robust 2–98%/)
     expect(root.textContent).not.toMatch(/Limits: Manual/)
 
     const limitsSelect = root.querySelector('select[aria-label="Limits"]') as HTMLSelectElement
