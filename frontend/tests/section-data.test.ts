@@ -106,7 +106,7 @@ describe('the section client', () => {
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ type: 'about:blank', title: 'stale cache', status: 409, artifact: 'elev', detail }), { status: 409 })),
     )
-    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'elev', reason: detail })
+    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'elev', reason: detail, retryable: false })
   })
 
   it('names the section route as the artifact when a problem names none, and reads the title', async () => {
@@ -114,14 +114,22 @@ describe('the section client', () => {
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ type: 'about:blank', title: 'the line crosses no model cell', status: 422 }), { status: 422 })),
     )
-    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'grid/section', reason: 'the line crosses no model cell' })
+    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'grid/section', reason: 'the line crosses no model cell', retryable: false })
+  })
+
+  it('marks a server error as worth asking again, and names it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ type: 'about:blank', title: 'the server is restarting', status: 503 }), { status: 503 })),
+    )
+    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'grid/section', reason: 'the server is restarting', retryable: true })
   })
 
   it('refuses a malformed answer by name instead of drawing it', async () => {
     const raw = fixture()
     delete raw.status
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(raw), { status: 200 })))
-    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'grid/section', reason: 'the section answer is missing status' })
+    expect(await fetchSection([0, 0], [1, 1])).toEqual({ ok: false, artifact: 'grid/section', reason: 'the section answer is missing status', retryable: false })
   })
 
   it('keys a line by its run and all four ends', () => {

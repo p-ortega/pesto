@@ -16,6 +16,8 @@ export interface SectionControlsHandle {
   setShown(on: boolean): void
   setLoading(on: boolean): void
   setRefusal(reason: string | null): void
+  /** Why the last request failed when asking again may work; the button stays enabled. */
+  setFailure(reason: string | null): void
   /** Why this run can have no section at all, or null when it can; it wins over any other reason. */
   setCapability(reason: string | null): void
   dispose(): void
@@ -67,6 +69,7 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   let shown = false
   let loading = false
   let refusal: string | null = null
+  let failure: string | null = null
   let capability: string | null = null
 
   function paint(): void {
@@ -75,7 +78,7 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     const blocked = capability ?? refusal ?? (hasLine ? null : NO_LINE_REASON)
     sectionButton.disabled = blocked !== null
     sectionButton.title = blocked ?? 'Show the section along the line'
-    const text = blocked ?? (loading ? LOADING_TEXT : '')
+    const text = blocked ?? (loading ? LOADING_TEXT : (failure ?? ''))
     reasonEl.textContent = text
     reasonEl.hidden = text === ''
     veRow.hidden = !shown
@@ -109,6 +112,10 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     },
     setRefusal(reason) {
       refusal = reason
+      paint()
+    },
+    setFailure(reason) {
+      failure = reason
       paint()
     },
     setCapability(reason) {

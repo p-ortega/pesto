@@ -51,6 +51,7 @@ const NO_BOTTOMS = 'the grid file records no layer bottoms'
 const UNREPORTED = 'the server did not report whether this run can have a section'
 const NO_LINE = 'draw a section line on the plan first'
 const CROSSES_NONE = 'the line crosses no model cell'
+const SERVER_DOWN = 'the server is restarting'
 const PLAN_ONLY = 'overlays are drawn on the plan only'
 const TOOLS_ON_PLAN = 'switch to the plan view to draw on the plan'
 const LASSO_NO_DOTS = 'no observation site dots are drawn; colour the map by observations'
@@ -204,10 +205,12 @@ interface Stub {
   calls: string[]
   puts: Record<string, unknown>[]
   refuse: string | null
+  /** A one-off failure of the section request: a server error, or no answer at all. */
+  failure: 'server' | 'network' | null
 }
 
 function stubEnvironment(options: Options): Stub {
-  const stub: Stub = { section: [], calls: [], puts: [], refuse: options.refuse ?? null }
+  const stub: Stub = { section: [], calls: [], puts: [], refuse: options.refuse ?? null, failure: null }
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -263,6 +266,8 @@ function stubEnvironment(options: Options): Stub {
           return respond({ status: 200, body: options.saved })
         case '/api/run/grid/section':
           stub.section.push(query)
+          if (stub.failure === 'server') return respond({ status: 503, body: { title: SERVER_DOWN, status: 503 } })
+          if (stub.failure === 'network') throw new TypeError('Failed to fetch')
           if (stub.refuse !== null) return respond({ status: 422, body: { title: stub.refuse, status: 422 } })
           return respond({ status: 200, body: FIXTURE })
         case '/api/run/par/at_bounds':
@@ -489,6 +494,30 @@ describe('why the map offers no section', () => {
     expect(controlsCard(m.root)).not.toContain(CROSSES_NONE)
     expect(sectionToggle(m.root).disabled).toBe(false)
     await showSection(m)
+    expect((await meshLayerMock()).mock.calls).toHaveLength(2)
+  })
+
+  it('says why a one-off failure stopped the section and tries the same line again on the next click', async () => {
+    const m = await mounted()
+    m.stub.failure = 'server'
+    drawLine(m)
+    sectionToggle(m.root).click()
+    await vi.waitFor(() => expect(controlsCard(m.root)).toContain(SERVER_DOWN))
+    await settle()
+    expect(sectionToggle(m.root).disabled).toBe(false)
+    expect(sectionToggle(m.root).getAttribute('aria-pressed')).toBe('false')
+
+    m.stub.failure = 'network'
+    sectionToggle(m.root).click()
+    await vi.waitFor(() => expect(controlsCard(m.root)).toContain('the section could not be read: Failed to fetch'))
+    await settle()
+    expect(m.stub.section).toHaveLength(2)
+    expect(sectionToggle(m.root).disabled).toBe(false)
+
+    m.stub.failure = null
+    await showSection(m)
+    expect(m.stub.section).toHaveLength(3)
+    expect(controlsCard(m.root)).not.toContain('could not be read')
     expect((await meshLayerMock()).mock.calls).toHaveLength(2)
   })
 })
