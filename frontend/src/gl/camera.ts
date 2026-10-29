@@ -59,7 +59,7 @@ export class Camera {
     const spanY = Math.max(ymax - ymin, 1e-9)
     const scale = (1 - padding) * Math.min(this.width / spanX, this.height / spanY)
     const tx = this.width / 2 - (scale * (xmin + xmax)) / 2
-    const ty = this.height / 2 - (scale * (ymin + ymax)) / 2
+    const ty = this.height / 2 + (scale * (ymin + ymax)) / 2
     return { scale, tx, ty }
   }
 
@@ -125,15 +125,16 @@ export class Camera {
     }
     this.scale = scale
     this.tx = x - this.scale * wx
-    this.ty = y - this.scale * wy
+    this.ty = y + this.scale * wy
   }
 
   screenToWorld(x: number, y: number): [number, number] {
-    return [(x - this.tx) / this.scale, (y - this.ty) / this.scale]
+    // Screen y grows downward and model y (northing) grows upward, so north is drawn at the top.
+    return [(x - this.tx) / this.scale, (this.ty - y) / this.scale]
   }
 
-  /** Column-major 3x3 taking model coordinates to clip space. Y is
-   *  flipped because screen y grows downward and model y grows upward. */
+  /** Column-major 3x3 taking model coordinates to clip space, the same
+   *  map as screenToWorld's inverse. Clip y and model y both grow upward. */
   matrix(): Float32Array {
     const sx = (2 * this.scale) / this.width
     const sy = (2 * this.scale) / this.height
@@ -142,7 +143,7 @@ export class Camera {
       0,
       0,
       0,
-      -sy,
+      sy,
       0,
       (2 * this.tx) / this.width - 1,
       1 - (2 * this.ty) / this.height,
