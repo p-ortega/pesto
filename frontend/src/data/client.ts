@@ -378,6 +378,8 @@ export interface IngestState {
     obs1to1?: Capability
     // The parameter view; absent from a server that does not send it.
     parView?: Capability
+    // The section view, with the reasons a run cannot have one; absent from a server that does not send it.
+    section?: Capability
   }
   ingestSeconds: number | null
   cacheBytes: number | null
@@ -428,6 +430,7 @@ export async function ingestState(): Promise<IngestState> {
       phi_check?: unknown
       obs_1to1?: unknown
       par_view?: unknown
+      section?: unknown
     }
     ingest_seconds: number | null
     cache_bytes: number | null
@@ -448,6 +451,7 @@ export async function ingestState(): Promise<IngestState> {
       ...present('phiCheck', raw.capabilities.phi_check),
       ...present('obs1to1', raw.capabilities.obs_1to1),
       ...present('parView', raw.capabilities.par_view),
+      ...present('section', raw.capabilities.section),
     },
     ingestSeconds: raw.ingest_seconds,
     cacheBytes: raw.cache_bytes,
