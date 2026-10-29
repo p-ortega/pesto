@@ -14,6 +14,8 @@ export type OverlayStatus =
 export interface OverlayControlsOptions {
   /** Told only when the user clicks an enabled toggle; setStatus never calls it. */
   onToggle(kind: OverlayKind, on: boolean): void
+  /** Told after every repaint, so a folded line can follow what the toggles say. */
+  onChange?(): void
 }
 
 export interface OverlayControlsHandle {
@@ -21,6 +23,8 @@ export interface OverlayControlsHandle {
   setStatus(kind: OverlayKind, status: OverlayStatus): void
   /** True only while the toggle shows data and the user has not turned it off. */
   isOn(kind: OverlayKind): boolean
+  /** Both toggles in one line, for the folded card. */
+  summary(): string
   dispose(): void
 }
 
@@ -73,6 +77,16 @@ export function renderOverlayControls(host: HTMLElement, opts: OverlayControlsOp
       t.reason.hidden = false
       t.button.title = `${NAME[kind]}: reading…`
     }
+    opts.onChange?.()
+  }
+
+  function summaryOf(kind: OverlayKind): string {
+    const t = toggles[kind]
+    const { status } = t
+    if (status.kind === 'shown') return t.wanted ? status.label : `${status.label} (turned off)`
+    if (status.kind === 'suppressed') return `${status.label} (${status.reason})`
+    if (status.kind === 'off') return `${NAME[kind]}: ${status.reason}`
+    return `${NAME[kind]}: reading…`
   }
 
   for (const kind of ['atBounds', 'conflict'] as const) {
@@ -114,6 +128,9 @@ export function renderOverlayControls(host: HTMLElement, opts: OverlayControlsOp
     isOn(kind) {
       const t = toggles[kind]
       return !disposed && t.status.kind === 'shown' && t.wanted
+    },
+    summary() {
+      return (['atBounds', 'conflict'] as const).map(summaryOf).join(' · ')
     },
     dispose() {
       disposed = true

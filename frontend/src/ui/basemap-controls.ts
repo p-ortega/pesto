@@ -56,6 +56,26 @@ export function opacityText(percent: number): string {
   return percent === 0 ? 'outlines only' : `${percent}%`
 }
 
+/** What the folded basemap card says after "Basemap: ". */
+export function basemapSummary(view: BasemapView): string {
+  switch (view.kind) {
+    case 'none':
+      return 'none'
+    case 'busy':
+      return view.text
+    case 'proposal':
+      return `place ${view.name}?`
+    case 'numbers':
+      return `${view.name} needs four numbers`
+    case 'ready':
+      return view.name
+    case 'refused':
+    case 'unavailable':
+    case 'failed':
+      return view.reason
+  }
+}
+
 /** The typed numbers as an extent, or the reason they cannot be one. */
 export function readNumbers(values: readonly string[]): { ok: true; extent: Extent } | { ok: false; reason: string } {
   const numbers = values.map((v) => (v.trim() === '' ? Number.NaN : Number(v)))
