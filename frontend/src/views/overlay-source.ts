@@ -139,7 +139,7 @@ function atBoundsPart(held: Held, inputs: OverlayInputs): Part {
   if (leftOut !== null) lines.push(leftOut)
   if (inputs.pointRows !== null) lines.push(`${plural(dots.size, 'pilot point', 'pilot points')} marked`)
   return {
-    status: { kind: 'shown', label: `45° at bounds: ${plural(count, 'parameter', 'parameters')}`, title: lines.join('\n') },
+    status: { kind: 'shown', label: `At bounds: ${plural(count, 'parameter', 'parameters')}`, title: lines.join('\n') },
     cells: placed.cells,
     dots,
   }
@@ -203,7 +203,7 @@ function conflictPart(held: Held, inputs: OverlayInputs): Part {
     lines.push(`${plural(leftOutObs, 'conflicted observation', 'conflicted observations')} left out: a simulated value was a placeholder or not a number`)
   }
   lines.push(...answer.notes)
-  const text = `135° conflict: ${plural(nObs, 'observation', 'observations')} at ${plural(nSites, 'site', 'sites')} · ${source}`
+  const text = `Prior-data conflict: ${plural(nObs, 'observation', 'observations')} at ${plural(nSites, 'site', 'sites')} · ${source}`
   return { status: { kind: 'shown', label: text, title: lines.join('\n') }, cells: placed.cells, dots }
 }
 
