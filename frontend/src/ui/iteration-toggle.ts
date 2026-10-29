@@ -9,6 +9,8 @@ export interface IterationToggleOptions {
   iterations: number[]
   current: number
   onChange: (iteration: number) => void
+  /** A row inside a labelled card: no floating card of its own and no Iteration word. */
+  bare?: boolean
 }
 
 export interface IterationToggleHandle {
@@ -34,7 +36,8 @@ export function renderIterationToggle(el: HTMLElement, opts: IterationToggleOpti
     return { setCurrent: () => {} }
   }
 
-  el.classList.add('floating', 'iteration-toggle')
+  if (!opts.bare) el.classList.add('floating')
+  el.classList.add('iteration-toggle')
   el.setAttribute('role', 'group')
   el.setAttribute('aria-label', 'Iteration')
   el.style.display = 'flex'
@@ -42,12 +45,14 @@ export function renderIterationToggle(el: HTMLElement, opts: IterationToggleOpti
   el.style.gap = 'var(--space-sm)'
   el.style.alignItems = 'center'
 
-  // The group's aria-label already says Iteration, so a screen reader would hear this twice.
-  const label = document.createElement('span')
-  label.classList.add('label')
-  label.textContent = 'Iteration'
-  label.setAttribute('aria-hidden', 'true')
-  el.appendChild(label)
+  if (!opts.bare) {
+    // The group's aria-label already says Iteration, so a screen reader would hear this twice.
+    const label = document.createElement('span')
+    label.classList.add('label')
+    label.textContent = 'Iteration'
+    label.setAttribute('aria-hidden', 'true')
+    el.appendChild(label)
+  }
 
   const buttons = new Map<number, HTMLButtonElement>()
   for (const iteration of opts.iterations) {
