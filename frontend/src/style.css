@@ -1225,6 +1225,31 @@ body {
   color: var(--ink-primary);
 }
 
+.chip.base-chip:disabled {
+  cursor: default;
+}
+
+/* The Obs tab heading: the tab name on the left, controls that act on its plots on the right (LD-6). */
+.obs-heading-row {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+/* Select base with its reason line under it, both held to the right edge. */
+.base-select {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-xs);
+}
+
+.base-select-reason {
+  text-align: right;
+}
+
 /* The basemap file picker covers the map it was opened from, never the whole page. */
 .basemap-picker {
   position: absolute;

@@ -196,6 +196,8 @@ export interface MapViewOptions {
   viewState: Promise<ViewState | null>
   onPanelFacts(facts: PanelFacts): void
   onViewStateChange(): void
+  /** Where Select base goes: the Obs tab's heading row (LD-6). A detached element when absent. */
+  baseChipHost?: HTMLElement
 }
 
 export interface MapViewHandle {
@@ -2221,8 +2223,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     })
   }
 
-  // Built once, so a header repaint keeps the same chip and its state.
-  const baseChip = renderBaseChip(document.createElement('div'), {
+  // Built once, in the Obs heading row where its effect is drawn; the header keeps only facts.
+  const baseChip = renderBaseChip(opts.baseChipHost ?? document.createElement('div'), {
     store,
     loadBase,
     iteration: openingIteration(opts.config, opts.state).iteration,
@@ -2233,7 +2235,6 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       title: opts.config?.case ?? 'This run',
       themeChoice: currentTheme(),
       chips: chipsInput(),
-      extras: [baseChip.el],
       onThemeChange: (choice: ThemeChoice) => {
         setTheme(choice)
         paintHeader()
