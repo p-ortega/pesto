@@ -152,7 +152,7 @@ describe('createOverlaySource load', () => {
     now.p.resolve(pdc(4))
     expect(await four).toEqual({ stale: false })
     built = source.build(inputs(), BOTH)
-    expect(label(built.atBounds)).toBe('45° at bounds: 1 parameter')
+    expect(label(built.atBounds)).toBe('At bounds: 1 parameter')
   })
 
   it('turns a thrown loader error into a reason instead of losing it', async () => {
@@ -188,7 +188,7 @@ describe('the at-bounds overlay', () => {
     expect(built.mask).not.toBeNull()
     const mask = built.mask as Uint8Array
     expect([...mask].map((v) => v & HATCH_AT_BOUNDS)).toEqual([1, 1, 0, 0, 0, 0])
-    expect(label(built.atBounds)).toBe('45° at bounds: 4 parameters')
+    expect(label(built.atBounds)).toBe('At bounds: 4 parameters')
     const t = title(built.atBounds)
     expect(t).toContain('at least 10% of realizations near a bound by pestpp rule')
     expect(t).toContain('can be one high against pcs.csv')
@@ -208,7 +208,7 @@ describe('the at-bounds overlay', () => {
 
   it('says one parameter, not one parameters', async () => {
     const source = await loaded(atBounds(3, { names: ['hk_a'], groups: [{ group: 'hk', nPar: 1, nCounted: 1, nAtBounds: 1, nExcluded: {} }] }))
-    expect(label(source.build(inputs(), BOTH).atBounds)).toBe('45° at bounds: 1 parameter')
+    expect(label(source.build(inputs(), BOTH).atBounds)).toBe('At bounds: 1 parameter')
   })
 
   it('is off with the reason when the map is coloured by observations', async () => {
@@ -255,7 +255,7 @@ describe('the conflict overlay', () => {
       inputs({ colourSource: 'obs', obsGroup: 'heads', dotSiteIds: Int32Array.from([11, 13, 10, 12]) }),
       BOTH,
     )
-    expect(label(built.conflict)).toBe('135° conflict: 6 observations at 3 sites · computed')
+    expect(label(built.conflict)).toBe('Prior-data conflict: 6 observations at 3 sites · computed')
     const mask = built.mask as Uint8Array
     expect([...mask].map((v) => v & HATCH_CONFLICT)).toEqual([2, 0, 2, 0, 0, 0])
     // Dot 0 is site 11 and dot 2 is site 10; site 13 is another group, 12 another layer.
@@ -270,7 +270,7 @@ describe('the conflict overlay', () => {
   it('takes every group on the drawn layer when no observation group is coloured', async () => {
     const source = await loaded(atBounds(3), pdc(3, { source: 'file', sourceFile: 'case.pdc.csv' }))
     const built = source.build(inputs(), { atBounds: false, conflict: true })
-    expect(label(built.conflict)).toBe('135° conflict: 9 observations at 5 sites · from file')
+    expect(label(built.conflict)).toBe('Prior-data conflict: 9 observations at 5 sites · from file')
     const mask = built.mask as Uint8Array
     expect([...mask]).toEqual([2, 2, 2, 0, 0, 0])
     const t = title(built.conflict)
@@ -288,7 +288,7 @@ describe('the conflict overlay', () => {
 
   it('says one observation at one site', async () => {
     const source = await loaded(atBounds(3), pdc(3, { nObs: 1, nSites: 1 }))
-    expect(label(source.build(inputs(), BOTH).conflict)).toBe('135° conflict: 1 observation at 1 site · computed')
+    expect(label(source.build(inputs(), BOTH).conflict)).toBe('Prior-data conflict: 1 observation at 1 site · computed')
   })
 
   it('is off with the reason, prefixed by the iteration, when the iteration has no conflict table', async () => {
@@ -326,7 +326,7 @@ describe('the combined mask', () => {
     const built = source.build(inputs({ pointRows: Int32Array.from([0]) }), { atBounds: false, conflict: true })
     expect([...(built.mask as Uint8Array)].some((v) => (v & HATCH_AT_BOUNDS) !== 0)).toBe(false)
     expect(built.atBoundsDots.size).toBe(0)
-    expect(label(built.atBounds)).toBe('45° at bounds: 4 parameters')
+    expect(label(built.atBounds)).toBe('At bounds: 4 parameters')
   })
 
   it('is null with both toggles off', async () => {
@@ -341,6 +341,6 @@ describe('the combined mask', () => {
     const source = await loaded(atBounds(3, { names: [] }), pdc(3), 3)
     const built = source.build(inputs({ layer: 2 }), BOTH)
     expect(built.mask).toBeNull()
-    expect(label(built.atBounds)).toBe('45° at bounds: 4 parameters')
+    expect(label(built.atBounds)).toBe('At bounds: 4 parameters')
   })
 })

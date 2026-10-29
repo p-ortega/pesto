@@ -417,8 +417,8 @@ function lastPointCount(layer: LayerDouble): number {
 
 async function shown(root: HTMLElement): Promise<void> {
   await vi.waitFor(() => {
-    expect(toggleText(root, 'atBounds')).toContain('45° at bounds: 1 parameter')
-    expect(toggleText(root, 'conflict')).toContain('135° conflict: 3 observations at 2 sites')
+    expect(toggleText(root, 'atBounds')).toContain('At bounds: 1 parameter')
+    expect(toggleText(root, 'conflict')).toContain('Prior-data conflict: 3 observations at 2 sites')
   })
 }
 
@@ -616,14 +616,18 @@ describe('the overlays on the map', () => {
 
     setTexture(root, true)
     expect(layer.setStyle.mock.calls.at(-1)?.[0]).toEqual({ classes: 7, symmetric: false, texture: true })
+    const tooltip = {
+      atBounds: 'Hatch the cells whose parameters sit at a bound in the drawn realization.',
+      conflict: 'Hatch the sites whose observations conflict with the prior.',
+    }
     for (const kind of ['atBounds', 'conflict'] as const) {
       expect(toggle(root, kind).disabled).toBe(true)
       expect(toggle(root, kind).getAttribute('aria-pressed')).toBe('false')
-      expect(toggle(root, kind).title).toBe(OVERLAY_SUPPRESSED_REASON)
+      expect(toggle(root, kind).title).toBe(`${tooltip[kind]}\n${OVERLAY_SUPPRESSED_REASON}`)
       expect(toggleText(root, kind)).toContain(OVERLAY_SUPPRESSED_REASON)
     }
-    expect(toggleText(root, 'atBounds')).toContain('45° at bounds: 1 parameter')
-    expect(toggleText(root, 'conflict')).toContain('135° conflict: 3 observations at 2 sites')
+    expect(toggleText(root, 'atBounds')).toContain('At bounds: 1 parameter')
+    expect(toggleText(root, 'conflict')).toContain('Prior-data conflict: 3 observations at 2 sites')
 
     setTexture(root, false)
     expect(toggle(root, 'atBounds').disabled).toBe(false)
