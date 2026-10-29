@@ -745,6 +745,26 @@ def test_a_command_line_open_does_not_record_a_recent_run(
     assert not (home / ".cache" / "pesto" / "last_run.json").exists()
 
 
+def test_ids_issued_from_many_threads_stay_one_per_path(tmp_path: Path) -> None:
+    import threading
+
+    paths = [tmp_path / f"d{i}" for i in range(20)]
+    fs_ids: dict[str, Path] = {}
+    issued: list[list[str]] = []
+
+    def work() -> None:
+        issued.append([fs_module._issue_id(fs_ids, p) for p in paths * 5])
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(fs_ids) == len(paths)
+    assert all(run == issued[0] for run in issued)
+
+
 # --- The one real-benchmark case ------------------------------------------
 
 

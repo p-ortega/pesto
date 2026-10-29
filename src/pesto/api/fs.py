@@ -28,6 +28,7 @@ import re
 import secrets
 import string
 import sys
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -113,6 +114,10 @@ def _resolves_inside(parent: Path, child: Path) -> bool:
     return resolved_parent in (resolved_child, *resolved_child.parents)
 
 
+# Basemap handlers run in the threadpool, so two requests can issue ids at once.
+_ISSUE_LOCK = threading.Lock()
+
+
 def _issue_id(fs_ids: dict[str, Path], path: Path) -> str:
     """Return the id already issued for ``path``, or mint and record a
     fresh one. The path is resolved before it ever enters the map.
@@ -124,12 +129,13 @@ def _issue_id(fs_ids: dict[str, Path], path: Path) -> str:
     map on every refresh.
     """
     resolved = path.resolve()
-    for existing_id, existing_path in fs_ids.items():
-        if existing_path == resolved:
-            return existing_id
-    new_id = secrets.token_urlsafe(16)
-    fs_ids[new_id] = resolved
-    return new_id
+    with _ISSUE_LOCK:
+        for existing_id, existing_path in fs_ids.items():
+            if existing_path == resolved:
+                return existing_id
+        new_id = secrets.token_urlsafe(16)
+        fs_ids[new_id] = resolved
+        return new_id
 
 
 def _entry(fs_ids: dict[str, Path], path: Path, name: str) -> dict[str, object]:
