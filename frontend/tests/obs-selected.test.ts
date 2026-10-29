@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// The Obs tab's 'Selected sites' section: where a cell click found its sites, the cap and the
-// counts of what it left out, and the place of sites chosen any other way.
+// The Obs tab's 'Selected sites' section: always shown under that name, where a cell click found
+// its sites, the cap and the counts of what it left out, and the place of sites chosen any other way.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CellLinkAnswer, CellLinkSite } from '../src/data/link'
@@ -73,6 +73,10 @@ function title(host: HTMLElement): string {
   return host.querySelector('.obs-selected-title')?.textContent ?? ''
 }
 
+function sentence(host: HTMLElement): string {
+  return host.querySelector('.obs-selected-line')?.textContent ?? ''
+}
+
 function lines(host: HTMLElement): string[] {
   return [...host.querySelectorAll('.link-reach')].map((l) => l.textContent ?? '')
 }
@@ -107,11 +111,12 @@ describe('after a cell click', () => {
   it('says the sites were found in the cell and its first ring, and lists each with group, layer and where', () => {
     const { host, loadWhere } = clicked(cellAnswer())
 
-    expect(title(host)).toBe('Sites in cell 1234 and its 8 neighbouring cells on layer 3')
+    expect(title(host)).toBe('Selected sites · 2')
+    expect(sentence(host)).toBe('Sites in cell 1234 and its 8 neighbouring cells on layer 4 (index 3)')
     const [a, b] = rows(host)
     expect(cell(a, 'site').textContent).toBe('site_10')
     expect(cell(a, 'group').textContent).toBe('gw_head')
-    expect(cell(a, 'layer').textContent).toBe('3')
+    expect(cell(a, 'layer').textContent).toBe('4 (3)')
     expect(cell(a, 'where').textContent).toBe('in the cell')
     expect(cell(b, 'group').textContent).toBe('gw_date')
     expect(cell(b, 'where').textContent).toBe('in a neighbouring cell')
@@ -121,7 +126,7 @@ describe('after a cell click', () => {
   it('names every clicked cell when there are a few', () => {
     const { host } = clicked(cellAnswer({ cells: [12, 34], ring: Array.from({ length: 14 }, (_, i) => i) }))
 
-    expect(title(host)).toBe('Sites in cells 12 and 34 and their 14 neighbouring cells on layer 3')
+    expect(sentence(host)).toBe('Sites in cells 12 and 34 and their 14 neighbouring cells on layer 4 (index 3)')
   })
 
   it('says how many sites the cap left out', () => {
@@ -147,10 +152,11 @@ describe('after a cell click', () => {
   })
 
   it("gives the answer's reason as the section's text when no site is in reach", () => {
-    const reason = 'no observation site in this cell or its neighbours on layer 3'
+    const reason = 'no observation site in this cell or its neighbours on layer 4 (index 3)'
     const { host } = clicked(cellAnswer({ sites: [], sitesTotal: 0, reasons: { pars: null, sites: reason }, siteCounts: { unknownLayerIncluded: 0, otherLayerLeftOut: 4, unplacedInRun: 0 } }))
 
-    expect(title(host)).toBe(reason)
+    expect(title(host)).toBe('Selected sites · 0')
+    expect(sentence(host)).toBe(reason)
     expect(lines(host)).toEqual(['4 sites on other layers in these cells left out'])
     expect(rows(host).length).toBe(0)
   })
@@ -163,7 +169,7 @@ describe('after a cell click', () => {
     handle.refresh()
     await vi.waitFor(() => expect(rows(host).length).toBe(1))
 
-    expect(title(host)).toBe('Selected sites: 1')
+    expect(title(host)).toBe('Selected sites · 1')
     expect(loadWhere).toHaveBeenCalledWith([10], 0, expect.anything())
     expect(rows(host).map((r) => r.dataset.siteId)).toEqual(['10'])
   })
@@ -185,11 +191,12 @@ describe('sites chosen another way', () => {
     expect(askedIds.length).toBe(200)
     expect(askedIds.slice(0, 3)).toEqual([0, 1, 2])
     expect(iteration).toBe(2)
-    expect(title(host)).toBe('Selected sites: 250')
+    expect(title(host)).toBe('Selected sites · 250')
     const [a, b] = rows(host)
     expect(cell(a, 'site').textContent).toBe('site_0')
     expect(cell(a, 'group').textContent).toBe('gw_head')
-    expect(cell(a, 'layer').textContent).toBe('2')
+    expect(cell(a, 'layer').textContent).toBe('3 (2)')
+    expect(cell(a, 'where').title).toBe('cell 40 on layer 3 (index 2)')
     expect(cell(b, 'layer').textContent).toBe('unknown')
     expect(cell(b, 'where').textContent).toBe('not placed')
     expect(lines(host)).toContain('50 more selected sites are not listed: only the first 200 are looked up')
@@ -230,7 +237,49 @@ describe('sites chosen another way', () => {
 
     handle.refresh()
     await vi.waitFor(() => expect(host.textContent).toContain('obs_cell: obs_cell is not in the cache'))
+    expect(title(host)).toBe('Selected sites · 1')
+    expect(host.textContent).toContain('Where the selected sites are could not be read')
     expect(rows(host).length).toBe(0)
+  })
+
+  it('keeps the title and shows the serious notice when the lookup itself fails', async () => {
+    const store = makeStore({ sites: new Set([1, 2]) })
+    const loadWhere = vi.fn(async (): Promise<SitesWhereResult> => {
+      throw new Error('network down')
+    })
+    const { host, handle } = mount({ store, loadWhere })
+
+    handle.refresh()
+    await vi.waitFor(() => expect(host.textContent).toContain('obs_cell: network down'))
+    expect(title(host)).toBe('Selected sites · 2')
+    expect(host.textContent).toContain('Where the selected sites are could not be read')
+  })
+
+  it('says it is looking the sites up while the first answer is on its way', () => {
+    const store = makeStore({ sites: new Set([1]) })
+    const { host, handle } = mount({ store, loadWhere: vi.fn(() => deferred<SitesWhereResult>().promise) })
+
+    handle.refresh()
+
+    expect(title(host)).toBe('Selected sites · 1')
+    expect(lines(host)).toEqual(['Looking up where they are…'])
+  })
+
+  it('words a site layer one-based with the index alongside, and an unknown layer as unknown', async () => {
+    const store = makeStore({ sites: new Set([77, 78]) })
+    const loadWhere = vi.fn(async () => whereAnswer([where(77, { cell: 77, layer: 3 }), where(78, { layer: -1, placed: false, cell: -1 })]))
+    const { host, handle } = mount({ store, loadWhere })
+
+    handle.refresh()
+    await vi.waitFor(() => expect(rows(host).length).toBe(2))
+
+    const [a, b] = rows(host)
+    expect(cell(a, 'layer').textContent).toBe('4 (3)')
+    expect(cell(a, 'where').title).toBe('cell 77 on layer 4 (index 3)')
+    expect(cell(b, 'layer').textContent).toBe('unknown')
+    expect(cell(b, 'layer').textContent).not.toBe('1 (0)')
+    const heading = host.querySelector<HTMLElement>('[role="columnheader"][data-column="layer"]')!
+    expect(heading.title).toBe('Layer counted from 1; the index from 0 is in brackets.')
   })
 
   it('refuses an answer for another iteration than the one asked for', async () => {
@@ -305,13 +354,29 @@ describe('a changed site set', () => {
 })
 
 describe('the section in general', () => {
-  it('shows nothing with no site chosen', () => {
-    const { host, handle } = mount()
+  it('shows its title and how to select sites with no site chosen', () => {
+    const { host, handle, loadWhere } = mount()
 
     handle.refresh()
 
-    expect(host.textContent).toBe('')
-    expect(host.children.length).toBe(0)
+    expect(title(host)).toBe('Selected sites')
+    expect(sentence(host)).toBe('ℹ Click a cell, lasso sites on the map, or brush a residual histogram to select sites.')
+    expect(host.querySelector('[role="grid"]')).toBeNull()
+    expect(loadWhere).not.toHaveBeenCalled()
+  })
+
+  it('goes back to the title and hint once the selection is cleared', async () => {
+    const store = makeStore({ sites: new Set([5]) })
+    const loadWhere = vi.fn(async () => whereAnswer([where(5)]))
+    const { host, handle } = mount({ store, loadWhere })
+    handle.refresh()
+    await vi.waitFor(() => expect(rows(host).length).toBe(1))
+
+    store.set({ sites: new Set() }, 'obs')
+    handle.refresh()
+
+    expect(title(host)).toBe('Selected sites')
+    expect(rows(host).length).toBe(0)
   })
 
   it('hands a row click and its modifiers to the panel', async () => {

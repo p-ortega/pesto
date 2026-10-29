@@ -1,13 +1,15 @@
-// The Obs tab's 'Selected sites' section. After a cell click it says where the sites were
-// found (the cell and its first ring), what the cap left out and why other sites are missing
-// (D-06, D-07). Sites chosen any other way are looked up by id at the shown iteration.
+// The Obs tab's 'Selected sites' section, always shown under that one name. After a cell click
+// it says where the sites were found (the cell and its first ring), what the cap left out and
+// why other sites are missing (D-06, D-07). Sites chosen any other way are looked up by id.
 
 import { recentCellLink, type CellLinkAnswer } from '../data/link'
 import { fetchLinkSites, MAX_LINK_SITES, type SitesWhereResult } from '../data/link-targets'
 import { LatestWins } from '../data/latest-wins'
+import { layerCompact, layerWords } from '../data/layer-words'
 import { sameSet } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
+import { paintNote } from './note-line'
 
 export interface SelectedSitesOptions {
   store: SelectionStore
@@ -30,6 +32,9 @@ const OVERSCAN = 20
 const VIEWPORT_HEIGHT = 240
 
 const NO_GROUP = '—'
+const TITLE = 'Selected sites'
+const EMPTY_HINT = 'Click a cell, lasso sites on the map, or brush a residual histogram to select sites.'
+export const LAYER_HEADING_TITLE = 'Layer counted from 1; the index from 0 is in brackets.'
 
 interface SectionRow {
   siteId: number
@@ -46,6 +51,7 @@ interface SectionColumn {
   kind: 'name' | 'figure' | 'text'
   text(row: SectionRow): string
   title(row: SectionRow): string
+  headingTitle?: string
 }
 
 const COLUMNS: SectionColumn[] = [
@@ -61,8 +67,9 @@ const COLUMNS: SectionColumn[] = [
     key: 'layer',
     label: 'Layer',
     kind: 'figure',
-    text: (r) => (r.layer === -1 ? 'unknown' : String(r.layer)),
+    text: (r) => layerCompact(r.layer),
     title: (r) => (r.layer === -1 ? 'no layer could be worked out for this site' : ''),
+    headingTitle: LAYER_HEADING_TITLE,
   },
   { key: 'where', label: 'Where', kind: 'name', text: (r) => r.where, title: (r) => r.whereTitle },
 ]
@@ -77,13 +84,14 @@ function cellList(cells: readonly number[]): string {
   return `cells ${cells.slice(0, -1).join(', ')} and ${cells[cells.length - 1]}`
 }
 
-/** "Sites in cell 1234 and its 8 neighbouring cells on layer 3". */
+/** "Sites in cell 1234 and its 8 neighbouring cells on layer 4 (index 3)". */
 function reachText(answer: CellLinkAnswer): string {
   const these = cellList(answer.cells)
   const whose = answer.cells.length === 1 ? 'its' : 'their'
   const n = answer.ring.length
-  if (n === 0) return `Sites in ${these} on layer ${answer.layer}; no cell borders ${answer.cells.length === 1 ? 'it' : 'them'}`
-  return `Sites in ${these} and ${whose} ${plural(n, 'neighbouring cell', 'neighbouring cells')} on layer ${answer.layer}`
+  const layer = layerWords(answer.layer)
+  if (n === 0) return `Sites in ${these} on ${layer}; no cell borders ${answer.cells.length === 1 ? 'it' : 'them'}`
+  return `Sites in ${these} and ${whose} ${plural(n, 'neighbouring cell', 'neighbouring cells')} on ${layer}`
 }
 
 function countLines(answer: CellLinkAnswer): string[] {
@@ -120,15 +128,41 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
     drawn = null
   }
 
-  function appendTitle(text: string, fullTitle: string): void {
+  // `Selected sites`, then ` · {count}` once sites are selected or a cell was clicked.
+  function appendTitle(count: number | null): void {
     const box = document.createElement('div')
     box.classList.add('obs-selected-title')
-    const span = document.createElement('span')
-    span.classList.add('label')
-    span.textContent = text
-    span.title = fullTitle
-    box.appendChild(span)
+    const heading = document.createElement('span')
+    heading.classList.add('body')
+    heading.style.fontWeight = '600'
+    heading.textContent = TITLE
+    box.appendChild(heading)
+    if (count !== null) {
+      box.appendChild(document.createTextNode(' '))
+      const countEl = document.createElement('span')
+      countEl.classList.add('body', 'tabular-nums')
+      countEl.style.fontWeight = '600'
+      countEl.textContent = `· ${count}`
+      countEl.title = `${plural(count, 'site is', 'sites are')} selected`
+      box.appendChild(countEl)
+    }
     host.appendChild(box)
+  }
+
+  // The sentence under the title: where a cell click looked, or why it found nothing.
+  function appendSentence(text: string, fullTitle: string): HTMLElement {
+    const line = document.createElement('div')
+    line.classList.add('label', 'wrap-note', 'obs-selected-line')
+    line.textContent = text
+    if (fullTitle !== '') line.title = fullTitle
+    host.appendChild(line)
+    return line
+  }
+
+  function drawEmpty(): void {
+    clear()
+    appendTitle(null)
+    paintNote(appendSentence('', ''), { kind: 'reason', text: EMPTY_HINT })
   }
 
   function appendLine(text: string): void {
@@ -154,6 +188,7 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
       heading.dataset.column = column.key
       heading.classList.add('obs-col', `obs-col-${column.kind}`, 'label')
       heading.textContent = column.label
+      if (column.headingTitle !== undefined) heading.title = column.headingTitle
       header.appendChild(heading)
     }
     grid.appendChild(header)
@@ -224,13 +259,14 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
     clear()
     const reach = reachText(answer)
     const fullReach = `${reach}. ${answer.ringRule}`
+    appendTitle(answer.sites.length)
     if (answer.sites.length === 0) {
       // D-07: an empty reach is said in words, never left as an empty section.
       const reason = answer.reasons.sites ?? 'no observation site was found in this cell or its neighbours'
-      appendTitle(reason, fullReach)
+      appendSentence(reason, fullReach)
     } else {
       const cells = answer.cells.length > 5 ? `${reach}. Cells: ${answer.cells.join(', ')}. ${answer.ringRule}` : fullReach
-      appendTitle(reach, cells)
+      appendSentence(reach, cells)
       if (answer.reasons.sites !== null) appendLine(answer.reasons.sites)
     }
     for (const line of countLines(answer)) appendLine(line)
@@ -255,7 +291,7 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
 
   function drawWhere(total: number, iteration: number, result: SitesWhereResult): void {
     clear()
-    appendTitle(`Selected sites: ${total}`, `${plural(total, 'site is', 'sites are')} selected`)
+    appendTitle(total)
     if (!result.ok) {
       drawRefusal(`${result.artifact}: ${result.reason}`)
       return
@@ -289,14 +325,14 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
         group: s.group === '' ? null : s.group,
         layer: s.layer,
         where: s.placed ? `cell ${s.cell}` : 'not placed',
-        whereTitle: s.placed ? `cell ${s.cell} on layer ${s.layer}` : 'this site has no position in the model grid',
+        whereTitle: s.placed ? `cell ${s.cell} on ${layerWords(s.layer)}` : 'this site has no position in the model grid',
       })),
     )
   }
 
   function drawLoading(total: number): void {
     clear()
-    appendTitle(`Selected sites: ${total}`, `${plural(total, 'site is', 'sites are')} selected`)
+    appendTitle(total)
     appendLine('Looking up where they are…')
   }
 
@@ -316,7 +352,7 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
       (error: unknown) => {
         slot.cancel()
         clear()
-        appendTitle(`Selected sites: ${ids.length}`, `${plural(ids.length, 'site is', 'sites are')} selected`)
+        appendTitle(ids.length)
         drawRefusal(`obs_cell: ${error instanceof Error ? error.message : String(error)}`)
       },
     )
@@ -337,7 +373,7 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
     }
     if (selection.sites.size === 0) {
       slot.cancel()
-      clear()
+      drawEmpty()
       return
     }
     lookUp([...selection.sites], selection.iteration)
