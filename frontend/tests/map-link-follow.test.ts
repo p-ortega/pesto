@@ -970,4 +970,17 @@ describe('picked sites are rings over a parameter field', () => {
     // The click named the site, not the cell under the ring.
     expect(stub.linkCells).toEqual([])
   })
+
+  it('a click 7 px from a ring picks its site, as the 8 px reach of a dot does', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    store.set({ sites: new Set([101, 104]) }, 'obs')
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([0.25, 0.6, 1.75, 0.5]))
+    // Canvas px per world unit as Camera.fit lays this 2 by 1 mesh out, with its 4% padding.
+    const scale = 0.96 * Math.min(canvas.width / 2, canvas.height)
+    clickAtWorld(canvas, 1.75 + 7 / scale, 0.5)
+    expect(sorted(store.get().sites)).toEqual([104])
+    expect(readoutText(root)).toContain('s104 (heads)')
+  })
 })

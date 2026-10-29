@@ -305,6 +305,21 @@ describe('a group placed by x/y draws as dots', () => {
     expect(readout).not.toMatch(/\bpa\b/)
   })
 
+  it('a click 7 px from a dot picks it and one 9 px away reads the cell instead', async () => {
+    const root = await mounted()
+    choose(root, 'k')
+    await vi.waitFor(() => expect(legendText(root)).toContain('points on this layer'))
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    const scale = 0.96 * Math.min(canvas.width, canvas.height)
+    const x = canvas.width / 2 + scale * (0.75 - 0.5)
+    const readout = () => root.querySelector('.floating-bottom-right')?.textContent ?? ''
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 7, clientY: canvas.height / 2 }))
+    expect(readout()).toContain('pb')
+    canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 9, clientY: canvas.height / 2 }))
+    expect(readout()).not.toContain('x 1, y 1 · layer 0')
+  })
+
   it('a click on a dot writes its parameter name to the store and clears the cell', async () => {
     const store = createSelectionStore({ initial: emptySelection('test_run', 0), schedule: () => {} })
     const root = await mounted(() => {}, store)
