@@ -411,6 +411,122 @@ def test_capability_map_blocked_when_nothing_has_been_ingested(tmp_path):
     assert "par_ens/0" in blocked_names
 
 
+def _section_state(run_dir: Path, cache_root: Path) -> dict:
+    app, token = _app_for(run_dir, cache_root)
+    response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_capability_section_is_available_once_grid_and_elev_are_ok(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    _mark_ok_with_file(manifest, layout, "grid")
+    _mark_ok_with_file(manifest, layout, "elev")
+    manifest.save(layout)
+
+    section = _section_state(run_dir, cache_root)["capabilities"]["section"]
+    assert section == {"available": True, "blocked_by": []}
+
+
+def test_capability_section_on_a_cache_from_before_the_section_view_says_the_next_ingest_adds_it(
+    tmp_path,
+):
+    from pesto.ingest.elev import ELEV_PREDATES
+
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    _mark_ok_with_file(manifest, layout, "grid")
+    manifest.save(layout)
+
+    section = _section_state(run_dir, cache_root)["capabilities"]["section"]
+    assert ELEV_PREDATES == "this cache predates the section view; it is added on the next ingest"
+    assert section == {
+        "available": False,
+        "blocked_by": [{"artifact": "elev", "reason": ELEV_PREDATES}],
+    }
+
+
+def test_capability_section_carries_the_elev_artifacts_own_refusal(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    _mark_ok_with_file(manifest, layout, "grid")
+    manifest.mark_failed("elev", "the grid file records no layer bottoms")
+    manifest.save(layout)
+
+    section = _section_state(run_dir, cache_root)["capabilities"]["section"]
+    assert section == {
+        "available": False,
+        "blocked_by": [{"artifact": "elev", "reason": "the grid file records no layer bottoms"}],
+    }
+
+
+def test_capability_section_names_the_grid_and_its_reason_when_the_grid_failed(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    manifest.mark_failed("grid", "failed to parse grid file model.grb: bad header")
+    manifest.save(layout)
+
+    section = _section_state(run_dir, cache_root)["capabilities"]["section"]
+    assert section == {
+        "available": False,
+        "blocked_by": [{"artifact": "grid", "reason": "failed to parse grid file model.grb: bad header"}],
+    }
+
+
+def test_capability_section_before_anything_is_ingested_names_the_grid(tmp_path):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    section = _section_state(run_dir, tmp_path / "cache")["capabilities"]["section"]
+    assert section == {
+        "available": False,
+        "blocked_by": [{"artifact": "grid", "reason": "not yet ingested"}],
+    }
+
+
+def test_capability_section_for_a_run_with_no_grid_file_says_so(tmp_path):
+    run_dir = _make_run(tmp_path, with_grid=False, iterations=(0,))
+    section = _section_state(run_dir, tmp_path / "cache")["capabilities"]["section"]
+    assert section == {
+        "available": False,
+        "blocked_by": [{"artifact": "grid", "reason": "this run has no grid file"}],
+    }
+
+
+def test_a_cache_with_grid_ok_and_no_elev_record_plans_elev_stale_and_grid_fresh(tmp_path):
+    from pesto.ingest.runner import is_planned_stale
+
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    manifest = Manifest.empty(str(run_dir))
+    for planned in _planned_for(run_dir, layout):
+        if planned.name == "elev":
+            continue
+        sources = [SourceFingerprint.of(Path(s)) for s in planned.sources]
+        _mark_ok_with_file(manifest, layout, planned.name, sources=sources)
+    manifest.save(layout)
+
+    by_planned = {pa.name: pa for pa in _planned_for(run_dir, layout)}
+    loaded = Manifest.load(layout)
+    assert is_planned_stale(loaded, layout, by_planned["elev"]) is True
+    assert is_planned_stale(loaded, layout, by_planned["grid"]) is False
+
+    body = _section_state(run_dir, cache_root)
+    by_name = {a["name"]: a for a in body["artifacts"]}
+    assert body["fresh"] is False
+    assert by_name["elev"]["stale"] is True and by_name["elev"]["state"] == "absent"
+    assert [a["name"] for a in body["artifacts"] if a["stale"]] == ["elev"]
+    assert CACHE_VERSION == 3
+
+
 def _obs_capability(app, token):
     response = _client(app).get("/api/run/ingest/state", headers={"x-pesto-token": token})
     return response.json()["capabilities"]["obs"]
