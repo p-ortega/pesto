@@ -4,13 +4,17 @@ import {
   offScreenCount,
   offScreenLine,
   parameterLines,
+  groupSitesById,
   parameterRingCells,
+  pickedSiteRings,
   selectedDotIndices,
   whereLines,
+  type GroupSitesRead,
   type ParLinkAnswer,
   type SitesWhereAnswer,
 } from '../src/data/link-follow'
 import type { ParLink, SiteWhere } from '../src/data/link-targets'
+import type { ObsSiteRow } from '../src/data/obs'
 import { OUTLINE_MAX_CELLS } from '../src/gl/outline'
 
 describe('selectedDotIndices', () => {
@@ -133,7 +137,7 @@ function sitesAnswer(sites: SiteWhere[], extra: Partial<SitesWhereAnswer> = {}):
   return { ok: true, iteration: 2, sites, unknown: [], valueRule: 'a measured value', valueReason: null, notAsked: 0, reason: null, notes: [], ...extra }
 }
 
-const OBS = { colourSource: 'obs' as const, group: 'heads', layer: 0, allLayers: false }
+const OBS = { group: 'heads', layer: 0, allLayers: false }
 
 describe('the reason and notes the server gives for a site lookup', () => {
   it('says why no id could be looked up instead of calling them missing from the index', () => {
@@ -141,11 +145,10 @@ describe('the reason and notes the server gives for a site lookup', () => {
     expect(whereLines(sitesAnswer([], { unknown: [1, 2], reason }), OBS)).toEqual([`2 selected sites are not looked up: ${reason}`])
   })
 
-  it("keeps the server's notes, also while the map is coloured by parameters", () => {
+  it("keeps the server's notes", () => {
     const note = 'site x has no observation group, so its group is sent as empty text'
     const answer = sitesAnswer([site({ siteId: 1, group: '' })], { notes: [note] })
     expect(whereLines(answer, OBS)).toEqual(['1 selected site is in another group (shown: heads)', note])
-    expect(whereLines(answer, { ...OBS, colourSource: 'par' })).toEqual(['1 selected site is not drawn: the map is coloured by parameters', note])
   })
 })
 
@@ -183,11 +186,6 @@ describe('whereLines', () => {
   it('counts sites on each other layer separately, plural spelled out', () => {
     const answer = sitesAnswer([site({ siteId: 1, layer: 4 }), site({ siteId: 2, layer: 4 }), site({ siteId: 3, layer: 1 })])
     expect(whereLines(answer, OBS)).toEqual(['1 selected site is on layer 1', '2 selected sites are on layer 4'])
-  })
-
-  it('says in one line that no site is drawn while the map is coloured by parameters', () => {
-    const answer = sitesAnswer([site({ siteId: 1 }), site({ siteId: 2, layer: 4 })], { unknown: [9] })
-    expect(whereLines(answer, { ...OBS, colourSource: 'par' })).toEqual(['3 selected sites are not drawn: the map is coloured by parameters'])
   })
 })
 
@@ -229,5 +227,72 @@ describe('missingValueLine', () => {
     expect(missingValueLine(sitesAnswer([site({ siteId: 1 })]), 1)).toBeNull()
     const line = missingValueLine(sitesAnswer([site({ siteId: 1, hasValue: false })], { notAsked: 4 }), 205)
     expect(line?.detail).toBe('a measured value. Only the first 200 selected sites were checked.')
+  })
+})
+
+function siteRow(over: Partial<ObsSiteRow> & { siteId: number }): ObsSiteRow {
+  return { site: `s${over.siteId}`, nObs: 1, x: 0, y: 0, xySource: 'own', layer: 0, cell: 0, rule: 'own xy', note: null, ...over }
+}
+
+const held = (rows: ObsSiteRow[]): GroupSitesRead => groupSitesById(rows)
+
+describe('pickedSiteRings', () => {
+  const ON_0 = { layer: 0, allLayers: false }
+
+  it('rings each picked site at its own row of its group, matched by id, never by row position', () => {
+    // The table lists 20 before 10; the answer asks 10 first.
+    const heads = held([siteRow({ siteId: 20, x: 5, y: 6 }), siteRow({ siteId: 10, x: 1, y: 2 })])
+    const rings = pickedSiteRings(sitesAnswer([site({ siteId: 10 }), site({ siteId: 20 })]), () => heads, ON_0)
+    expect(rings.siteIds).toEqual([10, 20])
+    expect(Array.from(rings.xy)).toEqual([1, 2, 5, 6])
+    expect(rings.lines).toEqual([])
+  })
+
+  it('reads each site from its own group', () => {
+    const tables: Record<string, GroupSitesRead> = {
+      heads: held([siteRow({ siteId: 1, x: 1, y: 1 })]),
+      conc: held([siteRow({ siteId: 1, x: 9, y: 9 }), siteRow({ siteId: 2, x: 3, y: 4 })]),
+    }
+    const rings = pickedSiteRings(sitesAnswer([site({ siteId: 2, group: 'conc' })]), (g) => tables[g], ON_0)
+    expect(Array.from(rings.xy)).toEqual([3, 4])
+  })
+
+  it('lists a site with no position with its reason, and draws no ring for it', () => {
+    const heads = held([siteRow({ siteId: 1, xySource: 'none', x: Number.NaN, y: Number.NaN, note: 'no x/y and no cell' })])
+    const rings = pickedSiteRings(sitesAnswer([site({ siteId: 1 })]), () => heads, ON_0)
+    expect(rings.siteIds).toEqual([])
+    expect(rings.lines).toEqual(['1 selected site has no position, not drawn: no x/y and no cell'])
+  })
+
+  it('draws a site on another layer or of unknown layer only while all layers is on, as the obs dots do', () => {
+    const heads = held([siteRow({ siteId: 1, layer: 2 }), siteRow({ siteId: 2, layer: 2 }), siteRow({ siteId: 3, layer: -1 }), siteRow({ siteId: 4 })])
+    const answer = sitesAnswer([1, 2, 3, 4].map((id) => site({ siteId: id })))
+    const one = pickedSiteRings(answer, () => heads, ON_0)
+    expect(one.siteIds).toEqual([4])
+    expect(one.lines).toEqual(['2 selected sites are on layer 2, not drawn on layer 0', '1 selected site has an unknown layer, not drawn on layer 0'])
+    const all = pickedSiteRings(answer, () => heads, { layer: 0, allLayers: true })
+    expect(all.siteIds).toEqual([1, 2, 3, 4])
+    expect(all.lines).toEqual([])
+  })
+
+  it('names a site missing from its table, an id on two rows, a table that failed, and one still loading', () => {
+    const tables: Record<string, GroupSitesRead> = {
+      heads: held([siteRow({ siteId: 1 }), siteRow({ siteId: 2 }), siteRow({ siteId: 2, x: 7 })]),
+      conc: { state: 'failed', reason: 'obs_cell: the file is missing' },
+      flow: { state: 'loading' },
+    }
+    const answer = sitesAnswer(
+      [site({ siteId: 9 }), site({ siteId: 2 }), site({ siteId: 3, group: 'conc' }), site({ siteId: 4, group: 'flow' })],
+      { unknown: [77] },
+    )
+    const rings = pickedSiteRings(answer, (g) => tables[g], ON_0)
+    expect(rings.siteIds).toEqual([])
+    expect(rings.lines).toEqual([
+      '1 selected site is not drawn: it is not in the sites table of group heads',
+      '1 selected site is not drawn: its id is on more than one row of the sites table of group heads',
+      '1 selected site is not drawn: the positions of group conc could not be read: obs_cell: the file is missing',
+      '1 selected site is not drawn yet: reading where it is',
+      "1 selected site is not in this run's index",
+    ])
   })
 })

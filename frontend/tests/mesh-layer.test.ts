@@ -1357,3 +1357,48 @@ describe('MeshLayer grid lines', () => {
     expect(lineDraws(calls).map((c) => c.args[1])).toEqual([24])
   })
 })
+
+describe('MeshLayer picked-site rings', () => {
+  const pointDraws = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'drawArrays' && c.args[0] === 'POINTS').map((c) => c.args)
+  const ringFragment = (calls: Call[]) =>
+    calls.filter((c) => c.method === 'shaderSource').map((c) => c.args[1] as string).find((s) => s.includes('u_inkInner'))!
+
+  it('draws one ring per site after the points, in the hatch ink and halo, and none once cleared', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setPoints(new Float32Array([0, 0, 1, 1]), new Float32Array([1, 2]))
+    layer.setSiteRings(new Float32Array([0.5, 0.5, 2.5, 0.5, 1.5, 0.5]))
+    layer.setHatchColors([0.1, 0.2, 0.3], [0.9, 0.9, 0.9])
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([
+      ['POINTS', 0, 2],
+      ['POINTS', 0, 3],
+    ])
+    expect(uniformAfter(calls, 'u_ink', 'uniform3f')).toContainEqual([0.1, 0.2, 0.3])
+    expect(uniformAfter(calls, 'u_halo', 'uniform3f')).toEqual([[0.9, 0.9, 0.9]])
+
+    layer.setSiteRings(new Float32Array(0))
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([['POINTS', 0, 2]])
+  })
+
+  it('draws a ring with no fill, so the cell value shows inside it', () => {
+    const { gl, calls } = createRecordingGl()
+    new MeshLayer(gl, threeCellMesh())
+    expect(ringFragment(calls)).toMatch(/r < u_inkInner - u_haloWidth \|\| r > u_inkOuter \+ u_haloWidth\) discard/)
+  })
+
+  it('keeps the rings after a context restore and refuses an odd coordinate count', () => {
+    const { gl, calls } = createRecordingGl()
+    const layer = new MeshLayer(gl, threeCellMesh())
+    layer.setSiteRings(new Float32Array([0.5, 0.5]))
+    layer.reupload()
+    calls.length = 0
+    layer.draw()
+    expect(pointDraws(calls)).toEqual([['POINTS', 0, 1]])
+    expect(() => layer.setSiteRings(new Float32Array([1, 2, 3]))).toThrow(/3 coordinates/)
+  })
+})
