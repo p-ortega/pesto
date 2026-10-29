@@ -22,6 +22,10 @@ class LineTooShort(ValueError):
     """The two ends of the line are closer together than the tolerance."""
 
 
+class LineTooLong(ValueError):
+    """The two ends of the line are too far apart for float64 to hold their distance."""
+
+
 def cell_bboxes(vx, vy, start):
     """Each cell's bounding box, as ``(xmin, xmax, ymin, ymax)`` arrays."""
     idx = start[:-1]
@@ -56,13 +60,48 @@ def _empty(counts):
     return np.empty(0, np.int64), np.empty(0), np.empty(0), counts
 
 
+def _on_edge(a, d, axis, value):
+    # Exact on the edge's own axis, so a far end cannot round the clipped point off the box.
+    point = np.empty(2)
+    other = 1 - axis
+    point[axis] = value
+    point[other] = a[other] + (value - a[axis]) * (d[other] / d[axis])
+    return point
+
+
+def _clip(bbox, a, b, d):
+    """The ends of the part of the line inside the cells' joint box padded by
+    its own size, or ``None`` when the line misses that box (Liang-Barsky)."""
+    x0, x1, y0, y1 = bbox[0].min(), bbox[1].max(), bbox[2].min(), bbox[3].max()
+    # A wide pad, so a line grazing the cells is still walked over a stretch much longer than tol.
+    pad = max(x1 - x0, y1 - y0)
+    lo = (x0 - pad, y0 - pad)
+    hi = (x1 + pad, y1 + pad)
+    t0, t1 = 0.0, 1.0
+    p0, p1 = a, b
+    for axis in (0, 1):
+        if d[axis] == 0.0:
+            if a[axis] < lo[axis] or a[axis] > hi[axis]:
+                return None
+            continue
+        enter, leave = (lo[axis], hi[axis]) if d[axis] > 0 else (hi[axis], lo[axis])
+        u0 = (enter - a[axis]) / d[axis]
+        u1 = (leave - a[axis]) / d[axis]
+        if u0 > t0:
+            t0, p0 = u0, _on_edge(a, d, axis, enter)
+        if u1 < t1:
+            t1, p1 = u1, _on_edge(a, d, axis, leave)
+    return None if t0 > t1 else (p0, p1)
+
+
 def walk(vx, vy, start, a, b, tol, bbox=None):
     """The pieces of the line from ``a`` to ``b``, ordered by ``s0`` then cell.
 
     Returns ``(cell, s0, s1, counts)``; ``counts`` holds ``candidates`` (cells
     whose box the line meets), ``zero_length_dropped`` and ``ties_resolved``.
-    Raises ``LineTooShort`` when the line is no longer than ``tol``, and
-    ``TypeError`` when ``vx`` or ``vy`` is not float64.
+    Raises ``LineTooShort`` when the line is no longer than ``tol``,
+    ``LineTooLong`` when its length overflows float64, and ``TypeError`` when
+    ``vx`` or ``vy`` is not float64.
     """
     vx = np.asarray(vx)
     vy = np.asarray(vy)
@@ -73,8 +112,11 @@ def walk(vx, vy, start, a, b, tol, bbox=None):
     start = np.asarray(start, dtype=np.int64)
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
-    d = b - a
-    length = float(np.hypot(*d))
+    with np.errstate(over="ignore"):
+        d = b - a
+        length = float(np.hypot(*d))
+    if not (np.all(np.isfinite(d)) and np.isfinite(length)):
+        raise LineTooLong("the two ends are too far apart for their distance to be held in float64")
     counts = {"candidates": 0, "zero_length_dropped": 0, "ties_resolved": 0}
     if not length > tol:
         raise LineTooShort(
@@ -82,6 +124,23 @@ def walk(vx, vy, start, a, b, tol, bbox=None):
         )
     if bbox is None:
         bbox = cell_bboxes(vx, vy, start)
+    clipped = _clip(bbox, a, b, d)
+    if clipped is None:
+        return _empty(counts)
+    a_c, b_c = clipped
+    if a_c is a and b_c is b:
+        return _walk_segment(vx, vy, start, a, d, length, tol, bbox, counts)
+    # Walked only near the cells, so a far end costs the midpoints no precision; s still counts from A.
+    d_c = b_c - a_c
+    length_c = float(np.hypot(*d_c))
+    if not length_c > tol:
+        return _empty(counts)
+    cell, s0, s1, counts = _walk_segment(vx, vy, start, a_c, d_c, length_c, tol, bbox, counts)
+    offset = float(np.hypot(*(a_c - a)))
+    return cell, s0 + offset, s1 + offset, counts
+
+
+def _walk_segment(vx, vy, start, a, d, length, tol, bbox, counts):
     cand = _slab_candidates(bbox, a, d, tol)
     counts["candidates"] = int(cand.size)
     if cand.size == 0:

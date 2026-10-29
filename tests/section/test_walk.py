@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pesto.section.walk import LineTooShort, walk
+from pesto.section.walk import LineTooLong, LineTooShort, walk
 
 SECTION_PACKAGE = Path(__file__).resolve().parents[2] / "src" / "pesto" / "section"
 
@@ -210,6 +210,36 @@ def test_a_line_that_misses_every_cell_gives_no_piece_and_no_candidate():
 
     assert cell.size == 0 and s0.size == 0 and s1.size == 0
     assert counts == {"candidates": 0, "zero_length_dropped": 0, "ties_resolved": 0}
+
+
+@pytest.mark.parametrize("far", [1e15, 1e16, 1e200])
+def test_ends_far_from_the_mesh_give_the_same_pieces_measured_from_the_real_start(far):
+    vx, vy, start = _two_unit_squares()
+
+    cell, s0, s1, _ = walk(vx, vy, start, (-far, 0.5), (far, 0.5), 1e-9)
+
+    assert cell.tolist() == [0, 1]
+    # far + 0, far + 1 and far + 2 are what float64 holds for the distances from A.
+    np.testing.assert_array_equal(s0, [far + 0.0, far + 1.0])
+    np.testing.assert_array_equal(s1, [far + 1.0, far + 2.0])
+
+
+def test_a_far_end_keeps_the_pieces_near_the_mesh_exact():
+    vx, vy, start = _two_unit_squares()
+
+    cell, s0, s1, _ = walk(vx, vy, start, (0.5, 0.5), (1e200, 0.5), 1e-9)
+
+    assert cell.tolist() == [0, 1]
+    np.testing.assert_allclose(s0, [0.0, 0.5], atol=1e-12)
+    np.testing.assert_allclose(s1, [0.5, 1.5], atol=1e-12)
+
+
+def test_a_line_too_long_to_measure_in_float64_is_refused_by_name():
+    vx, vy, start = _two_unit_squares()
+
+    with pytest.raises(LineTooLong, match="too far apart"):
+        walk(vx, vy, start, (-1e308, 0.5), (1e308, 0.5), 1e-9)
+    assert issubclass(LineTooLong, ValueError)
 
 
 def test_a_line_along_the_outer_boundary_gives_each_boundary_cell_once_with_no_gap():

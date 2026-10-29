@@ -27,7 +27,7 @@ from pesto.ingest.elev import ELEV_PREDATES, elev_grid_mismatch, load_elev
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import load_idomain, load_mesh_extent
 from pesto.section.assemble import STATUS_TEXT, answer_notes, assemble
-from pesto.section.walk import LineTooShort, walk
+from pesto.section.walk import LineTooLong, LineTooShort, walk
 
 router = APIRouter(prefix="/api/run/grid")
 
@@ -87,6 +87,14 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
         )
     except LineTooShort as exc:
         return problem(422, "the two ends are on the same spot", detail=str(exc))
+    except LineTooLong as exc:
+        return problem(422, "the line's ends are too far apart to measure", detail=str(exc))
+    except (OverflowError, FloatingPointError) as exc:
+        return problem(
+            422,
+            "the line's ends are too far apart to measure",
+            detail=f"the walk along the line overflowed float64: {exc}",
+        )
     if cell.size == 0:
         near = walk_counts["candidates"]
         detail = (

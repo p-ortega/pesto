@@ -230,6 +230,32 @@ def test_a_line_with_both_ends_off_the_mesh_keeps_the_part_over_cells(tmp_path, 
     assert body["s1"][-1] == pytest.approx(4.0, abs=1e-9)
 
 
+def test_a_line_with_an_end_far_beyond_the_mesh_still_answers_its_pieces(tmp_path, run_dir):
+    layout = _build_cache(run_dir, tmp_path / "cache")
+
+    response = _client(layout).get("/api/run/grid/section", params={**LINE, "bx": 1e200})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["cell"] == [0, 1, 2]
+    assert body["s0"] == pytest.approx([0.5, 1.5, 3.0], abs=1e-9)
+    assert body["s1"] == pytest.approx([1.5, 2.5, 4.0], abs=1e-9)
+    assert body["line"]["length"] == pytest.approx(1e200)
+
+
+def test_a_line_too_long_to_measure_is_refused_with_a_reason(tmp_path, run_dir):
+    layout = _build_cache(run_dir, tmp_path / "cache")
+
+    response = _client(layout).get(
+        "/api/run/grid/section", params={"ax": -1e308, "ay": 2000.5, "bx": 1e308, "by": 2000.5}
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["title"] == "the line's ends are too far apart to measure"
+    assert "too far apart" in body["detail"]
+
+
 @pytest.mark.parametrize(
     ("params", "field"),
     [
