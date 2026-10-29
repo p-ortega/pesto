@@ -233,9 +233,10 @@ NO_GRID_FILE_REASON = "this run has no grid file"
 def _section_capability(manifest: Manifest, grid_names: list[str]) -> dict[str, Any]:
     """Whether the section view can be drawn. The first thing missing is the
     one reason: no grid file, the grid's own failure, a cache written before
-    elev existed, or elev's own recorded refusal."""
+    elev existed, elev's own recorded refusal, or elev built from another
+    version of the grid file than the mesh."""
     # Imported here so this module stays light at launch (see the module docstring).
-    from pesto.ingest.elev import ELEV_PREDATES
+    from pesto.ingest.elev import ELEV_PREDATES, elev_grid_mismatch
 
     if not grid_names:
         return {"available": False, "blocked_by": [{"artifact": "grid", "reason": NO_GRID_FILE_REASON}]}
@@ -248,6 +249,9 @@ def _section_capability(manifest: Manifest, grid_names: list[str]) -> dict[str, 
         return {"available": False, "blocked_by": [{"artifact": "elev", "reason": ELEV_PREDATES}]}
     if elev.state != "ok":
         return {"available": False, "blocked_by": [_artifact_fact(manifest, "elev")]}
+    mismatch = elev_grid_mismatch(manifest.artifacts.get(grid_names[0]), elev)
+    if mismatch is not None:
+        return {"available": False, "blocked_by": [{"artifact": "elev", "reason": mismatch}]}
     return {"available": True, "blocked_by": []}
 
 

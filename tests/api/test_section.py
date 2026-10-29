@@ -290,6 +290,60 @@ def test_an_elev_artifact_recorded_failed_is_refused_with_its_reason(tmp_path, r
     assert body["detail"] == "the grid file records no layer bottoms"
 
 
+def test_elevations_built_from_another_version_of_the_grid_file_are_refused(tmp_path, run_dir):
+    from pesto.cache.manifest import SourceFingerprint
+
+    grid_file = run_dir / "model.disv.grb"
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    old = SourceFingerprint.of(grid_file)
+    # The grid file changed and grid was rebuilt from it; elev was not.
+    write_disv_grb(grid_file, inactive_cell=0)
+    new = SourceFingerprint.of(grid_file)
+    assert new.checksum != old.checksum
+    manifest = Manifest.load(layout)
+    manifest.mark_ok("grid", sources=[new], files=manifest.artifacts["grid"].files)
+    manifest.mark_ok("elev", sources=[old], files=manifest.artifacts["elev"].files)
+    manifest.save(layout)
+
+    response = _client(layout).get("/api/run/grid/section", params=LINE)
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["artifact"] == "elev"
+    assert "another version of the grid file" in body["detail"]
+
+
+def test_elevations_built_from_the_same_grid_file_as_the_mesh_are_served(tmp_path, run_dir):
+    from pesto.cache.manifest import SourceFingerprint
+
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    same = SourceFingerprint.of(run_dir / "model.disv.grb")
+    manifest = Manifest.load(layout)
+    manifest.mark_ok("grid", sources=[same], files=manifest.artifacts["grid"].files)
+    manifest.mark_ok("elev", sources=[same], files=manifest.artifacts["elev"].files)
+    manifest.save(layout)
+
+    response = _client(layout).get("/api/run/grid/section", params=LINE)
+
+    assert response.status_code == 200, response.text
+    _assert_three_pieces(response.json())
+
+
+def test_elevations_whose_cell_count_is_not_the_meshs_are_refused(tmp_path, run_dir):
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    mesh_json = layout.grid / "mesh.json"
+    mesh = json.loads(mesh_json.read_text())
+    mesh["n_cells"] += 1
+    mesh_json.write_text(json.dumps(mesh))
+
+    response = _client(layout).get("/api/run/grid/section", params=LINE)
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "elev.json" in detail and "mesh.json" in detail
+    assert f"{mesh['n_cells'] - 1} cells per layer" in detail
+
+
 def test_no_open_run_is_refused():
     app, token = create_app()
     client = TestClient(app, base_url=BASE_URL)
