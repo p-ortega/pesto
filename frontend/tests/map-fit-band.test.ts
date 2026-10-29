@@ -1,14 +1,20 @@
 // @vitest-environment jsdom
 //
-// LD-4: the plan fits into the part of the map the left cards leave free, on first draw, on Fit
-// to extent and on Home only, and folding or opening a card never moves it. The real map screen
-// against a stubbed fetch, with the GL context and MeshLayer mocked and the layout stubbed by hand.
+// LD-4: the plan and the section fit into the part of the map the left cards leave free, on first
+// draw, on Fit to extent and on Home only, and folding or opening a card never moves either. The
+// real map screen against a stubbed fetch, with the GL context and MeshLayer mocked and the layout
+// stubbed by hand.
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { Camera } from '../src/gl/camera'
+import { SectionCamera, type SectionInset } from '../src/gl/section-camera'
 import type { RunConfig } from '../src/views/map'
+import { createRecording2d } from './support/recording-2d'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -36,6 +42,28 @@ vi.mock('../src/ui/fold', async (importOriginal) => {
   }
 })
 
+// The real section frame, with the band of every paint kept so a test can read where the axis went.
+const framePaints = vi.hoisted(() => [] as Array<number | undefined>)
+vi.mock('../src/ui/section-axes', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ui/section-axes')>()
+  return {
+    ...actual,
+    renderSectionAxes: (opts: Parameters<typeof actual.renderSectionAxes>[0]) => {
+      const handle = actual.renderSectionAxes(opts)
+      const paint = handle.paint.bind(handle)
+      handle.paint = (input) => {
+        framePaints.push(input.bandCss)
+        paint(input)
+      }
+      return handle
+    },
+  }
+})
+
+const SECTION_ANSWER = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'section-tracer-answer.json'), 'utf8'),
+) as Record<string, unknown>
+
 const CONFIG: RunConfig = {
   case: 'test_run',
   n_par: null,
@@ -57,6 +85,7 @@ function baseState(): IngestState {
       map: { available: true, blockedBy: [] },
       stats: { available: true, blockedBy: [] },
       chips: { available: true, blockedBy: [] },
+      section: { available: true, blockedBy: [] },
     },
     ingestSeconds: null,
     cacheBytes: null,
@@ -124,6 +153,10 @@ function stubFetch(): void {
           onValues?.()
           onValues = null
           return respond({ status: 200, bytes: bytesOf(new Float32Array([10])) })
+        case '/api/run/grid/section':
+          return respond({ status: 200, body: SECTION_ANSWER })
+        case '/api/run/grid/pp':
+          return respond({ status: 200, body: { groups: [], not_interpolable: [], notes: [] } })
         default:
           throw new Error(`unhandled fetch in test: GET ${path}`)
       }
@@ -147,7 +180,7 @@ function stubLayout(): void {
   })
 }
 
-let fitSpy: ReturnType<typeof vi.spyOn<Camera, 'fit'>>
+let fitSpy: MockInstance<Camera['fit']>
 
 function camera(): Camera {
   const ctx = fitSpy.mock.contexts.at(-1)
@@ -301,5 +334,113 @@ describe('the plan fits into the area the left cards leave free (LD-4)', () => {
     const old = new Camera(canvas.width, canvas.height)
     old.fit(BOUNDS)
     expect(drawn).toEqual(Array.from(old.matrix()))
+  })
+})
+
+const recording2d = createRecording2d()
+
+// Where model (x, y) lands on the canvas, in canvas px; the canvas reports its own size as its box.
+function canvasPoint(cam: Camera, canvas: HTMLCanvasElement, wx: number, wy: number): [number, number] {
+  const m = cam.matrix()
+  return [((m[0] * wx + m[6] + 1) / 2) * canvas.width, ((1 - (m[4] * wy + m[7])) / 2) * canvas.height]
+}
+
+function clickAt(canvas: HTMLCanvasElement, [x, y]: [number, number]): void {
+  const init = { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true, cancelable: true }
+  canvas.dispatchEvent(new PointerEvent('pointerdown', init))
+  canvas.dispatchEvent(new PointerEvent('pointerup', init))
+  canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true }))
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+describe('the section fits right of the same band (LD-4)', () => {
+  let setInset: MockInstance<SectionCamera['setInset']>
+  let sectionFit: MockInstance<SectionCamera['fit']>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    settleHooks.before = null
+    settleHooks.calls = 0
+    onValues = null
+    framePaints.length = 0
+    recording2d.calls.length = 0
+    layout.area = { width: 1000, height: 800 }
+    layout.stack = { left: 16, width: 256 }
+    layout.legend = { left: 16, width: 200 }
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true })
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    )
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((cb: FrameRequestCallback) => {
+        cb(0)
+        return 1
+      }),
+    )
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((type: string) =>
+      type === '2d' ? recording2d.ctx : null) as typeof HTMLCanvasElement.prototype.getContext)
+    stubFetch()
+    stubLayout()
+    fitSpy = vi.spyOn(Camera.prototype, 'fit')
+    setInset = vi.spyOn(SectionCamera.prototype, 'setInset')
+    sectionFit = vi.spyOn(SectionCamera.prototype, 'fit')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  async function shownSection(): Promise<{ root: HTMLElement; canvas: HTMLCanvasElement }> {
+    const { root, canvas } = await mountAndDraw()
+    canvas.getBoundingClientRect = () => rect(0, canvas.width, canvas.height)
+    ;(root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement).click()
+    clickAt(canvas, canvasPoint(camera(), canvas, 1, 0.5))
+    clickAt(canvas, canvasPoint(camera(), canvas, 9, 0.5))
+    const toggle = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Section view') as HTMLButtonElement
+    toggle.click()
+    await vi.waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'))
+    await settle()
+    expect(sectionFit).toHaveBeenCalled()
+    return { root, canvas }
+  }
+
+  const lastInset = (): SectionInset => setInset.mock.calls.at(-1)![0]
+
+  it('fits the section on first show with the band plus the axis strip as its left inset, and paints the frame there', async () => {
+    await shownSection()
+    expect(lastInset()).toEqual({ left: (288 + 64) * 2, right: 0, top: 0, bottom: 44 * 2 })
+    expect(framePaints.length).toBeGreaterThan(0)
+    expect(framePaints.at(-1)).toBe(288)
+  })
+
+  it('moves neither the section nor its axis when a card folds, and fits to the band of the moment on Fit to extent', async () => {
+    const { root, canvas } = await shownSection()
+    const cam = sectionFit.mock.contexts.at(-1) as SectionCamera
+    const before = [cam.screenToWorld(0, 0), cam.screenToWorld(500, 300)]
+    const insets = setInset.mock.calls.length
+
+    layout.stack = { left: 16, width: 120 }
+    foldButton(root, 'data').click()
+    expect([cam.screenToWorld(0, 0), cam.screenToWorld(500, 300)]).toEqual(before)
+    expect(setInset.mock.calls.length).toBe(insets)
+    // A pan repaints the frame; the axis stays at the band the last fit used.
+    canvas.focus()
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    expect(framePaints.at(-1)).toBe(288)
+
+    layout.stack = { left: 16, width: 400 }
+    fitButton(root).click()
+    expect(lastInset().left).toBe((16 + 400 + 16 + 64) * 2)
+    expect(framePaints.at(-1)).toBe(16 + 400 + 16)
   })
 })

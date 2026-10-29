@@ -194,3 +194,59 @@ describe('the overlay canvas', () => {
     expect(area.querySelector('canvas.section-axes-overlay')).toBeNull()
   })
 })
+
+describe('the axes right of the left cards (LD-4)', () => {
+  const BAND = 288
+
+  function bandCamera(): SectionCamera {
+    const camera = new SectionCamera(W, H)
+    camera.setInset(axesInset(1, BAND))
+    camera.fit([0, 3.5, 0, 10])
+    return camera
+  }
+
+  it('adds the band to the left inset and keeps the old inset with no band', () => {
+    expect(axesInset(2, 288)).toEqual({ left: (288 + 64) * 2, right: 0, top: 0, bottom: 44 * 2 })
+    expect(axesInset(2)).toEqual({ left: 64 * 2, right: 0, top: 0, bottom: 44 * 2 })
+  })
+
+  it('draws the elevation axis, its labels, its title and the ends right of the band', () => {
+    const camera = bandCamera()
+    mount().paint({ camera, answer: answer(), planLayer: 0, width: W, height: H, bandCss: BAND })
+    const axisX = BAND + LEFT
+
+    const vertical = recording.calls.findIndex((c) => c.method === 'moveTo' && c.args[0] === axisX && c.args[1] === 0)
+    expect(vertical).toBeGreaterThanOrEqual(0)
+    expect(recording.calls[vertical + 1]).toMatchObject({ method: 'lineTo', args: [axisX, BASE] })
+
+    const scale = scaleLinear().domain([camera.screenToWorld(0, BASE)[1], camera.screenToWorld(0, 0)[1]]).range([BASE, 0])
+    const count = tickCount(BASE, 1)
+    const format = scale.tickFormat(count)
+    // Distance labels share some of these strings, so only labels above the distance axis count.
+    const upLeft = texts(recording.calls).filter((c) => (c.args[2] as number) < BASE)
+    for (const value of scale.ticks(count)) {
+      const call = upLeft.find((c) => c.args[0] === format(value))
+      expect(call, format(value)).toBeDefined()
+      expect(call!.args[1] as number).toBeLessThan(axisX)
+      expect(call!.args[1] as number).toBeGreaterThan(BAND)
+    }
+
+    // The title is drawn turned, at the point the last translate before it moved to.
+    const title = recording.calls.findIndex((c) => c.method === 'fillText' && c.args[0] === 'elevation (model units)')
+    const turn = recording.calls.slice(0, title).filter((c) => c.method === 'translate').at(-1)
+    expect(turn!.args[0] as number).toBeGreaterThanOrEqual(BAND + 2)
+
+    for (const letter of ['A', 'B']) {
+      const call = textAt(recording.calls, letter)
+      expect(call, letter).toBeDefined()
+      expect(call!.args[1] as number).toBeGreaterThanOrEqual(axisX)
+    }
+  })
+
+  it('leaves out an end panned under the band instead of drawing it over the cards', () => {
+    const camera = bandCamera()
+    camera.pan(BAND / 2 - camera.worldToScreen(0, 0)[0], 0)
+    mount().paint({ camera, answer: answer(), planLayer: 0, width: W, height: H, bandCss: BAND })
+    expect(textAt(recording.calls, 'A')).toBeUndefined()
+  })
+})
