@@ -114,16 +114,30 @@ interface CellLayout {
   clear: [number, number]
 }
 
+// The six-cell row fills the map's width, so the floating cards on the left cover cells 0 and 1.
+// One wheel step of 700 px zooms out by 1.1^-7 about a point at three quarters of the width, which
+// moves the whole row into the uncovered right half; every position below follows from that.
+const CLEAR_ZOOM = 1.1 ** -7
+const CLEAR_WHEEL_PX = 700
+
 async function cellLayout(page: Page): Promise<CellLayout> {
   const box = await page.locator(MAP_CANVAS).boundingBox()
   if (!box) throw new Error('no canvas on the page')
   const width = Math.round(box.width)
   const height = Math.round(box.height)
-  const cell = 0.96 * Math.min(width / 6, height / 1)
-  const left = (i: number) => Math.round(width / 2 + cell * (i - 3))
-  const centreX = (i: number) => Math.round(width / 2 + cell * (i - 2.5))
-  const midY = Math.round(height / 2)
-  const clear: [number, number] = [Math.round(width / 2), Math.min(height - 2, Math.round(midY + cell))]
+  const fitCell = 0.96 * Math.min(width / 6, height / 1)
+  const px = Math.round(width * 0.75)
+  const py = Math.round(height / 2)
+  await page.mouse.move(box.x + px, box.y + py)
+  await page.mouse.wheel(0, CLEAR_WHEEL_PX)
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  // zoomAt holds (px, py) still and scales every other screen offset from it.
+  const zoomX = (x: number) => px + CLEAR_ZOOM * (x - px)
+  const cell = fitCell * CLEAR_ZOOM
+  const left = (i: number) => Math.round(zoomX(width / 2 + fitCell * (i - 3)))
+  const centreX = (i: number) => Math.round(zoomX(width / 2 + fitCell * (i - 2.5)))
+  const midY = py
+  const clear: [number, number] = [centreX(3), Math.min(height - 2, Math.round(midY + cell))]
   if (clear[1] <= midY + cell / 2) throw new Error('the canvas is too short to have a point clear of the row of cells')
   return { width, height, cell, left, centreX, midY, clear }
 }
@@ -451,7 +465,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('.floating-bottom-left')).not.toContainText('contested')
 
     const layout = await cellLayout(page)
-    const dotX = Math.round(layout.width / 2 + layout.cell * (2.75 - 3))
+    const dotX = Math.round(layout.left(0) + layout.cell * 2.75)
     await page.locator(MAP_CANVAS).click({ position: { x: dotX, y: layout.midY } })
     await expect(page.locator('.floating-bottom-right')).toContainText('p11')
     await expect(page.locator('.floating-bottom-right')).toContainText('x 3, y 1 · layer 0')
@@ -493,11 +507,10 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await installCameraHook(page)
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
-    const before = await drawnMatrix(page)
-
     const readout = page.locator('.floating-bottom-right')
     const readoutBefore = await readout.innerText()
     const layout = await cellLayout(page)
+    const before = await drawnMatrix(page)
     const box = (await page.locator(MAP_CANVAS).boundingBox())!
 
     // One cell to the right: pressed over cell 1, released over cell 2.
