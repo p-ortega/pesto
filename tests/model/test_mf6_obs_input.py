@@ -345,6 +345,23 @@ def test_a_site_placed_by_its_columns_keeps_that_cell_and_a_disagreement_is_coun
     assert [g.rule for g in cells.groups] == ["icpl-layer"]
     note = next(n for n in cells.notes if "disagree" in n)
     assert note.startswith("1 site(s)") and "'w'" in note and "'v'" not in note
+    assert _note(cells, "w") == (
+        "the control file's columns were kept; "
+        "columns say cell 0 layer 1 (index 0), W in m.obs says cell 2 layer 1 (index 0)"
+    )
+
+
+def test_a_disagreement_names_both_layers_one_based_with_the_index_and_keeps_cell_numbers():
+    entry = ObsEntry("obs1", "HEAD", ("2", "6"), "model.obs", "model")
+    obs = ObsInput({"obs1": (entry,)}, ("model",), (), (), True)
+    shape = GridShape(ncpl=10, nlay=3, nrow=None, ncol=None)
+
+    placed = place_sites(["s"], ["obs1"], obs, shape, np.array([4], np.int32), np.array([0], np.int32))
+
+    assert placed.site_note[0] == (
+        "the control file's columns were kept; "
+        "columns say cell 4 layer 1 (index 0), obs1 in model.obs says cell 5 layer 2 (index 1)"
+    )
 
 
 def test_the_no_column_note_says_the_column_rules_were_not_tried(tmp_path):
@@ -407,7 +424,7 @@ def test_a_boundname_in_one_cell_over_several_layers_places_the_cell_with_layer_
     cells = _locate(run, "coarse.disv.grb", _sites(a="pw-b"))
 
     assert (cells.cell[0], cells.layer[0]) == (1, -1)
-    assert _note(cells, "a") == "spans layers 1 to 2 (zero-based)"
+    assert _note(cells, "a") == "spans layers 2 to 3 (index 1 to 2)"
     assert cells.site_rule == (OBS_INPUT_RULE,)
 
 
