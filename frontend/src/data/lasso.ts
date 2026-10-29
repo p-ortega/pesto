@@ -72,6 +72,16 @@ export function dotsInPolygon(tree: Flatbush | null, xy: Float32Array, poly: rea
   return hits.filter((i) => insideFlat(xy[2 * i], xy[2 * i + 1], flat)).sort((a, b) => a - b)
 }
 
+/** Whether any dot lies within `r` of (wx, wy); with no index every dot is checked. */
+export function dotWithin(tree: Flatbush | null, xy: Float32Array, wx: number, wy: number, r: number): boolean {
+  const limit = r * r
+  const near = (i: number) => (xy[2 * i] - wx) ** 2 + (xy[2 * i + 1] - wy) ** 2 <= limit
+  if (tree !== null) return tree.search(wx - r, wy - r, wx + r, wy + r, near).length > 0
+  const n = Math.floor(xy.length / 2)
+  for (let i = 0; i < n; i++) if (near(i)) return true
+  return false
+}
+
 /** Drops points closer than `minSpacing` to the last kept one; the first and last always stay. */
 export function thinPath(points: readonly LassoPoint[], minSpacing: number): [number, number][] {
   if (points.length <= 2) return points.map(([x, y]) => [x, y])

@@ -1167,6 +1167,11 @@ body {
   cursor: crosshair;
 }
 
+/* Over a dot a click would pick; an armed tool's crosshair still wins. */
+.map-area.dot-hover:not(.lasso-armed):not(.section-armed) > canvas {
+  cursor: pointer;
+}
+
 /* The lasso outline draws over the map and never takes a press from it. */
 .lasso-overlay {
   position: absolute;
