@@ -197,14 +197,14 @@ describe('sectionValues for a pilot-point group', () => {
 
 describe('layersSetLine', () => {
   it('names a single layer', () => {
-    expect(layersSetLine('npfklayer17pp', [17], 18)).toBe(
-      'group npfklayer17pp sets layer 17 only; other layers have no value from this group',
+    expect(layersSetLine('npfklayer17pp', [16], 18)).toBe(
+      'group npfklayer17pp sets layer 17 (index 16) only; other layers have no value from this group',
     )
   })
 
   it('joins several layers with commas and "and"', () => {
-    expect(layersSetLine('G', [0, 3, 5], 18)).toBe('group G sets layers 0, 3 and 5; other layers have no value from this group')
-    expect(layersSetLine('G', [3, 0], 18)).toBe('group G sets layers 0 and 3; other layers have no value from this group')
+    expect(layersSetLine('G', [0, 3, 5], 18)).toBe('group G sets layers 1, 4 and 6 (index 0, 3 and 5); other layers have no value from this group')
+    expect(layersSetLine('G', [3, 0], 18)).toBe('group G sets layers 1 and 4 (index 0 and 3); other layers have no value from this group')
   })
 
   it('says nothing when the group sets every layer or none', () => {
