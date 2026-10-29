@@ -4080,7 +4080,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     await performFetch(committed)
     mountBasemap()
     // First look: what would not fit starts folded, unless the viewer chose; nothing is stored.
+    // The legend's observer runs after this frame; measure it now so the stack's room is already right.
+    topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
     settleStack(stackCards, stackOverflows)
+    // Still too tall: the legend folds to its ramp and group too, quietly, unless the viewer chose.
+    if (stackOverflows() && !legendFold.folded() && !legendFold.chosen()) {
+      legendFold.setFolded(true, { remember: false })
+      topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
+    }
     // Still the first draw: the Basemap card and the folds above can move the band, so fit once more if they did.
     if (camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
       camera.fit(mesh.bounds, 0.04, planInset())

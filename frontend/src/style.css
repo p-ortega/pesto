@@ -523,16 +523,17 @@ body {
 }
 
 /* A zero basis with a floor: the plots and lists below shrink and scroll
-   before the table drops under its floor. */
+   before the table drops under its floor. 6rem keeps a header and three rows. */
 .obs-groups {
   flex: 1 1 0;
-  min-height: 10rem;
+  min-height: 6rem;
   max-height: 40%;
 }
 
+/* A floor so the plots below never squeeze the site list out of sight on a laptop-height panel. */
 .obs-sites {
   flex: 0 1 auto;
-  min-height: 0;
+  min-height: 7.5rem;
   max-height: 40%;
   overflow: hidden;
 }
@@ -663,7 +664,7 @@ body {
 }
 
 .obs-fit {
-  min-height: 8rem;
+  min-height: 7rem;
   max-height: 45%;
 }
 
@@ -680,7 +681,7 @@ body {
 
 /* A floor so the chosen site's spaghetti is never squeezed to a sliver. */
 .obs-spaghetti {
-  min-height: 10rem;
+  min-height: 8rem;
   max-height: 50%;
 }
 
@@ -760,9 +761,10 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--space-md);
+  /* 8px between cards, so a laptop-height map holds the open Data card and three folded lines. */
+  gap: var(--space-sm);
   /* With every card open the stack ran off the bottom of the map; a wheel over a card scrolls it instead. */
-  max-height: calc(100% - 3 * var(--space-md) - var(--legend-height, 0px));
+  max-height: calc(100% - 2 * var(--space-md) - var(--space-sm) - var(--legend-height, 0px));
   overflow-y: auto;
   /* A default scrollbar drew a tall white bar over the map. */
   scrollbar-width: thin;
@@ -848,6 +850,13 @@ body {
 .obs-colour-switch {
   display: flex;
   gap: var(--space-sm);
+}
+
+/* In the Data card's 144px cell the two words do not fit side by side, so they stack full width. */
+.card-row-control > .obs-colour-switch {
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: var(--space-xs);
 }
 
 .obs-colour-switch button[aria-pressed='true'] {
@@ -1070,8 +1079,8 @@ body {
 .obs-selected {
   display: flex;
   flex-direction: column;
-  /* The floor keeps the title and two rows; without it the group detail squeezed this to 3 px. */
-  flex: 0 1 auto;
+  /* Never shrinks below its rows up to the 40% cap: the plots below squeezed one row out of sight. */
+  flex: 0 0 auto;
   min-height: 4.5rem;
   max-height: 40%;
   overflow: hidden;
@@ -1539,8 +1548,16 @@ body {
   max-width: 256px;
 }
 
+/* A folded card is one line: 4px above and below its 24px button instead of 8px. */
+.floating-top-left > .fold-card[data-folded='true'] {
+  padding-top: var(--space-xs);
+  padding-bottom: var(--space-xs);
+}
+
+/* 6px on the right so the 88px + 8px + 144px rows fit inside the 1px borders and 8px left padding. */
 .floating-top-left > .fold-card[data-folded='false'] {
   width: 256px;
+  padding-right: 6px;
 }
 
 .fold-button {
@@ -1651,6 +1668,24 @@ body {
   max-width: 100%;
 }
 
+/* The group picker sizes to its longest group name; in a row it takes the cell's width instead. */
+.card-row-control > div:has(> select) {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.card-row-control > div:has(> select) > select,
+.card-row-control > div:has(> select) > button {
+  width: 100%;
+}
+
+/* "7 groups unmapped" on one line, so the Group row stays two controls tall. */
+.card-row-control > div:has(> select) > button {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Reverse, Patterns instead of colours and Go to: a box and its words, a small gap apart. */
 .card-row-control > label {
   display: inline-flex;
@@ -1679,6 +1714,11 @@ body {
 .floating-bottom-left .fold-body .label {
   max-width: 100%;
   overflow-wrap: anywhere;
+}
+
+/* Step edges at label size, so 0.00267 clears its same-row neighbour with eleven steps. */
+.legend-edge {
+  font-size: 13px;
 }
 
 .section-legend-line {
