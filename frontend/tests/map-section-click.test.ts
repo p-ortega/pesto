@@ -2,7 +2,7 @@
 //
 // A click on the section reads and selects like a click on the plan (SECT-02, D-23, D-24, D-33):
 // the readout names the value, layer and place along the line, the store gets cells, pars and
-// sites in one write, the link route is asked about the clicked layer, absence is named and never
+// sites in one write, askLinkCell asks the link route about the clicked layer, absence is named and never
 // selected, and the selected cells ring through every layer. The real map screen against a
 // stubbed fetch, with the GL context and the MeshLayer double mocked.
 
@@ -556,5 +556,80 @@ describe('a click on the section reads and selects like a plan click', () => {
     expect(m.store.get().sites.size).toBe(0)
     expect(readoutText(m.root)).toBe('Click a cell to see its value.')
     expect(m.stub.link).toHaveLength(1)
+  })
+})
+
+// The last ids a layer was told to ring, whichever of the two calls told it.
+function lastRing(layer: LayerDouble): number[] {
+  const calls: Array<{ order: number; ids: number[] }> = []
+  layer.setSelected.mock.calls.forEach((args, i) => {
+    const id = args[0] as number | null
+    calls.push({ order: layer.setSelected.mock.invocationCallOrder[i], ids: id === null ? [] : [id] })
+  })
+  layer.setSelectedCells.mock.calls.forEach((args, i) => {
+    calls.push({ order: layer.setSelectedCells.mock.invocationCallOrder[i], ids: [...(args[0] as number[])] })
+  })
+  calls.sort((a, b) => a.order - b.order)
+  return calls.at(-1)?.ids ?? []
+}
+
+describe('selected cells ring their whole column in the section', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    recording.calls.length = 0
+    stubOverlayContext()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('rings every layer of a cell selected before the section was built', async () => {
+    const m = await mounted()
+    m.store.set({ cells: new Set([0]) }, 'params')
+    await settle()
+    await showSection(m)
+    const section = await layerDouble(1)
+    expect(lastRing(section)).toEqual([0, 1])
+  })
+
+  it('follows a selection written by another view, and clears with an empty one', async () => {
+    const m = await mounted()
+    await showSection(m)
+    const section = await layerDouble(1)
+
+    m.store.set({ cells: new Set([1]) }, 'params')
+    await vi.waitFor(() => expect(lastRing(section)).toEqual([2, 3]))
+    m.store.set({ cells: new Set([0, 1]) }, 'params')
+    await vi.waitFor(() => expect(lastRing(section)).toEqual([0, 1, 2, 3]))
+    m.store.set({ cells: new Set() }, 'params')
+    await vi.waitFor(() => expect(lastRing(section)).toEqual([]))
+  })
+
+  it('rings the cell of an unanswered section click at once', async () => {
+    const m = await mounted()
+    await showSection(m)
+    const section = await layerDouble(1)
+
+    clickAt(m.canvas, clientAtSection(m.canvas, 2.0, 7.5))
+    expect(lastRing(section)).toEqual([2, 3])
+    expect(m.store.get().cells.size).toBe(0)
+    await answerLink(m, 0)
+    expect(lastRing(section)).toEqual([2, 3])
+  })
+
+  it('leaves the rings of parameters picked in a tab on the plan only', async () => {
+    const m = await mounted()
+    m.stub.pars.p9 = { cells: [1] }
+    const plan = await layerDouble(0)
+    m.store.set({ cells: new Set([0]), pars: new Set(['p9']) }, 'params')
+    await vi.waitFor(() => expect(lastRing(plan)).toEqual([0, 1]))
+    await showSection(m)
+    const section = await layerDouble(1)
+    expect(lastRing(section)).toEqual([0, 1])
+    // Quads 0 and 1 are cell 0's two layers; cell 1's quads 2 and 3 stay unringed.
+    expect(section.setSelectedCells.mock.calls.some((args) => (args[0] as number[]).includes(2))).toBe(false)
   })
 })
