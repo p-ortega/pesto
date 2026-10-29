@@ -1,5 +1,5 @@
-// The Obs panel: the observation group summary on top, the chosen group's
-// plot areas and site list under it. It copies the Params panel's frame --
+// The Obs panel: the selected sites on top, then the group summary, the chosen
+// group's site list and its site plots, and the group fit last. It copies the Params panel's frame --
 // one windowed table, a hidden tab that fetches and draws nothing, names
 // written through textContent only. A click writes the shared selection with
 // the origin 'obs'; this file never reads a site by row position.
@@ -18,14 +18,16 @@ import {
 } from '../data/obs'
 import type { Capability, IngestState } from '../data/client'
 import { isDimmed } from '../data/dim'
+import { layerCompact } from '../data/layer-words'
 import { fetchPdcSites, type PdcSitesAnswer, type PdcSitesResult } from '../data/overlays'
-import { modeOf } from '../state/modifiers'
+import { modeOf, removeKeyName } from '../state/modifiers'
 import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import { renderGroupFit } from './obs-fit'
-import { renderSelectedSites } from './obs-selected'
+import { LAYER_HEADING_TITLE, renderSelectedSites } from './obs-selected'
 import { renderSpaghetti } from './obs-spaghetti'
+import { paintNote } from './note-line'
 
 export interface ObsPanelOptions {
   store: SelectionStore
@@ -310,10 +312,8 @@ function iterationSuffix(iteration: number | null): string {
   return iteration === null ? '' : ` (iteration ${iteration})`
 }
 
-const LAYER_UNKNOWN = 'unknown'
-
 function layerText(row: ObsSiteRow): string {
-  return row.layer === -1 ? LAYER_UNKNOWN : String(row.layer)
+  return layerCompact(row.layer)
 }
 
 function placementText(row: ObsSiteRow): string {
@@ -363,7 +363,14 @@ function pdcHeadingTitle(state: PdcState | null): string {
 
 const SITE_COLUMNS_REST: GridColumn<ObsSiteRow>[] = [
   { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs) },
-  { key: 'layer', label: 'Layer', kind: 'figure', text: layerText, title: (r) => (r.layer === -1 ? 'no layer could be worked out for this site' : '') },
+  {
+    key: 'layer',
+    label: 'Layer',
+    kind: 'figure',
+    text: layerText,
+    title: (r) => (r.layer === -1 ? 'no layer could be worked out for this site' : ''),
+    headingTitle: () => LAYER_HEADING_TITLE,
+  },
   { key: 'placement', label: 'Placement', kind: 'text', text: placementText, title: placementTitle },
 ]
 
@@ -403,9 +410,9 @@ function appendNote(host: HTMLElement, note: string): void {
 
 /**
  * Fills `host` with the Obs panel. The panel's sections, top to bottom, are
- * `.obs-notices`, `.obs-groups`, `.obs-selected`, `.obs-fit`, `.obs-sites` and
- * `.obs-spaghetti`; the fit host stays empty until a group is chosen, and the
- * selected host until a site is.
+ * `.obs-heading-row`, `.obs-notices`, `.obs-selected`, `.obs-groups`, `.obs-sites`,
+ * `.obs-spaghetti` and `.obs-fit`, so a picked site's plot sits right under the list
+ * it was picked from. The fit host stays empty until a group is chosen.
  */
 export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPanelHandle {
   host.textContent = ''
@@ -429,36 +436,26 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   headingRow.appendChild(headingActions)
   host.appendChild(headingRow)
 
-  const noticesHost = document.createElement('div')
-  noticesHost.classList.add('obs-notices')
-  host.appendChild(noticesHost)
+  function section(name: string): HTMLElement {
+    const el = document.createElement('div')
+    el.classList.add(name)
+    host.appendChild(el)
+    return el
+  }
+  const noticesHost = section('obs-notices')
+  const selectedHost = section('obs-selected')
+  const groupsHost = section('obs-groups')
+  const sitesHost = section('obs-sites')
+  const spaghettiHost = section('obs-spaghetti')
+  const fitHost = section('obs-fit')
+
   renderCapabilityNotices(noticesHost, opts.capabilities)
-
-  const groupsHost = document.createElement('div')
-  groupsHost.classList.add('obs-groups')
-  host.appendChild(groupsHost)
-
-  const selectedHost = document.createElement('div')
-  selectedHost.classList.add('obs-selected')
-  host.appendChild(selectedHost)
   const selected = renderSelectedSites(selectedHost, {
     store: opts.store,
     isHidden: () => hidden,
     onPick: (siteId, event) => pickSiteId(siteId, event),
   })
-
-  const fitHost = document.createElement('div')
-  fitHost.classList.add('obs-fit')
-  host.appendChild(fitHost)
   const fit = renderGroupFit(fitHost, { store: opts.store, startHidden: hidden })
-
-  const sitesHost = document.createElement('div')
-  sitesHost.classList.add('obs-sites')
-  host.appendChild(sitesHost)
-
-  const spaghettiHost = document.createElement('div')
-  spaghettiHost.classList.add('obs-spaghetti')
-  host.appendChild(spaghettiHost)
   const spaghetti = renderSpaghetti(spaghettiHost, { store: opts.store, startHidden: hidden })
 
   let chosenGroup: string | null = null
@@ -474,7 +471,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   function renderSitePrompt(): void {
     sitesGrid = null
     showSelectedButton = null
-    renderNotice(sitesHost, { title: 'Choose a group above to list its sites', tone: 'info' })
+    renderNotice(sitesHost, { title: 'Click a group above to list its sites.', tone: 'info' })
   }
 
   function renderSitesFailure(artifact: string, reason: string): void {
@@ -586,11 +583,16 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     heading.style.alignItems = 'baseline'
     heading.style.gap = 'var(--space-sm)'
     const count = document.createElement('span')
-    count.classList.add('label', 'obs-sites-count', 'truncate')
+    count.classList.add('body', 'obs-sites-count', 'truncate')
+    count.style.fontWeight = '600'
     count.style.flex = '1 1 auto'
     count.style.minWidth = '0'
-    count.textContent = `${group}: ${rows.length} ${rows.length === 1 ? 'site' : 'sites'}`
-    count.title = count.textContent
+    count.appendChild(document.createTextNode(`Sites in ${group} · `))
+    const figure = document.createElement('span')
+    figure.classList.add('tabular-nums')
+    figure.textContent = String(rows.length)
+    count.appendChild(figure)
+    count.title = count.textContent ?? ''
     heading.appendChild(count)
     const show = document.createElement('button')
     show.type = 'button'
@@ -604,6 +606,14 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     heading.appendChild(show)
     showSelectedButton = show
     sitesHost.appendChild(heading)
+    // Users could not tell the list picks; the hint also says where the plot goes, since a pick never scrolls.
+    const hint = document.createElement('div')
+    hint.classList.add('label', 'wrap-note', 'obs-sites-hint')
+    paintNote(hint, {
+      kind: 'reason',
+      text: `Click a site to select it and draw its plot below. Shift-click adds, ${removeKeyName()}-click removes.`,
+    })
+    sitesHost.appendChild(hint)
     if (notes.length > 0) {
       const noteBox = document.createElement('div')
       noteBox.classList.add('obs-site-notes', 'scroll-pane')
