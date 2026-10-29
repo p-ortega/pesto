@@ -1565,6 +1565,25 @@ body {
   max-width: 100%;
 }
 
+/* Reverse, Patterns instead of colours and Go to: a box and its words, a small gap apart. */
+.card-row-control > label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.manual-limits {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+/* Two number boxes share the 144px cell instead of each taking its default width. */
+.manual-limits > input {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 0;
+}
+
 /* A card with nothing drawn in it, such as the legend before the first field, shows nothing. */
 .fold-card:has(> .fold-body:empty) {
   display: none;
