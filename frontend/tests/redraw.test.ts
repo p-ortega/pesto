@@ -196,7 +196,7 @@ function statusBarText(root: HTMLElement): string {
 
 function statusSelectionColor(root: HTMLElement): string {
   const spans = Array.from(root.querySelectorAll('.status-bar > span'))
-  const selectionField = spans.find((span) => span.textContent?.startsWith('Selection'))
+  const selectionField = spans.find((span) => span.textContent?.startsWith('Drawn'))
   const value = selectionField?.querySelector('.tabular-nums') as HTMLElement | undefined
   return value?.style.color ?? ''
 }
