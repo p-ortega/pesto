@@ -785,7 +785,8 @@ describe('the status bar carries real figures (Task 3)', () => {
     expect(statusBar.textContent).toContain('Cache size')
     expect(statusBar.textContent).toContain('4.0 KB')
     expect(statusBar.textContent).toContain('Mesh size')
-    expect(statusBar.textContent).toContain('Selection')
+    expect(statusBar.textContent).toContain('Drawn')
+    expect(statusBar.textContent).toMatch(/Drawn(realization |mean|std|—)/)
 
     const numericSpans = Array.from(statusBar.querySelectorAll('.tabular-nums'))
     expect(numericSpans.length).toBeGreaterThan(0)

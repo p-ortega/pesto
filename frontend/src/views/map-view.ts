@@ -1220,6 +1220,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     return isBase(selection.iteration, name) && name !== BASE_STYLE.label ? `${name} · ${BASE_STYLE.label}` : name
   }
 
+  // The footer's words for the drawn field: a statistic by name, a realization with the word in front.
+  function drawnLabel(selection: FieldChoice): string {
+    const label = selectionLabel(selection)
+    return selection.stat === 'value' && selection.realization !== null ? `realization ${label}` : label
+  }
+
   // The legend last drawn for the parameter field, so a base name that lands later can relabel it.
   let shownLegend: LegendOptions | null = null
   // The style and limits deriveAndDraw last drew with, for the readout's class line.
@@ -1273,10 +1279,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // touching chrome.ts, which this plan does not modify.
   function appendSelectionField(): void {
     const label =
-      statusError ?? (loadingIteration !== null ? `loading iteration ${loadingIteration}` : selectionLabel(pending ?? committed))
+      statusError ?? (loadingIteration !== null ? `loading iteration ${loadingIteration}` : drawnLabel(pending ?? committed))
     const field = document.createElement('span')
     const labelEl = document.createElement('span')
-    labelEl.textContent = 'Selection'
+    // Names the drawn field, not the selected cells, which "Selection" was read as.
+    labelEl.textContent = 'Drawn'
     field.appendChild(labelEl)
     const valueEl = document.createElement('span')
     valueEl.classList.add('tabular-nums')
