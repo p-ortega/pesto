@@ -80,6 +80,22 @@ describe('the selected sections', () => {
   })
 })
 
+describe('basemap warnings', () => {
+  for (const selector of ['.basemap-warning', '.basemap-picker-status.refused']) {
+    it(`${selector} reads in primary ink behind a warning glyph`, () => {
+      expect(rule(selector)).toMatch(/color:\s*var\(--ink-primary\)/)
+      expect(rule(selector)).not.toMatch(/--status-warning/)
+      const glyph = rule(`${selector}::before`)
+      expect(glyph).toMatch(/content:\s*'⚠ '/)
+      expect(glyph).toMatch(/color:\s*var\(--status-warning\)/)
+    })
+  }
+
+  it('hides the glyph of an empty warning line along with the line', () => {
+    expect(rule('.basemap-warning:empty')).toMatch(/display:\s*none/)
+  })
+})
+
 describe('controls in the floating cards', () => {
   it('use the body type instead of the browser default', () => {
     for (const selector of ['.floating button', '.floating select', '.floating input']) {
