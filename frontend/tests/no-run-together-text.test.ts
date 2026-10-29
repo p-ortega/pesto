@@ -429,7 +429,6 @@ describe('controls.ts (WINDOWS.md #13)', () => {
         manualLimits: [0, 1],
       },
       onSelectionChange: () => undefined,
-      onFitToExtent: () => undefined,
     })
     // Surfaces the log-unavailable warning line -- another text-bearing
     // sibling inside the scale control's own label.
@@ -446,7 +445,6 @@ describe('controls.ts (WINDOWS.md #13)', () => {
       realNames,
       partrans: null,
       onSelectionChange: () => undefined,
-      onFitToExtent: () => undefined,
     })
     expectNoRunTogetherText(el, 'controls.ts renderSelectionControls (no realization names)')
   })

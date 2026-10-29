@@ -103,9 +103,6 @@ export interface SelectionControlsOptions {
   /** A turned-off line the view already decided on, such as a restored symmetric a log scale refused. */
   styleNote?: string | null
   onSelectionChange: (selection: FieldChoice) => void
-  /** MAP-11/D-15: the one button-shaped primary action this map surface
-   *  has. Calls the same `camera.fit(bounds)` the `Home` key triggers. */
-  onFitToExtent: () => void
 }
 
 export interface SelectionControlsHandle {
@@ -182,7 +179,7 @@ export function renderSelectionControls(
 ): SelectionControlsHandle {
   el.textContent = ''
   el.classList.add('floating')
-  // WINDOWS.md #13's sweep: the fit button, each label and the two
+  // WINDOWS.md #13's sweep: each label and the two
   // manual-limit inputs are inline-level elements with no separation of
   // their own -- a flex row that wraps, with a real gap on both axes,
   // keeps the same shrink-to-fit packing (and roughly the same panel
@@ -197,16 +194,6 @@ export function renderSelectionControls(
   el.style.gap = 'var(--space-sm)'
   // Uncapped, the panel wrapped into one band across the whole map (974 px at 1440x900) and hid the northern edge.
   el.style.maxWidth = '32rem'
-
-  // Fit to extent (D-15/MAP-11): a real button, the one button-shaped
-  // primary action on this map surface, calling the same fit(bounds) the
-  // Home key triggers.
-  const fitButton = document.createElement('button')
-  fitButton.type = 'button'
-  fitButton.textContent = 'Fit to extent'
-  fitButton.addEventListener('click', () => {
-    opts.onFitToExtent()
-  })
 
   const nlay = Math.max(opts.nlay, 1)
 
@@ -717,7 +704,6 @@ export function renderSelectionControls(
     opts.onSelectionChange(currentSelection())
   })
 
-  el.appendChild(fitButton)
   el.appendChild(layerLabel)
   el.appendChild(statLabel)
   el.appendChild(realLabel)
