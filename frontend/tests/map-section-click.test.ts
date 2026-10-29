@@ -608,6 +608,39 @@ describe('a click on the section reads and selects like a plan click', () => {
     expect(readoutText(m.root)).toBe('Click a cell to see its value. The Params and Obs tabs then list what sets it.')
     expect(m.stub.link).toHaveLength(1)
   })
+
+  it('ignores a click on the strips the frame paints over, even where a panned cell lies under them', async () => {
+    const m = await mounted()
+    await showSection(m)
+    m.canvas.focus()
+    m.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    m.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }))
+    const camera = new SectionCamera(m.canvas.width, m.canvas.height)
+    camera.setInset(axesInset(1))
+    camera.fit([0, 3.5, 0, 10])
+    camera.pan(-40, 40)
+    const inset = axesInset(1)
+    const base = m.canvas.height - inset.bottom
+    // Under the left strip, and under the bottom strip, each on a piece of the line.
+    const hidden: Array<[number, number]> = [
+      [inset.left - 8, camera.worldToScreen(0, 7.5)[1]],
+      [camera.worldToScreen(1.0, 0)[0], base + 8],
+    ]
+    for (const [x, y] of hidden) {
+      const [s, z] = camera.screenToWorld(x, y)
+      expect(s).toBeGreaterThan(0)
+      expect(z).toBeGreaterThan(0)
+    }
+    const shown = readoutText(m.root)
+    const heard = vi.fn()
+    m.store.subscribe((sel) => [sel.cells, sel.pars, sel.sites], heard)
+
+    for (const point of hidden) clickAt(m.canvas, point)
+    await settle()
+    expect(m.stub.link).toHaveLength(0)
+    expect(heard).not.toHaveBeenCalled()
+    expect(readoutText(m.root)).toBe(shown)
+  })
 })
 
 // The last ids a layer was told to ring, whichever of the two calls told it.
