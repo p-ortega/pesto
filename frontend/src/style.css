@@ -740,6 +740,23 @@ body {
   pointer-events: none;
 }
 
+/* The plan / section toggle (D-06). Like the top-left cluster, only its .floating cards take a press. */
+.floating-top-right {
+  position: absolute;
+  top: var(--space-md);
+  right: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-md);
+  pointer-events: none;
+}
+
+.section-toggle-row {
+  display: flex;
+  gap: var(--space-sm);
+}
+
 /* Coloured by observations: the controls and the group picker that only describe a parameter
    field give way. !important because the picker sets its own display inline. */
 .map-area.colour-obs [data-colour-source='par'] {
@@ -1107,6 +1124,8 @@ body {
    by weight and an accent ring, not by colour alone. */
 .overlay-toggle[aria-pressed='true'],
 .lasso-button[aria-pressed='true'],
+.section-button[aria-pressed='true'],
+.section-toggle[aria-pressed='true'],
 .brush-switch button[aria-pressed='true'],
 .chip.base-chip[aria-pressed='true'] {
   font-weight: 600;
@@ -1114,17 +1133,27 @@ body {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.lasso-button {
+.lasso-button,
+.section-button,
+.section-toggle {
   pointer-events: auto;
   cursor: pointer;
 }
 
-.map-area.lasso-armed canvas {
+.map-area.lasso-armed canvas,
+.map-area.section-armed canvas {
   cursor: crosshair;
 }
 
 /* The lasso outline draws over the map and never takes a press from it. */
 .lasso-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The section line and its A and B labels, drawn over the plan the same way. */
+.section-line-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
