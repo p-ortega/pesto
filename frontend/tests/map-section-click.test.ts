@@ -545,6 +545,19 @@ describe('a click on the section reads and selects like a plan click', () => {
     expect(m.store.get().sites).toBe(before.sites)
   })
 
+  it('says a section cell the plan does not hold cannot be read, rather than that no parameter sits on it', async () => {
+    const m = await mounted()
+    await showSection(m)
+    // The answer's third piece is cell 2; this plan holds cells 0 and 1 only.
+    clickAt(m.canvas, clientAtSection(m.canvas, 3.25, 7.5))
+    await settle()
+    expect(readoutText(m.root)).toContain('the plan holds no cell 2, so this section cell cannot be read')
+    expect(readoutText(m.root)).not.toContain('No parameter')
+    expect(m.root.querySelector('.floating-bottom-left')?.textContent).toContain(
+      '2 section cells name a cell the plan does not hold; drawn as absence',
+    )
+  })
+
   it('lists the pinched layers of the clicked piece', async () => {
     const answer = {
       ...FIXTURE,

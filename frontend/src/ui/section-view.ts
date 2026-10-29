@@ -133,6 +133,9 @@ function countLines(out: SectionValues): string[] {
       ),
     )
   }
+  if (out.unknownCell > 0) {
+    lines.push(one(out.unknownCell, 'names a cell the plan does not hold; drawn as absence', 'name a cell the plan does not hold; drawn as absence'))
+  }
   if (out.absentWithValue > 0) {
     lines.push(
       one(
@@ -382,6 +385,13 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     opts.onPick(hit, mode)
   }
 
+  // A cell the plan does not hold is named as unreadable before any status, since nothing about it can be read.
+  function absenceReason(hit: SectionHit, nCells: number): string | null {
+    if (hit.cell < 0 || hit.cell >= nCells) return `the plan holds no cell ${hit.cell}, so this section cell cannot be read`
+    if (hit.status === 0 || answer === null) return null
+    return answer.statusText.get(hit.status) ?? `status ${hit.status}`
+  }
+
   function readoutPick(): SectionReadoutPick | null {
     if (picked === null || answer === null) return null
     const hit = picked
@@ -396,7 +406,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       layer: hit.layer,
       selectionLabel: plan.selectionLabel,
       classification: classifyQuad(answer, plan, hit.piece * answer.nlay + hit.layer),
-      absence: hit.status === 0 ? null : (answer.statusText.get(hit.status) ?? `status ${hit.status}`),
+      absence: absenceReason(hit, plan.nCells),
       lines,
     }
   }
