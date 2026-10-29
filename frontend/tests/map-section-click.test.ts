@@ -562,8 +562,8 @@ describe('a click on the section reads and selects like a plan click', () => {
     const answer = {
       ...FIXTURE,
       nlay: 5,
-      z: [10, 8, 6, 4, 4, 4, 10, 8, 6, 4, 2, 0, 10, 8, 6, 4, 2, 0],
-      status: [0, 0, 0, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      z: [10, 8, 6, 4, 4, 4, 10, 8, 6, 4, 2, 0, 10, 8, 6, 4, 2, 2],
+      status: [0, 0, 0, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
     }
     const m = await mounted((env) => {
       env.answer = answer
@@ -571,11 +571,15 @@ describe('a click on the section reads and selects like a plan click', () => {
     await showSection(m)
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 9, [0, 10]))
     expect(readoutText(m.root)).toContain('layer 0, cell 0')
-    expect(readoutText(m.root)).toContain('pinched out in this cell: layers 3, 4 (zero thickness)')
+    expect(readoutText(m.root)).toContain('pinched out in this cell (zero thickness): layers 4, 5 (index 3, 4)')
 
     clickAt(m.canvas, clientAtSection(m.canvas, 2.0, 9, [0, 10]))
     expect(readoutText(m.root)).toContain('layer 0, cell 1')
     expect(readoutText(m.root)).not.toContain('pinched out')
+
+    clickAt(m.canvas, clientAtSection(m.canvas, 3.25, 9, [0, 10]))
+    expect(readoutText(m.root)).toContain('layer 0, cell 2')
+    expect(readoutText(m.root)).toContain('pinched out in this cell (zero thickness): layer 5 (index 4)')
   })
 
   it('clears cells, sites and pars once on a plain click in a gap, and changes nothing on a shift or alt click there', async () => {

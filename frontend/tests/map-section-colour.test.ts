@@ -569,15 +569,15 @@ describe('the section coloured with what the plan draws', () => {
     expect(m.stub.section).toHaveLength(1)
   })
 
-  it('fills only layer 1 for a pilot-point group of layer 1, and says so', async () => {
+  it('fills only index 1 for a pilot-point group of index 1, and says so in both numbers', async () => {
     const m = await mounted()
     drawLine(m)
     const section = await showSection(m)
     select(m.root, 'Parameter group', 'PP1')
-    await vi.waitFor(() => expect(legendText(m.root)).toContain('group PP1 sets layer 1 only'))
+    await vi.waitFor(() => expect(legendText(m.root)).toContain('group PP1 sets layer 2 (index 1) only'))
 
     expect(lastValues(section)).toEqual([null, 7, null, null, null, 9])
-    expect(legendText(m.root)).toContain('group PP1 sets layer 1 only; other layers have no value from this group')
+    expect(legendText(m.root)).toContain('group PP1 sets layer 2 (index 1) only; other layers have no value from this group')
     expect(m.stub.section).toHaveLength(1)
   })
 

@@ -508,6 +508,8 @@ describe('the section tracer on the map', () => {
     await showSection(m)
     expect(legendText(m.root)).toContain('vertical exaggeration')
     expect(legendText(m.root)).toContain('× (fitted)')
+    // The plan layer line sits right after the exaggeration line.
+    expect(legendText(m.root)).toContain('× (fitted)plan layer 1 (index 0)')
   })
 
   it('names the layer and cell under a click on the section, and absence by its status text', async () => {
@@ -543,7 +545,7 @@ describe('the section tracer on the map', () => {
 
 interface SectionHooks {
   refresh: Mocked
-  planLayerChanged: Mocked
+  planLayerChanged: Mocked & ((layer: number) => void)
 }
 
 async function sectionHooks(): Promise<SectionHooks> {
@@ -678,7 +680,7 @@ describe('the section behaves like the map it replaces', () => {
     expect(m.stub.section).toHaveLength(1)
   })
 
-  it('tells the section about a plan layer change, with no new request', async () => {
+  it('tells the section about a plan layer change, with no new request, and names the new plan layer in the legend', async () => {
     const { m } = await shownSection()
     const hooks = await sectionHooks()
     m.store.set({ layer: 1 }, 'other')
@@ -686,6 +688,11 @@ describe('the section behaves like the map it replaces', () => {
 
     expect(hooks.planLayerChanged).toHaveBeenLastCalledWith(1)
     expect(m.stub.section).toHaveLength(1)
+    expect(legendText(m.root)).toContain('plan layer 2 (index 1)')
+
+    hooks.planLayerChanged(3)
+    expect(legendText(m.root)).toContain('plan layer 4 (index 3)')
+    expect(legendText(m.root)).not.toContain('plan layer 2 (index 1)')
   })
 
   it('shows only the section lines while coloured by observations, and the observation legend again on the plan', async () => {

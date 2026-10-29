@@ -652,7 +652,7 @@ describe('colouring the map by observations', () => {
       const layerOrigins: string[] = []
       store.subscribe((s) => s.layer, (_n, _p, o) => layerOrigins.push(...o))
       chooseGroup(root, 'deep')
-      await vi.waitFor(() => expect(legendText(root)).toContain('moved to layer 1, the lowest layer with a site of this group'))
+      await vi.waitFor(() => expect(legendText(root)).toContain('moved to layer 2 (index 1), the lowest layer with a site of this group'))
       expect(store.get().layer).toBe(1)
       expect(layerOrigins).toEqual(['map'])
       expect((root.querySelector('input[aria-label="Layer"]') as HTMLInputElement).value).toBe('1')
@@ -663,7 +663,7 @@ describe('colouring the map by observations', () => {
       const { root, store } = await mounted()
       groupOrder = ['conc', 'deep', 'heads', 'stack']
       await enterObservations(root)
-      await vi.waitFor(() => expect(legendText(root)).toContain('moved to layer 1, the lowest layer with a site of this group'))
+      await vi.waitFor(() => expect(legendText(root)).toContain('moved to layer 2 (index 1), the lowest layer with a site of this group'))
       expect([...store.get().obsGroups]).toEqual(['deep'])
       expect(store.get().layer).toBe(1)
       expect(Array.from(lastPoints()[0])).toEqual(f32(1.25, 0.5, 1.75, 0.5))

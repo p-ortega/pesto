@@ -354,8 +354,8 @@ describe('a section stacked from sibling groups', () => {
 
     expect(lastValues(section)).toEqual([10, 40, 20, null, 30, 50])
     const line = legendLine(m.root, 'kblayer#:')
-    expect(line?.textContent).toBe('kblayer#: layers 0–1 from 2 groups')
-    expect(line?.title).toBe('layer 0: kblayer1\nlayer 1: kblayer2')
+    expect(line?.textContent).toBe('kblayer#: layers 1–2 (index 0–1) from 2 groups')
+    expect(line?.title).toBe('layer 1 (index 0): kblayer1\nlayer 2 (index 1): kblayer2')
     expect(legendText(m.root)).not.toContain('other layers have no value')
     expect(m.stub.fields).toHaveLength(0)
 
@@ -396,13 +396,13 @@ describe('a section stacked from sibling groups', () => {
     expect(asked.get('realization')).toBe(own.get('realization'))
     // Layer 1 waits with no value rather than showing anything stale.
     expect(lastValues(section)).toEqual([1, null, 2, null, 3, null])
-    expect(legendText(m.root)).toContain('reading layer 1…')
+    expect(legendText(m.root)).toContain('reading layer 2 (index 1)…')
 
     m.stub.held[0]()
     await vi.waitFor(() => expect(lastValues(section)).toEqual([1, 7, 2, null, 3, 9]))
     expect(legendText(m.root)).not.toContain('reading layer')
-    expect(legendLine(m.root, 'kxlayer#pp:')?.textContent).toBe('kxlayer#pp: layers 0–1 from 2 groups')
-    expect(legendLine(m.root, 'kxlayer#pp:')?.title).toBe('layer 0: kxlayer1pp\nlayer 1: kxlayer9pp')
+    expect(legendLine(m.root, 'kxlayer#pp:')?.textContent).toBe('kxlayer#pp: layers 1–2 (index 0–1) from 2 groups')
+    expect(legendLine(m.root, 'kxlayer#pp:')?.title).toBe('layer 1 (index 0): kxlayer1pp\nlayer 2 (index 1): kxlayer9pp')
     // The sibling is drawn with the picked group's limits and style.
     expect(section.setLimits.mock.calls.at(-1)?.[0]).toEqual(m.plan.setLimits.mock.calls.at(-1)?.[0])
     expect(section.setStyle.mock.calls.at(-1)?.[0]).toBe(m.plan.setStyle.mock.calls.at(-1)?.[0])
