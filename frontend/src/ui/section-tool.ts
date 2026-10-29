@@ -4,12 +4,16 @@
 
 import { readColorToken } from '../gl/color-token'
 import type { Chart2D } from './charts/histogram'
+import { paintNote, type Note } from './note-line'
 
 export type SectionToolAvailability = { ok: true } | { ok: false; reason: string }
 
 // Two clicks closer than this make no line; the server keeps its own floor (D-42). CSS pixels.
 export const MIN_END_GAP_CSS_PX = 3
 export const SAME_SPOT_REASON = 'the two ends are on the same spot'
+export const SECTION_TOOL_NAME = 'Draw section line'
+export const SECTION_TOOL_TITLE = 'Click two points on the plan to draw a section line. Esc stops.'
+export const SECTION_TOOL_REASON_ID = 'section-tool-reason'
 
 export interface SectionToolOptions {
   /** The positioned box holding the map canvas; the line canvas goes in it. */
@@ -53,10 +57,11 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('section-button')
-  button.textContent = 'Draw section line'
-  button.setAttribute('aria-label', 'Draw section line')
+  button.textContent = SECTION_TOOL_NAME
+  button.setAttribute('aria-label', SECTION_TOOL_NAME)
   button.setAttribute('aria-pressed', 'false')
   const reasonEl = document.createElement('div')
+  reasonEl.id = SECTION_TOOL_REASON_ID
   reasonEl.classList.add('label', 'wrap-note')
   reasonEl.hidden = true
   opts.buttonHost.appendChild(button)
@@ -83,10 +88,18 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   // The line last finished; it stays until a new one replaces it (D-03).
   let line: { a: [number, number]; b: [number, number] } | null = null
 
+  // The line names its button, since the tools card shows several buttons' lines together.
   function paintReason(): void {
-    const text = unavailableReason ?? notice
-    reasonEl.textContent = text ?? ''
-    reasonEl.hidden = text === null
+    const note: Note | null =
+      unavailableReason !== null
+        ? { kind: 'reason', text: `${SECTION_TOOL_NAME}: ${unavailableReason}` }
+        : notice !== null
+          ? { kind: 'warning', text: `${SECTION_TOOL_NAME}: ${notice}` }
+          : null
+    paintNote(reasonEl, note)
+    reasonEl.hidden = note === null
+    if (note === null) button.removeAttribute('aria-describedby')
+    else button.setAttribute('aria-describedby', SECTION_TOOL_REASON_ID)
   }
 
   function setArmed(on: boolean): void {
@@ -213,7 +226,7 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
     available = state.ok
     button.disabled = !state.ok
     unavailableReason = state.ok ? null : state.reason
-    button.title = state.ok ? 'Click two points on the plan to draw a section line; Esc stops' : state.reason
+    button.title = state.ok ? SECTION_TOOL_TITLE : state.reason
     if (!state.ok && isArmed) setArmed(false)
     paintReason()
   }

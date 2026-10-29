@@ -62,7 +62,7 @@ function harness(): Harness {
 }
 
 const button = (h: { host: HTMLElement }): HTMLButtonElement => h.host.querySelector('.section-button') as HTMLButtonElement
-const reason = (h: { host: HTMLElement }): HTMLElement => h.host.querySelector('.wrap-note') as HTMLElement
+const reason = (h: { host: HTMLElement }): HTMLElement => h.host.querySelector('#section-tool-reason') as HTMLElement
 
 function pointer(type: string, x: number, y: number): PointerEvent {
   return new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true, cancelable: true })
@@ -190,7 +190,8 @@ describe('the section line tool', () => {
     expect(h.lines).toHaveLength(0)
     expect(h.tool.armed()).toBe(true)
     expect(reason(h).hidden).toBe(false)
-    expect(reason(h).textContent).toBe('the two ends are on the same spot')
+    expect(reason(h).textContent).toBe('⚠ Draw section line: the two ends are on the same spot')
+    expect(button(h).getAttribute('aria-describedby')).toBe('section-tool-reason')
 
     clickAt(h.canvas, 25, 40)
     expect(h.lines).toEqual([{ a: [10, 20], b: [12.5, 20] }])
@@ -231,7 +232,9 @@ describe('the section line tool', () => {
 
     expect(h.tool.armed()).toBe(false)
     expect(button(h).disabled).toBe(true)
-    expect(reason(h).textContent).toBe('the grid file records no layer bottoms')
+    expect(reason(h).textContent).toBe('ℹ Draw section line: the grid file records no layer bottoms')
+    expect(button(h).title).toBe('the grid file records no layer bottoms')
+    expect(button(h).getAttribute('aria-describedby')).toBe('section-tool-reason')
     button(h).click()
     expect(h.tool.armed()).toBe(false)
     expect(h.armed).toBe(1)
@@ -239,6 +242,13 @@ describe('the section line tool', () => {
     h.tool.setAvailable({ ok: true })
     expect(button(h).disabled).toBe(false)
     expect(reason(h).hidden).toBe(true)
+    expect(button(h).title).toBe('Click two points on the plan to draw a section line. Esc stops.')
+    expect(button(h).getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('reads Draw section line, in its text and its aria-label', () => {
+    expect(button(h).textContent).toBe('Draw section line')
+    expect(button(h).getAttribute('aria-label')).toBe('Draw section line')
   })
 
   it('disarms on disarm() and changes nothing else', () => {
@@ -258,7 +268,7 @@ describe('the section line tool', () => {
 
   it('puts the reason through textContent, never as markup', () => {
     h.tool.setAvailable({ ok: false, reason: '<b>no</b> bottoms' })
-    expect(reason(h).textContent).toBe('<b>no</b> bottoms')
+    expect(reason(h).textContent).toBe('ℹ Draw section line: <b>no</b> bottoms')
     expect(reason(h).querySelector('b')).toBeNull()
   })
 })

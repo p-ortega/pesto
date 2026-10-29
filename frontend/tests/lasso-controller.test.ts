@@ -137,6 +137,59 @@ describe('the lasso control', () => {
     expect(h.lasso.armed()).toBe(false)
   })
 
+  it('names itself in its reason line, which the button points at while it shows', () => {
+    const h = harness()
+    const line = h.host.querySelector('#lasso-reason') as HTMLElement
+    expect(line.textContent).toBe('ℹ Lasso sites: no observation site dots are drawn; colour the map by observations')
+    expect(button(h).getAttribute('aria-describedby')).toBe('lasso-reason')
+    h.lasso.setAvailable({ ok: true })
+    expect(line.hidden).toBe(true)
+    expect(line.textContent).toBe('')
+    expect(button(h).getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('puts the reason line in the reason host when one is given', () => {
+    const area = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const buttons = document.createElement('div')
+    const reasons = document.createElement('div')
+    area.append(buttons, reasons, canvas)
+    document.body.appendChild(area)
+    const lasso = renderLasso({
+      area,
+      canvas,
+      buttonHost: buttons,
+      reasonHost: reasons,
+      canvasPoint: (event) => [event.clientX, event.clientY],
+      screenToWorld: (x, y) => [x, y],
+      worldToScreen: (x, y) => [x, y],
+      onRelease: () => {},
+      onTooSmall: () => {},
+      context: () => null,
+    })
+    expect(buttons.querySelector('.lasso-button')).not.toBeNull()
+    expect(buttons.querySelector('#lasso-reason')).toBeNull()
+    expect(reasons.querySelector('#lasso-reason')).not.toBeNull()
+    lasso.dispose()
+    expect(buttons.children).toHaveLength(0)
+    expect(reasons.children).toHaveLength(0)
+  })
+
+  it('names the remove key in its title: Option on a Mac, Alt elsewhere', () => {
+    vi.stubGlobal('navigator', { platform: 'MacIntel' })
+    const mac = harness()
+    mac.lasso.setAvailable({ ok: true })
+    expect(button(mac).title).toBe('Drag around site dots to select them. Shift adds, Option removes. Esc stops.')
+    mac.lasso.dispose()
+
+    vi.stubGlobal('navigator', { platform: 'Win32' })
+    const pc = harness()
+    pc.lasso.setAvailable({ ok: true })
+    expect(button(pc).title).toBe('Drag around site dots to select them. Shift adds, Alt removes. Esc stops.')
+    pc.lasso.dispose()
+    vi.unstubAllGlobals()
+  })
+
   it('reports an armed drag once on release, in world units, with the keys held at release', () => {
     const h = harness()
     arm(h)

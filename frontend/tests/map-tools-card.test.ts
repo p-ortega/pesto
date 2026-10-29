@@ -11,6 +11,7 @@ import type { IngestState } from '../src/data/client'
 import { Camera } from '../src/gl/camera'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
+import { renderSectionControls } from '../src/ui/section-controls'
 import type { RunConfig } from '../src/views/map'
 import { createRecording2d } from './support/recording-2d'
 
@@ -39,7 +40,9 @@ const CONFIG: RunConfig = {
   noise: { has_noise: null, decided_by: '', evidence: [], notes: [] },
 }
 
-function baseState(): IngestState {
+const SECTION_OPEN = { available: true, blockedBy: [] }
+
+function baseState(section: IngestState['capabilities']['section'] = SECTION_OPEN): IngestState {
   return {
     fresh: true,
     artifacts: [],
@@ -48,7 +51,7 @@ function baseState(): IngestState {
       stats: { available: true, blockedBy: [] },
       chips: { available: true, blockedBy: [] },
       obs: { available: true, blockedBy: [] },
-      section: { available: true, blockedBy: [] },
+      section,
     },
     ingestSeconds: null,
     cacheBytes: null,
@@ -152,7 +155,7 @@ interface Mounted {
 
 const recording = createRecording2d()
 
-async function mounted(): Promise<Mounted> {
+async function mounted(section: IngestState['capabilities']['section'] = SECTION_OPEN): Promise<Mounted> {
   stubResizeObserver()
   stubFetch()
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((type: string) =>
@@ -168,7 +171,7 @@ async function mounted(): Promise<Mounted> {
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
-  mountMap(root, { config: CONFIG, state: baseState(), store })
+  mountMap(root, { config: CONFIG, state: baseState(section), store })
   await vi.waitFor(() => {
     expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
   })
@@ -230,6 +233,85 @@ describe('the tools card at the map top right', () => {
     canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home' }))
     expect(fitSpy).toHaveBeenCalledTimes(2)
     expect(fitSpy.mock.calls[1][0]).toEqual(fitSpy.mock.calls[0][0])
+  })
+})
+
+const reasonLines = (root: HTMLElement): { id: string; text: string }[] =>
+  Array.from(root.querySelectorAll('.tools-reasons > *'))
+    .filter((el) => !(el as HTMLElement).hidden)
+    .map((el) => ({ id: el.id, text: el.textContent ?? '' }))
+
+describe('the tools say what they do, and a disabled one says why with its name', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('titles Draw section line with what it does, and a disabled lasso with its reason', async () => {
+    const { root } = await mounted()
+    const line = root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
+    expect(line.disabled).toBe(false)
+    expect(line.title).toBe('Click two points on the plan to draw a section line. Esc stops.')
+    const lasso = buttonByText(toolsRow(root), 'Lasso sites')
+    expect(lasso.disabled).toBe(true)
+    expect(lasso.title).toBe('no observation site dots are drawn; colour the map by observations')
+  })
+
+  it('shows one named reason line per disabled button, in button order', async () => {
+    const { root } = await mounted()
+    expect(reasonLines(root)).toEqual([
+      { id: 'section-view-reason', text: 'ℹ Section view: draw a section line on the plan first' },
+      { id: 'lasso-reason', text: 'ℹ Lasso sites: no observation site dots are drawn; colour the map by observations' },
+    ])
+    expect(buttonByText(root, 'Section view').getAttribute('aria-describedby')).toBe('section-view-reason')
+    expect(buttonByText(toolsRow(root), 'Lasso sites').getAttribute('aria-describedby')).toBe('lasso-reason')
+    const line = root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
+    expect(line.getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('names Draw section line in its reason, and puts the reason in its title, when the run has no section', async () => {
+    const reason = 'the grid file records no layer bottoms'
+    const { root } = await mounted({ available: false, blockedBy: [{ artifact: 'grid', reason }] })
+    const line = root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
+    expect(line.disabled).toBe(true)
+    expect(line.title).toBe(reason)
+    expect(line.getAttribute('aria-describedby')).toBe('section-tool-reason')
+    expect(reasonLines(root).map((r) => r.text)).toEqual([
+      `ℹ Section view: ${reason}`,
+      `ℹ Draw section line: ${reason}`,
+      'ℹ Lasso sites: no observation site dots are drawn; colour the map by observations',
+    ])
+  })
+})
+
+describe('the Section view reason line', () => {
+  it('names Section view for a block and a failure, and says loading plainly', () => {
+    const host = document.createElement('div')
+    const controls = renderSectionControls(host, { onPlan: () => {}, onSection: () => {} })
+    const line = host.querySelector('#section-view-reason') as HTMLElement
+    const toggle = buttonByText(host, 'Section view')
+    expect(line.textContent).toBe('ℹ Section view: draw a section line on the plan first')
+    expect(toggle.title).toBe('draw a section line on the plan first')
+
+    controls.setHasLine(true)
+    expect(line.hidden).toBe(true)
+    expect(toggle.getAttribute('aria-describedby')).toBeNull()
+
+    controls.setLoading(true)
+    expect(line.textContent).toBe('loading the section')
+    expect(line.hidden).toBe(false)
+    controls.setLoading(false)
+
+    controls.setFailure('<b>the server</b> did not answer')
+    expect(line.textContent).toBe('⚠ Section view: <b>the server</b> did not answer')
+    expect(line.querySelector('b')).toBeNull()
+    expect(toggle.getAttribute('aria-describedby')).toBe('section-view-reason')
+    controls.dispose()
   })
 })
 

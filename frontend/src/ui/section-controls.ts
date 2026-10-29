@@ -4,6 +4,7 @@
 // the DOM through textContent.
 
 import type { VeMode } from '../gl/section-camera'
+import { paintNote } from './note-line'
 
 export interface SectionControlsOptions {
   onPlan(): void
@@ -30,6 +31,8 @@ export interface SectionControlsHandle {
 
 export const NO_LINE_REASON = 'draw a section line on the plan first'
 export const LOADING_TEXT = 'loading the section'
+export const SECTION_VIEW_NAME = 'Section view'
+export const SECTION_VIEW_REASON_ID = 'section-view-reason'
 export const VE_LABEL = 'Vertical exaggeration'
 export const VE_CHOICES: readonly VeMode[] = ['fitted', 1, 2, 5, 10, 20, 50, 100]
 
@@ -45,7 +48,7 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   const sectionButton = document.createElement('button')
   sectionButton.type = 'button'
   sectionButton.classList.add('section-toggle')
-  sectionButton.textContent = 'Section view'
+  sectionButton.textContent = SECTION_VIEW_NAME
   row.appendChild(planButton)
   row.appendChild(sectionButton)
   const toolsRow = document.createElement('div')
@@ -56,6 +59,7 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   const reasons = document.createElement('div')
   reasons.classList.add('tools-reasons')
   const reasonEl = document.createElement('div')
+  reasonEl.id = SECTION_VIEW_REASON_ID
   reasonEl.classList.add('label', 'wrap-note')
   reasons.appendChild(reasonEl)
   const veRow = document.createElement('label')
@@ -92,9 +96,17 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     const blocked = capability ?? refusal ?? (hasLine ? null : NO_LINE_REASON)
     sectionButton.disabled = blocked !== null
     sectionButton.title = blocked ?? 'Show the section along the line'
-    const text = blocked ?? (loading ? LOADING_TEXT : (failure ?? ''))
-    reasonEl.textContent = text
-    reasonEl.hidden = text === ''
+    // A reason and a failure name their button, since the card shows several buttons' lines together.
+    if (blocked !== null) paintNote(reasonEl, { kind: 'reason', text: `${SECTION_VIEW_NAME}: ${blocked}` })
+    else if (loading) {
+      reasonEl.textContent = LOADING_TEXT
+      reasonEl.style.display = ''
+    } else if (failure) paintNote(reasonEl, { kind: 'warning', text: `${SECTION_VIEW_NAME}: ${failure}` })
+    else paintNote(reasonEl, null)
+    const showing = blocked !== null || loading || Boolean(failure)
+    reasonEl.hidden = !showing
+    if (showing) sectionButton.setAttribute('aria-describedby', SECTION_VIEW_REASON_ID)
+    else sectionButton.removeAttribute('aria-describedby')
     veRow.hidden = !shown
   }
   paint()
