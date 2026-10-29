@@ -266,6 +266,20 @@ describe('every remaining state is a designed state', () => {
     )
   })
 
+  it('when no group can be drawn, the map itself shows the unmapped list its notice points at', async () => {
+    stubWebgl2()
+    stubEnvironment({ '/api/run/grid/cells/cell': { status: 200, bytes: bytesOf(UNMAPPED_CELL_ARRAY) } })
+    const root = mountFreshRoot()
+    await mount(root)
+
+    await vi.waitFor(() => {
+      expect(root.textContent).toContain('No parameter group can be drawn on this map')
+    })
+    const list = root.querySelector('.map-area .unmapped-list')
+    expect(list).not.toBeNull()
+    expect(list!.textContent).toContain('G1')
+  })
+
   it('the header, status bar and Params panel frame stay on screen in every designed state', async () => {
     stubWebgl2()
     stubEnvironment({ '/api/run/grid/mesh': { status: 502, body: { type: 'about:blank', title: 'read failure', status: 502 } } })
