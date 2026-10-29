@@ -447,10 +447,12 @@ describe('the overlays on the map', () => {
     expect(toggleText(root, 'conflict')).toContain('from file')
   })
 
-  it('puts the toggles first in the map controls', async () => {
+  it('puts the toggles right after the Data and Colours cards', async () => {
     const { root } = await mounted()
     const cluster = root.querySelector('.floating-top-left') as HTMLElement
-    expect(cluster.firstElementChild?.querySelector('.overlay-controls')).not.toBeNull()
+    const stack = Array.from(cluster.children)
+    expect(stack.slice(0, 3).map((el) => el.getAttribute('data-fold'))).toEqual(['data', 'colours', 'overlays'])
+    expect(stack[2].querySelector('.overlay-controls')).not.toBeNull()
   })
 
   it('clears only the at-bounds bit when its toggle is turned off, asking nothing, and clears the hatch with both off', async () => {
