@@ -13,6 +13,7 @@ from typing import Any
 
 from pesto.bench.limits import SPEED_LIMITS, passes, speed_limits_dict
 from pesto.cache._atomic import write_atomic_text
+from pesto.layer_words import layer_words
 
 SCHEMA_VERSION = 2
 TOOL = "pesto bench"
@@ -363,13 +364,13 @@ def _target_lines(result: BenchResult) -> list[str]:
         lines.append(f"  note: {targets.iteration_note}")
     heavy = targets.heaviest
     lines.append(
-        f"  heaviest: group {heavy.group}, layer {heavy.layer}, {heavy.cells} cells"
+        f"  heaviest: group {heavy.group}, {layer_words(heavy.layer)}, {heavy.cells} cells"
         if heavy is not None
         else f"  heaviest: none ({targets.heaviest_note})"
     )
     pilot = targets.pilot_point
     lines.append(
-        f"  pilot points: group {pilot.group}, layer {pilot.layer}, {pilot.n_pp} points"
+        f"  pilot points: group {pilot.group}, {layer_words(pilot.layer)}, {pilot.n_pp} points"
         if pilot is not None
         else f"  pilot points: none ({targets.pilot_point_note})"
     )
