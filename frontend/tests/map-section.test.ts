@@ -490,7 +490,8 @@ describe('the section tracer on the map', () => {
     expect((MeshLayer.mock.calls[1][1] as { nCells: number }).nCells).toBe(6)
     const section = await sectionLayer()
     expect(Array.from(section.setInactive.mock.calls.at(-1)?.[0] as Uint8Array)).toEqual([0, 0, 0, 1, 0, 0])
-    expect(Array.from(section.setFootprint.mock.calls.at(-1)?.[0] as Uint8Array)).toEqual([1, 1, 1, 0, 1, 1])
+    // Cell 2 is not in this plan's two-cell mesh, so only its quads have no value.
+    expect(Array.from(section.setFootprint.mock.calls.at(-1)?.[0] as Uint8Array)).toEqual([0, 0, 0, 0, 1, 1])
     // The section gets the theme colours the plan layer gets.
     expect(section.setFootprintColor).toHaveBeenCalled()
     expect(section.setHairlineColor).toHaveBeenCalled()
