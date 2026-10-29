@@ -78,7 +78,7 @@ describe('parameterRingCells', () => {
     const rings = parameterRingCells(parAnswer([par({ parnme: 'pp2', kind: 'pilot_point', layer: 2, cells: [1, 2], nCells: 2 })]), 0)
     expect(rings.cells).toEqual([])
     expect(rings.otherLayer).toEqual([{ layer: 2, count: 1 }])
-    expect(parameterLines(rings)).toEqual(['1 selected parameter is on layer 2'])
+    expect(parameterLines(rings)).toEqual(['1 selected parameter is on layer 3 (index 2)'])
   })
 
   it('counts a parameter with no cell by the reason the server gave', () => {
@@ -161,7 +161,7 @@ describe('whereLines', () => {
       site({ siteId: 4 }),
     ])
     expect(whereLines(answer, OBS)).toEqual([
-      '1 selected site is on layer 4',
+      '1 selected site is on layer 5 (index 4)',
       '1 selected site is in another group (shown: heads)',
       '1 selected site is not placed',
     ])
@@ -177,7 +177,7 @@ describe('whereLines', () => {
   it('says to turn on all layers for a site of unknown layer, and nothing once they are on', () => {
     const answer = sitesAnswer([site({ siteId: 1, layer: -1 }), site({ siteId: 2, layer: 3 })])
     expect(whereLines(answer, OBS)).toEqual([
-      '1 selected site is on layer 3',
+      '1 selected site is on layer 4 (index 3)',
       '1 selected site has an unknown layer; turn on all layers to see it',
     ])
     expect(whereLines(answer, { ...OBS, allLayers: true })).toEqual([])
@@ -185,7 +185,7 @@ describe('whereLines', () => {
 
   it('counts sites on each other layer separately, plural spelled out', () => {
     const answer = sitesAnswer([site({ siteId: 1, layer: 4 }), site({ siteId: 2, layer: 4 }), site({ siteId: 3, layer: 1 })])
-    expect(whereLines(answer, OBS)).toEqual(['1 selected site is on layer 1', '2 selected sites are on layer 4'])
+    expect(whereLines(answer, OBS)).toEqual(['1 selected site is on layer 2 (index 1)', '2 selected sites are on layer 5 (index 4)'])
   })
 })
 
@@ -269,7 +269,7 @@ describe('pickedSiteRings', () => {
     const answer = sitesAnswer([1, 2, 3, 4].map((id) => site({ siteId: id })))
     const one = pickedSiteRings(answer, () => heads, ON_0)
     expect(one.siteIds).toEqual([4])
-    expect(one.lines).toEqual(['2 selected sites are on layer 2, not drawn on layer 0', '1 selected site has an unknown layer, not drawn on layer 0'])
+    expect(one.lines).toEqual(['2 selected sites are on layer 3 (index 2), not drawn on layer 1 (index 0)', '1 selected site has an unknown layer, not drawn on layer 1 (index 0)'])
     const all = pickedSiteRings(answer, () => heads, { layer: 0, allLayers: true })
     expect(all.siteIds).toEqual([1, 2, 3, 4])
     expect(all.lines).toEqual([])
