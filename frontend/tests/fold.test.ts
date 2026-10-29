@@ -110,10 +110,13 @@ describe('a foldable card', () => {
     const scale = document.createElement('div')
     scale.classList.add('label')
     scale.textContent = 'Scale: Linear'
-    fold.body.append(ramp, name, scale)
+    const warning = document.createElement('div')
+    warning.classList.add('label', 'legend-keep')
+    warning.textContent = '3 cells no value'
+    fold.body.append(ramp, name, scale, warning)
     // Open, it carries its title like every card; a detail never joins it, since its lines say what it draws.
     fold.setSummary('ignored')
-    expect(fold.el.textContent).toBe('LegendG1Scale: Linear')
+    expect(fold.el.textContent).toBe('LegendG1Scale: Linear3 cells no value')
     expect(getComputedStyle(summary(fold.el)).display).not.toBe('none')
 
     button(fold.el).click()
@@ -121,6 +124,7 @@ describe('a foldable card', () => {
     expect(getComputedStyle(ramp).display).not.toBe('none')
     expect(getComputedStyle(name).display).not.toBe('none')
     expect(getComputedStyle(scale).display).toBe('none')
+    expect(getComputedStyle(warning).display).not.toBe('none')
     // Folded, the ramp and group name say what it is, so the title goes.
     expect(getComputedStyle(summary(fold.el)).display).toBe('none')
   })

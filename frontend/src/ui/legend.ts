@@ -170,7 +170,7 @@ function renderRamp(el: HTMLElement, table: Uint8Array, limits: [number, number]
 function renderLines(el: HTMLElement, opts: LegendOptions): void {
   if (opts.styleNotes?.classes) {
     const noteLine = document.createElement('div')
-    noteLine.classList.add('label')
+    noteLine.classList.add('label', 'legend-keep')
     noteLine.textContent = opts.styleNotes.classes
     el.appendChild(noteLine)
   }
@@ -199,7 +199,7 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
 
   if (opts.blended) {
     const blendedLine = document.createElement('div')
-    blendedLine.classList.add('label')
+    blendedLine.classList.add('label', 'legend-keep')
     blendedLine.textContent = 'blended — colours approximate'
     el.appendChild(blendedLine)
   }
@@ -234,11 +234,12 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
   noValueEl.textContent = `${opts.noValue} cells no value`
   countsLine.appendChild(contestedEl)
   countsLine.appendChild(noValueEl)
+  if (opts.contested > 0 || opts.noValue > 0) countsLine.classList.add('legend-keep')
   el.appendChild(countsLine)
 
   if (typeof opts.inactiveDrawn === 'number' && opts.inactiveDrawn > 0) {
     const inactiveLine = document.createElement('div')
-    inactiveLine.classList.add('label', 'tabular-nums')
+    inactiveLine.classList.add('label', 'tabular-nums', 'legend-keep')
     inactiveLine.textContent = `${opts.inactiveDrawn} cells inactive in idomain, still drawn`
     el.appendChild(inactiveLine)
   }

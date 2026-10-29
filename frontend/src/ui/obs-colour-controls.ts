@@ -320,14 +320,16 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
   }
   line(el, opts.timeText, 'wrap-note')
   if (opts.limitsRefused) {
-    line(el, `Limits unknown, so the dots carry no colour: ${opts.limitsRefused}`, 'wrap-note')
+    line(el, `Limits unknown, so the dots carry no colour: ${opts.limitsRefused}`, 'wrap-note', 'legend-keep')
+  } else if (opts.limits === null) {
+    line(el, `Limits: none, this statistic has no finite value (${opts.limitsRule})`, 'wrap-note', 'legend-keep')
   } else {
-    line(el, opts.limits === null ? `Limits: none, this statistic has no finite value (${opts.limitsRule})` : `Limits: ${opts.limitsRule}`, 'wrap-note')
+    line(el, `Limits: ${opts.limitsRule}`, 'wrap-note')
   }
 
   const { counts, atTime } = opts
   if (counts.drawn === 0) {
-    line(el, 'No site of this group is drawn', 'wrap-note')
+    line(el, 'No site of this group is drawn', 'wrap-note', 'legend-keep')
   } else {
     if (atTime !== null) {
       const total = atTime.total
@@ -342,6 +344,7 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
           el,
           `${n} ${n === 1 ? 'has' : 'have'} an observation at this time but no measured value, counted over the whole group`,
           'wrap-note',
+          'legend-keep',
         )
       }
     }
@@ -351,22 +354,23 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
         el,
         `${n} ${n === 1 ? 'observation shares its time' : 'observations share their time'} with a later one of the same site; the last is shown`,
         'wrap-note',
+        'legend-keep',
       )
     }
     line(el, `${counts.cellCentre} at the centre of the cell's vertices, ${counts.own} at its own x and y`, 'wrap-note')
   }
   if (counts.unplaced > 0) {
     const reason = counts.unplacedNotes.length > 0 ? counts.unplacedNotes.join('; ') : 'no reason was recorded'
-    line(el, `${sitesText(counts.unplaced)} not placed: ${reason}`, 'wrap-note')
+    line(el, `${sitesText(counts.unplaced)} not placed: ${reason}`, 'wrap-note', 'legend-keep')
   }
   if (counts.onOtherLayers > 0) {
-    line(el, counts.onOtherLayers === 1 ? '1 site on another layer' : `${counts.onOtherLayers} sites on other layers`, 'wrap-note')
+    line(el, counts.onOtherLayers === 1 ? '1 site on another layer' : `${counts.onOtherLayers} sites on other layers`, 'wrap-note', 'legend-keep')
   }
   if (counts.unknownLayerHidden > 0) {
-    line(el, `${sitesText(counts.unknownLayerHidden)} with an unknown layer, shown only under all layers`, 'wrap-note')
+    line(el, `${sitesText(counts.unknownLayerHidden)} with an unknown layer, shown only under all layers`, 'wrap-note', 'legend-keep')
   }
   if (opts.layerMoved !== null) {
-    line(el, `moved to ${layerWords(opts.layerMoved)}, the lowest layer with a site of this group`, 'wrap-note')
+    line(el, `moved to ${layerWords(opts.layerMoved)}, the lowest layer with a site of this group`, 'wrap-note', 'legend-keep')
   }
-  for (const note of opts.notes) line(el, note, 'wrap-note')
+  for (const note of opts.notes) line(el, note, 'wrap-note', 'legend-keep')
 }

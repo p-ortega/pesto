@@ -607,7 +607,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   function legendEntries(): LegendEntry[] {
     if (answer === null || !fitted) return []
     const entries: LegendEntry[] = [{ text: camera.veText() }, { text: `plan ${layerWords(planLayer)}` }]
-    const push = (...texts: string[]) => entries.push(...texts.map((text) => ({ text })))
+    // Past the VE and plan layer lines, every line pushed here says what is not drawn or why.
+    const push = (...texts: string[]) => entries.push(...texts.map((text) => ({ text, keep: true })))
     if (painted !== null) {
       const { out, plan, stack } = painted
       if (plan.obsActive) push(OBS_LINE)
@@ -636,9 +637,10 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     const entries = legendEntries()
     if (entries.length === 0) return
     el.classList.add('floating')
-    for (const { text, title } of entries) {
+    for (const { text, title, keep } of entries) {
       const line = appendLine(el, text, 'label', 'section-legend-line')
       if (title !== undefined) line.title = title
+      if (keep === true) line.classList.add('legend-keep')
     }
   }
 

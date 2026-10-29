@@ -122,6 +122,8 @@ export interface LegendEntry {
   text: string
   /** The full mapping, for a tooltip; absent when the text says it all. */
   title?: string
+  /** A warning or failure, kept readable when the legend folds. */
+  keep?: boolean
 }
 
 export interface StackStatus {
@@ -152,17 +154,17 @@ export function stackLegend(plan: SiblingPlan, status: StackStatus): LegendEntry
       title: mapping.join('\n'),
     })
   }
-  if (unfilled.length > 0) entries.push({ text: `no group of ${plan.key} fills ${layerRangeWords(unfilled)}` })
+  if (unfilled.length > 0) entries.push({ text: `no group of ${plan.key} fills ${layerRangeWords(unfilled)}`, keep: true })
   for (let l = 0; l < nlay; l++) {
     const groups = plan.fillers[l]
-    if (groups.length > 1) entries.push({ text: contestedLine(l, groups) })
+    if (groups.length > 1) entries.push({ text: contestedLine(l, groups), keep: true })
   }
-  if (status.loading.length > 0) entries.push({ text: `reading ${layerRangeWords(status.loading)}…` })
+  if (status.loading.length > 0) entries.push({ text: `reading ${layerRangeWords(status.loading)}…`, keep: true })
   for (const f of status.failed) {
     const verb = new Set(f.layers).size === 1 ? 'is' : 'are'
-    entries.push({ text: `${f.group} could not be read, so ${layerRangeWords(f.layers)} ${verb} drawn with no value: ${f.reason}` })
+    entries.push({ text: `${f.group} could not be read, so ${layerRangeWords(f.layers)} ${verb} drawn with no value: ${f.reason}`, keep: true })
   }
-  for (const note of plan.notes) entries.push({ text: note })
+  for (const note of plan.notes) entries.push({ text: note, keep: true })
   return entries
 }
 
