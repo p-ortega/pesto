@@ -535,7 +535,7 @@ describe('the map publishes its choices and follows other views', () => {
     store.flush()
 
     expect((root.querySelector('[aria-label="Layer"]') as HTMLInputElement).value).toBe('0')
-    expect(root.querySelector('[data-testid="map-notices"]')?.textContent).toContain('layer 7')
+    expect(root.querySelector('[data-testid="map-notices"]')?.textContent).toContain('layer index 7')
   })
 })
 
