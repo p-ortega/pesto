@@ -1,6 +1,6 @@
 // The plan / section toggle at the map's top right (D-06). "Section view" stays disabled, with the
-// reason as text, until a line exists and while the server refuses it. Every word reaches the DOM
-// through textContent.
+// reason as text, while the run cannot have a section, while the server refuses the line, and
+// until a line exists, in that order. Every word reaches the DOM through textContent.
 
 export interface SectionControlsOptions {
   onPlan(): void
@@ -12,6 +12,8 @@ export interface SectionControlsHandle {
   setShown(on: boolean): void
   setLoading(on: boolean): void
   setRefusal(reason: string | null): void
+  /** Why this run can have no section at all, or null when it can; it wins over any other reason. */
+  setCapability(reason: string | null): void
   dispose(): void
 }
 
@@ -43,11 +45,12 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   let shown = false
   let loading = false
   let refusal: string | null = null
+  let capability: string | null = null
 
   function paint(): void {
     planButton.setAttribute('aria-pressed', String(!shown))
     sectionButton.setAttribute('aria-pressed', String(shown))
-    const blocked = !hasLine ? NO_LINE_REASON : refusal
+    const blocked = capability ?? refusal ?? (hasLine ? null : NO_LINE_REASON)
     sectionButton.disabled = blocked !== null
     sectionButton.title = blocked ?? 'Show the section along the line'
     const text = blocked ?? (loading ? LOADING_TEXT : '')
@@ -78,6 +81,10 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     },
     setRefusal(reason) {
       refusal = reason
+      paint()
+    },
+    setCapability(reason) {
+      capability = reason
       paint()
     },
     dispose() {

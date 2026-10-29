@@ -60,13 +60,13 @@ import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
 import { renderLasso, type LassoKeys } from '../ui/lasso'
-import { renderSectionTool } from '../ui/section-tool'
+import { renderSectionTool, type SectionToolAvailability } from '../ui/section-tool'
 import { createSectionView } from '../ui/section-view'
 import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
-import { renderOverlayControls, type OverlayControlsHandle, type OverlayStatus } from '../ui/overlay-controls'
+import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
 import { renderTimeSlider, type TimeSliderHandle } from '../ui/time-slider'
@@ -491,9 +491,22 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     worldToScreen,
     onRelease: lassoRelease,
     onTooSmall: () => lassoEmpty(),
+    // D-01: one armed tool at a time.
+    onArm: () => sectionTool.disarm(),
   })
   // The section (SECT-01, SECT-02): the line tool on the plan and the view that replaces the plan.
-  const SECTION_TOOL_ON_PLAN = 'switch to the plan view to draw a section line'
+  // D-22: the line tool and the lasso draw on the plan, and the overlays hatch it.
+  const TOOLS_ON_PLAN = 'switch to the plan view to draw on the plan'
+  const OVERLAYS_ON_PLAN = 'overlays are drawn on the plan only'
+  // D-12 to D-14, D-32: the run's own reason first; a state that does not say is never read as yes.
+  const SECTION_UNREPORTED = 'the server did not report whether this run can have a section'
+  const sectionCapability = opts.state.capabilities.section
+  const sectionBlocked: string | null =
+    sectionCapability === undefined
+      ? SECTION_UNREPORTED
+      : sectionCapability.available
+        ? null
+        : (sectionCapability.blockedBy[0]?.reason ?? 'the server says this run has no section and gave no reason')
   const sectionView = createSectionView({
     area: mapCanvasArea,
     canvas,
@@ -526,8 +539,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     onShownChange: (shown) => {
       mapCanvasArea.classList.toggle('showing-section', shown)
       sectionTool.disarm()
-      // A line is drawn on the plan, so the tool waits while the section shows.
-      sectionTool.setAvailable(shown ? { ok: false, reason: SECTION_TOOL_ON_PLAN } : { ok: true })
+      // An armed lasso would hold every press, so the section could not pan.
+      lasso.disarm()
+      syncSectionTool()
+      syncLasso()
+      showOverlayStatuses()
+      if (!shown) redrawOverlays()
       updateReadout()
       repaintLegend()
     },
@@ -543,13 +560,29 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     canvasPoint,
     screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
     worldToScreen,
+    onArm: () => lasso.disarm(),
     onLine: (a, b) => {
       const [ox, oy] = mesh?.origin ?? [0, 0]
       sectionView.setLine([a[0] + ox, a[1] + oy], [b[0] + ox, b[1] + oy])
     },
   })
+  sectionView.controls().setCapability(sectionBlocked)
+
+  function sectionToolState(): SectionToolAvailability {
+    if (sectionBlocked !== null) return { ok: false, reason: sectionBlocked }
+    // A line is drawn on the plan, so the tool waits while the section shows.
+    if (sectionView.shown()) return { ok: false, reason: TOOLS_ON_PLAN }
+    if (!camera) return { ok: false, reason: 'the map is still loading' }
+    return { ok: true }
+  }
+
+  function syncSectionTool(): void {
+    sectionTool.setAvailable(sectionToolState())
+  }
+  syncSectionTool()
   let lassoIndex: { key: string; xy: Float32Array; tree: Flatbush | null } | null = null
-  let lassoAvailable = false
+  // What the lasso was last told, so an unchanged answer is not told again.
+  let lassoTold = LASSO_NO_DOTS
   // The sites the lasso last wrote: a sites change to anything else takes its outline away.
   let lassoSites: ReadonlySet<number> | null = null
   topLeftEl.appendChild(whereEl)
@@ -587,6 +620,27 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // The two overlays (D-21 to D-29): one source for both answers, one hatch pass, swatches in dots.
   const overlaySource = createOverlaySource()
   let overlayControls: OverlayControlsHandle | null = null
+  // The statuses the overlay source last gave, put back when the plan returns (D-22).
+  const overlayPlanStatus: Record<OverlayKind, OverlayStatus> = { atBounds: { kind: 'loading' }, conflict: { kind: 'loading' } }
+
+  function putOverlayStatus(controls: OverlayControlsHandle, kind: OverlayKind, status: OverlayStatus): void {
+    overlayPlanStatus[kind] = status
+    controls.setStatus(kind, status)
+  }
+
+  // While the section shows, a toggle with data keeps its count and the user's choice but says why it is off.
+  function showOverlayStatuses(): void {
+    const controls = overlayControls
+    if (controls === null) return
+    for (const kind of ['atBounds', 'conflict'] as const) {
+      const status = overlayPlanStatus[kind]
+      if (sectionView.shown() && (status.kind === 'shown' || status.kind === 'suppressed')) {
+        controls.setStatus(kind, { kind: 'suppressed', reason: OVERLAYS_ON_PLAN, label: status.label, title: OVERLAYS_ON_PLAN })
+      } else {
+        controls.setStatus(kind, status)
+      }
+    }
+  }
   // The iteration and group last asked for, and what the last build was made from. A build runs
   // only when one of these moves, never on a pan or zoom frame.
   let overlayAsked: string | null = null
@@ -629,6 +683,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // hatch from the held answers otherwise. Says whether the hatch changed, so the caller redraws.
   function refreshOverlays(): boolean {
     if (!layer || !mesh || !overlayControls) return false
+    // The plan is not drawn while the section shows; the plan's return rebuilds what moved meanwhile.
+    if (sectionView.shown()) return false
     const controls = overlayControls
     const iteration = loadingIteration ?? committed.iteration
     const group = drawnGroup
@@ -657,8 +713,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     let atDots: ReadonlySet<number> = new Set()
     let conflictDots: ReadonlySet<number> = new Set()
     if (loading) {
-      controls.setStatus('atBounds', { kind: 'loading' })
-      controls.setStatus('conflict', { kind: 'loading' })
+      putOverlayStatus(controls, 'atBounds', { kind: 'loading' })
+      putOverlayStatus(controls, 'conflict', { kind: 'loading' })
     } else {
       const inputs = overlayInputs(mesh.nCells)
       // Built once for the words, then again only when the user has one of the toggles off.
@@ -667,8 +723,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         textured && status.kind === 'shown'
           ? { kind: 'suppressed', reason: OVERLAY_SUPPRESSED_REASON, label: status.label, title: OVERLAY_SUPPRESSED_REASON }
           : status
-      controls.setStatus('atBounds', shownAs(build.atBounds))
-      controls.setStatus('conflict', shownAs(build.conflict))
+      putOverlayStatus(controls, 'atBounds', shownAs(build.atBounds))
+      putOverlayStatus(controls, 'conflict', shownAs(build.conflict))
       const enabled = { atBounds: controls.isOn('atBounds'), conflict: controls.isOn('conflict') }
       if (!enabled.atBounds || !enabled.conflict) build = overlaySource.build(inputs, enabled)
       mask = build.mask
@@ -705,10 +761,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   function syncLasso(): void {
-    const ok = drawnSiteDots() !== null
-    if (ok === lassoAvailable) return
-    lassoAvailable = ok
-    lasso.setAvailable(ok ? { ok: true } : { ok: false, reason: LASSO_NO_DOTS })
+    const reason = sectionView.shown() ? TOOLS_ON_PLAN : drawnSiteDots() !== null ? null : LASSO_NO_DOTS
+    const told = reason ?? ''
+    if (told === lassoTold) return
+    lassoTold = told
+    lasso.setAvailable(reason === null ? { ok: true } : { ok: false, reason })
   }
 
   function lassoEmpty(): void {
@@ -3388,7 +3445,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)
     layer.setMatrix(camera.matrix())
-    sectionTool.setAvailable({ ok: true })
+    syncSectionTool()
 
     // A run whose realization names were never recorded can still show an
     // aggregate statistic, which needs no realization name -- 'value'
