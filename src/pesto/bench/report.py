@@ -151,11 +151,23 @@ class ObsFramesLatency:
 
 
 @dataclass(frozen=True)
+class SectionLatency:
+    """grid/section on a diagonal across the whole mesh; recorded only, with no speed limit."""
+
+    n_pieces: int | None
+    nlay: int | None
+    quads: int | None
+    summary: LatencySummary | None
+    notes: list[str]
+
+
+@dataclass(frozen=True)
 class ServerMeasures:
     started_seconds: float
     reopen_share: ReopenShare
     values: ValuesLatency
     obs_frames: ObsFramesLatency | None = None
+    section: SectionLatency | None = None
 
 
 @dataclass(frozen=True)
@@ -324,6 +336,20 @@ def _server_lines(result: BenchResult) -> list[str]:
                 f"p95 {_ms(summary.p95_seconds)} (nearest rank), max {_ms(summary.max_seconds)}"
             )
         for note in frames.notes:
+            lines.append(f"  note: {note}")
+    section = server.section
+    if section is not None:
+        if section.summary is None:
+            lines.append("grid/section: not measured")
+        else:
+            summary = section.summary
+            lines.append(
+                f"grid/section, whole-mesh diagonal ({section.n_pieces} pieces x {section.nlay} layers "
+                f"= {section.quads} section cells): {summary.count} requests, "
+                f"first {_ms(summary.first_seconds)}, p50 {_ms(summary.p50_seconds)}, "
+                f"p95 {_ms(summary.p95_seconds)} (nearest rank), max {_ms(summary.max_seconds)}"
+            )
+        for note in section.notes:
             lines.append(f"  note: {note}")
     return lines
 

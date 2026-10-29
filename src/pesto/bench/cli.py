@@ -35,6 +35,7 @@ from pesto.bench.serve import (
     BenchServer,
     measure_obs_frames,
     measure_reopen_share,
+    measure_section,
     measure_values,
     pick_browser_targets,
 )
@@ -201,11 +202,14 @@ def run_bench(
                 targets = pick_browser_targets(server)
                 values = measure_values(server, targets.iteration, values_samples, targets.iteration_note)
                 obs_frames = measure_obs_frames(server, values_samples)
+                # Recorded only: no speed limit governs the section route, so it adds no verdict row.
+                section = measure_section(server, values_samples)
                 server_result = ServerMeasures(
                     started_seconds=server.started_seconds,
                     reopen_share=share,
                     values=values,
                     obs_frames=obs_frames,
+                    section=section,
                 )
             verdicts += _values_verdicts(values)
             verdicts.append(_obs_frame_verdict(obs_frames))
