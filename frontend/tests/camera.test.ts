@@ -763,3 +763,43 @@ describe('Camera orientation', () => {
     expect(after[1]).toBeCloseTo(before[1], 9)
   })
 })
+
+describe('Camera.fit into an inset box', () => {
+  it('puts the bounds right of a left inset and centres them in the box that is left', () => {
+    const camera = new Camera(1000, 500)
+    camera.fit([0, 10, 0, 5], 0.04, { left: 300, right: 0, top: 0, bottom: 0 })
+    const m = camera.matrix()
+    const screenX = (wx: number): number => ((m[0] * wx + m[6] + 1) / 2) * 1000
+    expect(screenX(0)).toBeGreaterThanOrEqual(300)
+    expect((screenX(0) + screenX(10)) / 2).toBeCloseTo(650, 3)
+    const [, cy] = camera.screenToWorld(650, 250)
+    expect(cy).toBeCloseTo(2.5, 9)
+  })
+
+  it('lands exactly where it did before when given no inset or a zero one', () => {
+    const plain = new Camera(1000, 500)
+    plain.fit([0, 10, 0, 5])
+    const zero = new Camera(1000, 500)
+    zero.fit([0, 10, 0, 5], 0.04, { left: 0, right: 0, top: 0, bottom: 0 })
+    expect(Array.from(zero.matrix())).toEqual(Array.from(plain.matrix()))
+    // The old fit centred the bounds on the whole canvas.
+    expect(plain.screenToWorld(500, 250)).toEqual([5, 2.5])
+  })
+
+  it('lands fitAnimated with an inset where fit with the same inset lands', () => {
+    const inset = { left: 300, right: 20, top: 10, bottom: 40 }
+    const jumped = new Camera(1000, 500)
+    jumped.fit([0, 10, 0, 5], 0.04, inset)
+    const eased = new Camera(1000, 500)
+    eased.fitAnimated([0, 10, 0, 5], () => {}, { reduced: true, inset })
+    expect(Array.from(eased.matrix())).toEqual(Array.from(jumped.matrix()))
+  })
+
+  it('keeps a positive, finite scale when the inset is wider than the canvas', () => {
+    const camera = new Camera(400, 300)
+    camera.fit([0, 10, 0, 5], 0.04, { left: 900, right: 0, top: 0, bottom: 0 })
+    const m = camera.matrix()
+    expect(m[0]).toBeGreaterThan(0)
+    expect(Number.isFinite(m[6])).toBe(true)
+  })
+})

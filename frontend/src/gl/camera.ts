@@ -23,6 +23,16 @@ export function wheelZoomFactor(
 export const MIN_ZOOM_FROM_FIT = 0.1
 export const MAX_ZOOM_FROM_FIT = 1000
 
+/** Room a fit leaves clear at each canvas edge, in canvas pixels. */
+export interface Inset {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+const NO_INSET: Inset = { left: 0, right: 0, top: 0, bottom: 0 }
+
 /** Pan and zoom in model coordinates. The mesh arrives in whatever units
  *  the grid file uses, projected or not, so the camera works in those
  *  units and never assumes a projection. */
@@ -53,18 +63,22 @@ export class Camera {
   private targetFor(
     bounds: [number, number, number, number],
     padding: number,
+    inset: Inset,
   ): { scale: number; tx: number; ty: number } {
     const [xmin, xmax, ymin, ymax] = bounds
     const spanX = Math.max(xmax - xmin, 1e-9)
     const spanY = Math.max(ymax - ymin, 1e-9)
-    const scale = (1 - padding) * Math.min(this.width / spanX, this.height / spanY)
-    const tx = this.width / 2 - (scale * (xmin + xmax)) / 2
-    const ty = this.height / 2 + (scale * (ymin + ymax)) / 2
+    // At least 1px, so an inset wider than the canvas never gives a zero or negative scale.
+    const boxW = Math.max(this.width - inset.left - inset.right, 1)
+    const boxH = Math.max(this.height - inset.top - inset.bottom, 1)
+    const scale = (1 - padding) * Math.min(boxW / spanX, boxH / spanY)
+    const tx = inset.left + boxW / 2 - (scale * (xmin + xmax)) / 2
+    const ty = inset.top + boxH / 2 + (scale * (ymin + ymax)) / 2
     return { scale, tx, ty }
   }
 
-  fit(bounds: [number, number, number, number], padding = 0.04): void {
-    const target = this.targetFor(bounds, padding)
+  fit(bounds: [number, number, number, number], padding = 0.04, inset: Inset = NO_INSET): void {
+    const target = this.targetFor(bounds, padding, inset)
     this.fitScale = target.scale
     this.scale = target.scale
     this.tx = target.tx
@@ -81,9 +95,9 @@ export class Camera {
   fitAnimated(
     bounds: [number, number, number, number],
     onFrame: () => void,
-    opts: { duration?: number; reduced?: boolean; padding?: number } = {},
+    opts: { duration?: number; reduced?: boolean; padding?: number; inset?: Inset } = {},
   ): void {
-    const target = this.targetFor(bounds, opts.padding ?? 0.04)
+    const target = this.targetFor(bounds, opts.padding ?? 0.04, opts.inset ?? NO_INSET)
     this.fitScale = target.scale
     if (opts.reduced) {
       this.scale = target.scale

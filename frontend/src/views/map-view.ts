@@ -24,7 +24,7 @@ import {
   type PpGroupInfo,
   type PpIndex,
 } from '../data/fields'
-import { Camera, wheelZoomFactor } from '../gl/camera'
+import { Camera, wheelZoomFactor, type Inset } from '../gl/camera'
 import { applyScale, logIsUsable, scaleLimits, subsetValues, symmetricLimits, LimitsMemory, type ColormapName, type ValueScale } from '../gl/colormap'
 import { readColorToken, readNumberToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
@@ -1973,7 +1973,27 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // goes through here (visual contract §11).
   function fitToExtent(): void {
     if (!camera || !mesh) return
-    camera.fitAnimated(mesh.bounds, redrawFromCamera, { reduced: prefersReducedMotion() })
+    camera.fitAnimated(mesh.bounds, redrawFromCamera, { reduced: prefersReducedMotion(), inset: planInset() })
+  }
+
+  // LD-4: the left cards' band, in CSS px from the map's left edge, read only when a fit runs.
+  // The wider of the stack and the legend plus the 16px margin; 0 when neither has any width.
+  function leftBandCss(): number {
+    const areaLeft = mapCanvasArea.getBoundingClientRect().left
+    let right = 0
+    for (const el of [topLeftEl, legendFold.el]) {
+      const rect = el.getBoundingClientRect()
+      if (rect.width > 0) right = Math.max(right, rect.right - areaLeft)
+    }
+    return right > 0 ? right + 16 : 0
+  }
+
+  // The band the last plan fit used, so the first draw can tell whether the cards settled elsewhere.
+  let fittedBandCss = 0
+
+  function planInset(): Inset {
+    fittedBandCss = leftBandCss()
+    return { left: fittedBandCss * (window.devicePixelRatio || 1), right: 0, top: 0, bottom: 0 }
   }
 
   // Home and the fit button act on whichever view is shown (D-21).
@@ -4052,11 +4072,19 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
     baseChip.setIteration(iteration)
 
+    // LD-4: the first fit into the free area, once the Data, Colours and Overlays cards exist.
+    camera.fit(mesh.bounds, 0.04, planInset())
+    layer.setMatrix(camera.matrix())
     pending = committed
     await performFetch(committed)
     mountBasemap()
     // First look: what would not fit starts folded, unless the viewer chose; nothing is stored.
     settleStack(stackCards, stackOverflows)
+    // Still the first draw: the Basemap card and the folds above can move the band, so fit once more if they did.
+    if (camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
+      camera.fit(mesh.bounds, 0.04, planInset())
+      redrawFromCamera()
+    }
     if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
     if (store.get().colour.source === 'obs') void drawObservations()
   }
