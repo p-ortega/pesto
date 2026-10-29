@@ -83,6 +83,8 @@ export interface SectionViewOptions {
   repaintLegend(): void
   /** A sibling field landed or failed, so a readout on its layer may now say more. */
   refreshReadout(): void
+  /** The width the map's left cards cover, in CSS px, read only when the section fits (LD-4). */
+  leftBand?: () => number
 }
 
 export type SectionReadoutPick = Extract<ReadoutPick, { kind: 'section' }>
@@ -226,15 +228,19 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   const frame = renderSectionAxes({ area: opts.area })
 
-  // The fit keeps clear of the axes, read at each fit since the pixel ratio can change.
-  function fitInset(): void {
-    camera.setInset(axesInset(window.devicePixelRatio || 1))
+  // The left band the last fit kept clear; the axis stays there until the next fit, so a fold never moves it.
+  let fittedBand = 0
+
+  // The fit keeps clear of the axes and the left cards, read at each fit since the pixel ratio can change.
+  function fitInset(measure = true): void {
+    if (measure) fittedBand = opts.leftBand?.() ?? 0
+    camera.setInset(axesInset(window.devicePixelRatio || 1, fittedBand))
   }
 
   // Reads only the camera and the held answer, never the plan layer's own GL state.
   function paintFrame(): void {
     if (!isShown || answer === null) return
-    frame.paint({ camera, answer, planLayer, width: opts.canvas.width, height: opts.canvas.height })
+    frame.paint({ camera, answer, planLayer, width: opts.canvas.width, height: opts.canvas.height, bandCss: fittedBand })
   }
 
   const controls = renderSectionControls(opts.controlsHost, {
@@ -242,7 +248,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     onSection: () => show(true),
     // A purely visual choice: kept for the page's life, never written to the view state (D-04).
     onVe: (mode) => {
-      fitInset()
+      // An exaggeration change keeps the band the axis is drawn at; only a fit measures it again.
+      fitInset(false)
       camera.setVe(mode)
       if (isShown) {
         opts.requestRedraw()
