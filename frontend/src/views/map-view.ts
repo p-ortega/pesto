@@ -60,7 +60,7 @@ import { pickAtWorld, preparePickIndex } from '../gl/picking'
 import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
 import { renderLasso, type LassoKeys } from '../ui/lasso'
-import { renderSectionTool } from '../ui/section-tool'
+import { renderSectionTool, type SectionToolAvailability } from '../ui/section-tool'
 import { createSectionView } from '../ui/section-view'
 import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } from '../ui/iteration-toggle'
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
@@ -494,6 +494,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   })
   // The section (SECT-01, SECT-02): the line tool on the plan and the view that replaces the plan.
   const SECTION_TOOL_ON_PLAN = 'switch to the plan view to draw a section line'
+  // D-12 to D-14, D-32: the run's own reason first; a state that does not say is never read as yes.
+  const SECTION_UNREPORTED = 'the server did not report whether this run can have a section'
+  const sectionCapability = opts.state.capabilities.section
+  const sectionBlocked: string | null =
+    sectionCapability === undefined
+      ? SECTION_UNREPORTED
+      : sectionCapability.available
+        ? null
+        : (sectionCapability.blockedBy[0]?.reason ?? 'the server says this run has no section and gave no reason')
   const sectionView = createSectionView({
     area: mapCanvasArea,
     canvas,
@@ -526,8 +535,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     onShownChange: (shown) => {
       mapCanvasArea.classList.toggle('showing-section', shown)
       sectionTool.disarm()
-      // A line is drawn on the plan, so the tool waits while the section shows.
-      sectionTool.setAvailable(shown ? { ok: false, reason: SECTION_TOOL_ON_PLAN } : { ok: true })
+      syncSectionTool()
       updateReadout()
       repaintLegend()
     },
@@ -548,6 +556,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       sectionView.setLine([a[0] + ox, a[1] + oy], [b[0] + ox, b[1] + oy])
     },
   })
+  sectionView.controls().setCapability(sectionBlocked)
+
+  function sectionToolState(): SectionToolAvailability {
+    if (sectionBlocked !== null) return { ok: false, reason: sectionBlocked }
+    // A line is drawn on the plan, so the tool waits while the section shows.
+    if (sectionView.shown()) return { ok: false, reason: SECTION_TOOL_ON_PLAN }
+    if (!camera) return { ok: false, reason: 'the map is still loading' }
+    return { ok: true }
+  }
+
+  function syncSectionTool(): void {
+    sectionTool.setAvailable(sectionToolState())
+  }
+  syncSectionTool()
   let lassoIndex: { key: string; xy: Float32Array; tree: Flatbush | null } | null = null
   let lassoAvailable = false
   // The sites the lasso last wrote: a sites change to anything else takes its outline away.
@@ -3388,7 +3410,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     camera = new Camera(canvas.width, canvas.height)
     camera.fit(mesh.bounds)
     layer.setMatrix(camera.matrix())
-    sectionTool.setAvailable({ ok: true })
+    syncSectionTool()
 
     // A run whose realization names were never recorded can still show an
     // aggregate statistic, which needs no realization name -- 'value'
