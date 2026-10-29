@@ -292,11 +292,11 @@ describe('the group summary', () => {
     expect(cell(groupRows(host)[0], 'group').textContent).toBe(name)
   })
 
-  it('has the six sections in order, the selected sites between the group table and the fit', () => {
+  it('reads top to bottom: heading, notices, selected sites, groups, site list, site plots, then the group fit', () => {
     const { host } = mount({ startHidden: true })
 
     const classes = [...host.children].map((el) => el.className).filter((c) => c.startsWith('obs-'))
-    expect(classes).toEqual(['obs-heading-row', 'obs-notices', 'obs-groups', 'obs-selected', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
+    expect(classes).toEqual(['obs-heading-row', 'obs-notices', 'obs-selected', 'obs-groups', 'obs-sites', 'obs-spaghetti', 'obs-fit'])
   })
 
   it('opens with a heading row: Obs on the left and an empty slot for actions on the right', () => {
@@ -600,10 +600,10 @@ describe('the site list', () => {
     )
   })
 
-  it('asks the user to choose a group before one is chosen', async () => {
+  it('asks the user to click a group before one is chosen', async () => {
     const { host } = await openWithGroups()
 
-    expect(host.querySelector('.obs-sites')?.textContent).toContain('Choose a group above to list its sites')
+    expect(host.querySelector('.obs-sites')?.textContent).toContain('Click a group above to list its sites.')
     expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
   })
 
@@ -617,13 +617,83 @@ describe('the site list', () => {
     const [a, b] = siteRows(host)
     expect(cell(a, 'site').textContent).toBe('well_a')
     expect(cell(a, 'n_obs').textContent).toBe('7')
-    expect(cell(a, 'layer').textContent).toBe('1')
+    expect(cell(a, 'layer').textContent).toBe('2 (1)')
     expect(cell(a, 'placement').textContent).toBe('own position')
     expect(cell(b, 'site').textContent).toBe('well_b')
     expect(cell(b, 'layer').textContent).toBe('unknown')
     expect(cell(b, 'placement').textContent).toBe('not placed')
     expect(cell(b, 'placement').title).toBe('no x or y in the file')
-    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('gw_head: 2 sites')
+    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('Sites in gw_head · 2')
+    const heading = host.querySelector<HTMLElement>('.obs-sites [role="columnheader"][data-column="layer"]')!
+    expect(heading.title).toBe('Layer counted from 1; the index from 0 is in brackets.')
+  })
+
+  it('words a layer one-based with the index alongside, and never shows an unknown layer as 1 (0)', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(60, 'deep', { layer: 3 }), site(61, 'lost', { layer: -1 })]))
+    const { host } = await openWithGroups()
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+    expect(cell(siteRows(host)[0], 'layer').textContent).toBe('4 (3)')
+    expect(cell(siteRows(host)[1], 'layer').textContent).toBe('unknown')
+  })
+
+  it('puts Show selected on the title line and says how to pick under it, naming Option on macOS', async () => {
+    vi.stubGlobal('navigator', { platform: 'MacIntel' })
+    try {
+      const { host } = await openWithGroups()
+      groupRows(host)[0].click()
+      await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+      const title = host.querySelector<HTMLElement>('.obs-sites-title')!
+      expect(title.querySelector('.obs-sites-count')).not.toBeNull()
+      expect(title.querySelector('button')?.textContent).toBe('Show selected')
+      const hint = host.querySelector<HTMLElement>('.obs-sites-hint')!
+      expect(title.nextElementSibling).toBe(hint)
+      expect(hint.textContent).toBe('ℹ Click a site to select it and draw its plot below. Shift-click adds, Option-click removes.')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('names Alt in the pick hint on other platforms', async () => {
+    vi.stubGlobal('navigator', { platform: 'Win32' })
+    try {
+      const { host } = await openWithGroups()
+      groupRows(host)[0].click()
+      await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+
+      expect(host.querySelector('.obs-sites-hint')?.textContent).toBe(
+        'ℹ Click a site to select it and draw its plot below. Shift-click adds, Alt-click removes.',
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('never scrolls the panel or the list on its own when a site is picked', async () => {
+    const scrolled = vi.fn()
+    const had = Object.prototype.hasOwnProperty.call(Element.prototype, 'scrollIntoView')
+    const before = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    try {
+      const { host } = await openWithGroups()
+      groupRows(host)[0].click()
+      await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+      host.scrollTop = 120
+      const pane = host.querySelector<HTMLElement>('.obs-sites .scroll-pane')!
+      pane.scrollTop = 0
+
+      siteRows(host)[1].click()
+
+      expect(host.scrollTop).toBe(120)
+      expect(pane.scrollTop).toBe(0)
+      expect(scrolled).not.toHaveBeenCalled()
+    } finally {
+      if (had) Element.prototype.scrollIntoView = before
+      else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
   })
 
   it('shows the site by name and keys it by site_id, never by position', async () => {
@@ -717,7 +787,7 @@ describe('the site list', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     expect(siteRows(host).map((r) => cell(r, 'site').textContent)).toEqual(['date_a'])
-    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('gw_date: 1 site')
+    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('Sites in gw_date · 1')
   })
 
   it('shows the reason in place of the list when the sites are refused', async () => {
