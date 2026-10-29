@@ -377,7 +377,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     const hit = pickSection(answer, s, z)
     // A shift or alt click on empty space changes nothing, the readout included (D-24).
     if (hit === null && mode !== 'replace') return
-    picked = hit
+    // An alt click that takes a cell away clears the readout, as on the plan; absence is still named.
+    picked = mode === 'remove' && hit !== null && hit.status === 0 ? null : hit
     opts.onPick(hit, mode)
   }
 

@@ -1547,7 +1547,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   // A section click selects as a plan click does, on the layer it names (D-23, D-24, D-33). The
-  // plan's own readout pick and its layer stay as they were.
+  // plan's layer stays as it was.
   function handleSectionPick(hit: SectionHit | null, mode: SelectMode): void {
     if (hit === null) {
       // D-24: only a plain click on empty space clears, as on the plan.
@@ -1560,9 +1560,16 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       refreshMarks()
       return
     }
-    updateReadout()
     // Absence is named, never selected (D-16, D-24).
-    if (hit.status !== 0) return
+    if (hit.status !== 0) {
+      updateReadout()
+      return
+    }
+    // The plan's readout follows the same cell, so it matches the selection when the plan comes back.
+    takeAwaySitePick()
+    selectedPointRow = null
+    selectedCellId = mode === 'remove' ? null : hit.cell
+    updateReadout()
     clearLassoOutline()
     if (sectionView.readoutPick()?.classification?.kind === 'interpolated') fetchContributors(hit.cell)
     const current = store.get()
