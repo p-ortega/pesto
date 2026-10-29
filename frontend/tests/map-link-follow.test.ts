@@ -736,7 +736,7 @@ describe('a parameter picked in a tab rings its cells on the map', () => {
     await vi.waitFor(() => expect(lastRing(layer)).toEqual([0, 1]))
 
     store.set({ pars: new Set(['pp2']) }, 'params')
-    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected parameter is on layer 2']))
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected parameter is on layer 3 (index 2)']))
     expect(lastRing(layer)).toEqual([])
   })
 
@@ -788,7 +788,7 @@ describe('the map counts the selected sites it cannot draw, and never moves', ()
     store.set({ sites: new Set([103, 201, 202, 999]) }, 'obs')
     await vi.waitFor(() =>
       expect(whereLinesOf(root)).toEqual([
-        '1 selected site is on layer 1',
+        '1 selected site is on layer 2 (index 1)',
         '1 selected site is in another group (shown: heads)',
         '1 selected site is not placed',
         "1 selected site is not in this run's index",
@@ -913,12 +913,12 @@ describe('picked sites are rings over a parameter field', () => {
     const { root, layer } = await mountedWith(store)
 
     store.set({ sites: new Set([103, 104]) }, 'obs')
-    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site is on layer 1, not drawn on layer 0']))
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site is on layer 2 (index 1), not drawn on layer 1 (index 0)']))
     expect(siteRingXy(layer)).toEqual([1.75, 0.5])
 
     store.set({ layer: 1 }, 'other')
     await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([1.5, 0.5]))
-    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site is on layer 0, not drawn on layer 1']))
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site is on layer 1 (index 0), not drawn on layer 2 (index 1)']))
   })
 
   it('lists a site with no position, and one not in the index, and rings neither', async () => {

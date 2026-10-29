@@ -378,7 +378,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     expect(bodyText).toContain('Contested cell')
     expect(bodyText).toContain('p1 (G1)')
     expect(bodyText).toContain('p2 (G1)')
-    expect(bodyText).toContain('layer 0, cell 0')
+    expect(bodyText).toContain('layer 1 (index 0), cell 0')
   })
 
   test('clicking a cell outside the model says plainly there is no parameter of the drawn group', async ({
@@ -468,7 +468,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     const dotX = Math.round(layout.left(0) + layout.cell * 2.75)
     await page.locator(MAP_CANVAS).click({ position: { x: dotX, y: layout.midY } })
     await expect(page.locator('.floating-bottom-right')).toContainText('p11')
-    await expect(page.locator('.floating-bottom-right')).toContainText('x 3, y 1 · layer 0')
+    await expect(page.locator('.floating-bottom-right')).toContainText('x 3, y 1 · layer 1 (index 0)')
   })
 
   // G-07-3: the top-left cluster is a see-through box. A press in its gaps used to

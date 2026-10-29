@@ -210,7 +210,7 @@ describe('the readout of a pilot-point dot', () => {
     chooseK(root)
     await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left')?.textContent).toContain('points on this layer'))
     clickDot(root)
-    expect(readoutText(root)).toContain('x 0, y 1 · layer 0')
+    expect(readoutText(root)).toContain('x 0, y 1 · layer 1 (index 0)')
   })
 })
 

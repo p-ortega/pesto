@@ -12,6 +12,7 @@ import type Flatbush from 'flatbush'
 import { buildDotIndex, dotWithin, dotsInPolygon } from '../data/lasso'
 import { fetchObsGroups, fetchObsSite, fetchObsSites, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
+import { gridLayerCountWords, layerWords } from '../data/layer-words'
 import { fetchPlacement } from '../data/par'
 import { frameLogInstalled, markFrame } from '../perf'
 import type { CellClass, ParIdentity } from '../data/parmap'
@@ -2832,7 +2833,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (!Number.isInteger(layerIndex) || layerIndex < 0 || layerIndex >= (mesh?.nlay ?? 0)) {
       addNotice(mapNotice, {
         title: 'A layer was asked for that this grid does not have',
-        detail: `Another view asked for layer ${layerIndex}; the grid has ${mesh?.nlay ?? 0}. The map keeps drawing layer ${committed.layer}.`,
+        detail: `Another view asked for layer index ${layerIndex}; the grid has ${gridLayerCountWords(mesh?.nlay ?? 0)}. The map keeps drawing ${layerWords(committed.layer)}.`,
         tone: 'serious',
       })
       return
