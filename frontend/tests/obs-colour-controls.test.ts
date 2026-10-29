@@ -282,8 +282,8 @@ describe('renderObsLegend', () => {
 
   it('says the layer move, and a missing reason for unplaced sites', () => {
     const el = document.createElement('div')
-    renderObsLegend(el, { ...base, layerMoved: 6, counts: { ...counts, unplacedNotes: [] } })
-    expect(el.textContent).toContain('moved to layer 6, the lowest layer with a site of this group')
+    renderObsLegend(el, { ...base, layerMoved: 1, counts: { ...counts, unplacedNotes: [] } })
+    expect(el.textContent).toContain('moved to layer 2 (index 1), the lowest layer with a site of this group')
     expect(el.textContent).toContain('1 site not placed: no reason was recorded')
   })
 

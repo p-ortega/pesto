@@ -529,11 +529,13 @@ describe('the frame over the section', () => {
     m.store.set({ layer: 1 }, 'other')
     await settle()
     expectBandOver(m.canvas, 5, 0)
+    expect(legendText(m.root)).toContain('plan layer 2 (index 1)')
 
     const hooks = await frameHooks()
     const values = section.setValues.mock.calls.length
     hooks.planLayerChanged(0)
     expectBandOver(m.canvas, 10, 5)
+    expect(legendText(m.root)).toContain('plan layer 1 (index 0)')
     expect(section.setValues.mock.calls.length).toBe(values)
     expect(m.stub.section).toHaveLength(1)
   })

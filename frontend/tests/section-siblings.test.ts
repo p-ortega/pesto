@@ -6,10 +6,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { PpIndex } from '../src/data/fields'
+import { layerRangeWords } from '../src/data/layer-words'
 import type { ParIdentity } from '../src/data/parmap'
 import { parseSection } from '../src/data/section'
 import {
-  layerRanges,
   planSiblings,
   SiblingFields,
   siblingKey,
@@ -117,7 +117,7 @@ describe('planSiblings', () => {
     )!
     expect(plan.notes).toEqual([
       'group klayer2pp has no pilot-point layer and no parameter placed on a cell, so it fills no layer',
-      'group klayer3pp names layer 9, which this grid of 6 layers does not have',
+      'group klayer3pp names layer 10 (index 9), which this grid of 6 layers does not have',
       'group klayer4pp is placed as dots, so the section shows no value for it',
     ])
     expect(plan.members.map((m) => m.group)).toEqual(['klayer1pp'])
@@ -129,25 +129,25 @@ describe('the stacked legend', () => {
     const groups = Array.from({ length: 17 }, (_, i) => `npfklayer${i + 1}pp`)
     const plan = planSiblings('npfklayer1pp', input(groups, groups.map((g, i) => pp(g, i)), [], 19))!
     const entries = stackLegend(plan, { loading: [], failed: [] })
-    expect(entries[0].text).toBe('npfklayer#pp: layers 0–16 from 17 groups')
-    expect(entries[0].title?.split('\n')[0]).toBe('layer 0: npfklayer1pp')
-    expect(entries[0].title?.split('\n')[16]).toBe('layer 16: npfklayer17pp')
-    expect(entries[1].text).toBe('no group of npfklayer#pp fills layers 17–18')
+    expect(entries[0].text).toBe('npfklayer#pp: layers 1–17 (index 0–16) from 17 groups')
+    expect(entries[0].title?.split('\n')[0]).toBe('layer 1 (index 0): npfklayer1pp')
+    expect(entries[0].title?.split('\n')[16]).toBe('layer 17 (index 16): npfklayer17pp')
+    expect(entries[1].text).toBe('no group of npfklayer#pp fills layers 18–19 (index 17–18)')
   })
 
   it('names a contested layer, the layers still loading, and a sibling that failed', () => {
     const plan = planSiblings('klayer1pp', input(['klayer1pp', 'klayer2pp', 'klayer5pp'], [pp('klayer1pp', 0), pp('klayer2pp', 1), pp('klayer5pp', 1)], [], 3))!
     const texts = stackLegend(plan, { loading: [2], failed: [{ group: 'klayer9pp', layers: [2], reason: 'the field is missing' }] }).map((e) => e.text)
-    expect(texts).toContain('layer 1 is contested: klayer2pp and klayer5pp both fill it; no value drawn')
-    expect(texts).toContain('no group of klayer#pp fills layer 2')
-    expect(texts).toContain('reading layer 2…')
-    expect(texts).toContain('klayer9pp could not be read, so layer 2 is drawn with no value: the field is missing')
-    expect(stackLegend(plan, { loading: [], failed: [] })[0].title).toContain('layer 1: klayer2pp and klayer5pp (contested)')
+    expect(texts).toContain('layer 2 (index 1) is contested: klayer2pp and klayer5pp both fill it; no value drawn')
+    expect(texts).toContain('no group of klayer#pp fills layer 3 (index 2)')
+    expect(texts).toContain('reading layer 3 (index 2)…')
+    expect(texts).toContain('klayer9pp could not be read, so layer 3 (index 2) is drawn with no value: the field is missing')
+    expect(stackLegend(plan, { loading: [], failed: [] })[0].title).toContain('layer 2 (index 1): klayer2pp and klayer5pp (contested)')
   })
 
-  it('writes runs of layers as ranges', () => {
-    expect(layerRanges([3])).toBe('3')
-    expect(layerRanges([0, 1, 2, 3, 5, 7, 8])).toBe('0–3, 5 and 7–8')
+  it('writes runs of layers as ranges, one-based with the index beside them', () => {
+    expect(layerRangeWords([3])).toBe('layer 4 (index 3)')
+    expect(layerRangeWords([0, 1, 2, 3, 5, 7, 8])).toBe('layers 1–4, 6 and 8–9 (index 0–3, 5 and 7–8)')
   })
 })
 
