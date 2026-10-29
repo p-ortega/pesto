@@ -328,6 +328,59 @@ describe('the Data and Colours cards', () => {
     expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
   })
 
+  it('folds the open stack cards and stores them when the viewer opens a legend that would push them out of sight', async () => {
+    const root = await mountReady()
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    foldButton(root, 'legend').click()
+    stubStackOverflow()
+    foldButton(root, 'legend').click()
+    expect(card(root, 'legend').getAttribute('data-folded')).toBe('false')
+    for (const key of ['data', 'colours', 'overlays', 'basemap']) {
+      expect(card(root, key).getAttribute('data-folded')).toBe('true')
+      expect(localStorage.getItem(`pesto.fold.${key}`)).toBe('folded')
+    }
+  })
+
+  it('folds the lowest cards the viewer never chose, quietly, when the legend grows on its own', async () => {
+    const observed: Array<{ callback: ResizeObserverCallback; targets: Element[] }> = []
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        private entry: { callback: ResizeObserverCallback; targets: Element[] }
+        constructor(callback: ResizeObserverCallback) {
+          this.entry = { callback, targets: [] }
+          observed.push(this.entry)
+        }
+        observe(target: Element): void {
+          this.entry.targets.push(target)
+        }
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    )
+    localStorage.setItem('pesto.fold.overlays', 'open')
+    const root = await mountReady()
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    expect(['data', 'colours', 'overlays', 'basemap'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
+      'false',
+      'false',
+      'false',
+      'false',
+    ])
+    stubStackOverflow()
+    const legend = card(root, 'legend')
+    for (const entry of observed) {
+      if (entry.targets.includes(legend)) entry.callback([], {} as ResizeObserver)
+    }
+    expect(['data', 'colours', 'overlays', 'basemap'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
+      'false',
+      'true',
+      'false',
+      'true',
+    ])
+    for (const key of ['data', 'colours', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+  })
+
   it('starts both cards open on a tall map', async () => {
     stubMapHeight(900)
     const root = await mountReady()

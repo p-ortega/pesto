@@ -422,7 +422,17 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     return fold
   }
   // The legend folds to its ramp and drawn group; its lines are redrawn into the body on every draw.
-  const legendFold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })
+  const legendFold: FoldHandle = renderFold({
+    key: 'legend',
+    name: 'Legend',
+    mode: 'lines',
+    // The stack stops above the legend, so opening it takes room from the stack's cards (LD-3).
+    onUserToggle: (folded) => {
+      if (folded) return
+      syncLegendHeight()
+      foldOthersToFit(legendFold, stackCards, stackOverflows)
+    },
+  })
   legendFold.el.classList.add('floating-bottom-left')
   const legendEl = legendFold.body
   // The parameter group picker, placed in the Data card's Group row once that card is made.
@@ -1966,8 +1976,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     new ResizeObserver(() => fitCanvasToFrame()).observe(mapCanvasArea)
     // The top-left stack stops above the legend, so an open legend never covers its last cards.
     new ResizeObserver(() => {
-      topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
+      syncLegendHeight()
+      // A legend that grew on its own folds the cards the viewer never chose, quietly; folding only, so no loop.
+      settleStack(stackCards, stackOverflows)
     }).observe(legendFold.el)
+  }
+
+  function syncLegendHeight(): void {
+    topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
   }
 
   // MAP-11/D-15: the button and the Home key call exactly this, both
@@ -4091,12 +4107,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     mountBasemap()
     // First look: what would not fit starts folded, unless the viewer chose; nothing is stored.
     // The legend's observer runs after this frame; measure it now so the stack's room is already right.
-    topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
+    syncLegendHeight()
     settleStack(stackCards, stackOverflows)
     // Still too tall: the legend folds to its ramp and group too, quietly, unless the viewer chose.
     if (stackOverflows() && !legendFold.folded() && !legendFold.chosen()) {
       legendFold.setFolded(true, { remember: false })
-      topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
+      syncLegendHeight()
     }
     // Still the first draw: the Basemap card and the folds above can move the band, so fit once more if they did.
     if (!userMovedPlan && camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
