@@ -17,6 +17,7 @@ so ``write_dis_grb`` is the only way to test the structured path at all.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -102,6 +103,11 @@ def write_disv_grb(
     inactive_layer: int = 1,
     inactive_cell: int = 1,
     inconsistent_botm: bool = False,
+    vertices: Sequence[tuple[float, float]] | None = None,
+    rings: Sequence[Sequence[int]] | None = None,
+    top: Sequence[float] | np.ndarray | None = None,
+    botm: Sequence[Sequence[float]] | np.ndarray | None = None,
+    idomain: Sequence[Sequence[int]] | np.ndarray | None = None,
 ) -> Path:
     """Write a small synthetic DISV binary grid file to ``path`` and return
     it.
@@ -120,16 +126,24 @@ def write_disv_grb(
     built": flopy's ``_set_modelgrid`` catches the resulting reshape
     failure internally, prints a line, and leaves the model grid unset,
     never raising to its caller.
+
+    ``vertices`` and ``rings`` replace the three-cell mesh (rings as
+    zero-based vertex indices, open, clockwise); ``top`` is ``(ncpl,)`` and
+    ``botm`` ``(nlay, ncpl)``; ``idomain`` is ``(nlay, ncpl)`` and, when
+    given, replaces ``inactive_layer`` and ``inactive_cell``. Left out, each
+    writes exactly the file it always has.
     """
     path = Path(path)
-    ncpl = len(_RINGS)
-    nvert = len(_VERTICES)
+    vertices = _VERTICES if vertices is None else tuple(tuple(v) for v in vertices)
+    rings = _RINGS if rings is None else tuple(tuple(r) for r in rings)
+    ncpl = len(rings)
+    nvert = len(vertices)
 
     # IAVERT/JAVERT are one-based on disk, and each ring is stored closed
     # (its first vertex repeated at the end) -- flopy subtracts one and
     # strips the repeat on read, so what pesto ever sees is the open,
     # zero-based ring in ``_RINGS`` above.
-    closed_rings = [list(ring) + [ring[0]] for ring in _RINGS]
+    closed_rings = [list(ring) + [ring[0]] for ring in rings]
     javert = np.array(
         [vertex + 1 for ring in closed_rings for vertex in ring], dtype=np.int32
     )
@@ -145,20 +159,29 @@ def write_disv_grb(
     ja = np.arange(1, ncells + 1, dtype=np.int32)
     nja = ncells
 
-    idomain = np.ones((nlay, ncpl), dtype=np.int32)
-    idomain[inactive_layer, inactive_cell] = 0
+    if idomain is None:
+        idomain = np.ones((nlay, ncpl), dtype=np.int32)
+        idomain[inactive_layer, inactive_cell] = 0
+    else:
+        idomain = np.asarray(idomain, dtype=np.int32).reshape(nlay, ncpl)
 
-    verts_array = np.array(_VERTICES, dtype=np.float64)
-    top = np.full(ncpl, 10.0, dtype=np.float64)
-    botm = np.empty((nlay, ncpl), dtype=np.float64)
-    for lay in range(nlay):
-        botm[lay, :] = 10.0 - 5.0 * (lay + 1)
+    verts_array = np.array(vertices, dtype=np.float64)
+    if top is None:
+        top = np.full(ncpl, 10.0, dtype=np.float64)
+    else:
+        top = np.asarray(top, dtype=np.float64).reshape(ncpl)
+    if botm is None:
+        botm = np.empty((nlay, ncpl), dtype=np.float64)
+        for lay in range(nlay):
+            botm[lay, :] = 10.0 - 5.0 * (lay + 1)
+    else:
+        botm = np.asarray(botm, dtype=np.float64).reshape(nlay, ncpl)
 
     cellx = np.array(
-        [sum(_VERTICES[v][0] for v in ring) / len(ring) for ring in _RINGS], dtype=np.float64
+        [sum(vertices[v][0] for v in ring) / len(ring) for ring in rings], dtype=np.float64
     )
     celly = np.array(
-        [sum(_VERTICES[v][1] for v in ring) / len(ring) for ring in _RINGS], dtype=np.float64
+        [sum(vertices[v][1] for v in ring) / len(ring) for ring in rings], dtype=np.float64
     )
 
     # (key, dtype name, ndim, header shape dims, payload). Order matches
@@ -206,6 +229,9 @@ def write_dis_grb(
     yorigin: float = 2000.0,
     angrot: float = 0.0,
     idomain: bool = True,
+    top: Sequence[float] | np.ndarray | None = None,
+    botm: np.ndarray | None = None,
+    idomain_values: np.ndarray | None = None,
 ) -> Path:
     """Write a small synthetic DIS (structured) binary grid file to
     ``path`` and return it.
@@ -217,6 +243,11 @@ def write_dis_grb(
     so there is nothing to hand-write there. ``idomain=False`` omits the
     ``IDOMAIN`` record entirely, which is the shape a grid file with no
     idomain record actually takes on disk -- not an array of ones.
+
+    ``top`` is ``(nrow, ncol)`` and ``botm`` ``(nlay, nrow, ncol)``, either
+    flat or shaped; ``idomain_values`` is ``(nlay, nrow, ncol)`` and is
+    written when ``idomain`` is true. Left out, each writes exactly the file
+    it always has.
     """
     path = Path(path)
     ncells = nlay * nrow * ncol
@@ -224,10 +255,16 @@ def write_dis_grb(
 
     delr_array = np.full(ncol, delr, dtype=np.float64)
     delc_array = np.full(nrow, delc, dtype=np.float64)
-    top = np.full(nrow * ncol, 10.0, dtype=np.float64)
-    botm = np.empty((nlay, nrow, ncol), dtype=np.float64)
-    for lay in range(nlay):
-        botm[lay, :, :] = 10.0 - 5.0 * (lay + 1)
+    if top is None:
+        top = np.full(nrow * ncol, 10.0, dtype=np.float64)
+    else:
+        top = np.asarray(top, dtype=np.float64).reshape(nrow * ncol)
+    if botm is None:
+        botm = np.empty((nlay, nrow, ncol), dtype=np.float64)
+        for lay in range(nlay):
+            botm[lay, :, :] = 10.0 - 5.0 * (lay + 1)
+    else:
+        botm = np.asarray(botm, dtype=np.float64).reshape(nlay, nrow, ncol)
 
     # A self-consistent diagonal-only connectivity, same convention as
     # ``write_disv_grb`` -- pesto's grid reading never touches IA/JA, so
@@ -253,7 +290,12 @@ def write_dis_grb(
         ("JA", "INTEGER", 1, (nja,), ja),
     ]
     if idomain:
-        idomain_array = np.ones(nlay * nrow * ncol, dtype=np.int32)
+        if idomain_values is None:
+            idomain_array = np.ones(nlay * nrow * ncol, dtype=np.int32)
+        else:
+            idomain_array = np.asarray(idomain_values, dtype=np.int32).reshape(-1)
+            if idomain_array.size != ncells:
+                raise ValueError(f"idomain_values holds {idomain_array.size} values, not {ncells}")
         records.append(("IDOMAIN", "INTEGER", 1, (nlay * nrow * ncol,), idomain_array))
 
     return _write_grb(path, "DIS", records)

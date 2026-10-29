@@ -4,14 +4,17 @@ that cache alone."""
 
 from __future__ import annotations
 
+import json
+import math
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from model.fixtures import write_disv_grb
+from model.fixtures import write_dis_grb, write_disv_grb
 from pesto.api.app import create_app
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
@@ -31,10 +34,16 @@ def _snapshot(folder: Path) -> dict[str, tuple[int, int]]:
     }
 
 
-def _build_cache(run_dir: Path, cache_dir: Path, *, with_elev: bool = True) -> CacheLayout:
+def _build_cache(
+    run_dir: Path,
+    cache_dir: Path,
+    *,
+    with_elev: bool = True,
+    grid_file: str = "model.disv.grb",
+) -> CacheLayout:
     layout = CacheLayout(root=cache_dir)
     layout.ensure()
-    adapter = Mf6Adapter(run_dir / "model.disv.grb")
+    adapter = Mf6Adapter(run_dir / grid_file)
     grid = write_grid_from_adapter(adapter, layout)
     manifest = Manifest.empty(str(run_dir))
     manifest.mark_ok("grid", sources=[], files=grid.files)
@@ -290,3 +299,273 @@ def test_no_open_run_is_refused():
 
     assert response.status_code == 409
     assert response.json()["title"] == "no run is open"
+
+
+# --- DIS and DISV grid files end to end -----------------------------------
+
+DIS_NROW, DIS_NCOL, DIS_DELR = 3, 4, 10.0
+TIES_NOTE = "lies on an edge shared by two cells; it went to the lower cell index"
+TIES_NOTE_MANY = "lie on an edge shared by two cells; they went to the lower cell index"
+
+
+def _section(client: TestClient, a, b) -> dict:
+    response = client.get(
+        "/api/run/grid/section", params={"ax": a[0], "ay": a[1], "bx": b[0], "by": b[1]}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _centres(grid_path: Path) -> np.ndarray:
+    """Each cell's centre from the adapter's own float64 rings, by the adapter's own cell id."""
+    geometry = Mf6Adapter(grid_path).geometry()
+    assert not hasattr(geometry, "reason"), geometry
+    ncpl = int(np.asarray(geometry.top).reshape(-1).shape[0])
+    cell = np.asarray(geometry.cell_index).astype(np.int64)
+    pos = np.asarray(geometry.positions, dtype=np.float64)
+    total = np.zeros((ncpl, 2))
+    np.add.at(total, cell, pos)
+    return total / np.bincount(cell, minlength=ncpl)[:, None]
+
+
+def _rotated_dis(tmp_path, **kwargs) -> tuple[Path, np.ndarray]:
+    folder = tmp_path / "run"
+    folder.mkdir()
+    grid = write_dis_grb(
+        folder / "model.dis.grb",
+        nrow=DIS_NROW,
+        ncol=DIS_NCOL,
+        delr=DIS_DELR,
+        delc=20.0,
+        angrot=30,
+        **kwargs,
+    )
+    return folder, _centres(grid)
+
+
+def _row_ids(row: int) -> list[int]:
+    return [row * DIS_NCOL + col for col in range(DIS_NCOL)]
+
+
+def _extended(first: np.ndarray, last: np.ndarray, by: float):
+    """The line from ``first`` to ``last``, lengthened by ``by`` at both ends."""
+    u = (last - first) / np.hypot(*(last - first))
+    return tuple(first - by * u), tuple(last + by * u)
+
+
+def test_a_rotated_dis_line_along_a_rows_centres_returns_that_row_in_column_order(tmp_path):
+    run, centres = _rotated_dis(tmp_path)
+    row = _row_ids(1)
+    # The adapter's own ids are row-major: the row's centres sit on one straight line.
+    first, last = centres[row[0]], centres[row[-1]]
+    for c in row[1:-1]:
+        offset = centres[c] - first
+        direction = last - first
+        assert abs(offset[0] * direction[1] - offset[1] * direction[0]) < 1e-6
+    # The centres of the end cells are half a cell in; a cell more puts the ends half a cell out.
+    a, b = _extended(first, last, DIS_DELR)
+    client = _client(_build_cache(run, tmp_path / "cache", grid_file="model.dis.grb"))
+
+    body = _section(client, a, b)
+
+    assert body["cell"] == row
+    assert body["grid_type"] == "structured"
+    assert body["s0"][0] == pytest.approx(DIS_DELR / 2, abs=1e-6)
+    assert body["s1"][-1] == pytest.approx(body["line"]["length"] - DIS_DELR / 2, abs=1e-6)
+    assert body["status"] == [0] * (len(row) * 2)
+
+
+def test_a_rotated_dis_line_along_a_row_boundary_goes_to_the_lower_row_and_says_so(tmp_path):
+    run, centres = _rotated_dis(tmp_path)
+    upper, lower = _row_ids(0), _row_ids(1)
+    first = 0.5 * (centres[upper[0]] + centres[lower[0]])
+    last = 0.5 * (centres[upper[-1]] + centres[lower[-1]])
+    a, b = _extended(first, last, DIS_DELR)
+    client = _client(_build_cache(run, tmp_path / "cache", grid_file="model.dis.grb"))
+
+    body = _section(client, a, b)
+
+    assert body["cell"] == upper
+    assert body["counts"]["ties_resolved"] > 0
+    assert any(TIES_NOTE in n or TIES_NOTE_MANY in n for n in body["notes"])
+
+
+def test_a_dis_grid_with_no_idomain_reads_its_statuses_from_the_elevations_alone(tmp_path):
+    run, centres = _rotated_dis(tmp_path, idomain=False)
+    row = _row_ids(1)
+    a, b = _extended(centres[row[0]], centres[row[-1]], DIS_DELR)
+    client = _client(_build_cache(run, tmp_path / "cache", grid_file="model.dis.grb"))
+
+    body = _section(client, a, b)
+
+    assert body["has_idomain"] is False
+    assert body["cell"] == row
+    assert body["status"] == [0] * (len(row) * 2)
+
+
+def test_a_dis_idomain_and_bad_elevations_reach_the_section_as_absence(tmp_path):
+    nlay = 2
+    idomain = np.ones((nlay, DIS_NROW, DIS_NCOL), dtype=np.int32)
+    idomain[0, 1, 0] = 0
+    idomain[1, 1, 1] = -2
+    botm = np.empty((nlay, DIS_NROW, DIS_NCOL))
+    botm[0], botm[1] = 5.0, 0.0
+    botm[1, 1, 2] = 5.0
+    botm[1, 1, 3] = 6.0
+    run, centres = _rotated_dis(tmp_path, botm=botm, idomain_values=idomain)
+    row = _row_ids(1)
+    a, b = _extended(centres[row[0]], centres[row[-1]], DIS_DELR)
+    client = _client(_build_cache(run, tmp_path / "cache", grid_file="model.dis.grb"))
+
+    body = _section(client, a, b)
+
+    assert body["cell"] == row
+    assert body["status"] == [1, 0, 0, 2, 0, 3, 0, 4]
+    assert body["z"][3 * 3 :] == [10, 5, 6]
+    assert body["counts"]["idomain_below_minus_1"] == 1
+    assert body["counts"]["pinched"] == 1
+    assert body["counts"]["bottom_above_top"] == 1
+    assert len(body["notes"]) == 3
+
+
+# A U opening upwards, with a block under it: a line across both arms crosses the U twice.
+U_VERTICES = [
+    (0.0, 0.0), (0.0, 3.0), (1.0, 3.0), (1.0, 1.0),
+    (2.0, 1.0), (2.0, 3.0), (3.0, 3.0), (3.0, 0.0),
+    (0.0, -1.0), (3.0, -1.0),
+]  # fmt: skip
+U_RINGS = [(0, 1, 2, 3, 4, 5, 6, 7), (8, 0, 7, 9)]
+
+
+def test_a_concave_disv_cell_crossed_twice_gives_two_pieces_with_one_id(tmp_path):
+    folder = tmp_path / "run"
+    folder.mkdir()
+    write_disv_grb(
+        folder / "model.disv.grb",
+        vertices=U_VERTICES,
+        rings=U_RINGS,
+        idomain=np.ones((2, 2), dtype=np.int32),
+    )
+    client = _client(_build_cache(folder, tmp_path / "cache"))
+
+    body = _section(client, (999.5, 2002.0), (1003.5, 2002.0))
+
+    assert body["cell"] == [0, 0]
+    assert body["s0"] == pytest.approx([0.5, 2.5], abs=1e-9)
+    assert body["s1"] == pytest.approx([1.5, 3.5], abs=1e-9)
+
+
+def test_a_disv_line_through_a_shared_vertex_drops_the_corner_cell_and_counts_it(
+    tmp_path, run_dir
+):
+    client = _client(_build_cache(run_dir, tmp_path / "cache"))
+
+    # Down and to the right through (1, 1), the corner cells 0 and 1 share.
+    body = _section(client, (1000.5, 2001.5), (1001.5, 2000.5))
+
+    assert body["cell"] == [1]
+    assert body["counts"]["zero_length_dropped"] >= 1
+    assert any("of zero length" in n for n in body["notes"])
+
+
+def test_disv_pinched_inverted_and_pass_through_quads_say_why_they_are_absent(tmp_path):
+    folder = tmp_path / "run"
+    folder.mkdir()
+    botm = np.array([[5.0, 5.0, 5.0], [5.0, 0.0, 7.0]])
+    idomain = np.ones((2, 3), dtype=np.int32)
+    idomain[0, 2] = -1
+    write_disv_grb(folder / "model.disv.grb", botm=botm, idomain=idomain)
+    client = _client(_build_cache(folder, tmp_path / "cache"))
+
+    body = _section(client, (LINE["ax"], LINE["ay"]), (LINE["bx"], LINE["by"]))
+
+    assert body["cell"] == [0, 1, 2]
+    assert body["status"] == [0, 3, 0, 0, 2, 4]
+    # The bottom above the top is kept as the grid file gave it, never swapped.
+    assert body["z"][6:] == [10, 5, 7]
+    assert body["counts"]["pinched"] == 1
+    assert body["counts"]["bottom_above_top"] == 1
+    assert "1 section cell is pinched out (zero thickness); drawn as absence" in body["notes"]
+    assert "1 section cell has its bottom above its top; drawn as absence" in body["notes"]
+
+
+def test_a_disv_idomain_below_minus_one_is_pass_through_with_a_note(tmp_path):
+    folder = tmp_path / "run"
+    folder.mkdir()
+    idomain = np.ones((2, 3), dtype=np.int32)
+    idomain[1, 0] = -3
+    write_disv_grb(folder / "model.disv.grb", idomain=idomain)
+    client = _client(_build_cache(folder, tmp_path / "cache"))
+
+    body = _section(client, (LINE["ax"], LINE["ay"]), (LINE["bx"], LINE["by"]))
+
+    assert body["status"][:2] == [0, 2]
+    assert body["counts"]["idomain_below_minus_1"] == 1
+    assert body["notes"] == [
+        "1 section cell has an idomain below -1; read as vertical pass-through (idomain -1)"
+    ]
+
+
+def test_a_disv_line_at_a_real_northing_gives_the_same_cells_and_distances(tmp_path):
+    answers = []
+    for yorigin in (2000.0, 7.02e6):
+        folder = tmp_path / f"run-{yorigin:.0f}"
+        folder.mkdir()
+        write_disv_grb(folder / "model.disv.grb", yorigin=yorigin)
+        client = _client(_build_cache(folder, tmp_path / f"cache-{yorigin:.0f}"))
+        shift = yorigin - 2000.0
+        answers.append(
+            _section(
+                client, (LINE["ax"], LINE["ay"] + shift), (LINE["bx"], LINE["by"] + shift)
+            )
+        )
+
+    near, far = answers
+    assert far["cell"] == near["cell"] == [0, 1, 2]
+    assert far["s0"] == pytest.approx(near["s0"], abs=1e-6)
+    assert far["s1"] == pytest.approx(near["s1"], abs=1e-6)
+    assert far["status"] == near["status"]
+
+
+# The browser's half of the tracer was built on this file; the repository root is two up.
+TRACER_ANSWER = (
+    Path(__file__).resolve().parents[2]
+    / "frontend"
+    / "tests"
+    / "fixtures"
+    / "section-tracer-answer.json"
+)
+# The answer's float fields. The browser's JSON writes 10.0 as 10, so here a number is
+# compared as a float whatever its spelling; everywhere else the type must match too.
+FLOAT_FIELDS = {"line", "s0", "s1", "z"}
+
+
+def _assert_same(got, want, where: str, as_float: bool = False) -> None:
+    if isinstance(want, dict):
+        assert isinstance(got, dict), where
+        assert set(got) == set(want), f"{where}: keys {sorted(got)} != {sorted(want)}"
+        for key in want:
+            _assert_same(got[key], want[key], f"{where}.{key}", as_float or key in FLOAT_FIELDS)
+    elif isinstance(want, list):
+        assert isinstance(got, list) and len(got) == len(want), where
+        for i, (g, w) in enumerate(zip(got, want)):
+            _assert_same(g, w, f"{where}[{i}]", as_float)
+    elif as_float and isinstance(want, (int, float)) and not isinstance(want, bool):
+        assert isinstance(got, (int, float)) and not isinstance(got, bool), where
+        assert math.isclose(got, want, rel_tol=0, abs_tol=1e-9), f"{where}: {got!r} != {want!r}"
+    else:
+        assert type(got) is type(want) and got == want, f"{where}: {got!r} != {want!r}"
+
+
+def test_the_route_answer_for_the_tracer_line_is_the_one_the_browser_was_built_on(
+    tmp_path, run_dir
+):
+    want = json.loads(TRACER_ANSWER.read_text())
+    client = _client(_build_cache(run_dir, tmp_path / "cache"))
+
+    got = _section(client, (LINE["ax"], LINE["ay"]), (LINE["bx"], LINE["by"]))
+
+    assert set(got) == set(want)
+    got.pop("tag")
+    want.pop("tag")
+    _assert_same(got, want, "answer")
