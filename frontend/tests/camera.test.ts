@@ -669,3 +669,36 @@ describe('Camera.resize', () => {
     expect(newRightX - nx).toBeCloseTo(rightX - cx, 5)
   })
 })
+
+describe('Camera orientation', () => {
+  // Clip y of a model point under the column-major matrix; the matrix is float32, hence 5 digits below.
+  const clipY = (m: Float32Array, x: number, y: number): number => m[1] * x + m[4] * y + m[7]
+
+  it('draws north at the top and east on the right, and its matrix agrees with screenToWorld', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const [, northY] = camera.screenToWorld(400, 10)
+    const [, southY] = camera.screenToWorld(400, 470)
+    expect(northY).toBeGreaterThan(southY)
+    const [westX] = camera.screenToWorld(10, 240)
+    const [eastX] = camera.screenToWorld(790, 240)
+    expect(eastX).toBeGreaterThan(westX)
+
+    const m = camera.matrix()
+    for (const [sx, sy] of [[10, 10], [400, 240], [790, 470]]) {
+      const [wx, wy] = camera.screenToWorld(sx, sy)
+      expect(clipY(m, wx, wy)).toBeCloseTo(1 - (2 * sy) / 480, 5)
+      expect(m[0] * wx + m[3] * wy + m[6]).toBeCloseTo((2 * sx) / 800 - 1, 5)
+    }
+  })
+
+  it('keeps the point under the pointer still while zooming, with y pointing north', () => {
+    const camera = new Camera(800, 480)
+    camera.fit([0, 100, 0, 100])
+    const before = camera.screenToWorld(300, 100)
+    camera.zoomAt(300, 100, 2)
+    const after = camera.screenToWorld(300, 100)
+    expect(after[0]).toBeCloseTo(before[0], 9)
+    expect(after[1]).toBeCloseTo(before[1], 9)
+  })
+})
