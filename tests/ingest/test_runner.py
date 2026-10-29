@@ -1550,7 +1550,7 @@ def test_plan_artifacts_plans_elev_right_after_grid_from_the_grid_file_alone(tmp
     assert elev.needs == ("grid",)
     assert elev.source_bytes == run.grid.stat().st_size
     assert elev.outputs == tuple(
-        str(layout.grid / name) for name in ("elev.f32", "ring.f64", "ring_start.u32", "elev.json")
+        str(layout.grid / name) for name in ("elev.f64", "ring.f64", "ring_start.u32", "elev.json")
     )
 
 
@@ -1585,7 +1585,7 @@ def test_the_elev_worker_writes_its_four_files_under_the_cache_root_and_nothing_
     assert not isinstance(grid, ReadFailure), grid
     assert not isinstance(elev, ReadFailure), elev
     assert sorted(f.path for f in elev.files) == sorted(
-        str(Path("grid") / name) for name in ("elev.f32", "ring.f64", "ring_start.u32", "elev.json")
+        str(Path("grid") / name) for name in ("elev.f64", "ring.f64", "ring_start.u32", "elev.json")
     )
     for f in elev.files:
         assert (cache_root / f.path).stat().st_size == f.bytes
@@ -1620,6 +1620,36 @@ def test_a_cache_with_grid_ok_and_no_elev_record_plans_only_elev_stale(tmp_path,
     planned = {pa.name: pa for pa in plan_artifacts(discover(run_dir), layout)}
     assert is_planned_stale(manifest, layout, planned["elev"]) is True
     assert is_planned_stale(manifest, layout, planned["grid"]) is False
+
+
+def test_an_elev_that_stores_its_elevations_in_float32_plans_stale(tmp_path, monkeypatch):
+    from dataclasses import replace as _replace
+
+    from pesto.ingest.runner import is_planned_stale
+
+    monkeypatch.setattr(runner_module, "_run_isolated", _in_this_process)
+    run_dir = _run_with_a_real_grid(tmp_path)
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    first = ingest_run(run_dir, cache_root=cache_root)
+    assert first.artifacts["elev"].state == "ok", first.artifacts["elev"].reason
+    planned = {pa.name: pa for pa in plan_artifacts(discover(run_dir), layout)}
+    assert is_planned_stale(Manifest.load(layout), layout, planned["elev"]) is False
+
+    # An elev written before the elevations were stored in float64, with its size record kept true.
+    sidecar = layout.grid / "elev.json"
+    payload = json.loads(sidecar.read_text())
+    payload["files"]["elev"]["dtype"] = "<f4"
+    sidecar.write_text(json.dumps(payload, indent=2))
+    record = first.artifacts["elev"]
+    files = tuple(
+        _replace(f, bytes=sidecar.stat().st_size) if f.path.endswith("elev.json") else f for f in record.files
+    )
+    first.artifacts["elev"] = _replace(record, files=files)
+    first.save(layout)
+
+    assert is_planned_stale(Manifest.load(layout), layout, planned["elev"]) is True
+    assert is_planned_stale(Manifest.load(layout), layout, planned["grid"]) is False
 
 
 def _in_this_process(fn, *args):

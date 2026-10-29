@@ -29,6 +29,7 @@ from pesto.ingest.mesh import load_mesh_origin
 ELEV_PREDATES = "this cache predates the section view; it is added on the next ingest"
 
 _NAME = "elev"
+_ELEV_DTYPE = "<f8"
 _NO_ELEVATIONS = "the grid file records no layer elevations"
 # flopy's words for a DIS and a DISV grid; a DISU grid's cells have no shared layer stack.
 _SECTION_GRID_TYPES = ("structured", "vertex")
@@ -50,7 +51,7 @@ def _grid_type_refusal(grid_type: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class ElevArrays:
-    """``elev`` is ``(nlay + 1, ncpl)`` float32, row 0 the top and row ``k + 1``
+    """``elev`` is ``(nlay + 1, ncpl)`` float64, row 0 the top and row ``k + 1``
     the bottom of layer ``k``. ``ring`` is ``(n_ring, 2)`` float64 relative to
     ``origin``; cell ``c`` owns ``ring[ring_start[c]:ring_start[c + 1]]``."""
 
@@ -126,7 +127,7 @@ def write_elev(
     origin: tuple[float, float],
     layout: CacheLayout,
 ) -> WrittenArtifact | ReadFailure:
-    """Write ``grid/elev.f32``, ``grid/ring.f64`` and ``grid/ring_start.u32``,
+    """Write ``grid/elev.f64``, ``grid/ring.f64`` and ``grid/ring_start.u32``,
     then ``grid/elev.json`` last, so a reader never finds a sidecar naming a
     file that is not there yet. Byte order is forced on every binary."""
     try:
@@ -150,15 +151,16 @@ def write_elev(
 
         stacked = np.vstack([top64[None, :], botm64])
         counts = _elev_counts(stacked)
-        elev32 = np.ascontiguousarray(stacked, dtype="<f4")
+        # Kept at the precision the counts used, so the section never judges a rounded copy.
+        elev64 = np.ascontiguousarray(stacked, dtype=_ELEV_DTYPE)
         starts32 = np.ascontiguousarray(starts, dtype="<u4")
 
-        elev_path = layout.grid / "elev.f32"
+        elev_path = layout.grid / "elev.f64"
         ring_path = layout.grid / "ring.f64"
         start_path = layout.grid / "ring_start.u32"
         json_path = layout.grid / "elev.json"
 
-        elev_bytes = write_atomic_bytes(elev_path, lambda f: f.write(elev32.tobytes()))
+        elev_bytes = write_atomic_bytes(elev_path, lambda f: f.write(elev64.tobytes()))
         ring_bytes = write_atomic_bytes(ring_path, lambda f: f.write(ring64.tobytes()))
         start_bytes = write_atomic_bytes(start_path, lambda f: f.write(starts32.tobytes()))
 
@@ -172,7 +174,7 @@ def write_elev(
             "origin": [float(origin[0]), float(origin[1])],
             "length_units": None,
             "files": {
-                "elev": {"name": elev_path.name, "dtype": "<f4", "count": int(elev32.size)},
+                "elev": {"name": elev_path.name, "dtype": _ELEV_DTYPE, "count": int(elev64.size)},
                 "ring": {"name": ring_path.name, "dtype": "<f8", "count": int(ring64.size)},
                 "ring_start": {
                     "name": start_path.name,
@@ -292,6 +294,24 @@ def _read_binary(layout: CacheLayout, entry: object, label: str) -> "np.ndarray 
     return array
 
 
+def _stored_elev_dtype(raw: object) -> object:
+    try:
+        return raw["files"]["elev"]["dtype"]  # type: ignore[index]
+    except (KeyError, TypeError):
+        return None
+
+
+def elev_outdated(layout: CacheLayout) -> bool:
+    """Whether the cached ``elev`` stores its elevations at another precision than
+    the one its counts are taken at, or cannot be read to tell; it is then rebuilt
+    on the next ingest."""
+    try:
+        raw = json.loads((layout.grid / "elev.json").read_text())
+    except (OSError, ValueError):
+        return True
+    return _stored_elev_dtype(raw) != _ELEV_DTYPE
+
+
 def load_elev(layout: CacheLayout) -> ElevArrays | ReadFailure:
     """Read the artifact back, checking the cache version before any other
     field, the origin against ``mesh.json``'s, and each binary's size against
@@ -348,6 +368,17 @@ def load_elev(layout: CacheLayout) -> ElevArrays | ReadFailure:
 
     if not isinstance(files, dict):
         return ReadFailure(name=_NAME, path=str(json_path), reason="elev.json names no files")
+    stored = _stored_elev_dtype(raw)
+    if stored != _ELEV_DTYPE:
+        return ReadFailure(
+            name=_NAME,
+            path=str(json_path),
+            reason=(
+                f"elev.json stores the layer elevations as {stored!r}, not {_ELEV_DTYPE!r}, so the "
+                "section could judge a cell from rounded values the ingest never counted; "
+                "re-ingest to rebuild them"
+            ),
+        )
     elev = _read_binary(layout, files.get("elev"), "elev")
     if isinstance(elev, ReadFailure):
         return elev
@@ -384,7 +415,7 @@ def load_elev(layout: CacheLayout) -> ElevArrays | ReadFailure:
         nlay=nlay,
         ncpl=ncpl,
         origin=origin,
-        elev=elev.reshape(nlay + 1, ncpl).astype(np.float32, copy=False),
+        elev=elev.reshape(nlay + 1, ncpl).astype(np.float64, copy=False),
         ring=ring.reshape(n_ring, 2).astype(np.float64, copy=False),
         ring_start=starts64,
         length_units=None if units is None else str(units),

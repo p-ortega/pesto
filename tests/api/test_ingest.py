@@ -103,6 +103,11 @@ def _mark_ok_with_file(manifest: Manifest, layout: CacheLayout, name: str, *, so
         content = buffer.getvalue()
         file_name = str(layout.par_change.relative_to(layout.root))
         layout.par_change.parent.mkdir(parents=True, exist_ok=True)
+    if name == "elev":
+        # The state route also asks whether elev stores its elevations in float64.
+        content = json.dumps({"files": {"elev": {"dtype": "<f8"}}}).encode()
+        file_name = str((layout.grid / "elev.json").relative_to(layout.root))
+        layout.grid.mkdir(parents=True, exist_ok=True)
     (layout.root / file_name).write_bytes(content)
     manifest.mark_ok(
         name, sources=list(sources), files=(CacheFile(path=file_name, bytes=len(content)),), seconds=seconds
