@@ -15,6 +15,7 @@ import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
 import { frameLogInstalled, markFrame } from '../perf'
 import type { CellClass, ParIdentity } from '../data/parmap'
+import type { SectionHit } from '../data/section-pick'
 import {
   EMPTY_PP_INDEX,
   fieldContributors,
@@ -517,6 +518,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       fullField,
       limits: drawnLimits,
       style: drawnStyle,
+      scale: scaledFieldScale ?? committed.scale,
       colormap: committed.colormap,
       reverse: committed.reverseColormap,
       fieldKind,
@@ -548,7 +550,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       updateReadout()
       repaintLegend()
     },
-    onPick: () => updateReadout(),
+    onPick: (hit, mode) => handleSectionPick(hit, mode),
     requestRedraw: () => redraw(),
     repaintLegend: () => repaintLegend(),
   })
@@ -591,6 +593,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // Rings the cell set of an unanswered click when there is one, else the store's cells, plus the
   // picked parameters' cells. Says whether the rings changed, so the caller redraws once.
   function refreshRings(): boolean {
+    // The section rings the selected cells only; the parameters' rings are the plan's (D-22, D-33).
+    sectionView.selectionChanged(pendingCells ?? store.get().cells)
     if (!layer) return false
     const ring = new Set(pendingCells ?? store.get().cells)
     for (const cell of parRingCells) ring.add(cell)
@@ -1374,7 +1378,21 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // loading state here (D-08).
   function updateReadout(): void {
     if (sectionView.shown()) {
-      sectionView.paintReadout(readoutEl)
+      const pick = sectionView.readoutPick()
+      const field = rawFullField ?? new Float32Array(0)
+      const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
+      const interpolated =
+        pick !== null && pick.classification?.kind === 'interpolated' && entry !== null
+          ? { value: field[pick.cellId], nPoints: entry.n_pp, contributors: contributorsMemo.get(pick.cellId) ?? null }
+          : undefined
+      renderReadout(readoutEl, {
+        pick: pick ?? { kind: 'none' },
+        group: drawnGroup ?? '',
+        joined,
+        field,
+        interpolated,
+        classLine: sectionView.readoutClassLine(),
+      })
       return
     }
     if (obsPick !== null) {
@@ -1439,7 +1457,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       .then((result) => {
         if (fieldGroup !== group || committed.iteration !== iteration) return
         contributorsMemo.set(cellId, result)
-        if (selectedCellId === cellId) updateReadout()
+        if (selectedCellId === cellId || sectionView.readoutPick()?.cellId === cellId) updateReadout()
       })
   }
 
@@ -1522,6 +1540,39 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       store.set({ cells: new Set() }, 'map')
     } else {
       askLinkCell(committed.layer, next)
+    }
+    refreshRings()
+    redraw()
+  }
+
+  // A section click selects as a plan click does, on the layer it names (D-23, D-24, D-33). The
+  // plan's own readout pick and its layer stay as they were.
+  function handleSectionPick(hit: SectionHit | null, mode: SelectMode): void {
+    if (hit === null) {
+      // D-24: only a plain click on empty space clears, as on the plan.
+      if (mode !== 'replace') return
+      clearLassoOutline()
+      takeAwaySitePick()
+      clearSelection(false)
+      updateReadout()
+      store.set({ cells: new Set(), sites: new Set(), pars: new Set() }, 'map')
+      refreshMarks()
+      return
+    }
+    updateReadout()
+    // Absence is named, never selected (D-16, D-24).
+    if (hit.status !== 0) return
+    clearLassoOutline()
+    if (sectionView.readoutPick()?.classification?.kind === 'interpolated') fetchContributors(hit.cell)
+    const current = store.get()
+    const base = pendingCells ?? current.cells
+    const next = selectCells({ ...current, cells: new Set(base) }, [hit.cell], mode).cells
+    if (sameSet(next, base)) return
+    if (next.size === 0) {
+      dropPendingLink()
+      store.set({ cells: new Set() }, 'map')
+    } else {
+      askLinkCell(hit.layer, next)
     }
     refreshRings()
     redraw()

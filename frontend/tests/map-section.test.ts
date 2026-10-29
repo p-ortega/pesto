@@ -524,8 +524,8 @@ describe('the section tracer on the map', () => {
     expect(readoutText(m.root)).toContain('layer 1, cell 1')
     expect(readoutText(m.root)).toContain('inactive (idomain 0)')
     expect(readoutText(m.root)).toContain('top 5, bottom 0 model units')
-    // A section click does not pick a plan cell in this plan.
-    expect(m.stub.calls).not.toContain('/api/run/link/cell')
+    // The active quad asks what its cell holds; the absent one asks nothing (map-section-click covers the rest).
+    expect(m.stub.calls.filter((path) => path === '/api/run/link/cell')).toHaveLength(1)
   })
 
   it('shows the held answer again after Plan view, with no second request', async () => {

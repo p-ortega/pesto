@@ -337,3 +337,83 @@ describe('renderReadout class line', () => {
     expect(el.textContent).not.toContain(LINE)
   })
 })
+
+describe('renderReadout section pick', () => {
+  const LINE = 'class 4 of 9 (1.2 to 3.4)'
+  const SECTION_LINES = ['distance from A: 2 model units', 'top 10, bottom 5 model units']
+  const lines = (el: HTMLElement): string[] => [...el.children].map((c) => c.textContent ?? '')
+
+  function sectionPick(classification: CellClass | null, absence: string | null = null): ReadoutPick {
+    return { kind: 'section', cellId: 3, layer: 1, selectionLabel: 'r001', classification, absence, lines: SECTION_LINES }
+  }
+
+  function cellPick(classification: CellClass): ReadoutPick {
+    return { kind: 'cell', cellId: 3, layer: 1, selectionLabel: 'r001', classification }
+  }
+
+  it('names absence by its reason, then the footer, then the lines, with no value or class', () => {
+    const el = mount()
+    renderReadout(el, {
+      pick: sectionPick({ kind: 'outside-model' }, 'inactive (idomain 0)'),
+      group: 'G1',
+      joined: [G1],
+      field: new Float32Array([2]),
+      classLine: LINE,
+    })
+    expect(lines(el)).toEqual(['inactive (idomain 0)', 'layer 1, cell 3 · r001', ...SECTION_LINES])
+  })
+
+  it('reads a classified quad exactly as the plan reads the same cell, then the lines', () => {
+    const classifications: CellClass[] = [
+      { kind: 'valued', row: 0 },
+      { kind: 'contested', rows: [0, 1] },
+      { kind: 'no-parameter' },
+      { kind: 'points', rows: [0] },
+    ]
+    for (const classification of classifications) {
+      const plan = mount()
+      const section = mount()
+      const common = { group: 'G1', joined: [G1, G1B], field: new Float32Array([2, 3]), classLine: LINE }
+      renderReadout(plan, { ...common, pick: cellPick(classification) })
+      renderReadout(section, { ...common, pick: sectionPick(classification) })
+      expect(lines(section)).toEqual([...lines(plan), ...SECTION_LINES])
+    }
+  })
+
+  it('reads an interpolated quad as the plan does, its points included', () => {
+    const plan = mount()
+    const section = mount()
+    const common = {
+      group: 'pp',
+      joined: [],
+      field: new Float32Array(0),
+      interpolated: { value: 1.5, nPoints: 2, contributors: [{ parnme: 'pp_01', weight: 0.75 }] },
+      classLine: LINE,
+    }
+    renderReadout(plan, { ...common, pick: cellPick({ kind: 'interpolated' }) })
+    renderReadout(section, { ...common, pick: sectionPick({ kind: 'interpolated' }) })
+    expect(lines(section)).toEqual([...lines(plan), ...SECTION_LINES])
+    expect(section.textContent).toContain('pp_01 (weight 0.75)')
+  })
+
+  it('never shows a class line for a contested quad', () => {
+    const el = mount()
+    const pick = sectionPick({ kind: 'contested', rows: [0, 1] })
+    renderReadout(el, { pick, group: 'G1', joined: [G1, G1B], field: new Float32Array([1, 2]), classLine: LINE })
+    expect(el.textContent).toContain('Contested cell')
+    expect(el.textContent).not.toContain(LINE)
+  })
+
+  it('with nothing to classify against shows the footer and the lines', () => {
+    const el = mount()
+    renderReadout(el, { pick: sectionPick(null), group: '', joined: [], field: new Float32Array(0), classLine: LINE })
+    expect(lines(el)).toEqual(['layer 1, cell 3 · r001', ...SECTION_LINES])
+  })
+
+  it('writes a reason carrying markup as plain text', () => {
+    const el = mount()
+    renderReadout(el, { pick: sectionPick(null, '<b>odd</b>'), group: '', joined: [], field: new Float32Array(0) })
+    expect(el.querySelector('b')).toBeNull()
+    expect(el.textContent).toContain('<b>odd</b>')
+  })
+})
