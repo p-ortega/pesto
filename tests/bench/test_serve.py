@@ -31,6 +31,7 @@ from pesto.bench.serve import (
     _route,
     measure_obs_frames,
     measure_reopen_share,
+    measure_section,
     measure_values,
     page_iteration,
     pick_browser_targets,
@@ -603,3 +604,155 @@ def test_the_frame_times_spread_over_the_groups_times(tmp_path, in_process) -> N
         measure_obs_frames(recording, 5)  # type: ignore[arg-type]
     times = [float(p.split("time=")[1].split("&")[0]) for p in recording.frames()]
     assert times[0] == 1.0 and times[-1] == 3.0 and set(times) == {1.0, 2.0, 3.0}
+
+
+# ---------------------------------------------------------------------------
+# grid/section: the line walk route, timed on a diagonal across the whole mesh
+# ---------------------------------------------------------------------------
+
+
+def _section_not_measured(block) -> str:
+    assert block.summary is None
+    assert len(block.notes) == 1 and block.notes[0].startswith("section:")
+    return block.notes[0]
+
+
+def _diagonal(server: BenchServer) -> tuple[float, float, float, float]:
+    _timed, body = server.get("/api/run/grid/mesh")
+    mesh = json.loads(body)
+    xmin, xmax, ymin, ymax = mesh["bounds"]
+    ox, oy = mesh["origin"]
+    return xmin + ox, ymin + oy, xmax + ox, ymax + oy
+
+
+def test_the_section_is_timed_on_the_whole_mesh_diagonal(server: BenchServer) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from fixtures.synthetic_run import NLAY
+
+    expected = _diagonal(server)
+    recording = _Recording(server)
+    block = measure_section(recording, 3)  # type: ignore[arg-type]
+    assert block.notes == []
+    assert block.summary is not None and block.summary.count == 3
+    assert block.n_pieces is not None and block.n_pieces > 0
+    assert block.nlay == NLAY
+    assert block.quads == block.n_pieces * block.nlay
+
+    assert [p for p in recording.paths if p.startswith("/api/run/grid/mesh")] == ["/api/run/grid/mesh"]
+    sections = [p for p in recording.paths if p.startswith("/api/run/grid/section")]
+    # One untimed request reads the counts, then the three timed ones.
+    assert len(sections) == 4 and len(set(sections)) == 1
+    query = parse_qs(urlsplit(sections[0]).query)
+    ends = tuple(float(query[key][0]) for key in ("ax", "ay", "bx", "by"))
+    assert ends == expected
+
+
+def test_asking_for_no_section_requests_is_not_measured_with_a_reason(server: BenchServer) -> None:
+    recording = _Recording(server)
+    block = measure_section(recording, 0)  # type: ignore[arg-type]
+    assert _section_not_measured(block) == "section: no section requests were asked for, so none was timed"
+    assert recording.paths == []
+
+
+def test_a_refused_section_carries_the_servers_reason(server: BenchServer) -> None:
+    from pesto.ingest.elev import ELEV_PREDATES
+
+    problem = json.dumps(
+        {"title": "the section is not available", "status": 409, "detail": ELEV_PREDATES}
+    ).encode()
+    wrapped = _Wrapped(server, {"/api/run/grid/section": (409, problem)})
+    note = _section_not_measured(measure_section(wrapped, 3))  # type: ignore[arg-type]
+    assert "status 409" in note
+    assert "the section is not available" in note
+    assert ELEV_PREDATES in note
+
+
+def test_a_failing_timed_section_request_is_not_measured_with_its_status(server: BenchServer) -> None:
+    class FailAfterFirst:
+        def __init__(self) -> None:
+            self.sections = 0
+
+        def get(self, path: str) -> tuple[Timed, bytes]:
+            if path.startswith("/api/run/grid/section"):
+                self.sections += 1
+                if self.sections > 1:
+                    return Timed(500, 2, 0.001), b"{}"
+            return server.get(path)
+
+    block = measure_section(FailAfterFirst(), 3)  # type: ignore[arg-type]
+    note = _section_not_measured(block)
+    assert "3 of 3 requests failed (first status 500)" in note
+    assert block.n_pieces is not None and block.nlay is not None
+
+
+def test_a_mesh_or_section_answer_of_the_wrong_shape_is_not_measured_not_a_crash(server: BenchServer) -> None:
+    broken_mesh = (
+        b"not json",
+        json.dumps({"bounds": [0, 1], "origin": [0, 0]}).encode(),
+        json.dumps({"bounds": [0, 1, 0, "x"], "origin": [0, 0]}).encode(),
+        json.dumps({"bounds": [0, float("inf"), 0, 1], "origin": [0, 0]}).encode(),
+        json.dumps({"bounds": [0, 1, 0, 1]}).encode(),
+    )
+    for body in broken_mesh:
+        wrapped = _Wrapped(server, {"/api/run/grid/mesh": (200, body)})
+        assert "mesh answer could not be read" in _section_not_measured(measure_section(wrapped, 2))  # type: ignore[arg-type]
+    failed = _Wrapped(server, {"/api/run/grid/mesh": (502, json.dumps({"title": "bad grid"}).encode())})
+    assert "status 502: bad grid" in _section_not_measured(measure_section(failed, 2))  # type: ignore[arg-type]
+    for body in (b"not json", json.dumps({"n_pieces": 3}).encode(), json.dumps({"n_pieces": "3", "nlay": 2}).encode()):
+        wrapped = _Wrapped(server, {"/api/run/grid/section": (200, body)})
+        assert "section answer could not be read" in _section_not_measured(measure_section(wrapped, 2))  # type: ignore[arg-type]
+
+
+def test_the_section_block_of_a_bench_result_holds_no_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bench.test_json_contract import _copy_ready_cache
+
+    from pesto.bench.cli import run_bench
+    from pesto.bench.report import format_table, result_to_dict
+
+    known = "section-block-known-token"
+    monkeypatch.setattr("pesto.api.app.mint_token", lambda: known)
+    run = write_synthetic_run(tmp_path / "run")
+    monkeypatch.setattr("pesto.bench.cli.ingest_run", _copy_ready_cache(run))
+    result = run_bench(run, tmp_path / "scratch", tmp_path / "out.json", values_samples=4)
+    assert result.server is not None and result.server.section is not None
+    assert result.server.section.summary is not None
+    block = result_to_dict(result)["server"]["section"]
+    assert known not in json.dumps(block)
+    assert known not in json.dumps(result_to_dict(result)) and known not in format_table(result)
+    assert not any("section" in row.speed_limit for row in result.verdicts)
+
+
+def test_the_table_says_when_the_section_was_not_measured() -> None:
+    from pesto.bench.report import (
+        LatencySummary,
+        ReopenShare,
+        SectionLatency,
+        ServerMeasures,
+        ValuesLatency,
+        _server_lines,
+    )
+
+    summary = LatencySummary(4, 0.004, 0.002, 0.003, 0.004)
+    measured = SectionLatency(n_pieces=7, nlay=2, quads=14, summary=summary, notes=[])
+    missing = SectionLatency(n_pieces=None, nlay=None, quads=None, summary=None, notes=["section: why"])
+
+    class Result:
+        def __init__(self, section) -> None:
+            self.server = ServerMeasures(
+                started_seconds=0.1,
+                reopen_share=ReopenShare(requests=[], total_seconds=0.0, note="n"),
+                values=ValuesLatency(iteration=0, realization=None, statistic=None, notes=[]),
+                section=section,
+            )
+
+    lines = _server_lines(Result(measured))  # type: ignore[arg-type]
+    assert (
+        "grid/section, whole-mesh diagonal (7 pieces x 2 layers = 14 section cells): 4 requests, "
+        "first 4.0 ms, p50 2.0 ms, p95 3.0 ms (nearest rank), max 4.0 ms"
+    ) in lines
+    lines = _server_lines(Result(missing))  # type: ignore[arg-type]
+    assert lines[-2:] == ["grid/section: not measured", "  note: section: why"]
+    assert not any(line.startswith("grid/section") for line in _server_lines(Result(None)))  # type: ignore[arg-type]
