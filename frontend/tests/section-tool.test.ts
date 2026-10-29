@@ -62,7 +62,7 @@ function harness(): Harness {
 }
 
 const button = (h: { host: HTMLElement }): HTMLButtonElement => h.host.querySelector('.section-button') as HTMLButtonElement
-const reason = (h: { host: HTMLElement }): HTMLElement => h.host.querySelector('.section-tool .wrap-note') as HTMLElement
+const reason = (h: { host: HTMLElement }): HTMLElement => h.host.querySelector('.wrap-note') as HTMLElement
 
 function pointer(type: string, x: number, y: number): PointerEvent {
   return new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true, cancelable: true })

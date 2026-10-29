@@ -15,16 +15,14 @@ const noteText = (line: Element | null | undefined): string => line?.querySelect
 function mount(realNames: RealNamesResult, nlay = 3, partrans: string | null = null) {
   const el = document.createElement('div')
   const onSelectionChange = vi.fn()
-  const onFitToExtent = vi.fn()
   const handle = renderSelectionControls(el, {
     nlay,
     iteration: 0,
     realNames,
     partrans,
     onSelectionChange,
-    onFitToExtent,
   })
-  return { el, onSelectionChange, onFitToExtent, handle }
+  return { el, onSelectionChange, handle }
 }
 
 const THREE_NAMES: RealNamesResult = { ok: true, names: ['base', 'r001', 'r002'] }
@@ -225,17 +223,6 @@ describe('renderSelectionControls', () => {
     expect(select.getAttribute('aria-describedby')).toBeNull()
   })
 
-  it('renders a real Fit to extent button that calls onFitToExtent when clicked', () => {
-    const { el, onFitToExtent } = mount(THREE_NAMES)
-    const buttons = Array.from(el.querySelectorAll('button'))
-    const fitButton = buttons.find((button) => button.textContent === 'Fit to extent')
-    expect(fitButton).toBeTruthy()
-    expect(fitButton?.getAttribute('tabindex')).toBeNull()
-
-    fitButton!.dispatchEvent(new Event('click'))
-    expect(onFitToExtent).toHaveBeenCalledTimes(1)
-  })
-
   // WINDOWS.md #8: a restored view state carried reverseColormap: true and
   // it was applied to the ramp, but the checkbox this same module renders
   // read unchecked -- the control never learned what the caller already
@@ -258,7 +245,6 @@ describe('renderSelectionControls', () => {
         manualLimits: null,
       },
       onSelectionChange: vi.fn(),
-      onFitToExtent: vi.fn(),
     })
 
     expect((el.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement).checked).toBe(true)
@@ -286,7 +272,6 @@ describe('renderSelectionControls', () => {
         stat: 'mean',
       },
       onSelectionChange,
-      onFitToExtent: vi.fn(),
     })
 
     expect((el.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement).value).toBe('mean')
@@ -314,7 +299,6 @@ describe('renderSelectionControls', () => {
         manualLimits: null,
       },
       onSelectionChange,
-      onFitToExtent: vi.fn(),
     })
 
     const layerSlider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
@@ -393,7 +377,6 @@ describe('renderSelectionControls', () => {
           style: { classes: 11, symmetric: false, texture: false },
         },
         onSelectionChange,
-        onFitToExtent: vi.fn(),
       })
       expect(classes(el).value).toBe('11')
       classes(el).value = '7'
@@ -600,7 +583,6 @@ describe('renderSelectionControls', () => {
         },
         styleNote: 'centre on zero was turned off: manual limits are used as typed',
         onSelectionChange: vi.fn(),
-        onFitToExtent: vi.fn(),
       })
       expect(box(el).checked).toBe(true)
       expect(noteText(reason(el))).toBe('centre on zero was turned off: manual limits are used as typed')

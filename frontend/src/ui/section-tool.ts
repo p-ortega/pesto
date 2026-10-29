@@ -16,6 +16,8 @@ export interface SectionToolOptions {
   area: HTMLElement
   canvas: HTMLCanvasElement
   buttonHost: HTMLElement
+  /** Where the reason line goes; the button's host when absent. */
+  reasonHost?: HTMLElement
   /** Client CSS pixels to the map canvas's own pixels. */
   canvasPoint(event: { clientX: number; clientY: number }): [number, number]
   /** Plan screen to plan world units (relative to the mesh origin), and back. */
@@ -48,8 +50,6 @@ function cssColour(name: string): string {
 export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   const { area, canvas } = opts
 
-  const wrap = document.createElement('div')
-  wrap.classList.add('floating', 'section-tool')
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('section-button')
@@ -59,9 +59,8 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   const reasonEl = document.createElement('div')
   reasonEl.classList.add('label', 'wrap-note')
   reasonEl.hidden = true
-  wrap.appendChild(button)
-  wrap.appendChild(reasonEl)
-  opts.buttonHost.appendChild(wrap)
+  opts.buttonHost.appendChild(button)
+  ;(opts.reasonHost ?? opts.buttonHost).appendChild(reasonEl)
 
   const overlay = document.createElement('canvas')
   overlay.classList.add('section-line-overlay')
@@ -245,7 +244,8 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
       button.removeEventListener('click', onButtonClick)
       area.classList.remove('section-armed')
       overlay.remove()
-      wrap.remove()
+      button.remove()
+      reasonEl.remove()
     },
   }
 }

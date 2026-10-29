@@ -21,6 +21,8 @@ export interface LassoOptions {
   area: HTMLElement
   canvas: HTMLCanvasElement
   buttonHost: HTMLElement
+  /** Where the reason line goes; the button's host when absent. */
+  reasonHost?: HTMLElement
   /** Client CSS pixels to the map canvas's own pixels. */
   canvasPoint(event: { clientX: number; clientY: number }): [number, number]
   screenToWorld(x: number, y: number): [number, number]
@@ -56,9 +58,6 @@ function cssColour(name: string): string {
 export function renderLasso(opts: LassoOptions): LassoHandle {
   const { area, canvas } = opts
 
-  const wrap = document.createElement('div')
-  // A card, so the disabled reason reads over any colour ramp.
-  wrap.classList.add('floating', 'lasso-control')
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('lasso-button')
@@ -67,9 +66,8 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
   const reasonEl = document.createElement('div')
   reasonEl.classList.add('label', 'wrap-note')
   reasonEl.hidden = true
-  wrap.appendChild(button)
-  wrap.appendChild(reasonEl)
-  opts.buttonHost.appendChild(wrap)
+  opts.buttonHost.appendChild(button)
+  ;(opts.reasonHost ?? opts.buttonHost).appendChild(reasonEl)
 
   const overlay = document.createElement('canvas')
   overlay.classList.add('lasso-overlay')
@@ -266,7 +264,8 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
       button.removeEventListener('click', onButtonClick)
       area.classList.remove('lasso-armed')
       overlay.remove()
-      wrap.remove()
+      button.remove()
+      reasonEl.remove()
     },
   }
 }
