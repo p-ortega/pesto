@@ -13,6 +13,8 @@ and can remove it.
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,23 +24,42 @@ from pesto.cache.layout import run_id_for
 STORE_VERSION = 1
 _RECORD_NAME = "basemap.json"
 
+
+def _int(v: object) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _extent_ok(v: object) -> bool:
+    if not (isinstance(v, list) and len(v) == 4):
+        return False
+    if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in v):
+        return False
+    return v[0] < v[1] and v[2] < v[3]
+
+
+# A tag goes into a copy's file name and a world file name into a path, so neither may hold a separator.
+_TAG = re.compile(r"[0-9a-f]{16}")
+
+
+def _plain_name(v: object) -> bool:
+    return isinstance(v, str) and v not in ("", ".", "..") and "/" not in v and "\\" not in v and "\0" not in v
+
+
 # Each key a record must carry, with the check its value must pass.
 _FIELDS = {
     "source": lambda v: isinstance(v, str),
-    "size": lambda v: isinstance(v, int),
-    "mtime_ns": lambda v: isinstance(v, int),
+    "size": _int,
+    "mtime_ns": _int,
     "format": lambda v: v in ("png", "jpeg"),
-    "width": lambda v: isinstance(v, int) and v > 0,
-    "height": lambda v: isinstance(v, int) and v > 0,
-    "extent": lambda v: isinstance(v, list)
-    and len(v) == 4
-    and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v),
+    "width": lambda v: _int(v) and v > 0,
+    "height": lambda v: _int(v) and v > 0,
+    "extent": _extent_ok,
     "placed_by": lambda v: v in ("world_file", "numbers"),
-    "world_file": lambda v: v is None or isinstance(v, str),
-    "world_file_size": lambda v: v is None or (isinstance(v, int) and not isinstance(v, bool)),
-    "world_file_mtime_ns": lambda v: v is None or (isinstance(v, int) and not isinstance(v, bool)),
+    "world_file": lambda v: v is None or _plain_name(v),
+    "world_file_size": lambda v: v is None or _int(v),
+    "world_file_mtime_ns": lambda v: v is None or _int(v),
     "notes": lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
-    "tag": lambda v: isinstance(v, str),
+    "tag": lambda v: isinstance(v, str) and _TAG.fullmatch(v) is not None,
 }
 
 

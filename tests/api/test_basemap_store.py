@@ -167,6 +167,37 @@ def test_a_broken_record_is_unavailable_with_a_reason_and_kept(tmp_path, monkeyp
     assert_no_path_leaked(opened)
 
 
+@pytest.mark.parametrize(
+    "field, value, said",
+    [
+        ("tag", "../../x", "'tag'"),
+        ("tag", "ABCDEF0123456789", "'tag'"),
+        ("world_file", "../other.pgw", "'world_file'"),
+        ("world_file", "..", "'world_file'"),
+        ("extent", [0, float("nan"), 0, 1], "'extent'"),
+        ("extent", [0, float("inf"), 0, 1], "'extent'"),
+        ("extent", [5, 1, 0, 1], "'extent'"),
+        ("size", True, "'size'"),
+        ("mtime_ns", True, "'mtime_ns'"),
+        ("width", True, "'width'"),
+        ("height", True, "'height'"),
+    ],
+)
+def test_a_record_with_an_unsafe_or_unusable_value_is_unavailable_with_a_reason(
+    tmp_path, monkeypatch, field, value, said
+):
+    opened, _image, _world = _registered(tmp_path, monkeypatch)
+    path = basemap_dir(opened.run_dir) / "basemap.json"
+    record = json.loads(path.read_text())
+    record[field] = value
+    path.write_text(json.dumps(record))
+
+    failure = read_registration(opened.run_dir)
+    assert isinstance(failure, StoreFailure)
+    assert said in failure.reason
+    assert opened.get("/api/run/basemap").json()["status"] == "unavailable"
+
+
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses permission bits")
 def test_an_unreadable_record_is_unavailable_not_none(tmp_path, monkeypatch):
     opened = open_run(tmp_path, monkeypatch)
