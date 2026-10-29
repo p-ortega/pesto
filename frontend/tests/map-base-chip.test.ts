@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// The base chip in the map's header and the word base in the map's labels: one click selects
-// the shown iteration's base, an iteration with none says so and keeps the selection, and the
-// legend names the drawn realization base when it is. The real map screen against a stubbed
+// Select base in the Obs tab heading row (LD-6) and the word base in the map's labels: one click
+// selects the shown iteration's base, an iteration with none says why and keeps the selection, and
+// the legend names the drawn realization base when it is. The real map screen against a stubbed
 // fetch, with the GL context and the shared MeshLayer double mocked.
 
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
@@ -157,7 +157,9 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-const chipOf = (root: HTMLElement): HTMLButtonElement => root.querySelector('button.base-chip') as HTMLButtonElement
+const chipOf = (root: HTMLElement): HTMLButtonElement =>
+  root.querySelector('#panel-obs .obs-heading-row button.base-chip') as HTMLButtonElement
+const reasonOf = (root: HTMLElement): string => root.querySelector('#base-chip-reason')?.textContent ?? ''
 const legendText = (root: HTMLElement): string => root.querySelector('.floating-bottom-left')?.textContent ?? ''
 const selectedNotice = (root: HTMLElement): string =>
   root.querySelector('[data-testid="iteration-selected-notice"]')?.textContent ?? ''
@@ -176,7 +178,7 @@ async function drawRealization(root: HTMLElement, store: SelectionStore, index: 
   await settle()
 }
 
-describe('the base chip in the map header', () => {
+describe('Select base in the Obs heading row', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
   })
@@ -186,15 +188,19 @@ describe('the base chip in the map header', () => {
     vi.clearAllMocks()
   })
 
-  it('sits after the configuration chips and asks for the shown iteration\'s base once', async () => {
+  it('sits at the right of the Obs heading, not in the header, and asks for the shown iteration\'s base once', async () => {
     const store = manualStore()
     const { root, stub } = await mounted(store)
     await chipReady(root)
 
     const chip = chipOf(root)
-    expect(chip.textContent).toBe('base')
-    expect(chip.previousElementSibling?.querySelector('.chip')).not.toBeNull()
-    expect(chip.nextElementSibling?.querySelector('select[aria-label="Theme"]')).not.toBeNull()
+    expect(chip.textContent).toBe('Select base')
+    expect(chip.closest('.obs-heading-actions')).not.toBeNull()
+    expect(root.querySelector('#panel-obs .obs-heading-row .heading')?.textContent).toBe('Obs')
+    expect(root.querySelector('.header button.base-chip')).toBeNull()
+    // The header keeps its plain fact chip.
+    expect(root.querySelector('.header')?.textContent).toContain('2 reals')
+    expect(root.querySelector('.header')?.textContent).toContain('base alive')
     expect(stub.base).toEqual(['3'])
   })
 
@@ -229,7 +235,8 @@ describe('the base chip in the map header', () => {
     store.set({ iteration: 5 }, 'test')
     store.flush()
 
-    await vi.waitFor(() => expect(chipOf(root).textContent).toBe('no base in iteration 5'))
+    await vi.waitFor(() => expect(reasonOf(root)).toBe('ℹ iteration 5 has no base realization'))
+    expect(chipOf(root).textContent).toBe('Select base')
     expect(chipOf(root).disabled).toBe(true)
     expect(chipOf(root).title).toBe('iteration 5 has no base realization')
     expect(store.get().reals).toEqual(new Set(['b0']))
@@ -253,6 +260,24 @@ describe('the base chip in the map header', () => {
     expect(root.textContent).not.toContain('r1 · base')
   })
 
+  it('shift-click adds base, and a second plain click selects all again', async () => {
+    const store = manualStore()
+    const { root } = await mounted(store)
+    await chipReady(root)
+    await drawRealization(root, store, 1, 'r1')
+
+    chipOf(root).dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+    store.flush()
+    expect(store.get().reals).toEqual(new Set(['r1', 'b0']))
+
+    chipOf(root).click()
+    store.flush()
+    expect(store.get().reals).toEqual(new Set(['b0']))
+    chipOf(root).click()
+    store.flush()
+    expect(store.get().reals).toBe('all')
+  })
+
   it('keeps the same chip, with its state, when a theme change repaints the header', async () => {
     const store = manualStore()
     const { root, stub } = await mounted(store)
@@ -266,7 +291,7 @@ describe('the base chip in the map header', () => {
     expect(chipOf(root)).toBe(before)
     expect(before.isConnected).toBe(true)
     expect(before.disabled).toBe(false)
-    expect(before.textContent).toBe('base')
+    expect(before.textContent).toBe('Select base')
     expect(stub.base).toEqual(['3'])
   })
 })

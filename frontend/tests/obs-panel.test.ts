@@ -296,7 +296,18 @@ describe('the group summary', () => {
     const { host } = mount({ startHidden: true })
 
     const classes = [...host.children].map((el) => el.className).filter((c) => c.startsWith('obs-'))
-    expect(classes).toEqual(['obs-notices', 'obs-groups', 'obs-selected', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
+    expect(classes).toEqual(['obs-heading-row', 'obs-notices', 'obs-groups', 'obs-selected', 'obs-fit', 'obs-sites', 'obs-spaghetti'])
+  })
+
+  it('opens with a heading row: Obs on the left and an empty slot for actions on the right', () => {
+    const { host, handle } = mount({ startHidden: true })
+
+    const row = host.firstElementChild as HTMLElement
+    expect(row.className).toBe('obs-heading-row')
+    expect([...row.children].map((el) => el.className)).toEqual(['heading', 'obs-heading-actions'])
+    expect(row.querySelector('.heading')?.textContent).toBe('Obs')
+    expect(handle.headingActions).toBe(row.querySelector('.obs-heading-actions'))
+    expect(handle.headingActions.childElementCount).toBe(0)
   })
 })
 

@@ -1,12 +1,12 @@
-// The header's base chip (D-18, D-19). An iteration with no base says so and leaves the
-// selection alone; realization names reach the DOM through textContent only.
+// The Select base button in the Obs heading row (D-18, D-19, LD-6). An iteration with no base says
+// why under the button and leaves the selection alone; names and reasons go in as text only.
 
 import { LatestWins } from '../data/latest-wins'
 import type { BaseResult } from '../data/reals'
 import { modeOf } from '../state/modifiers'
 import { clearReals, selectReals } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
-import { BASE_STYLE } from './charts/base-style'
+import { paintNote } from './note-line'
 
 export interface BaseChipOptions {
   store: SelectionStore
@@ -16,14 +16,20 @@ export interface BaseChipOptions {
 }
 
 export interface BaseChipHandle {
+  /** The button with its reason line under it. */
   el: HTMLElement
   setIteration(k: number): void
   dispose(): void
 }
 
+// Kept as 'header' after the move, so no store subscriber that reads origins changes.
 const ORIGIN = 'header'
-const LOADING_TITLE = "reading the base realization's name"
-const HINT = 'select the base realization; click again for all realizations; shift-click adds it to the selection'
+// Its own word, not BASE_STYLE.label: the plot legends and the map's realization label still say base.
+const BUTTON_LABEL = 'Select base'
+const LOADING_REASON = "reading the base realization's name"
+const HINT =
+  'Select the base realization: it draws bold and the others dim. Click again to select all. Shift-click adds base to the selection.'
+const REASON_ID = 'base-chip-reason'
 
 type ChipState =
   | { kind: 'loading' }
@@ -35,12 +41,26 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function reasonOf(state: Exclude<ChipState, { kind: 'named' }>): string {
+  if (state.kind === 'loading') return LOADING_REASON
+  if (state.kind === 'absent') return state.reason
+  return `base unknown: ${state.reason}`
+}
+
 export function renderBaseChip(host: HTMLElement, opts: BaseChipOptions): BaseChipHandle {
   const { store } = opts
+  const wrapper = document.createElement('div')
+  wrapper.classList.add('base-select')
   const el = document.createElement('button')
   el.type = 'button'
   el.classList.add('chip', 'base-chip')
-  host.appendChild(el)
+  el.textContent = BUTTON_LABEL
+  const reasonLine = document.createElement('div')
+  reasonLine.id = REASON_ID
+  reasonLine.classList.add('label', 'wrap-note', 'base-select-reason')
+  wrapper.appendChild(el)
+  wrapper.appendChild(reasonLine)
+  host.appendChild(wrapper)
 
   const slot = new LatestWins<BaseResult>()
   let iteration = opts.iteration ?? store.get().iteration
@@ -53,26 +73,20 @@ export function renderBaseChip(host: HTMLElement, opts: BaseChipOptions): BaseCh
   }
 
   function paint(): void {
-    el.removeAttribute('title')
     if (state.kind === 'named') {
-      el.textContent = BASE_STYLE.label
       el.disabled = false
       el.title = state.note ? `${HINT}\n${state.note}` : HINT
       el.setAttribute('aria-pressed', String(isPressed(state.name)))
+      el.removeAttribute('aria-describedby')
+      paintNote(reasonLine, null)
       return
     }
+    const reason = reasonOf(state)
     el.disabled = true
     el.setAttribute('aria-pressed', 'false')
-    if (state.kind === 'loading') {
-      el.textContent = BASE_STYLE.label
-      el.title = LOADING_TITLE
-    } else if (state.kind === 'absent') {
-      el.textContent = `no base in iteration ${state.iteration}`
-      el.title = state.reason
-    } else {
-      el.textContent = 'base unknown'
-      el.title = state.reason
-    }
+    el.title = reason
+    el.setAttribute('aria-describedby', REASON_ID)
+    paintNote(reasonLine, { kind: 'reason', text: reason })
   }
 
   function settle(result: BaseResult): ChipState {
@@ -125,7 +139,7 @@ export function renderBaseChip(host: HTMLElement, opts: BaseChipOptions): BaseCh
   load()
 
   return {
-    el,
+    el: wrapper,
     setIteration(k: number) {
       if (k === iteration && state.kind !== 'unknown') return
       iteration = k
@@ -137,7 +151,7 @@ export function renderBaseChip(host: HTMLElement, opts: BaseChipOptions): BaseCh
       unsubscribeReals()
       unsubscribeRun()
       el.removeEventListener('click', onClick)
-      el.remove()
+      wrapper.remove()
     },
   }
 }
