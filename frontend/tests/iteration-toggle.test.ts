@@ -125,6 +125,34 @@ describe('renderIterationToggle', () => {
   })
 })
 
+describe('renderIterationToggle as a card row', () => {
+  it('drops the floating card and its own Iteration word, and keeps the group, its name and its buttons', () => {
+    const el = document.createElement('div')
+    renderIterationToggle(el, { iterations: [0, 1, 2], current: 0, onChange: vi.fn(), bare: true })
+
+    expect(el.classList.contains('floating')).toBe(false)
+    expect(el.classList.contains('iteration-toggle')).toBe(true)
+    expect(el.getAttribute('role')).toBe('group')
+    expect(el.getAttribute('aria-label')).toBe('Iteration')
+    expect(el.querySelector('span.label')).toBeNull()
+    expect(el.textContent).not.toContain('Iteration')
+    expect(Array.from(el.querySelectorAll('button')).map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Iteration 0',
+      'Iteration 1',
+      'Iteration 2',
+    ])
+  })
+
+  it('without bare keeps its floating card and its Iteration word', () => {
+    const el = document.createElement('div')
+    renderIterationToggle(el, { iterations: [0, 1, 2], current: 0, onChange: vi.fn() })
+
+    expect(el.classList.contains('floating')).toBe(true)
+    expect(el.querySelector('span.label')?.textContent).toBe('Iteration')
+    expect(el.querySelectorAll('button')).toHaveLength(3)
+  })
+})
+
 const CONFIG: RunConfig = {
   case: 'test_run',
   n_par: null,

@@ -21,6 +21,8 @@ export type GroupPickerState =
 export interface GroupPickerOptions {
   state: GroupPickerState
   onGroupChange: (group: string) => void
+  /** A row inside a labelled card: no floating card of its own. */
+  bare?: boolean
 }
 
 function renderUnmappedRows(el: HTMLElement, unmapped: UnmappedGroup[]): void {
@@ -55,7 +57,7 @@ export function renderGroupPicker(el: HTMLElement, opts: GroupPickerOptions): vo
     return
   }
 
-  el.classList.add('floating')
+  if (!opts.bare) el.classList.add('floating')
 
   if (opts.state.kind === 'loading') {
     const select = document.createElement('select')
