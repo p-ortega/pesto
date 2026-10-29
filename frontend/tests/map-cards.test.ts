@@ -232,6 +232,25 @@ describe('the Data and Colours cards', () => {
     expect(summary(root, 'colours')).toBe('Colours: viridis · linear · robust 2–98% · smooth')
   })
 
+  it('names the drawn group, layer and realization on the folded Data line, and follows the layer slider', async () => {
+    const root = await mountReady()
+    foldButton(root, 'data').click()
+    await vi.waitFor(() => expect(summary(root, 'data')).toBe('Data: G1 · layer 1 (0) · base'))
+    const slider = card(root, 'data').querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    slider.value = '1'
+    slider.dispatchEvent(new Event('input'))
+    await vi.waitFor(() => expect(summary(root, 'data')).toBe('Data: G1 · layer 2 (1) · base'))
+  })
+
+  it('names a statistic on the folded Data line when one is drawn', async () => {
+    const root = await mountReady()
+    const select = card(root, 'data').querySelector('select[aria-label="Statistic"]') as HTMLSelectElement
+    select.value = 'mean'
+    select.dispatchEvent(new Event('change'))
+    foldButton(root, 'data').click()
+    await vi.waitFor(() => expect(summary(root, 'data')).toBe('Data: G1 · layer 1 (0) · mean'))
+  })
+
   it('changes the Colours folded line when the colormap changes', async () => {
     const root = await mountReady()
     const select = card(root, 'colours').querySelector('select[aria-label="Colormap"]') as HTMLSelectElement
