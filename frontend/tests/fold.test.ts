@@ -162,7 +162,7 @@ describe('the legend card', () => {
     line.classList.add('label', 'section-legend-line')
     line.textContent = 'group G1 sets layers 1, 2, 3; other layers have no value from this group'
     fold.body.appendChild(line)
-    expect(getComputedStyle(fold.body).maxWidth).not.toBe('none')
+    expect(getComputedStyle(line).maxWidth).not.toBe('none')
     expect(getComputedStyle(line).whiteSpace).toBe('normal')
   })
 })

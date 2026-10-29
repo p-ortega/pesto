@@ -95,9 +95,12 @@ describe('renderLegend with classes', () => {
     const swatches = [...el.querySelectorAll('.legend-class')] as HTMLElement[]
     const edges = [...el.querySelectorAll('.legend-edge')] as HTMLElement[]
     expect(edges).toHaveLength(swatches.length + 1)
-    // Edge j spans half-columns 2j+1..2j+2 so its centre is grid line 2j+2, where swatch j starts.
-    swatches.forEach((swatch, k) => expect(swatch.style.gridColumn).toBe(`${2 * k + 2} / span 2`))
-    edges.forEach((edge, j) => expect(edge.style.gridColumn).toBe(`${2 * j + 1} / span 2`))
+    // Edge j spans half-columns 2j+1..2j+4 so its centre is grid line 2j+3, where swatch j starts.
+    swatches.forEach((swatch, k) => expect(swatch.style.gridColumn).toBe(`${2 * k + 3} / span 2`))
+    edges.forEach((edge, j) => expect(edge.style.gridColumn).toBe(`${2 * j + 1} / span 4`))
+    // Neighbouring edges sit on different rows, so their numbers never touch.
+    edges.forEach((edge, j) => expect(edge.style.gridRow).toBe(String(2 + (j % 2))))
+    expect((el.querySelector('.legend-class-grid') as HTMLElement).style.width).toBe('100%')
   })
 
   it('shows one swatch per class in the shader colour and one edge per boundary', () => {
