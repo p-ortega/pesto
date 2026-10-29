@@ -172,3 +172,22 @@ def test_neither_the_json_nor_the_table_holds_a_token_or_a_url(bench) -> None:
     for text in (bench["text"], bench["table"]):
         assert "token" not in text.lower()
         assert "http://127.0.0.1" not in text
+
+
+def test_the_section_block_is_recorded_with_no_verdict(bench) -> None:
+    section = bench["body"]["server"]["section"]
+    assert set(section) == {"n_pieces", "nlay", "quads", "summary", "notes"}
+    assert section["summary"] is not None and section["summary"]["count"] == 20
+    assert section["notes"] == []
+    assert section["quads"] == section["n_pieces"] * section["nlay"]
+    verdicts = bench["body"]["verdicts"]
+    assert not any("section" in row["speed_limit"] for row in verdicts)
+    # The four rows there were before the section was timed; it adds none.
+    assert [row["speed_limit"] for row in verdicts] == [
+        "cache_ratio",
+        "grid/values p95, realization",
+        "grid/values p95, statistic",
+        "obs/frame p95",
+    ]
+    assert bench["body"]["speed_limits"] == speed_limits_dict()
+    assert any(line.startswith("grid/section") for line in bench["table"].splitlines())
