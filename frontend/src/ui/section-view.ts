@@ -161,6 +161,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   let fetching: string | null = null
   let fitted = false
   let refusal: string | null = null
+  // A failure that asking again may cure: said, but the next "Section view" click retries.
+  let failure: string | null = null
   let picked: SectionHit | null = null
   // The selected cells, kept so a section built later rings them too.
   let selected: ReadonlySet<number> = new Set()
@@ -213,8 +215,10 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     dropAnswer()
     line = { a, b }
     refusal = null
+    failure = null
     controls.setLoading(false)
     controls.setRefusal(null)
+    controls.setFailure(null)
     controls.setHasLine(true)
     if (isShown || wanted) request()
   }
@@ -223,6 +227,13 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     refusal = reason
     wanted = false
     controls.setRefusal(reason)
+    if (isShown) hide()
+  }
+
+  function fail(reason: string): void {
+    failure = reason
+    wanted = false
+    controls.setFailure(reason)
     if (isShown) hide()
   }
 
@@ -240,7 +251,8 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
         controls.setLoading(false)
         const value = result.value
         if (!value.ok) {
-          refuse(value.reason)
+          if (value.retryable) fail(value.reason)
+          else refuse(value.reason)
           return
         }
         answer = value.answer
@@ -249,7 +261,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       (error: unknown) => {
         fetching = null
         controls.setLoading(false)
-        refuse(`the section could not be read: ${describeError(error)}`)
+        fail(`the section could not be read: ${describeError(error)}`)
       },
     )
   }
@@ -260,7 +272,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     if (sectionLayer === null) {
       const gl = opts.gl()
       if (gl === null) {
-        refuse('the graphics context is not ready')
+        fail('the graphics context is not ready')
         return
       }
       sectionLayer = new SectionLayer(gl, answer)
@@ -297,6 +309,10 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       return
     }
     if (line === null || refusal !== null) return
+    if (failure !== null) {
+      failure = null
+      controls.setFailure(null)
+    }
     wanted = true
     if (answer !== null) display()
     else request()

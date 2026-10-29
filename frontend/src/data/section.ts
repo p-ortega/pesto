@@ -26,7 +26,10 @@ export interface SectionAnswer {
   tag: string | null
 }
 
-export type SectionResult = { ok: true; answer: SectionAnswer } | { ok: false; artifact: string; reason: string }
+/** `retryable` is false when the answer refuses the line itself, true when asking again may work. */
+export type SectionResult =
+  | { ok: true; answer: SectionAnswer }
+  | { ok: false; artifact: string; reason: string; retryable: boolean }
 
 const ARTIFACT = 'grid/section'
 const WHAT = 'section answer'
@@ -179,9 +182,12 @@ export async function fetchSection(
     return { ok: true, answer: parseSection(payload) }
   } catch (error) {
     if (error instanceof ApiError) {
-      return { ok: false, artifact: error.problem.artifact ?? ARTIFACT, reason: error.problem.detail ?? error.problem.title }
+      const reason = error.problem.detail ?? error.problem.title
+      // A 4xx refuses this line or this run; a 5xx is the server failing, which may pass.
+      const retryable = !(typeof error.problem.status === 'number' && error.problem.status < 500)
+      return { ok: false, artifact: error.problem.artifact ?? ARTIFACT, reason, retryable }
     }
-    if (error instanceof Refusal) return { ok: false, artifact: ARTIFACT, reason: error.message }
+    if (error instanceof Refusal) return { ok: false, artifact: ARTIFACT, reason: error.message, retryable: false }
     throw error
   }
 }
