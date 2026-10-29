@@ -300,8 +300,9 @@ function lastValues(instance: { setValues: ReturnType<typeof vi.fn> }): number[]
   return Array.from(instance.setValues.mock.calls.at(-1)?.[0] as Float32Array)
 }
 
+// The legend's lines without its card title.
 function legendText(root: HTMLElement): string {
-  return root.querySelector('.floating-bottom-left')?.textContent ?? ''
+  return root.querySelector('.floating-bottom-left > .fold-body')?.textContent ?? ''
 }
 
 function lastFrame() {

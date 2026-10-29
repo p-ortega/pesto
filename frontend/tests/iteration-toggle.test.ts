@@ -362,12 +362,19 @@ describe('switching the iteration', () => {
     expect(stub.valuesCalls.length).toBe(1)
   })
 
-  it('puts the toggle in the top-left cluster with the first iteration pressed', async () => {
+  it("puts the toggle in the Data card's Iteration row with the first iteration pressed", async () => {
     const { root } = await mountedWith(manualStore())
-    const buttons = Array.from((root.querySelector('[aria-label="Iteration"]') as HTMLElement).querySelectorAll('button'))
+    const toggle = root.querySelector('[aria-label="Iteration"]') as HTMLElement
+    const buttons = Array.from(toggle.querySelectorAll('button'))
     expect(buttons.map((b) => b.textContent)).toEqual(['0', '3'])
     expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
     expect(root.querySelector('.floating-top-left')?.contains(buttons[0])).toBe(true)
+    const row = toggle.closest('.card-row') as HTMLElement
+    expect(row.closest('[data-fold]')?.getAttribute('data-fold')).toBe('data')
+    expect(row.querySelector('.card-row-label')?.textContent).toBe('Iteration')
+    // The row's label says Iteration, so the toggle neither floats nor says it again.
+    expect(toggle.classList.contains('floating')).toBe(false)
+    expect(Array.from(toggle.querySelectorAll('span')).map((s) => s.textContent)).not.toContain('Iteration')
     expectNoRunTogetherText(root.querySelector('.floating-top-left') as HTMLElement, 'map controls with toggle')
   })
 
@@ -529,7 +536,7 @@ describe('a realization or group the new iteration lacks', () => {
     const instance = await meshLayerInstance()
     setInput(root, 'Realization', '1')
     await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
-    await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left')?.textContent).not.toBe(''))
+    await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left > .fold-body')?.textContent).not.toBe(''))
     const callsBefore = stub.valuesCalls.length
 
     await choose(root, store, '3')
@@ -540,7 +547,7 @@ describe('a realization or group the new iteration lacks', () => {
     const values = lastValues(instance)
     expect(values.length).toBe(2)
     expect(values.every((v) => Number.isNaN(v))).toBe(true)
-    expect(root.querySelector('.floating-bottom-left')?.textContent).toBe('')
+    expect(root.querySelector('.floating-bottom-left > .fold-body')?.textContent).toBe('')
     expect(selectedNotice(root)).toBe('')
     expect(sliderLabel(root)).toBe('—')
   })
@@ -644,7 +651,7 @@ describe('a realization or group the new iteration lacks', () => {
     await vi.waitFor(() => expect(drawnNotice(root)).toContain('group sy has nothing to draw in iteration 3'))
     expect(stub.valuesCalls.length).toBe(callsBefore)
     expect(lastValues(instance).every((v) => Number.isNaN(v))).toBe(true)
-    expect(root.querySelector('.floating-bottom-left')?.textContent).toBe('')
+    expect(root.querySelector('.floating-bottom-left > .fold-body')?.textContent).toBe('')
 
     // Picking a group that does draw in this iteration fetches its field.
     setInput(root, 'Parameter group', 'hk', 'change')
