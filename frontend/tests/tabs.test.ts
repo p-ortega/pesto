@@ -223,6 +223,64 @@ describe('renderTabs', () => {
 
     expectNoRunTogetherText(host, 'tabs.ts renderTabs')
   })
+
+  it('shows a count after the label with its title, and none for zero or null', () => {
+    const host = mount()
+    const tabs = renderTabs(host, {
+      tabs: [
+        { id: 'params', label: 'Params' },
+        { id: 'obs', label: 'Obs' },
+      ],
+      initial: 'params',
+      onSelect: () => {},
+    })
+    const count = tabEl(host, 'params').querySelector('.tab-count.tabular-nums') as HTMLElement
+
+    tabs.setCount('params', 12, '12 parameters selected')
+    expect(tabEl(host, 'params').textContent).toBe('Params · 12')
+    expect(count.title).toBe('12 parameters selected')
+    expect(tabEl(host, 'params').querySelector('.tab-name')?.textContent).toBe('Params')
+    expect(tabEl(host, 'obs').textContent).toBe('Obs')
+
+    tabs.setCount('params', 0, '')
+    expect(tabEl(host, 'params').textContent).toBe('Params')
+    expect(count.textContent).toBe('')
+    expect(count.hasAttribute('title')).toBe(false)
+
+    tabs.setCount('params', 3, '3 parameters selected')
+    tabs.setCount('params', null, '')
+    expect(tabEl(host, 'params').textContent).toBe('Params')
+  })
+
+  it('keeps clicks and arrow keys working with a count shown, and ignores an unknown id', () => {
+    const host = mount()
+    const tabs = renderTabs(host, { tabs: specs(), initial: 'params', onSelect: () => {} })
+    tabs.setCount('obs', 4, '4 sites selected')
+    tabs.setCount('nope', 2, 'x')
+
+    tabEl(host, 'obs').click()
+    expect(tabs.current()).toBe('obs')
+    key(tabEl(host, 'obs'), 'ArrowRight')
+    expect(tabs.current()).toBe('config')
+    expect(tabEl(host, 'obs').textContent!.startsWith('obs')).toBe(true)
+  })
+
+  it('a tab with a count does not run together', () => {
+    loadRealStylesheet()
+    const host = mount()
+    const tabs = renderTabs(host, {
+      tabs: [
+        { id: 'params', label: 'Params' },
+        { id: 'obs', label: 'Obs' },
+      ],
+      initial: 'params',
+      onSelect: () => {},
+    })
+    tabs.setCount('params', 12, '12 parameters selected')
+    tabs.setCount('obs', 1, '1 site selected')
+
+    expectNoRunTogetherText(host, 'tabs.ts renderTabs with counts')
+  })
 })
 
 function parTable(n: number): Promise<ArrayBuffer> {
