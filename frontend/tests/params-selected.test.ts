@@ -77,6 +77,14 @@ function groupRows(host: HTMLElement): HTMLElement[] {
   return [...host.querySelectorAll<HTMLElement>('.selected-group')]
 }
 
+function title(host: HTMLElement): string {
+  return host.querySelector('.params-selected-title')!.textContent ?? ''
+}
+
+function lines(host: HTMLElement): string[] {
+  return [...host.querySelectorAll('.params-selected-line')].map((l) => l.textContent ?? '')
+}
+
 beforeEach(() => {
   linkApi.recentCellLink.mockReset()
   linkApi.recentCellLink.mockReturnValue(null)
@@ -96,7 +104,8 @@ describe('renderSelectedParams after a cell click', () => {
     const store = makeStore({ pars: found.pars.map((p) => p.parnme), cells: [1234] })
     const { host } = render(store)
 
-    expect(host.querySelector('.params-selected-title')!.textContent).toContain('Parameters that set cell 1234 on layer 4 (index 3)')
+    expect(title(host)).toBe('Selected parameters · 4')
+    expect(lines(host)[0]).toBe('Parameters that set cell 1234 on layer 4 (index 3)')
     expect(groupRows(host).map((g) => g.dataset.group)).toEqual(['hk', 'pp_k', 'rch'])
     expect(groupRows(host)[1].textContent).toContain('2 parameters')
     expect(groupRows(host)[0].textContent).toContain('1 parameter')
@@ -110,7 +119,7 @@ describe('renderSelectedParams after a cell click', () => {
     linkApi.recentCellLink.mockReturnValue(found)
     const { host } = render(makeStore({ pars: ['a1'], cells: [12, 13] }))
 
-    expect(host.querySelector('.params-selected-title')!.textContent).toContain('Parameters that set cells 12, 13 on layer 4 (index 3)')
+    expect(lines(host)[0]).toBe('Parameters that set cells 12, 13 on layer 4 (index 3)')
   })
 
   it('lists the par_notes under the heading', () => {
@@ -129,7 +138,8 @@ describe('renderSelectedParams after a cell click', () => {
     linkApi.recentCellLink.mockReturnValue(found)
     const { host } = render(makeStore({ pars: pars.map((p) => p.parnme), cells: [1234] }))
 
-    expect(host.querySelector('.params-selected-title')!.textContent).toContain('500 of 620 shown')
+    expect(title(host)).toBe('Selected parameters · 500')
+    expect(lines(host)).toContain('500 of 620 shown')
   })
 
   it('shows the answer reason when no parameter sets the cell, never an empty section', () => {
@@ -137,7 +147,8 @@ describe('renderSelectedParams after a cell click', () => {
     linkApi.recentCellLink.mockReturnValue(answer({ reasons: { pars: reason, sites: null } }))
     const { host } = render(makeStore({ pars: [], cells: [1234] }))
 
-    expect(host.textContent).toContain(reason)
+    expect(title(host)).toBe('Selected parameters · 0')
+    expect(lines(host)).toEqual([reason])
     expect(host.style.display).not.toBe('none')
     expect(parRows(host).length).toBe(0)
   })
@@ -147,8 +158,18 @@ describe('renderSelectedParams after a cell click', () => {
     linkApi.recentCellLink.mockReturnValue(answer({ parNotes: [note], reasons: { pars: null, sites: null } }))
     const { host } = render(makeStore({ pars: [], cells: [1234] }))
 
-    expect(host.querySelector('.params-selected-title')!.textContent).toContain('no parameter listed for cell 1234 on layer 4 (index 3)')
+    expect(title(host)).toBe('Selected parameters · 0')
+    expect(lines(host)).toEqual(['no parameter listed for cell 1234 on layer 4 (index 3)'])
     expect(host.textContent).toContain(note)
+  })
+
+  it('keeps the title and words the cell when the server gave neither a reason nor notes', () => {
+    linkApi.recentCellLink.mockReturnValue(answer())
+    const { host } = render(makeStore({ pars: [], cells: [1234] }))
+
+    expect(host.style.display).not.toBe('none')
+    expect(title(host)).toBe('Selected parameters · 0')
+    expect(lines(host)).toEqual(['no parameter listed for cell 1234 on layer 4 (index 3)'])
   })
 
   it('draws 500 rows windowed, with only the visible rows and the overscan in the DOM', () => {
@@ -190,6 +211,8 @@ describe('renderSelectedParams for pars from a tab or a dot', () => {
 
     expect(host.textContent).not.toContain('Parameters that set')
     expect(host.textContent).not.toContain('layer 3')
+    expect(title(host)).toBe('Selected parameters · 3')
+    expect(lines(host)).toEqual(['Picked in the table or a plot'])
     expect(groupRows(host).map((g) => g.dataset.group)).toEqual(['B', 'A'])
     expect(parRows(host).map((r) => r.dataset.selectedParameter)).toEqual(['b1', 'a1', 'a2'])
   })
@@ -201,11 +224,20 @@ describe('renderSelectedParams for pars from a tab or a dot', () => {
     expect(host.textContent).toContain('not in the parameter table')
   })
 
-  it('hides the section and draws no heading when pars is empty', () => {
+  it('shows the title and the hint, and no grid, when pars is empty', () => {
     const { host } = render(makeStore())
 
-    expect(host.textContent).toBe('')
-    expect(host.style.display).toBe('none')
+    expect(host.style.display).not.toBe('none')
+    expect(title(host)).toBe('Selected parameters')
+    expect(lines(host)).toEqual(['ℹ Click a cell on the map to list the parameters that set it, or pick rows in the table below.'])
+    expect(host.querySelector('[role="grid"]')).toBeNull()
+  })
+
+  it('puts the count in a tabular-nums span', () => {
+    const { host } = render(makeStore({ pars: ['a1', 'a2'] }))
+
+    const count = host.querySelector('.params-selected-title .tabular-nums')!
+    expect(count.textContent).toBe('· 2')
   })
 
   it('follows a later pars change on refresh', () => {
