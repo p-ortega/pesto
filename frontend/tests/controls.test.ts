@@ -97,7 +97,270 @@ describe('renderSelectionControls', () => {
     expect(slider).not.toBeNull()
     expect(slider.disabled).toBe(true)
     const label = slider.nextElementSibling as HTMLElement
-    expect(label.textContent).toBe('0')
+    expect(label.textContent).toBe('1 (0)')
+  })
+
+  it('says why the layer slider is disabled on a one-layer grid, under it, on hover and to a screen reader', () => {
+    const { el } = mount(THREE_NAMES, 1)
+    const slider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    const reason = el.querySelector('#layer-reason') as HTMLElement
+    expect(reason.textContent).toBe('ℹ the grid has one layer')
+    expect(noteText(reason)).toBe('the grid has one layer')
+    expect(reason.style.display).toBe('')
+    expect(slider.title).toBe('the grid has one layer')
+    expect(slider.getAttribute('aria-describedby')).toBe('layer-reason')
+    expect(reason.closest('.card-row')).toBe(slider.closest('.card-row'))
+    expect(reason.hasAttribute('data-colour-source')).toBe(false)
+  })
+
+  it('has no layer reason on a grid with more than one layer', () => {
+    const { el } = mount(THREE_NAMES, 17)
+    const slider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+    expect(slider.disabled).toBe(false)
+    expect((el.querySelector('#layer-reason') as HTMLElement).style.display).toBe('none')
+    expect(slider.hasAttribute('aria-describedby')).toBe(false)
+  })
+
+  describe('the layer value, one-based with the index alongside (LD-5)', () => {
+    const TIP = (n: number) => `Layer ${n + 1}, index ${n}. Layers count from 1 at the top; the index counts from 0.`
+
+    it('reads 4 (3) for layer index 3, keeps the slider zero-based, and says both numbers on hover and to a screen reader', () => {
+      const { el, handle } = mount(THREE_NAMES, 17)
+      handle.setLayer(3)
+      const slider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      const value = slider.nextElementSibling as HTMLElement
+      expect(value.textContent).toBe('4 (3)')
+      expect(slider.value).toBe('3')
+      expect(slider.max).toBe('16')
+      expect(slider.getAttribute('aria-valuetext')).toBe('layer 4, index 3')
+      expect(value.title).toBe(TIP(3))
+      expect(slider.title).toBe(TIP(3))
+    })
+
+    it('starts at 1 (0) and follows the slider, emitting the zero-based layer', () => {
+      const { el, onSelectionChange } = mount(THREE_NAMES, 17)
+      const slider = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      const value = slider.nextElementSibling as HTMLElement
+      expect(value.textContent).toBe('1 (0)')
+      expect(slider.getAttribute('aria-valuetext')).toBe('layer 1, index 0')
+      slider.value = '16'
+      slider.dispatchEvent(new Event('input'))
+      expect(value.textContent).toBe('17 (16)')
+      expect(slider.getAttribute('aria-valuetext')).toBe('layer 17, index 16')
+      expect(value.title).toBe(TIP(16))
+      expect(slider.title).toBe(TIP(16))
+      expect(onSelectionChange.mock.lastCall?.[0].layer).toBe(16)
+    })
+  })
+
+  describe('the card rows', () => {
+    const rowLabels = (host: HTMLElement) =>
+      Array.from(host.querySelectorAll(':scope > .card-row > .card-row-label')).map((label) => label.textContent)
+
+    it('lays out Layer, Statistic and Realization, then the six Colours rows, then the observation line', () => {
+      const { el } = mount(THREE_NAMES)
+      expect(rowLabels(el)).toEqual([
+        'Layer',
+        'Statistic',
+        'Realization',
+        'Colormap',
+        'Value scale',
+        'Limits',
+        'Colour steps',
+        'Centre on zero',
+        'Patterns',
+      ])
+      const children = Array.from(el.children)
+      expect(children.slice(0, 9).every((child) => child.classList.contains('card-row'))).toBe(true)
+      expect(children[9].classList.contains('colours-obs-line')).toBe(true)
+      expect(children).toHaveLength(10)
+    })
+
+    it('puts each control in its own row', () => {
+      const { el } = mount(THREE_NAMES)
+      const rowOf = (selector: string) =>
+        (el.querySelector(selector) as HTMLElement).closest('.card-row')?.querySelector('.card-row-label')?.textContent
+      expect(rowOf('input[aria-label="Layer"]')).toBe('Layer')
+      expect(rowOf('select[aria-label="Statistic"]')).toBe('Statistic')
+      expect(rowOf('input[aria-label="Realization"]')).toBe('Realization')
+      expect(rowOf('input[aria-label="Go to realization"]')).toBe('Realization')
+      expect(rowOf('select[aria-label="Colormap"]')).toBe('Colormap')
+      expect(rowOf('input[aria-label="Reverse colormap"]')).toBe('Colormap')
+      expect(rowOf('select[aria-label="Value scale"]')).toBe('Value scale')
+      expect(rowOf('select[aria-label="Limits"]')).toBe('Limits')
+      expect(rowOf('input[aria-label="Lower limit"]')).toBe('Limits')
+      expect(rowOf('input[aria-label="Upper limit"]')).toBe('Limits')
+      expect(rowOf('select[aria-label="Colour steps"]')).toBe('Colour steps')
+      expect(rowOf('input[aria-label="Centre on zero"]')).toBe('Centre on zero')
+      expect(rowOf('input[aria-label="Patterns instead of colours"]')).toBe('Patterns')
+    })
+
+    it('tags every Colours row and the realization row for parameters, the layer row for neither, and the line for observations', () => {
+      const { el } = mount(THREE_NAMES)
+      const rows = Array.from(el.querySelectorAll(':scope > .card-row')) as HTMLElement[]
+      expect(rows[0].hasAttribute('data-colour-source')).toBe(false)
+      for (const row of rows.slice(2)) expect(row.getAttribute('data-colour-source')).toBe('par')
+      expect((el.querySelector('select[aria-label="Statistic"]') as HTMLElement).getAttribute('data-colour-source')).toBe('par')
+      const line = el.querySelector('.colours-obs-line') as HTMLElement
+      expect(line.textContent).toBe('Colormap, value scale, limits, colour steps, centring and patterns apply to parameter fields only.')
+      expect(line.getAttribute('data-colour-source')).toBe('obs')
+    })
+
+    it('puts the layer, statistic and realization controls into the Data rows it is given, leaving the element the Colours rows', async () => {
+      const { renderDataCard } = await import('../src/ui/data-card')
+      const body = document.createElement('div')
+      const data = renderDataCard(body)
+      const el = document.createElement('div')
+      const onSelectionChange = vi.fn()
+      renderSelectionControls(el, {
+        nlay: 3,
+        iteration: 0,
+        realNames: THREE_NAMES,
+        partrans: null,
+        dataRows: { layer: data.layer, statistic: data.statistic, realization: data.realization },
+        onSelectionChange,
+      })
+      expect(data.layer.control.querySelector('input[aria-label="Layer"]')).not.toBeNull()
+      expect(data.statistic.control.querySelector('select[aria-label="Statistic"]')).not.toBeNull()
+      expect(data.realization.control.querySelector('input[aria-label="Realization"]')).not.toBeNull()
+      expect(data.realization.control.querySelector('input[aria-label="Go to realization"]')).not.toBeNull()
+      // The Data card's statistic row will also hold the observation statistic, so only the select is tagged.
+      expect(data.statistic.row.hasAttribute('data-colour-source')).toBe(false)
+      expect(rowLabels(el)).toEqual(['Colormap', 'Value scale', 'Limits', 'Colour steps', 'Centre on zero', 'Patterns'])
+      expect(el.querySelector('input[aria-label="Layer"]')).toBeNull()
+      expect(el.lastElementChild?.classList.contains('colours-obs-line')).toBe(true)
+
+      const slider = data.layer.control.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      slider.value = '2'
+      slider.dispatchEvent(new Event('input'))
+      expect(onSelectionChange.mock.lastCall?.[0]).toMatchObject({ layer: 2, stat: 'value', realization: 'base' })
+    })
+
+    it('hides the realization row unless the statistic is value, and asks for a name in the Go to box', () => {
+      const { el } = mount(THREE_NAMES)
+      const statSelect = el.querySelector('select[aria-label="Statistic"]') as HTMLSelectElement
+      const row = (el.querySelector('input[aria-label="Realization"]') as HTMLElement).closest('.card-row') as HTMLElement
+      expect(row.hidden).toBe(false)
+      statSelect.value = 'mean'
+      statSelect.dispatchEvent(new Event('change'))
+      expect(row.hidden).toBe(true)
+      statSelect.value = 'value'
+      statSelect.dispatchEvent(new Event('change'))
+      expect(row.hidden).toBe(false)
+      expect((el.querySelector('input[aria-label="Go to realization"]') as HTMLInputElement).placeholder).toBe('type a name')
+    })
+
+    it('starts the realization row hidden for a restored aggregate statistic', () => {
+      const el = document.createElement('div')
+      renderSelectionControls(el, {
+        nlay: 3,
+        iteration: 0,
+        realNames: THREE_NAMES,
+        partrans: null,
+        initial: { colormap: 'viridis', reverseColormap: false, scale: 'linear', scaleInferred: true, limitsMode: 'robust', manualLimits: null, stat: 'q50' },
+        onSelectionChange: () => undefined,
+      })
+      expect(((el.querySelector('input[aria-label="Realization"]') as HTMLElement).closest('.card-row') as HTMLElement).hidden).toBe(true)
+    })
+  })
+
+  describe('the Colours folded line', () => {
+    it('reads the defaults in the controls own words', () => {
+      const { handle } = mount(THREE_NAMES)
+      expect(handle.coloursSummary()).toBe('viridis · linear · robust 2–98% · smooth')
+    })
+
+    it('names a reversed ramp, log scale, min–max limits, steps, centring and patterns', () => {
+      const { handle } = mount(THREE_NAMES)
+      handle.sync({
+        colormap: 'magma',
+        reverseColormap: true,
+        scale: 'log10',
+        scaleInferred: false,
+        limitsMode: 'minmax',
+        manualLimits: null,
+        style: { classes: 9, symmetric: true, texture: true },
+      })
+      expect(handle.coloursSummary()).toBe('magma reversed · log₁₀ · min–max · 9 steps · centred · patterns')
+    })
+
+    it('names manual limits and jet without its warning glyph, and leaves out greyed centring and patterns boxes', () => {
+      const { handle } = mount(THREE_NAMES)
+      handle.sync({
+        colormap: 'jet',
+        reverseColormap: false,
+        scale: 'linear',
+        scaleInferred: true,
+        limitsMode: 'manual',
+        manualLimits: [0, 1],
+        style: { classes: 7, symmetric: true, texture: true },
+      })
+      handle.showStyle(
+        { classes: 7, symmetric: false, texture: false },
+        { classes: null, symmetric: 'centring needs robust or min–max limits', texture: 'patterns apply to cell fields' },
+      )
+      expect(handle.coloursSummary()).toBe('jet · linear · manual · 7 steps')
+    })
+
+    it('sends the new line after a colour change and after a sync, and not after a layer move', () => {
+      const el = document.createElement('div')
+      const onColoursChange = vi.fn()
+      const handle = renderSelectionControls(el, {
+        nlay: 3,
+        iteration: 0,
+        realNames: THREE_NAMES,
+        partrans: null,
+        onSelectionChange: () => undefined,
+        onColoursChange,
+      })
+      const pick = (label: string, value: string) => {
+        const select = el.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement
+        select.value = value
+        select.dispatchEvent(new Event('change'))
+      }
+      pick('Colormap', 'cividis')
+      expect(onColoursChange).toHaveBeenLastCalledWith('cividis · linear · robust 2–98% · smooth')
+      const reverse = el.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement
+      reverse.checked = true
+      reverse.dispatchEvent(new Event('change'))
+      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · linear · robust 2–98% · smooth')
+      pick('Value scale', 'log10')
+      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · robust 2–98% · smooth')
+      pick('Limits', 'minmax')
+      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · min–max · smooth')
+      pick('Colour steps', '11')
+      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · min–max · 11 steps')
+      const patterns = el.querySelector('input[aria-label="Patterns instead of colours"]') as HTMLInputElement
+      patterns.checked = true
+      patterns.dispatchEvent(new Event('change'))
+      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · min–max · 11 steps · patterns')
+
+      onColoursChange.mockClear()
+      handle.sync({ colormap: 'viridis', reverseColormap: false, scale: 'linear', scaleInferred: true, limitsMode: 'robust', manualLimits: null })
+      expect(onColoursChange).toHaveBeenLastCalledWith('viridis · linear · robust 2–98% · 11 steps · patterns')
+
+      onColoursChange.mockClear()
+      const layer = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
+      layer.value = '1'
+      layer.dispatchEvent(new Event('input'))
+      expect(onColoursChange).not.toHaveBeenCalled()
+    })
+
+    it('sends the new line when the field forces the scale back to linear', () => {
+      const el = document.createElement('div')
+      const onColoursChange = vi.fn()
+      const handle = renderSelectionControls(el, {
+        nlay: 3,
+        iteration: 0,
+        realNames: THREE_NAMES,
+        partrans: 'log',
+        onSelectionChange: () => undefined,
+        onColoursChange,
+      })
+      expect(handle.coloursSummary()).toBe('viridis · log₁₀ · robust 2–98% · smooth')
+      handle.setLogUsability(4)
+      expect(onColoursChange).toHaveBeenLastCalledWith('viridis · linear · robust 2–98% · smooth')
+    })
   })
 
   it('gives every control an accessible name and never sets a tabindex above zero', () => {
@@ -341,17 +604,17 @@ describe('renderSelectionControls', () => {
         ['11', '11 steps'],
       ])
       expect(select.value).toBe('0')
-      expect(select.closest('label')?.getAttribute('data-colour-source')).toBe('par')
+      expect(select.closest('.card-row')?.getAttribute('data-colour-source')).toBe('par')
     })
 
     it('is labelled Colour steps, says what it does on hover, and has a hint under it', () => {
       const { el } = mount(THREE_NAMES)
       const select = classes(el)
-      const label = select.closest('label') as HTMLElement
-      expect(label.firstChild?.textContent).toBe('Colour steps')
+      const label = select.closest('.card-row')?.querySelector('.card-row-label') as HTMLElement
+      expect(label.textContent).toBe('Colour steps')
       expect(select.title).toBe('Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.')
       expect(label.title).toBe('Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.')
-      const hint = label.nextElementSibling as HTMLElement
+      const hint = select.nextElementSibling as HTMLElement
       expect(hint.classList.contains('card-hint')).toBe(true)
       expect(hint.classList.contains('wrap-note')).toBe(true)
       expect(hint.textContent).toBe('Bands values like a contour map.')
@@ -429,11 +692,11 @@ describe('renderSelectionControls', () => {
 
     it('is labelled Centre on zero, says what it does on hover, and has a hint under it', () => {
       const { el } = mount(THREE_NAMES)
-      const label = box(el).closest('label') as HTMLElement
+      const label = box(el).closest('.card-row')?.querySelector('.card-row-label') as HTMLElement
       expect(label.textContent).toBe('Centre on zero')
       expect(box(el).title).toBe('Puts zero in the middle of the colour ramp, so values above and below zero get matching colours.')
       expect(label.title).toBe('Puts zero in the middle of the colour ramp, so values above and below zero get matching colours.')
-      const hint = label.nextElementSibling as HTMLElement
+      const hint = box(el).nextElementSibling as HTMLElement
       expect(hint.classList.contains('card-hint')).toBe(true)
       expect(hint.textContent).toBe('For changes and residuals.')
     })
@@ -443,11 +706,11 @@ describe('renderSelectionControls', () => {
       const input = box(el)
       expect(input.type).toBe('checkbox')
       expect(input.checked).toBe(false)
-      const label = input.closest('label') as HTMLElement
+      const label = input.closest('.card-row') as HTMLElement
       expect(label.textContent).toContain('Centre on zero')
       expect(label.getAttribute('data-colour-source')).toBe('par')
-      const classesLabel = (el.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('label') as HTMLElement
-      expect(classesLabel.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const classesLabel = (el.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('.card-row') as HTMLElement
+      expect(classesLabel.nextElementSibling).toBe(label)
       expect(reason(el).style.display).toBe('none')
     })
 
@@ -608,6 +871,9 @@ describe('renderSelectionControls', () => {
       expect(label.textContent).toBe('Patterns instead of colours')
       expect(box(el).title).toBe('Draws each colour step as its own line pattern, for black-and-white printing, colour-blind readers, or seeing a basemap through the field. Uses colour steps.')
       expect(label.title).toBe('Draws each colour step as its own line pattern, for black-and-white printing, colour-blind readers, or seeing a basemap through the field. Uses colour steps.')
+      const rowLabel = label.closest('.card-row')?.querySelector('.card-row-label') as HTMLElement
+      expect(rowLabel.textContent).toBe('Patterns')
+      expect(rowLabel.title).toBe(label.title)
       const hint = label.nextElementSibling as HTMLElement
       expect(hint.classList.contains('card-hint')).toBe(true)
       expect(hint.textContent).toBe('For print, colour-blind readers, or a basemap underneath.')
@@ -618,11 +884,11 @@ describe('renderSelectionControls', () => {
       const input = box(el)
       expect(input.type).toBe('checkbox')
       expect(input.checked).toBe(false)
-      const label = input.closest('label') as HTMLElement
+      const label = input.closest('.card-row') as HTMLElement
       expect(label.textContent).toContain('Patterns instead of colours')
       expect(label.getAttribute('data-colour-source')).toBe('par')
-      const symmetricLabel = (el.querySelector('input[aria-label="Centre on zero"]') as HTMLElement).closest('label') as HTMLElement
-      expect(symmetricLabel.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const symmetricLabel = (el.querySelector('input[aria-label="Centre on zero"]') as HTMLElement).closest('.card-row') as HTMLElement
+      expect(symmetricLabel.nextElementSibling).toBe(label)
       expect(reason(el).style.display).toBe('none')
       expect(reason(el).getAttribute('data-colour-source')).toBe('par')
     })
@@ -705,11 +971,17 @@ describe('renderSelectionControls', () => {
     })
   })
 
-  it('caps the panel at 32rem and still wraps, so it stops spanning the whole map', () => {
+  it('lays its rows out as the card grid, with no inline layout of its own', () => {
     const { el } = mount(THREE_NAMES)
-    expect(el.style.maxWidth).toBe('32rem')
-    expect(el.style.flexWrap).toBe('wrap')
-    expect(el.style.gap).toBe('var(--space-sm)')
+    expect(el.classList.contains('card-rows')).toBe(true)
+    expect(el.style.maxWidth).toBe('')
+    expect(el.style.display).toBe('')
+    loadRealStylesheet()
+    document.body.appendChild(el)
+    const row = el.querySelector('.card-row') as HTMLElement
+    expect(getComputedStyle(row).display).toBe('grid')
+    expect(getComputedStyle(row).gridTemplateColumns).toBe('88px 144px')
+    el.remove()
   })
 
   describe('the Go to realization box', () => {
