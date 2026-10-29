@@ -1130,7 +1130,8 @@ export class MeshLayer {
     gl.uniform4f(gl.getUniformLocation(this.outlineProgram, 'u_color'), c[0], c[1], c[2], c[3])
     const wasBlending = gl.isEnabled(gl.BLEND)
     gl.enable(gl.BLEND)
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    // Separate alpha keeps the canvas opaque under the lines, as the fill and basemap do.
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.drawElements(gl.LINES, this.gridCount, gl.UNSIGNED_INT, 0)
     if (!wasBlending) gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
