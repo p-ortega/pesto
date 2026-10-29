@@ -12,7 +12,9 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import { Camera } from '../src/gl/camera'
+import { SectionCamera } from '../src/gl/section-camera'
 import { emptySelection } from '../src/state/rules'
+import { axesInset } from '../src/ui/section-axes'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
 import { createRecording2d } from './support/recording-2d'
@@ -274,6 +276,26 @@ function stubEnvironment(world: World): Stub {
             })
           }
           return respond({ status: 200, body: world.answer })
+        case '/api/run/link/cell': {
+          const cells = (query.get('cells') ?? '').split(',').map(Number)
+          return respond({
+            status: 200,
+            body: {
+              layer: Number(query.get('layer')),
+              cells,
+              ring: [],
+              ring_rule: 'a neighbouring cell shares at least one corner with a clicked cell',
+              pars: [],
+              pars_total: 0,
+              par_notes: [],
+              sites: [],
+              sites_total: 0,
+              sites_cap: 50,
+              site_counts: { unknown_layer_included: 0, other_layer_left_out: 0, unplaced_in_run: 0 },
+              reasons: { pars: null, sites: null },
+            },
+          })
+        }
         case '/api/run/obs/groups':
           return respond({ status: 200, bytes: groupsTable() })
         case '/api/run/obs/sites':
@@ -385,6 +407,14 @@ function clientAtPlan(canvas: HTMLCanvasElement, wx: number, wy: number): [numbe
   return [(wx - x0) / (x1 - x0), (wy - y0) / (y1 - y0)]
 }
 
+// Through a camera fitted as the section fits: the whole line, the finite elevations, clear of the axes.
+function clientAtSection(canvas: HTMLCanvasElement, s: number, z: number): [number, number] {
+  const camera = new SectionCamera(canvas.width, canvas.height)
+  camera.setInset(axesInset(1))
+  camera.fit([0, 3.5, 0, 10])
+  return camera.worldToScreen(s, z)
+}
+
 function pointer(type: string, [x, y]: [number, number]): PointerEvent {
   return new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true, cancelable: true })
 }
@@ -404,6 +434,7 @@ function buttonByText(root: HTMLElement, text: string): HTMLButtonElement {
 const sectionToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Section view')
 const planToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Plan view')
 const legendText = (root: HTMLElement): string => root.querySelector('.floating-bottom-left')?.textContent ?? ''
+const readoutText = (root: HTMLElement): string => root.querySelector('.floating-bottom-right')?.textContent ?? ''
 
 function drawLine(m: Mounted, ay = 0.5, by = 0.5): void {
   ;(m.root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
@@ -571,6 +602,25 @@ describe('the section coloured with what the plan draws', () => {
     expect(lastValues(section).every((v) => v === null)).toBe(true)
     expect(legendText(m.root)).not.toContain('inactive in idomain')
     expect(m.stub.section).toHaveLength(1)
+  })
+
+  it('takes the site pick away when a section click selects a cell, as a plan cell click does', async () => {
+    const m = await mounted()
+    m.store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+    const points = (m.plan as unknown as { setPoints: Mocked }).setPoints
+    await vi.waitFor(() => expect((points.mock.calls.at(-1) as [Float32Array, Float32Array] | undefined)?.[1].length).toBe(2))
+    await settle()
+    clickAt(m.canvas, clientAtPlan(m.canvas, 0.25, 0.5))
+    await vi.waitFor(() => expect(readoutText(m.root)).toContain('s101'))
+
+    drawLine(m)
+    await showSection(m)
+    clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5))
+    await vi.waitFor(() => expect([...m.store.get().cells]).toEqual([0]))
+    planToggle(m.root).click()
+    await settle()
+
+    expect(readoutText(m.root)).not.toContain('s101')
   })
 
   it('shows the mesh note when the grid has no idomain', async () => {

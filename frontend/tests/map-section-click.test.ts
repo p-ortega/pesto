@@ -452,6 +452,40 @@ describe('a click on the section reads and selects like a plan click', () => {
     expect(m.stub.link).toHaveLength(3)
   })
 
+  it('moves the plan readout to the cell a section click selects, as a plan click does', async () => {
+    const m = await mounted()
+    clickAt(m.canvas, clientAtPlan(m.canvas, 1.5, 0.5))
+    await answerLink(m, 0)
+    expect(readoutText(m.root)).toContain('layer 0, cell 1')
+    await showSection(m)
+
+    clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 2.5))
+    await answerLink(m, 1)
+    expect(readoutText(m.root)).toContain('layer 1, cell 0')
+    buttonByText(m.root, 'Plan view').click()
+    await settle()
+
+    // The plan reads the same cell on its own layer, not the cell it was clicked on before.
+    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+    expect(readoutText(m.root)).not.toContain('cell 1')
+  })
+
+  it('clears the readout when an alt click takes the cell away, in the section as on the plan', async () => {
+    const m = await mounted()
+    await showSection(m)
+    clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5))
+    await answerLink(m, 0)
+    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+
+    clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5), { altKey: true })
+    await settle()
+    expect(readoutText(m.root)).not.toContain('cell 0')
+    expect(readoutText(m.root)).toContain('Click a cell to see its value.')
+    buttonByText(m.root, 'Plan view').click()
+    await settle()
+    expect(readoutText(m.root)).toContain('Click a cell to see its value.')
+  })
+
   it('shows a contested quad with every row, as the plan does', async () => {
     const m = await mounted((env) => {
       env.cellArray = new Int32Array([0, 1, 0, 0])
