@@ -53,8 +53,8 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('section-button')
-  button.textContent = 'Section'
-  button.setAttribute('aria-label', 'Draw a section line')
+  button.textContent = 'Draw section line'
+  button.setAttribute('aria-label', 'Draw section line')
   button.setAttribute('aria-pressed', 'false')
   const reasonEl = document.createElement('div')
   reasonEl.classList.add('label', 'wrap-note')

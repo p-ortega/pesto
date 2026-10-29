@@ -351,7 +351,7 @@ const readoutText = (root: HTMLElement): string => root.querySelector('.floating
 const layerInput = (root: HTMLElement): HTMLInputElement => root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
 
 async function showSection(m: Mounted): Promise<void> {
-  ;(m.root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
+  ;(m.root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement).click()
   clickAt(m.canvas, clientAtPlan(m.canvas, 0.25, 0.5))
   clickAt(m.canvas, clientAtPlan(m.canvas, 1.75, 0.5))
   buttonByText(m.root, 'Section view').click()

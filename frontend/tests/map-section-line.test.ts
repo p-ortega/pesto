@@ -408,7 +408,7 @@ function buttonByText(root: HTMLElement, text: string): HTMLButtonElement {
 }
 
 const toolButton = (root: HTMLElement): HTMLButtonElement =>
-  root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement
+  root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
 const toolCard = (root: HTMLElement): string => root.querySelector('.section-tool')?.textContent ?? ''
 const lassoButton = (root: HTMLElement): HTMLButtonElement => root.querySelector('.lasso-button') as HTMLButtonElement
 const lassoCard = (root: HTMLElement): string => root.querySelector('.lasso-control')?.textContent ?? ''

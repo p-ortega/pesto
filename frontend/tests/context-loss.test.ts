@@ -332,7 +332,7 @@ describe('the section through a lost and restored context', () => {
       canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true }))
       canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true }))
     }
-    ;(root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
+    ;(root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement).click()
     click(client(25, 50))
     click(client(75, 50))
     const toggle = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Section view') as HTMLButtonElement
@@ -382,7 +382,7 @@ describe('the section through a lost and restored context', () => {
       canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true }))
       canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true }))
     }
-    ;(root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
+    ;(root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement).click()
     click(client(25, 50))
     click(client(75, 50))
     const toggle = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Section view') as HTMLButtonElement
