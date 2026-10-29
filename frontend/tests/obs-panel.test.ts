@@ -965,7 +965,8 @@ describe('the Selected sites section in the panel', () => {
     store.set({ cells: new Set([1234]), sites: new Set([10, 11]) }, 'map')
     store.flush()
 
-    expect(host.querySelector('.obs-selected-title')?.textContent).toBe('Sites in cell 1234 and its 8 neighbouring cells on layer 3')
+    expect(host.querySelector('.obs-selected-title')?.textContent).toBe('Selected sites · 2')
+    expect(host.querySelector('.obs-selected-line')?.textContent).toBe('Sites in cell 1234 and its 8 neighbouring cells on layer 4 (index 3)')
     expect(host.querySelector('.obs-selected')?.textContent).toContain('2 of 73 sites shown; zoom in or lasso to pick fewer')
     expect(selectedRows(host).length).toBe(2)
     expect(linkTargets.fetchLinkSites).not.toHaveBeenCalled()
@@ -999,7 +1000,8 @@ describe('the Selected sites section in the panel', () => {
 
     expect([...store.get().sites]).toEqual([])
     expect(heard).toEqual([['obs']])
-    expect(host.querySelector('.obs-selected')?.textContent).toBe('')
+    expect(host.querySelector('.obs-selected-title')?.textContent).toBe('Selected sites')
+    expect(selectedRows(host).length).toBe(0)
   })
 
   it('asks where the sites are only once the tab is shown', async () => {
