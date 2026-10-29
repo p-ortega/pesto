@@ -20,7 +20,9 @@ function toggle(host: HTMLElement, kind: 'atBounds' | 'conflict'): HTMLButtonEle
   return found as HTMLButtonElement
 }
 
-const SHOWN = { kind: 'shown' as const, label: '45° at bounds: 412 parameters', title: 'rule; caveat; 3 fixed excluded' }
+const SHOWN = { kind: 'shown' as const, label: 'At bounds: 412 parameters', title: 'rule; caveat; 3 fixed excluded' }
+const AT_BOUNDS_TIP = 'Hatch the cells whose parameters sit at a bound in the drawn realization.'
+const CONFLICT_TIP = 'Hatch the sites whose observations conflict with the prior.'
 
 beforeEach(() => {
   document.body.textContent = ''
@@ -54,13 +56,23 @@ describe('renderOverlayControls', () => {
     }
   })
 
+  it('names each toggle by what it hatches, with the reading reason under the name', () => {
+    const { host } = mount()
+    const b = toggle(host, 'atBounds')
+    expect(b.querySelector('.overlay-count')?.textContent).toBe('At bounds')
+    expect(b.querySelector('.overlay-reason')?.textContent).toBe('ℹ reading…')
+    expect(b.querySelector('.overlay-reason [aria-hidden="true"]')?.textContent).toBe('ℹ')
+    expect(b.title).toBe('At bounds: reading…')
+    expect(toggle(host, 'conflict').querySelector('.overlay-count')?.textContent).toBe('Prior-data conflict')
+  })
+
   it('shows a label and title, enabled and pressed, when the data is there', () => {
     const { host, handle } = mount()
     handle.setStatus('atBounds', SHOWN)
     const b = toggle(host, 'atBounds')
     expect(b.disabled).toBe(false)
-    expect(b.querySelector('.overlay-count')?.textContent).toBe('45° at bounds: 412 parameters')
-    expect(b.title).toBe('rule; caveat; 3 fixed excluded')
+    expect(b.querySelector('.overlay-count')?.textContent).toBe('At bounds: 412 parameters')
+    expect(b.title).toBe(`${AT_BOUNDS_TIP}\nrule; caveat; 3 fixed excluded`)
     expect(b.getAttribute('aria-pressed')).toBe('true')
     expect(handle.isOn('atBounds')).toBe(true)
     expect((b.querySelector('.overlay-reason') as HTMLElement).hidden).toBe(true)
@@ -86,9 +98,10 @@ describe('renderOverlayControls', () => {
     handle.setStatus('conflict', { kind: 'off', reason })
     const b = toggle(host, 'conflict')
     expect(b.disabled).toBe(true)
+    expect(b.querySelector('.overlay-count')?.textContent).toBe('Prior-data conflict')
     const shown = b.querySelector('.overlay-reason') as HTMLElement
     expect(shown.hidden).toBe(false)
-    expect(shown.textContent).toBe(reason)
+    expect(shown.textContent).toBe(`ℹ ${reason}`)
     expect(b.title).toBe(reason)
     expect(b.getAttribute('aria-pressed')).toBe('false')
     b.click()
@@ -102,10 +115,10 @@ describe('renderOverlayControls', () => {
     handle.setStatus('atBounds', SHOWN)
     toggle(host, 'atBounds').click()
     handle.setStatus('atBounds', { kind: 'loading' })
-    handle.setStatus('atBounds', { ...SHOWN, label: '45° at bounds: 1 parameter' })
+    handle.setStatus('atBounds', { ...SHOWN, label: 'At bounds: 1 parameter' })
     expect(handle.isOn('atBounds')).toBe(false)
     expect(toggle(host, 'atBounds').getAttribute('aria-pressed')).toBe('false')
-    expect(toggle(host, 'atBounds').querySelector('.overlay-count')?.textContent).toBe('45° at bounds: 1 parameter')
+    expect(toggle(host, 'atBounds').querySelector('.overlay-count')?.textContent).toBe('At bounds: 1 parameter')
   })
 
   it('starts on again after a stretch with no data', () => {
@@ -121,7 +134,8 @@ describe('renderOverlayControls', () => {
   it('keeps the two toggles independent', () => {
     const { host, handle } = mount()
     handle.setStatus('atBounds', SHOWN)
-    handle.setStatus('conflict', { kind: 'shown', label: '135° conflict: 86 observations at 31 sites · computed', title: 't' })
+    handle.setStatus('conflict', { kind: 'shown', label: 'Prior-data conflict: 86 observations at 31 sites · computed', title: 't' })
+    expect(toggle(host, 'conflict').title).toBe(`${CONFLICT_TIP}\nt`)
     toggle(host, 'conflict').click()
     expect(handle.isOn('atBounds')).toBe(true)
     expect(handle.isOn('conflict')).toBe(false)
@@ -133,7 +147,7 @@ describe('renderOverlayControls', () => {
     handle.setStatus('atBounds', { kind: 'shown', label: '<b>hk</b>', title: '<i>t</i>' })
     expect(host.querySelector('img')).toBeNull()
     expect(host.querySelector('b')).toBeNull()
-    expect(toggle(host, 'conflict').querySelector('.overlay-reason')?.textContent).toBe('<img src=x onerror=alert(1)>')
+    expect(toggle(host, 'conflict').querySelector('.overlay-reason')?.textContent).toBe('ℹ <img src=x onerror=alert(1)>')
   })
 
   it('never runs the swatch, label and reason together', () => {
@@ -147,14 +161,14 @@ describe('renderOverlayControls', () => {
   it('a suppressed toggle is disabled but keeps its count, and shows the reason as text and title', () => {
     const { host, handle, onToggle } = mount()
     const reason = 'off while patterns are on: the hatching would look like the patterns'
-    handle.setStatus('atBounds', { kind: 'suppressed', reason, label: '12 at bounds', title: reason })
+    handle.setStatus('atBounds', { kind: 'suppressed', reason, label: 'At bounds: 12 parameters', title: reason })
     const b = toggle(host, 'atBounds')
     expect(b.disabled).toBe(true)
-    expect(b.querySelector('.overlay-count')?.textContent).toBe('12 at bounds')
+    expect(b.querySelector('.overlay-count')?.textContent).toBe('At bounds: 12 parameters')
     const shown = b.querySelector('.overlay-reason') as HTMLElement
     expect(shown.hidden).toBe(false)
-    expect(shown.textContent).toBe(reason)
-    expect(b.title).toBe(reason)
+    expect(shown.textContent).toBe(`ℹ ${reason}`)
+    expect(b.title).toBe(`${AT_BOUNDS_TIP}\n${reason}`)
     expect(b.getAttribute('aria-pressed')).toBe('false')
     expect(handle.isOn('atBounds')).toBe(false)
     b.click()
@@ -164,7 +178,7 @@ describe('renderOverlayControls', () => {
   // [edge MAPX-03 restore]
   it('gives back the user choice after a suppressed stretch, off or on', () => {
     const { host, handle } = mount()
-    const conflictShown = { kind: 'shown' as const, label: '135° conflict: 86 observations', title: 't' }
+    const conflictShown = { kind: 'shown' as const, label: 'Prior-data conflict: 86 observations', title: 't' }
     handle.setStatus('atBounds', SHOWN)
     handle.setStatus('conflict', conflictShown)
     toggle(host, 'atBounds').click()
