@@ -5,6 +5,7 @@
 
 import { OUTLINE_MAX_CELLS } from '../gl/outline'
 import { MAX_LINK_PARS, MAX_LINK_SITES, type ParLinkResult, type SitesWhereResult } from './link-targets'
+import type { ObsSiteRow } from './obs'
 
 export type ParLinkAnswer = Extract<ParLinkResult, { ok: true }>
 export type SitesWhereAnswer = Extract<SitesWhereResult, { ok: true }>
@@ -127,21 +128,27 @@ export function parameterLines(rings: ParameterRings): string[] {
 }
 
 export interface DrawnSites {
-  colourSource: 'par' | 'obs'
   /** The coloured observation group; null while none is known, so no site counts as another group's. */
   group: string | null
   layer: number
   allLayers: boolean
 }
 
-/** One sentence per reason a selected site is not drawn as a dot, with counts (D-09, D-10). */
-export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[] {
-  if (drawn.colourSource === 'par') {
-    const total = answer.sites.length + answer.unknown.length + answer.notAsked
-    const lines = total === 0 ? [] : [`${selected(total, 'site', 'is')} not drawn: the map is coloured by parameters`]
-    if (answer.reason !== null) lines.push(`${selected(answer.unknown.length, 'site', 'is')} not looked up: ${answer.reason}`)
-    return [...lines, ...answer.notes]
+function lookupLines(answer: SitesWhereAnswer): string[] {
+  const lines: string[] = []
+  if (answer.unknown.length > 0) {
+    lines.push(
+      answer.reason !== null
+        ? `${selected(answer.unknown.length, 'site', 'is')} not looked up: ${answer.reason}`
+        : `${selected(answer.unknown.length, 'site', 'is')} not in this run's index`,
+    )
   }
+  if (answer.notAsked > 0) lines.push(`${selected(answer.notAsked, 'site', 'is')} not checked: only the first ${MAX_LINK_SITES} are`)
+  return [...lines, ...answer.notes]
+}
+
+/** One sentence per reason a selected site is not drawn as a dot while the map is coloured by observations (D-09). */
+export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[] {
   const otherLayer = new Map<number, number>()
   let otherGroup = 0
   let unknownLayer = 0
@@ -161,16 +168,109 @@ export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[
     lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer; turn on all layers to see ${unknownLayer === 1 ? 'it' : 'them'}`)
   }
   if (notPlaced > 0) lines.push(`${selected(notPlaced, 'site', 'is')} not placed`)
-  if (answer.unknown.length > 0) {
-    lines.push(
-      answer.reason !== null
-        ? `${selected(answer.unknown.length, 'site', 'is')} not looked up: ${answer.reason}`
-        : `${selected(answer.unknown.length, 'site', 'is')} not in this run's index`,
-    )
+  return [...lines, ...lookupLines(answer)]
+}
+
+/** A group's sites table by site id, or why it is not there yet or at all. */
+export type GroupSitesRead =
+  | { state: 'loading' }
+  | { state: 'failed'; reason: string }
+  | { state: 'done'; byId: ReadonlyMap<number, ObsSiteRow>; duplicated: ReadonlySet<number> }
+
+/** A sites table by site id; an id on more than one row names no one row, so it is kept apart. */
+export function groupSitesById(rows: readonly ObsSiteRow[]): GroupSitesRead {
+  const byId = new Map<number, ObsSiteRow>()
+  const duplicated = new Set<number>()
+  for (const row of rows) {
+    if (byId.has(row.siteId)) duplicated.add(row.siteId)
+    byId.set(row.siteId, row)
   }
-  if (answer.notAsked > 0) lines.push(`${selected(answer.notAsked, 'site', 'is')} not checked: only the first ${MAX_LINK_SITES} are`)
-  lines.push(...answer.notes)
-  return lines
+  for (const id of duplicated) byId.delete(id)
+  return { state: 'done', byId, duplicated }
+}
+
+export interface PickedSiteRings {
+  /** The ringed sites, in ring order. */
+  siteIds: number[]
+  /** The site rows behind the rings, in ring order, for the readout. */
+  rows: Array<{ group: string; row: ObsSiteRow }>
+  /** x, y of each ring, from the site's own row of its group's sites table. */
+  xy: Float32Array
+  lines: string[]
+}
+
+function countedText(byKey: Map<string, number>): Array<[string, number]> {
+  return [...byKey.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+}
+
+/** Picked sites ringed over a parameter field at the x, y of their own row, by site id. The obs dots'
+ *  rule (dotsFor): no position is never drawn; another or unknown layer only while all layers is on. */
+export function pickedSiteRings(
+  answer: SitesWhereAnswer,
+  groupSites: (group: string) => GroupSitesRead,
+  drawn: { layer: number; allLayers: boolean },
+): PickedSiteRings {
+  const siteIds: number[] = []
+  const rows: PickedSiteRings['rows'] = []
+  const xy: number[] = []
+  const add = (map: Map<string, number>, key: string): void => {
+    map.set(key, (map.get(key) ?? 0) + 1)
+  }
+  const failed = new Map<string, number>()
+  const notInTable = new Map<string, number>()
+  const noPosition = new Map<string, number>()
+  const otherLayer = new Map<number, number>()
+  let loading = 0
+  let unknownLayer = 0
+  for (const site of answer.sites) {
+    const read = groupSites(site.group)
+    if (read.state === 'loading') {
+      loading += 1
+      continue
+    }
+    if (read.state === 'failed') {
+      add(failed, `the positions of group ${site.group} could not be read: ${read.reason}`)
+      continue
+    }
+    if (read.duplicated.has(site.siteId)) {
+      add(failed, `its id is on more than one row of the sites table of group ${site.group}`)
+      continue
+    }
+    const row = read.byId.get(site.siteId)
+    if (row === undefined) {
+      add(notInTable, site.group)
+      continue
+    }
+    if (row.xySource === 'none' || !Number.isFinite(row.x) || !Number.isFinite(row.y)) {
+      add(noPosition, row.note ?? 'no position was recorded for this site')
+      continue
+    }
+    if (!drawn.allLayers) {
+      if (row.layer < 0) {
+        unknownLayer += 1
+        continue
+      }
+      if (row.layer !== drawn.layer) {
+        otherLayer.set(row.layer, (otherLayer.get(row.layer) ?? 0) + 1)
+        continue
+      }
+    }
+    siteIds.push(site.siteId)
+    rows.push({ group: site.group, row })
+    xy.push(row.x, row.y)
+  }
+  const lines: string[] = []
+  for (const { layer, count } of countedLayers(otherLayer)) {
+    lines.push(`${selected(count, 'site', 'is')} on layer ${layer}, not drawn on layer ${drawn.layer}`)
+  }
+  if (unknownLayer > 0) lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer, not drawn on layer ${drawn.layer}`)
+  for (const [reason, count] of countedText(noPosition)) lines.push(`${selected(count, 'site', 'has')} no position, not drawn: ${reason}`)
+  for (const [group, count] of countedText(notInTable)) {
+    lines.push(`${selected(count, 'site', 'is')} not drawn: it is not in the sites table of group ${group}`)
+  }
+  for (const [reason, count] of countedText(failed)) lines.push(`${selected(count, 'site', 'is')} not drawn: ${reason}`)
+  if (loading > 0) lines.push(`${selected(loading, 'site', 'is')} not drawn yet: reading where ${loading === 1 ? 'it is' : 'they are'}`)
+  return { siteIds, rows, xy: Float32Array.from(xy), lines: [...lines, ...lookupLines(answer)] }
 }
 
 /** How many of the given dots sit outside the world box [minX, minY, maxX, maxY]. */

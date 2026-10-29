@@ -10,7 +10,7 @@ import { chipFactsFrom, type ConfigFact } from '../data/config'
 import { pickPoint, pickPointsWithin, pointsOnLayer, type DrawnPoints } from '../data/points'
 import type Flatbush from 'flatbush'
 import { buildDotIndex, dotsInPolygon } from '../data/lasso'
-import { fetchObsGroups, fetchObsSite, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
+import { fetchObsGroups, fetchObsSite, fetchObsSites, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
 import { frameLogInstalled, markFrame } from '../perf'
@@ -126,8 +126,12 @@ import {
   offScreenLine,
   parameterLines,
   parameterRingCells,
+  groupSitesById,
+  pickedSiteRings,
   selectedDotIndices,
   whereLines,
+  type GroupSitesRead,
+  type PickedSiteRings,
 } from '../data/link-follow'
 import { fetchLinkPar, fetchLinkSites, MAX_LINK_PARS, MAX_LINK_SITES, type ParLinkResult, type SitesWhereResult } from '../data/link-targets'
 import { modeOf } from '../state/modifiers'
@@ -487,7 +491,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // The ringed site dots and the positions they index, for the off-screen count.
   let ringedSiteDots: number[] = []
   let ringedSiteXy: Float32Array | null = null
-  // D-09, D-10: how many selected items the map cannot draw, and why. It never moves the map to show them.
+  // Picked sites ringed over a parameter field, and the ring positions last handed to the layer.
+  let siteRings: PickedSiteRings | null = null
+  let siteRingsKey = ''
+  let ringAnswer: Extract<SitesWhereResult, { ok: true }> | null = null
+  // Each group's sites table by site id, read once per group for the rings.
+  const groupSitesMemo = new Map<string, GroupSitesRead>()
+  // The readout of a ring click; the obs readout has its own.
+  let ringPick: ReadoutPick | null = null
+  // D-09: how many selected items the map cannot draw, and why. It never moves the map to show them.
   const whereEl = document.createElement('div')
   whereEl.setAttribute('data-testid', 'selection-where')
   whereEl.setAttribute('role', 'status')
@@ -884,8 +896,89 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const rings = refreshRings()
     const hatch = refreshOverlays()
     const dots = refreshPointMarks()
-    if ((rings || hatch || dots) && draw) redraw()
+    const sites = refreshSiteRings()
+    if ((rings || hatch || dots || sites) && draw) redraw()
     renderWhere()
+  }
+
+  // Only the site rings and the lines under them; the other marks have their own triggers.
+  function followSiteRings(): void {
+    if (refreshSiteRings() && canvas.getAttribute('data-drawn') === 'true') redraw()
+    renderWhere()
+  }
+
+  function groupSitesRead(group: string): GroupSitesRead {
+    const held = groupSitesMemo.get(group)
+    if (held !== undefined) return held
+    const loading: GroupSitesRead = { state: 'loading' }
+    groupSitesMemo.set(group, loading)
+    void fetchObsSites(group)
+      .then(
+        (result): GroupSitesRead =>
+          result.ok ? groupSitesById(result.rows) : { state: 'failed', reason: `${result.artifact}: ${result.reason}` },
+        (error: unknown): GroupSitesRead => ({ state: 'failed', reason: describeError(error) }),
+      )
+      .then((read) => {
+        groupSitesMemo.set(group, read)
+        followSiteRings()
+      })
+    return loading
+  }
+
+  // D-10 is lifted: over a parameter field the picked sites are rings, never dots of a group.
+  // Says whether the rings changed, so the caller redraws once.
+  function refreshSiteRings(): boolean {
+    if (sitesAnswer !== null && sitesAnswer.ok) ringAnswer = sitesAnswer
+    else if (sitesAnswer !== null) ringAnswer = null
+    const picked = store.get().sites
+    if (picked.size === 0) {
+      ringAnswer = null
+      ringPick = null
+    }
+    // While a new lookup is out, the last answer's sites that are still picked keep their rings, so a click does not blink them.
+    const answer = ringAnswer === null || ringAnswer === sitesAnswer ? ringAnswer : { ...ringAnswer, sites: ringAnswer.sites.filter((s) => picked.has(s.siteId)) }
+    // The obs dots' layer rule (dotsFor): the shown layer only, every layer while All layers is on; the switch keeps its value while hidden.
+    siteRings = !obsActive && answer !== null ? pickedSiteRings(answer, groupSitesRead, { layer: committed.layer, allLayers: obsAllLayers }) : null
+    if (!layer) return false
+    const xy = siteRings?.xy ?? new Float32Array(0)
+    const key = Array.from(xy).join(',')
+    if (key === siteRingsKey) return false
+    siteRingsKey = key
+    layer.setSiteRings(xy)
+    return true
+  }
+
+  // A ring click picks and reads its sites as a site-dot click does; there is no time to read a value at.
+  function pickRingedSites(hits: number[], mode: SelectMode): void {
+    const rings = siteRings
+    if (rings === null) return
+    const [originX, originY] = mesh?.origin ?? [0, 0]
+    const entries: SiteReadoutEntry[] = hits.slice(0, OBS_SITE_LIST_CAP).map((i) => {
+      const { group, row } = rings.rows[i]
+      return {
+        name: row.site,
+        group,
+        x: row.x + originX,
+        y: row.y + originY,
+        xySource: row.xySource === 'own' ? 'own' : 'cell_centre',
+        layer: row.layer >= 0 ? row.layer : null,
+        cell: row.cell,
+        rule: row.rule,
+        timeText: 'no observation time: the map is coloured by parameters',
+      }
+    })
+    ringPick = { kind: 'sites', entries, total: hits.length }
+    selectedPointRow = null
+    updateReadout()
+    dropPendingLink()
+    const sites = selectSites(store.get(), hits.map((i) => rings.siteIds[i]), mode).sites
+    if (mode === 'replace') {
+      selectedCellId = null
+      store.set({ sites, cells: new Set(), pars: new Set() }, 'map')
+    } else {
+      store.set({ sites }, 'map')
+    }
+    refreshMarks()
   }
 
   // The held /link/par answer on the drawn layer; worked out again only when the answer or layer moves.
@@ -924,14 +1017,18 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (answer !== null && store.get().sites.size > 0) {
       if (!answer.ok) {
         lines.push(`Where the selected sites are could not be read: ${answer.artifact}: ${answer.reason}`)
-      } else {
-        const drawn = { colourSource: obsActive ? 'obs' : 'par', group: obsGroupInUse, layer: committed.layer, allLayers: obsAllLayers } as const
-        lines.push(...whereLines(answer, drawn))
+      } else if (obsActive) {
+        lines.push(...whereLines(answer, { group: obsGroupInUse, layer: committed.layer, allLayers: obsAllLayers }))
+      } else if (siteRings !== null) {
+        lines.push(...siteRings.lines)
       }
     }
-    const box = ringedSiteDots.length > 0 ? cameraBox() : null
-    if (box !== null && ringedSiteXy !== null) {
-      const off = offScreenLine(offScreenCount(ringedSiteXy, ringedSiteDots, box))
+    const rings = !obsActive && siteRings !== null ? siteRings : null
+    const offXy = rings !== null ? rings.xy : ringedSiteXy
+    const offDots = rings !== null ? rings.siteIds.map((_, i) => i) : ringedSiteDots
+    const box = offDots.length > 0 ? cameraBox() : null
+    if (box !== null && offXy !== null) {
+      const off = offScreenLine(offScreenCount(offXy, offDots, box))
       if (off !== null) lines.push(off)
     }
     const text = lines.join('\n')
@@ -978,18 +1075,19 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (ids.length === 0) {
       sitesSlot.cancel()
       sitesAnswer = null
-      renderWhere()
+      followSiteRings()
       renderSelectedNotice()
       return
     }
     const key = `${iteration}|${ids.length}|${ids.slice(0, MAX_LINK_SITES).join(',')}`
     if (sitesSlot.current() === key) return
     sitesAnswer = null
-    renderWhere()
+    for (const [group, read] of groupSitesMemo) if (read.state === 'failed') groupSitesMemo.delete(group)
+    followSiteRings()
     renderSelectedNotice()
     const land = (answer: SitesWhereResult): void => {
       sitesAnswer = answer
-      renderWhere()
+      followSiteRings()
       renderSelectedNotice()
     }
     void sitesSlot.run(key, (signal) => fetchLinkSites(ids, iteration, { signal })).then(
@@ -1441,6 +1539,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       renderReadout(readoutEl, { pick: obsPick, group: obsGroupInUse ?? '', joined, field: new Float32Array(0) })
       return
     }
+    if (!obsActive && ringPick !== null) {
+      renderReadout(readoutEl, { pick: ringPick, group: drawnGroup ?? '', joined, field: new Float32Array(0) })
+      return
+    }
     const group = drawnGroup ?? ''
     const field = rawFullField ?? new Float32Array(0)
     const classification = selectedCellId !== null ? currentClasses[selectedCellId] : undefined
@@ -1552,6 +1654,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       pickObservationSites(obsHits, mode)
       return
     }
+    // The rings sit over the parameter dots, so they are hit first.
+    const rings = obsActive ? null : siteRings
+    const ringHits = rings !== null ? pickPointsWithin({ rows: Int32Array.from(rings.siteIds), xy: rings.xy }, wx, wy, reachWorld) : []
+    if (ringHits.length > 0) {
+      pickRingedSites(ringHits, mode)
+      return
+    }
     // Parameter dots are not drawn while the map is coloured by observations, so none can be hit.
     const pointIndex = obsActive ? null : pickPoint(currentPoints, wx, wy, reachWorld)
     if (pointIndex !== null) {
@@ -1651,6 +1760,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function takeAwaySitePick(): void {
     obsPick = null
     obsPickedRows = []
+    ringPick = null
   }
 
   // The ring is already drawn; the store hears of the cells with their parameters and sites
@@ -2882,6 +2992,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const fresh = !obsActive
     obsActive = true
     obsLookLayer = committed.layer
+    ringPick = null
+    siteRings = null
+    siteRingsKey = ''
+    layer.setSiteRings(new Float32Array(0))
     mapCanvasArea.classList.add('colour-obs')
     const active = activeMaskFor(committed.layer)
     // D-01: observation dots keep their own continuous colouring.

@@ -278,6 +278,34 @@ void main() {
   fragColor = color;
 }`
 
+// Picked sites over a parameter field: a ring with no fill, so the cell value shows inside it, and
+// an ink band with a halo either side, as the hatch has, so it reads over every ramp in both themes.
+const SITE_RING_VERTEX = `#version 300 es
+in vec2 a_pos;
+uniform mat3 u_matrix;
+uniform float u_size;
+
+void main() {
+  gl_Position = vec4((u_matrix * vec3(a_pos, 1.0)).xy, 0.0, 1.0);
+  gl_PointSize = u_size;
+}`
+
+const SITE_RING_FRAGMENT = `#version 300 es
+precision highp float;
+uniform float u_size;
+uniform float u_inkInner;
+uniform float u_inkOuter;
+uniform float u_haloWidth;
+uniform vec3 u_ink;
+uniform vec3 u_halo;
+out vec4 fragColor;
+
+void main() {
+  float r = length(gl_PointCoord - vec2(0.5)) * u_size;
+  if (r < u_inkInner - u_haloWidth || r > u_inkOuter + u_haloWidth) discard;
+  fragColor = r >= u_inkInner && r <= u_inkOuter ? vec4(u_ink, 1.0) : vec4(u_halo, 1.0);
+}`
+
 export interface MeshData {
   positions: Float32Array
   cellIndex: Float32Array
@@ -398,6 +426,11 @@ export class MeshLayer {
   private droppedPoints = 0
   private dimAlpha = 0.35
   private missingStyle: 'discard' | 'ring' = 'discard'
+
+  private siteRingProgram!: WebGLProgram
+  private siteRingVao!: WebGLVertexArrayObject
+  private siteRingBuffer!: WebGLBuffer
+  private siteRingXy: Float32Array = new Float32Array(0)
 
   private limits: [number, number] = [0, 1]
   private matrix: Float32Array<ArrayBufferLike> = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
@@ -587,6 +620,23 @@ export class MeshLayer {
     const pointsFlagLoc = gl.getAttribLocation(this.pointsProgram, 'a_flags')
     gl.enableVertexAttribArray(pointsFlagLoc)
     gl.vertexAttribPointer(pointsFlagLoc, 1, gl.FLOAT, false, 0, 0)
+    gl.bindVertexArray(null)
+
+    this.siteRingProgram = gl.createProgram()!
+    gl.attachShader(this.siteRingProgram, compile(gl, gl.VERTEX_SHADER, SITE_RING_VERTEX))
+    gl.attachShader(this.siteRingProgram, compile(gl, gl.FRAGMENT_SHADER, SITE_RING_FRAGMENT))
+    gl.linkProgram(this.siteRingProgram)
+    if (!gl.getProgramParameter(this.siteRingProgram, gl.LINK_STATUS)) {
+      throw new Error(`site ring program failed to link: ${gl.getProgramInfoLog(this.siteRingProgram)}`)
+    }
+    this.siteRingVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.siteRingVao)
+    this.siteRingBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.siteRingBuffer)
+    const siteRingLoc = gl.getAttribLocation(this.siteRingProgram, 'a_pos')
+    gl.enableVertexAttribArray(siteRingLoc)
+    gl.vertexAttribPointer(siteRingLoc, 2, gl.FLOAT, false, 0, 0)
+    gl.bufferData(gl.ARRAY_BUFFER, this.siteRingXy, gl.DYNAMIC_DRAW)
     gl.bindVertexArray(null)
 
     this.valuesTex = gl.createTexture()!
@@ -1008,6 +1058,38 @@ export class MeshLayer {
     this.pointRingColor = rgb
   }
 
+  /** x, y pairs in mesh coordinates, one ring each; empty clears them. Apart
+   *  from the points, so a parameter group's own dots stay as they are. */
+  setSiteRings(xy: Float32Array): void {
+    if (xy.length % 2 !== 0) throw new Error(`site rings need x, y pairs, got ${xy.length} coordinates`)
+    this.siteRingXy = xy.slice()
+    const { gl } = this
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.siteRingBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, this.siteRingXy, gl.DYNAMIC_DRAW)
+  }
+
+  private drawSiteRings(): void {
+    const count = this.siteRingXy.length / 2
+    if (count === 0) return
+    const { gl } = this
+    const dpr = globalThis.devicePixelRatio || 1
+    const program = this.siteRingProgram
+    gl.useProgram(program)
+    gl.bindVertexArray(this.siteRingVao)
+    gl.uniformMatrix3fv(gl.getUniformLocation(program, 'u_matrix'), false, this.matrix)
+    // In device pixels: a 1.5 ink band at radius 4 to 5.5, a 1 halo band each side, 15 across.
+    gl.uniform1f(gl.getUniformLocation(program, 'u_size'), 15 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_inkInner'), 4 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_inkOuter'), 5.5 * dpr)
+    gl.uniform1f(gl.getUniformLocation(program, 'u_haloWidth'), 1 * dpr)
+    const ink = this.hatchInk
+    const halo = this.hatchHalo
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ink'), ink[0], ink[1], ink[2])
+    gl.uniform3f(gl.getUniformLocation(program, 'u_halo'), halo[0], halo[1], halo[2])
+    gl.drawArrays(gl.POINTS, 0, count)
+    gl.bindVertexArray(null)
+  }
+
   /** The point drawn larger with an accent ring; `null` removes it. */
   setSelectedPoint(index: number | null): void {
     this.setSelectedPoints(index === null ? [] : [index])
@@ -1252,7 +1334,8 @@ export class MeshLayer {
    *  cell's value is always NaN and so never overwrites it; the ring last
    *  so it sits over whichever of the first three marks the selected cell
    *  carries. The hatch goes over the fill and under the points, so it
-   *  never covers a dot. Points go after the fill and before the ring. The
+   *  never covers a dot. Points go after the fill and before the ring, and
+   *  the picked-site rings just after the points. The
    *  footprint goes under everything, so the hairline still reads at its
    *  edge. The grid lines of the outlines-only look go just over the fill
    *  and under the hatch. */
@@ -1265,6 +1348,7 @@ export class MeshLayer {
     this.drawGridLines()
     this.drawHatch()
     this.drawPoints()
+    this.drawSiteRings()
     this.drawSelection()
   }
 
@@ -1283,6 +1367,9 @@ export class MeshLayer {
     gl.deleteProgram(this.pointsProgram)
     gl.deleteProgram(this.ringProgram)
     gl.deleteProgram(this.hatchProgram)
+    gl.deleteProgram(this.siteRingProgram)
+    gl.deleteVertexArray(this.siteRingVao)
+    gl.deleteBuffer(this.siteRingBuffer)
     gl.deleteVertexArray(this.hatchVao)
     gl.deleteTexture(this.hatchTex)
     gl.deleteTexture(this.classTex)

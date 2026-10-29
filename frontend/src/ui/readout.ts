@@ -22,7 +22,8 @@ export interface SiteReadoutEntry {
   rule: string
   /** Already formatted in the site's time kind. */
   timeText: string
-  observed:
+  /** Absent when no observation time is shown, as over a parameter field. */
+  observed?:
     | { kind: 'value'; value: number }
     | { kind: 'zero_weight'; value: number }
     | { kind: 'no_value' }
@@ -31,7 +32,8 @@ export interface SiteReadoutEntry {
     | { kind: 'unavailable'; reason: string }
   /** Observations of this site at the shown time; more than one means the last is the one shown. */
   rowsAtTime?: number
-  stat: { label: string; value: number | null; iteration: number }
+  /** Absent when the map is not coloured by an observation statistic. */
+  stat?: { label: string; value: number | null; iteration: number }
 }
 
 export type ReadoutPick =
@@ -122,7 +124,19 @@ function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
   const layer = site.layer === null ? 'layer unknown' : `layer ${site.layer}`
   appendLine(block, `${layer}, cell ${site.cell} · placed by ${site.rule}`, 'label', 'truncate').title = site.rule
   appendLine(block, site.timeText, 'label')
+  appendObserved(block, site)
+  if (site.stat !== undefined) {
+    const { label, value, iteration } = site.stat
+    const stat = value === null ? 'no value at this time' : formatValue(value)
+    appendLine(block, `${label}, iteration ${iteration}: ${stat}`, 'label', 'truncate')
+  }
+  el.appendChild(block)
+}
+
+function appendObserved(block: HTMLElement, site: SiteReadoutEntry): void {
   const obs = site.observed
+  // With no observed entry the time line has already said why there is no value.
+  if (obs === undefined) return
   if (obs.kind === 'value') {
     appendLine(block, `observed ${formatValue(obs.value)}`, 'label')
   } else if (obs.kind === 'zero_weight') {
@@ -139,10 +153,6 @@ function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
   if ((site.rowsAtTime ?? 0) > 1) {
     appendLine(block, `${site.rowsAtTime} observations at this time; the last is shown`, 'label', 'wrap-note')
   }
-  const { label, value, iteration } = site.stat
-  const stat = value === null ? 'no value at this time' : formatValue(value)
-  appendLine(block, `${label}, iteration ${iteration}: ${stat}`, 'label', 'truncate')
-  el.appendChild(block)
 }
 
 export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {

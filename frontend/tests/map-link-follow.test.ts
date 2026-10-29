@@ -99,18 +99,18 @@ function ipc(columns: Record<string, unknown[]>): Uint8Array {
   return Uint8Array.from(tableToIPC(tableFromArrays(columns), 'stream'))
 }
 
-function sitesTable(): Uint8Array {
+function sitesTable(rows: SiteSpec[] = HEADS): Uint8Array {
   return ipc({
-    site_id: HEADS.map((s) => s.id),
-    site: HEADS.map((s) => s.name),
-    n_obs: HEADS.map(() => 3),
-    x: HEADS.map((s) => s.x),
-    y: HEADS.map((s) => s.y),
-    xy_source: HEADS.map(() => 'own'),
-    layer: HEADS.map((s) => s.layer),
-    cell: HEADS.map((s) => s.cell),
-    rule: HEADS.map(() => 'own xy'),
-    note: HEADS.map(() => null),
+    site_id: rows.map((s) => s.id),
+    site: rows.map((s) => s.name),
+    n_obs: rows.map(() => 3),
+    x: rows.map((s) => s.x),
+    y: rows.map((s) => s.y),
+    xy_source: rows.map(() => 'own'),
+    layer: rows.map((s) => s.layer),
+    cell: rows.map((s) => s.cell),
+    rule: rows.map(() => 'own xy'),
+    note: rows.map(() => null),
   })
 }
 
@@ -187,6 +187,8 @@ interface Stub {
   pars: Record<string, LinkParRow>
   sites: Record<number, LinkSiteRow>
   valueReason: string | null
+  // The sites table in this row order instead, so a test can tell identity from position.
+  sitesRows: SiteSpec[]
 }
 
 function linkCellBody(cells: number[]): Record<string, unknown> {
@@ -224,6 +226,7 @@ function stubEnvironment(): Stub {
     pars: {},
     sites: defaultSites(),
     valueReason: null,
+    sitesRows: HEADS,
   }
   vi.stubGlobal(
     'fetch',
@@ -272,7 +275,7 @@ function stubEnvironment(): Stub {
         case '/api/run/obs/groups':
           return respond({ status: 200, bytes: groupsTable() })
         case '/api/run/obs/sites':
-          return respond({ status: 200, bytes: sitesTable(), headers: { 'X-Pesto-Meta': JSON.stringify({ order_digest: 'digest-a' }) } })
+          return respond({ status: 200, bytes: sitesTable(stub.sitesRows), headers: { 'X-Pesto-Meta': JSON.stringify({ order_digest: 'digest-a' }) } })
         case '/api/run/obs/times':
           return respond({ status: 200, body: timesBody(group) })
         case '/api/run/obs/frame': {
@@ -362,6 +365,7 @@ interface LayerDouble {
   setDimAlpha: Mocked
   setPoints: Mocked
   setPointValues: Mocked
+  setSiteRings: Mocked
   setMatrix: Mocked
   draw: Mocked
 }
@@ -802,13 +806,6 @@ describe('the map counts the selected sites it cannot draw, and never moves', ()
     await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site has an unknown layer; turn on all layers to see it']))
   })
 
-  it('says in one line that the sites are not drawn while the map is coloured by parameters', async () => {
-    const store = autoStore()
-    const { root } = await mountedWith(store)
-    store.set({ sites: new Set([101, 102, 104]) }, 'obs')
-    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['3 selected sites are not drawn: the map is coloured by parameters']))
-  })
-
   it('counts a ringed dot panned off screen, and a selection from a tab never moves the camera', async () => {
     const store = autoStore()
     const { root, layer } = await mountedWith(store)
@@ -857,7 +854,9 @@ describe('the map counts the selected sites it cannot draw, and never moves', ()
     const ids = Array.from({ length: 205 }, (_, i) => 1000 + i)
 
     store.set({ sites: new Set(ids) }, 'obs')
-    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['205 selected sites are not drawn: the map is coloured by parameters']))
+    await vi.waitFor(() =>
+      expect(whereLinesOf(root)).toEqual(["200 selected sites are not in this run's index", '5 selected sites are not checked: only the first 200 are']),
+    )
     expect(stub.linkSites.at(-1)!.sites.split(',').length).toBe(200)
 
     await enterObservations(store, await layerDouble())
@@ -873,5 +872,102 @@ describe('the map counts the selected sites it cannot draw, and never moves', ()
     store.set({ pars: new Set(['<b>x</b>']) }, 'params')
     await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected parameter has no cell: <i>no cell</i>']))
     expect(root.querySelector('[data-testid="selection-where"] i')).toBeNull()
+  })
+})
+
+// The rings the layer draws now over the parameter field, as x, y pairs.
+function siteRingXy(layer: LayerDouble): number[] {
+  const call = layer.setSiteRings.mock.calls.at(-1) as [Float32Array] | undefined
+  return call === undefined ? [] : Array.from(call[0]).map((v) => Math.round(v * 100) / 100)
+}
+
+describe('picked sites are rings over a parameter field', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('rings only the picked sites, each at its own x, y matched by id, and calls none of them not drawn', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    // The sites table in another row order than the ids, so a ring by row position lands on the wrong site.
+    stub.sitesRows = [...HEADS].reverse()
+
+    store.set({ sites: new Set([104, 101]) }, 'obs')
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([0.25, 0.6, 1.75, 0.5]))
+    expect(whereLinesOf(root)).toEqual([])
+    expect(root.textContent).not.toContain('not drawn')
+    // The parameter field stays: no site dots replace it.
+    expect(layer.setPoints.mock.calls.every((args) => (args[1] as Float32Array).length === 0)).toBe(true)
+
+    store.set({ sites: new Set() }, 'obs')
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([]))
+  })
+
+  it('rings a site on another layer only on its own layer, and says which layer it is on', async () => {
+    const store = autoStore()
+    const { root, layer } = await mountedWith(store)
+
+    store.set({ sites: new Set([103, 104]) }, 'obs')
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site is on layer 1, not drawn on layer 0']))
+    expect(siteRingXy(layer)).toEqual([1.75, 0.5])
+
+    store.set({ layer: 1 }, 'other')
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([1.5, 0.5]))
+    await vi.waitFor(() => expect(whereLinesOf(root)).toEqual(['1 selected site is on layer 0, not drawn on layer 1']))
+  })
+
+  it('lists a site with no position, and one not in the index, and rings neither', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    stub.sitesRows = [...HEADS, { id: 106, name: 's106', x: Number.NaN, y: Number.NaN, layer: -1, cell: -1 }]
+    stub.sites[106] = { site_id: 106, site: 's106', group: 'heads', layer: -1, cell: -1, placed: false, has_value: true }
+
+    store.set({ sites: new Set([106, 999, 102]) }, 'obs')
+    await vi.waitFor(() =>
+      expect(whereLinesOf(root)).toEqual([
+        '1 selected site has no position, not drawn: no position was recorded for this site',
+        "1 selected site is not in this run's index",
+      ]),
+    )
+    expect(siteRingXy(layer)).toEqual([0.75, 0.6])
+  })
+
+  it('takes the rings away while the map is coloured by observations, where the dots carry the selection', async () => {
+    const store = autoStore()
+    const { layer } = await mountedWith(store)
+    store.set({ sites: new Set([101]) }, 'obs')
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([0.25, 0.6]))
+
+    await enterObservations(store, layer)
+    expect(siteRingXy(layer)).toEqual([])
+    expect(dotMarks(layer).ringed).toEqual([0])
+  })
+
+  it('a ring click picks and reads its site as a site-dot click does, over the cell under it', async () => {
+    const store = autoStore()
+    const { root, stub, layer } = await mountedWith(store)
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    store.set({ sites: new Set([101, 104]), cells: new Set([0]), pars: new Set(['p0']) }, 'obs')
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([0.25, 0.6, 1.75, 0.5]))
+
+    clickAtWorld(canvas, 0.25, 0.6, { altKey: true })
+    expect(sorted(store.get().sites)).toEqual([104])
+    expect(sorted(store.get().cells)).toEqual([0])
+    expect(sorted(store.get().pars)).toEqual(['p0'])
+    await vi.waitFor(() => expect(siteRingXy(layer)).toEqual([1.75, 0.5]))
+
+    clickAtWorld(canvas, 1.75, 0.5)
+    expect(sorted(store.get().sites)).toEqual([104])
+    expect(store.get().cells.size).toBe(0)
+    expect(store.get().pars.size).toBe(0)
+    expect(readoutText(root)).toContain('s104 (heads)')
+    expect(readoutText(root)).toContain('no observation time: the map is coloured by parameters')
+    // The click named the site, not the cell under the ring.
+    expect(stub.linkCells).toEqual([])
   })
 })
