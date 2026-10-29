@@ -41,7 +41,7 @@ CENTRE_TEXT = "a cell centre is the centre of the cell's vertices"
 NO_NEAREST_TEXT = "the group has no observation at that time; pesto never uses the nearest time"
 LIMITS_RULE = (
     "2nd to 98th percentile over every time of this group and both iterations, so colours do "
-    "not shift while the slider moves; the mean residual is symmetric about 0"
+    "not shift while the slider moves; the mean residual is centred on zero"
 )
 NO_LIMITS_REASON = "no iteration has observation statistics, so no colour limits can be made"
 POSITION_NOTE = "this group has no times, so the slider steps by position in site"

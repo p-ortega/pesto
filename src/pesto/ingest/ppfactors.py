@@ -27,6 +27,7 @@ from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CACHE_VERSION, CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
+from pesto.layer_words import layer_words
 
 # GridShape lives in pesto.model, which nothing under pesto.ingest may import,
 # even for typing; the annotations below stay unresolved forward references.
@@ -286,7 +287,7 @@ def _binary_groups(run_dir, factor_files, par, shape):
             if len(groups) == found_before:
                 raise _Refused(
                     f"no parameter group in the control table matches {path.name}'s points "
-                    f"in {tag.name} and its layer {layer}"
+                    f"in {tag.name} and its {layer_words(layer)}"
                 )
         except _Refused as exc:
             refused.append((path.name, str(exc)))
