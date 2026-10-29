@@ -1,0 +1,42 @@
+[
+  {"fn": "layer_words", "args": [0], "expected": "layer 1 (index 0)"},
+  {"fn": "layer_words", "args": [3], "expected": "layer 4 (index 3)"},
+  {"fn": "layer_words", "args": [null], "expected": "layer unknown"},
+  {"fn": "layer_words", "args": [-1], "expected": "layer unknown"},
+  {"fn": "layer_words", "args": [2.5], "expected": "layer unknown"},
+  {"fn": "layer_words", "args": [true], "expected": "layer unknown"},
+  {"fn": "layer_words", "args": ["3"], "expected": "layer unknown"},
+
+  {"fn": "layer_compact", "args": [3], "expected": "4 (3)"},
+  {"fn": "layer_compact", "args": [0], "expected": "1 (0)"},
+  {"fn": "layer_compact", "args": [null], "expected": "unknown"},
+  {"fn": "layer_compact", "args": [-1], "expected": "unknown"},
+  {"fn": "layer_compact", "args": [2.5], "expected": "unknown"},
+
+  {"fn": "layer_range_words", "args": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]], "expected": "layers 1–17 (index 0–16)"},
+  {"fn": "layer_range_words", "args": [[0, 1, 2, 3, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]], "expected": "layers 1–4, 6 and 8–17 (index 0–3, 5 and 7–16)"},
+  {"fn": "layer_range_words", "args": [[3]], "expected": "layer 4 (index 3)"},
+  {"fn": "layer_range_words", "args": [[3, 3]], "expected": "layer 4 (index 3)"},
+  {"fn": "layer_range_words", "args": [[5, 3, 4, 3]], "expected": "layers 4–6 (index 3–5)"},
+  {"fn": "layer_range_words", "args": [[1, 3]], "expected": "layers 2 and 4 (index 1 and 3)"},
+  {"fn": "layer_range_words", "args": [[2, null, 0, 1, -1]], "expected": "layers 1–3 (index 0–2) and an unknown layer"},
+  {"fn": "layer_range_words", "args": [[3, 2.5]], "expected": "layer 4 (index 3) and an unknown layer"},
+  {"fn": "layer_range_words", "args": [[null]], "expected": "layer unknown"},
+  {"fn": "layer_range_words", "args": [[]], "expected": "no layer"},
+
+  {"fn": "layer_list_words", "args": [[0, 1, 2]], "expected": "layers 1, 2, 3 (index 0, 1, 2)"},
+  {"fn": "layer_list_words", "args": [[2, 0, 1, 1]], "expected": "layers 1, 2, 3 (index 0, 1, 2)"},
+  {"fn": "layer_list_words", "args": [[3]], "expected": "layer 4 (index 3)"},
+  {"fn": "layer_list_words", "args": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], 10], "expected": "layers 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and more (index 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 and more)"},
+  {"fn": "layer_list_words", "args": [[0, 1, 2], 10], "expected": "layers 1, 2, 3 (index 0, 1, 2)"},
+  {"fn": "layer_list_words", "args": [[0, null]], "expected": "layer 1 (index 0) and an unknown layer"},
+  {"fn": "layer_list_words", "args": [[-1]], "expected": "layer unknown"},
+  {"fn": "layer_list_words", "args": [[]], "expected": "no layer"},
+
+  {"fn": "grid_layer_count_words", "args": [1], "expected": "1 layer (index 0)"},
+  {"fn": "grid_layer_count_words", "args": [2], "expected": "2 layers (index 0–1)"},
+  {"fn": "grid_layer_count_words", "args": [17], "expected": "17 layers (index 0–16)"},
+  {"fn": "grid_layer_count_words", "args": [0], "expected": "no layers"},
+  {"fn": "grid_layer_count_words", "args": [null], "expected": "an unknown number of layers"},
+  {"fn": "grid_layer_count_words", "args": [-2], "expected": "an unknown number of layers"}
+]

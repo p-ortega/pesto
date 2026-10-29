@@ -3,6 +3,7 @@ cache made by ingesting a generated run on a real vertex grid (three cells, one 
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -122,7 +123,7 @@ def test_a_cell_no_parameter_sets_says_so(tmp_path, in_process):
 
     assert body["pars"] == []
     assert body["pars_total"] == 0
-    assert body["reasons"]["pars"] == "no parameter sets this cell on layer 0"
+    assert body["reasons"]["pars"] == "no parameter sets this cell on layer 1 (index 0)"
 
 
 def test_a_cell_with_no_site_says_so(tmp_path, in_process):
@@ -132,7 +133,7 @@ def test_a_cell_with_no_site_says_so(tmp_path, in_process):
 
     assert body["sites"] == []
     assert body["sites_total"] == 0
-    assert body["reasons"]["sites"] == "no observation site in this cell or its neighbours on layer 0"
+    assert body["reasons"]["sites"] == "no observation site in this cell or its neighbours on layer 1 (index 0)"
     assert body["site_counts"]["unplaced_in_run"] == 3
 
 
@@ -203,6 +204,17 @@ def test_a_cell_list_or_layer_it_cannot_use_is_422_with_the_reason(tmp_path, in_
 
     assert response.status_code == 422
     assert says in response.json()["detail"]
+
+
+def test_a_layer_outside_the_grid_is_named_as_an_index_and_the_grid_counted_in_both(tmp_path, in_process):
+    client, _ = open_obs_run(tmp_path, **GRID_RUN)
+    nlay = json.loads((_layout(client).grid / "mesh.json").read_text())["nlay"]
+    has = "1 layer (index 0)" if nlay == 1 else f"{nlay} layers (index 0–{nlay - 1})"
+
+    response = _get(client, layer=99, cells="0")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == f"layer index 99 is outside the grid, which has {has}"
 
 
 def test_an_extra_query_field_is_422(tmp_path, in_process):
@@ -342,7 +354,7 @@ def test_more_parameters_than_the_cap_are_counted_and_noted(tmp_path, in_process
     assert [p["parnme"] for p in body["pars"]] == ["par0", "par1"]
     assert body["pars_total"] == 3
     assert body["par_notes"] == [
-        "3 parameters set this cell on layer 0; the first 2 are listed, by parameter group, "
+        "3 parameters set this cell on layer 1 (index 0); the first 2 are listed, by parameter group, "
         "direct parameters in control-file order and then pilot points by largest factor"
     ]
 
@@ -517,7 +529,7 @@ def test_the_cap_counts_point_rows_too(tmp_path, in_process, monkeypatch):
 
     assert [p["parnme"] for p in body["pars"]] == ["par0", "par1"]
     assert body["pars_total"] == 3
-    assert body["par_notes"][-1].startswith("3 parameters set this cell on layer 0; the first 2 are listed")
+    assert body["par_notes"][-1].startswith("3 parameters set this cell on layer 1 (index 0); the first 2 are listed")
 
 
 def test_a_binary_group_is_named_in_a_note_and_its_point_in_the_cell_is_still_listed(tmp_path, in_process):
