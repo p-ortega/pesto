@@ -416,6 +416,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let basemapLayer: BasemapLayer | null = null
   // The layer keeps a reference for reupload but never closes it; this view does.
   let basemapBitmap: ImageBitmap | null = null
+  // A basemap read while the graphics context was lost, drawn when it is back.
+  let pendingBasemap: ReadyState | null = null
   let basemapControls: BasemapControlsHandle | null = null
   let basemapPicker: BasemapPickerHandle | null = null
   // What the controls show for the registration when no add is under way.
@@ -1777,6 +1779,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     contextLost = false
     layer?.reupload()
     basemapLayer?.reupload()
+    const waiting = pendingBasemap
+    pendingBasemap = null
+    if (waiting !== null) void drawBasemap(waiting)
     layer?.setHairlineColor(readColorToken('--model-edge'))
     applyThemeColors()
     if (camera) {
@@ -3518,6 +3523,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       setBasemapBase({ kind: 'unavailable', reason: 'the basemap cannot be drawn before the map is' })
       return
     }
+    if (contextLost) {
+      holdBasemap(state)
+      return
+    }
     setBasemapBase({ kind: 'busy', text: `loading the basemap ${state.name}` })
     // Kept outside the slot so an image that lands after a newer pick is still closed.
     const landed: { image: BasemapImage | null } = { image: null }
@@ -3535,16 +3544,28 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     } catch (error) {
       image = { ok: false, reason: describeError(error), code: null }
     }
+    if (contextLost) {
+      if (image.ok) image.bitmap.close()
+      holdBasemap(state)
+      return
+    }
     if (!image.ok) {
       clearBasemapImage()
       setBasemapBase({ kind: 'unavailable', reason: image.reason })
       return
     }
-    if (basemapLayer === null) {
-      basemapLayer = new BasemapLayer(gl)
-      basemapLayer.setSaturation(basemapColour ? 1 : 0)
+    let refusal: string | null
+    try {
+      if (basemapLayer === null) {
+        basemapLayer = new BasemapLayer(gl)
+        basemapLayer.setSaturation(basemapColour ? 1 : 0)
+      }
+      refusal = basemapLayer.setImage(image.bitmap, state.extent, origin)
+    } catch (error) {
+      image.bitmap.close()
+      setBasemapBase({ kind: 'unavailable', reason: `the basemap could not be drawn: ${describeError(error)}` })
+      return
     }
-    const refusal = basemapLayer.setImage(image.bitmap, state.extent, origin)
     if (camera) basemapLayer?.setMatrix(camera.matrix())
     const previous = basemapBitmap
     basemapBitmap = refusal === null ? image.bitmap : null
@@ -3566,6 +3587,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     applyFieldOpacity()
     redraw()
+  }
+
+  function holdBasemap(state: ReadyState): void {
+    pendingBasemap = state
+    setBasemapBase({ kind: 'busy', text: `the basemap ${state.name} will be drawn when the graphics context is back` })
   }
 
   function addBasemap(): void {
@@ -3681,6 +3707,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
 
   function clearBasemapImage(): void {
+    pendingBasemap = null
     basemapImageSlot.cancel()
     if (basemapBitmap === null) return
     basemapLayer?.setImage(null, null, mesh?.origin ?? [0, 0])

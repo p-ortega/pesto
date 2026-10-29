@@ -357,6 +357,41 @@ describe('a registered basemap drawn when the run opens', () => {
     expect(basemap.setMatrix.mock.calls.at(-1)?.[0]).toEqual(mesh.setMatrix.mock.calls.at(-1)?.[0])
   })
 
+  it('waits for a lost graphics context to come back before it loads or draws the basemap', async () => {
+    serveReady()
+    const gate = deferred<Reply>()
+    basemapRoutes['GET /api/run/basemap'] = () => gate.promise
+    const root = await openMap()
+    await vi.waitFor(() => expect(fetchCalls('/api/run/basemap').length).toBe(1))
+
+    const { createContext } = await import('../src/gl/context')
+    const context = vi.mocked(createContext).mock.results[0].value as { onLost: Mock; onRestored: Mock }
+    ;(context.onLost.mock.calls[0][0] as () => void)()
+    gate.resolve({ status: 200, body: ready() })
+
+    await vi.waitFor(() => expect(controls(root).textContent).toContain('will be drawn when the graphics context is back'))
+    expect(fetchCalls('/api/run/basemap/image')).toHaveLength(0)
+    expect(await basemapLayers()).toHaveLength(0)
+
+    ;(context.onRestored.mock.calls[0][0] as () => void)()
+
+    await vi.waitFor(async () => expect((await basemapLayers())[0]?.setImage).toHaveBeenCalled())
+    expect(view(root)).toBe('ready')
+  })
+
+  it('says why when the basemap layer cannot be built, instead of staying on loading', async () => {
+    serveReady()
+    const { BasemapLayer } = await import('../src/gl/basemap-layer')
+    vi.mocked(BasemapLayer).mockImplementationOnce(function ThrowingLayer() {
+      throw new Error('could not create a shader')
+    } as never)
+    const root = await openMap()
+
+    await vi.waitFor(() => expect(view(root)).toBe('unavailable'))
+    expect(controls(root).textContent).toContain('could not create a shader')
+    expect(bitmaps[0].close).toHaveBeenCalled()
+  })
+
   it('says it was placed by its world file, with the numbers, in the map controls', async () => {
     serveReady()
     const root = await openMap()
