@@ -2140,6 +2140,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (!rawFullField || !layer) {
+      sectionView.refresh()
       paintLegend(null)
       return
     }
@@ -2521,6 +2522,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     scaledFieldScale = null
     currentClasses = []
     currentPoints = { rows: new Int32Array(0), xy: new Float32Array(0) }
+    // The section reads the plan's field, so it must lose the old colours and legend lines too.
+    sectionView.refresh()
     if (obsActive) {
       // The dots are not parameter fields; they keep drawing.
       void drawObservations()
