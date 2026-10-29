@@ -27,7 +27,7 @@ from pesto.cache.runconfig import build_config, config_outdated, write_config
 from pesto.ingest.aggregate import write_par_agg
 from pesto.ingest.control import read_control
 from pesto.ingest.discover import RunLayout, discover
-from pesto.ingest.elev import write_elev_from_adapter
+from pesto.ingest.elev import elev_outdated, write_elev_from_adapter
 from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
@@ -694,7 +694,8 @@ def is_planned_stale(manifest: Manifest, layout: CacheLayout, artifact: PlannedA
     """Whether ``artifact`` must be read again: stale by its sources and files,
     or, for ``config``, written before the current facts version, or, for the
     observation statistics and the 1:1 grid, written before the current sentinel
-    rule, or, for ``par_change``, written without the near-bound realization counts.
+    rule, or, for ``par_change``, written without the near-bound realization counts,
+    or, for ``elev``, storing its elevations in a type other than float64.
     The state route and ``ingest_run`` both use this, so they never disagree."""
     if manifest.is_stale(artifact.name, layout, artifact.sources):
         return True
@@ -705,7 +706,8 @@ def is_planned_stale(manifest: Manifest, layout: CacheLayout, artifact: PlannedA
 
 def _rule_outdated(manifest: Manifest, layout: CacheLayout, artifact: PlannedArtifact) -> bool:
     """True for an ``ok`` obs_agg or obs_1to1 whose sidecar predates the sentinel rule, or an
-    ``ok`` par_change without the near-bound realization counts. A failed
+    ``ok`` par_change without the near-bound realization counts, or an ``ok`` elev
+    storing its elevations in a type other than float64. A failed
     one keeps the usual rule: it is read again only when its source changes."""
     recorded = manifest.artifacts.get(artifact.name)
     if recorded is None or recorded.state != "ok":
@@ -716,6 +718,8 @@ def _rule_outdated(manifest: Manifest, layout: CacheLayout, artifact: PlannedArt
         return sentinel_rule_outdated(layout.obs_1to1_meta)
     if artifact.kind == "par_change":
         return par_change_outdated(layout)
+    if artifact.kind == "elev":
+        return elev_outdated(layout)
     return False
 
 
@@ -1062,7 +1066,7 @@ def plan_artifacts(
                 kind="elev",
                 sources=(str(grid_path),),
                 outputs=(
-                    str(layout.grid / "elev.f32"),
+                    str(layout.grid / "elev.f64"),
                     str(layout.grid / "ring.f64"),
                     str(layout.grid / "ring_start.u32"),
                     str(layout.grid / "elev.json"),

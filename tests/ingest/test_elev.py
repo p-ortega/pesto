@@ -21,7 +21,7 @@ from pesto.model import Geometry, GridShape, fan_polygons
 
 _VERTS = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [2.0, 0.0], [2.0, 1.0]])
 _IVERTS = [[0, 1, 2, 3], [1, 4, 5, 2]]
-_ELEV_FILES = ("elev.f32", "ring.f64", "ring_start.u32", "elev.json")
+_ELEV_FILES = ("elev.f64", "ring.f64", "ring_start.u32", "elev.json")
 
 
 def _mesh():
@@ -160,7 +160,7 @@ def test_bottoms_above_their_tops_are_counted_and_noted_not_swapped(tmp_path):
     note = "2 cells have their bottom above their top; drawn as absence in the section"
     assert note in payload["notes"]
     assert note in result.notes
-    elev = np.fromfile(layout.grid / "elev.f32", dtype="<f4").reshape(3, 2)
+    elev = np.fromfile(layout.grid / "elev.f64", dtype="<f8").reshape(3, 2)
     assert elev[2].tolist() == [7.0, 7.0]
 
 
@@ -187,7 +187,7 @@ def test_a_nan_bottom_is_counted_and_noted(tmp_path):
         "1 elevation is not a finite number; the cells it bounds are drawn as absence in the section"
         in payload["notes"]
     )
-    elev = np.fromfile(layout.grid / "elev.f32", dtype="<f4").reshape(3, 2)
+    elev = np.fromfile(layout.grid / "elev.f64", dtype="<f8").reshape(3, 2)
     assert np.isnan(elev[1, 1])
 
 
@@ -201,6 +201,43 @@ def test_counts_come_from_the_float64_values_before_the_cast(tmp_path):
     assert payload["counts"]["zero_thickness"] == 0
 
 
+def test_the_section_judges_the_same_elevations_the_ingest_counted(tmp_path):
+    from pesto.ingest.elev import load_elev
+    from pesto.section.assemble import ACTIVE, BOTTOM_ABOVE_TOP, assemble
+
+    # Cell 0's layer 1 is 1e-5 thick and cell 1's bottom sits 1e-9 above its top; float32 rounds both to zero thickness.
+    thin = 999.0 - 1e-5
+    above = 100.0 + 1e-9
+    assert np.float32(thin) == np.float32(999.0) and np.float32(above) == np.float32(100.0)
+    layout, _, payload = _write(tmp_path, [1000.0, 200.0], [[999.0, 100.0], [thin, above]])
+
+    arrays = load_elev(layout)
+    assert not isinstance(arrays, ReadFailure), arrays
+    built = assemble(np.array([0, 1]), arrays.elev, None, arrays.nlay, arrays.ncpl)
+
+    assert payload["counts"]["zero_thickness"] == 0
+    assert payload["counts"]["bottom_above_top"] == 1
+    assert built.status[0, 1] == ACTIVE
+    assert built.status[1, 1] == BOTTOM_ABOVE_TOP
+    assert built.counts["pinched"] == 0
+    assert built.counts["bottom_above_top"] == 1
+
+
+def test_load_elev_refuses_elevations_stored_in_float32_and_says_to_re_ingest(tmp_path):
+    from pesto.ingest.elev import load_elev
+
+    layout, _, payload = _write(tmp_path, [10.0, 10.0], [[5.0, 5.0], [0.0, 0.0]])
+    old = layout.grid / "elev.f32"
+    old.write_bytes(np.array([10, 10, 5, 5, 0, 0], dtype="<f4").tobytes())
+    payload["files"]["elev"] = {"name": "elev.f32", "dtype": "<f4", "count": 6}
+    (layout.grid / "elev.json").write_text(json.dumps(payload))
+
+    result = load_elev(layout)
+    assert isinstance(result, ReadFailure)
+    assert "'<f4'" in result.reason
+    assert "re-ingest" in result.reason
+
+
 def test_a_clean_grid_has_zero_counts_and_only_the_length_unit_note(tmp_path):
     _, result, payload = _write(tmp_path, [10.0, 10.0], [[5.0, 5.0], [0.0, 0.0]])
     assert payload["counts"] == {"bottom_above_top": 0, "zero_thickness": 0, "non_finite": 0}
@@ -209,13 +246,13 @@ def test_a_clean_grid_has_zero_counts_and_only_the_length_unit_note(tmp_path):
     assert payload["length_units"] is None
 
 
-def test_elev_f32_is_the_top_then_each_layers_bottom_little_endian(tmp_path):
+def test_elev_f64_is_the_top_then_each_layers_bottom_little_endian(tmp_path):
     layout, _, payload = _write(tmp_path, [10.0, 12.0], [[5.0, 6.0], [0.0, 1.0]])
-    raw = (layout.grid / "elev.f32").read_bytes()
-    assert len(raw) == 4 * (2 + 1) * 2
-    elev = np.frombuffer(raw, dtype="<f4").reshape(3, 2)
+    raw = (layout.grid / "elev.f64").read_bytes()
+    assert len(raw) == 8 * (2 + 1) * 2
+    elev = np.frombuffer(raw, dtype="<f8").reshape(3, 2)
     assert elev.tolist() == [[10.0, 12.0], [5.0, 6.0], [0.0, 1.0]]
-    assert payload["files"]["elev"] == {"name": "elev.f32", "dtype": "<f4", "count": 6}
+    assert payload["files"]["elev"] == {"name": "elev.f64", "dtype": "<f8", "count": 6}
 
 
 def _snapshot(root, *, dirs=True):
@@ -332,5 +369,5 @@ def test_load_elev_refuses_counts_that_disagree_with_the_shape_naming_both(tmp_p
 
     result = load_elev(layout)
     assert isinstance(result, ReadFailure)
-    assert "elev.f32 holds 6 values" in result.reason
+    assert "elev.f64 holds 6 values" in result.reason
     assert "(nlay + 1) * ncpl = 8" in result.reason
