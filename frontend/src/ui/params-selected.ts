@@ -2,6 +2,7 @@
 // grouped by pargp. When `pars` came from a cell click it also names the cells and layer,
 // each pilot point's factor on them, and every group the answer could not list.
 
+import { layerWords } from '../data/layer-words'
 import { recentCellLink, type CellLinkAnswer, type CellLinkPar } from '../data/link'
 import { sameSet } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
@@ -200,7 +201,7 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
         return
       }
       host.style.display = ''
-      drawTitle(found.reasons.pars ?? `no parameter listed for ${cellsText(found.cells)} on layer ${found.layer}`, null)
+      drawTitle(found.reasons.pars ?? `no parameter listed for ${cellsText(found.cells)} on ${layerWords(found.layer)}`, null)
       drawNotes(found.parNotes)
       return
     }
@@ -214,7 +215,7 @@ export function renderSelectedParams(host: HTMLElement, opts: SelectedParamsOpti
     if (found !== null) {
       const shown = found.pars.length
       drawTitle(
-        `Parameters that set ${cellsText(found.cells)} on layer ${found.layer}`,
+        `Parameters that set ${cellsText(found.cells)} on ${layerWords(found.layer)}`,
         found.parsTotal > shown ? `${shown} of ${found.parsTotal} shown` : shown === 1 ? '1 parameter' : `${shown} parameters`,
       )
       drawNotes(found.parNotes)
