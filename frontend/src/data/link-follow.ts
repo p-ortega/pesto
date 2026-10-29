@@ -4,6 +4,7 @@
 // sentences as text.
 
 import { OUTLINE_MAX_CELLS } from '../gl/outline'
+import { layerWords } from './layer-words'
 import { MAX_LINK_PARS, MAX_LINK_SITES, type ParLinkResult, type SitesWhereResult } from './link-targets'
 import type { ObsSiteRow } from './obs'
 
@@ -103,7 +104,7 @@ function cellsAre(n: number): string {
 /** One sentence per reason a picked parameter is not, or not wholly, outlined on the drawn layer. */
 export function parameterLines(rings: ParameterRings): string[] {
   const lines: string[] = []
-  for (const { layer, count } of rings.otherLayer) lines.push(`${selected(count, 'parameter', 'is')} on layer ${layer}`)
+  for (const { layer, count } of rings.otherLayer) lines.push(`${selected(count, 'parameter', 'is')} on ${layerWords(layer)}`)
   if (rings.unknownLayer > 0) lines.push(`${selected(rings.unknownLayer, 'parameter', 'has')} an unknown layer`)
   for (const { reason, count } of rings.noCell) lines.push(`${selected(count, 'parameter', 'has')} no cell: ${reason}`)
   for (const { reason, count } of rings.ownCellOnly) {
@@ -162,7 +163,7 @@ export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[
     else if (site.layer !== drawn.layer) otherLayer.set(site.layer, (otherLayer.get(site.layer) ?? 0) + 1)
   }
   const lines: string[] = []
-  for (const { layer, count } of countedLayers(otherLayer)) lines.push(`${selected(count, 'site', 'is')} on layer ${layer}`)
+  for (const { layer, count } of countedLayers(otherLayer)) lines.push(`${selected(count, 'site', 'is')} on ${layerWords(layer)}`)
   if (otherGroup > 0) lines.push(`${selected(otherGroup, 'site', 'is')} in another group (shown: ${drawn.group})`)
   if (unknownLayer > 0) {
     lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer; turn on all layers to see ${unknownLayer === 1 ? 'it' : 'them'}`)
@@ -261,9 +262,9 @@ export function pickedSiteRings(
   }
   const lines: string[] = []
   for (const { layer, count } of countedLayers(otherLayer)) {
-    lines.push(`${selected(count, 'site', 'is')} on layer ${layer}, not drawn on layer ${drawn.layer}`)
+    lines.push(`${selected(count, 'site', 'is')} on ${layerWords(layer)}, not drawn on ${layerWords(drawn.layer)}`)
   }
-  if (unknownLayer > 0) lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer, not drawn on layer ${drawn.layer}`)
+  if (unknownLayer > 0) lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer, not drawn on ${layerWords(drawn.layer)}`)
   for (const [reason, count] of countedText(noPosition)) lines.push(`${selected(count, 'site', 'has')} no position, not drawn: ${reason}`)
   for (const [group, count] of countedText(notInTable)) {
     lines.push(`${selected(count, 'site', 'is')} not drawn: it is not in the sites table of group ${group}`)
