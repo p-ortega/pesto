@@ -1317,9 +1317,11 @@ describe('MeshLayer grid lines', () => {
     expect(colour.args.slice(1)).toEqual([0.1, 0.2, 0.3, 0.5])
     const before = calls.slice(0, lines)
     const enable = before.map((c) => c.method === 'enable' && c.args[0] === 'BLEND').lastIndexOf(true)
-    const blend = before.map((c) => c.method === 'blendFunc').lastIndexOf(true)
+    const blend = before.map((c) => c.method === 'blendFuncSeparate').lastIndexOf(true)
     expect(enable).toBeGreaterThan(calls.indexOf(allDraws(calls)[0]))
-    expect(before[blend].args).toEqual(['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA'])
+    // Colour blends by alpha; the alpha channel adds like the fill's, so the canvas stays opaque.
+    expect(before[blend].args).toEqual(['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ONE', 'ONE_MINUS_SRC_ALPHA'])
+    expect(before.some((c, i) => i > enable && c.method === 'blendFunc')).toBe(false)
     expect(calls.slice(lines).some((c) => c.method === 'disable' && c.args[0] === 'BLEND')).toBe(true)
   })
 
