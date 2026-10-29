@@ -711,6 +711,19 @@ describe('the time slider on the observation map', () => {
       expect(Array.from(stack.children).every((el) => el.hasAttribute('data-fold'))).toBe(true)
     })
 
+    it('names the group, statistic, layer and shown time on the folded Data line, without the step count', async () => {
+      const { root } = await mounted()
+      await enterObservations(root)
+      await settle()
+      const card = root.querySelector('[data-fold="data"]') as HTMLElement
+      ;(card.querySelector(':scope > .fold-button') as HTMLButtonElement).click()
+      moveSlider(root, 2)
+      const summary = (): string => card.querySelector(':scope > .fold-summary')?.textContent ?? ''
+      await vi.waitFor(() => expect(summary()).toBe('Data: many · mean residual (simulated minus observed) · layer 1 (0) · day 30 (model time)'))
+      expect(sliderText(root)).toContain('3 of 10')
+      expect(summary()).not.toContain('of 10')
+    })
+
     // Parked, the map draws a parameter field, so the card shows the parameter group and statistic
     // and tucks the observation ones away; the warning notice says why nothing is drawn as dots.
     it('shows the parameter rows and hides the observation group and statistic while parked', async () => {

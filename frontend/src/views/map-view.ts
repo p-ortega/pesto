@@ -68,7 +68,7 @@ import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
 import { isShortMap, renderFold, type FoldHandle } from '../ui/fold'
-import { renderDataCard, type DataCardRows } from '../ui/data-card'
+import { dataSummary, renderDataCard } from '../ui/data-card'
 import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
@@ -1179,8 +1179,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
   let controlsHandle: SelectionControlsHandle | null = null
-  // The Data card's rows; plan 14-11 places the group picker, iteration toggle and observation controls into them.
-  let dataCardRows: DataCardRows | null = null
+  // The Data card, whose folded line the legend paints keep saying what is drawn.
+  let dataFold: FoldHandle | null = null
+  // How many iterations the run holds; the folded Data line names the iteration only with two or more.
+  let iterationCount = 0
   let toggleHandle: IterationToggleHandle | null = null
   // The iteration whose tables, cell arrays and names the view holds now.
   let loadedIteration = 0
@@ -1364,7 +1366,35 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let drawnStyle: EffectiveStyle = CONTINUOUS
   let drawnLimits: [number, number] = [0, 1]
 
+  function paintDataSummary(): void {
+    if (dataFold === null) return
+    if (obsActive) {
+      dataFold.setSummary(
+        dataSummary({
+          source: 'obs',
+          group: obsGroupInUse,
+          statistic: OBS_STAT_LABEL[obsStat],
+          layer: committed.layer,
+          allLayers: obsAllLayers,
+          time: obsSlider?.currentText() ?? null,
+        }),
+      )
+      return
+    }
+    dataFold.setSummary(
+      dataSummary({
+        source: 'par',
+        group: drawnGroup,
+        layer: committed.layer,
+        drawn: selectionLabel(committed),
+        iterations: iterationCount,
+        iteration: committed.iteration,
+      }),
+    )
+  }
+
   function paintLegend(legend: LegendOptions | null): void {
+    paintDataSummary()
     shownLegend = legend
     if (sectionView.shown()) {
       repaintLegend()
@@ -1377,6 +1407,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let obsLegendKept: ObsLegendOptions | null = null
 
   function showObsLegend(legend: ObsLegendOptions | null): void {
+    paintDataSummary()
     obsLegendKept = legend
     if (!sectionView.shown()) renderObsLegend(legendEl, legend)
   }
@@ -3841,12 +3872,12 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // order, both visually and in tab order (LD-2).
     // On a short map the two cards would cover most of it, so they start folded unless the viewer chose.
     const startFolded = isShortMap(mapCanvasArea.clientHeight)
-    const dataFold = renderFold({ key: 'data', name: 'Data', startFolded })
+    const dataCard = renderFold({ key: 'data', name: 'Data', startFolded })
+    dataFold = dataCard
     const coloursFold = renderFold({ key: 'colours', name: 'Colours', startFolded })
-    topLeftEl.insertBefore(dataFold.el, topLeftEl.firstChild)
-    dataFold.el.after(coloursFold.el)
-    const rows = renderDataCard(dataFold.body)
-    dataCardRows = rows
+    topLeftEl.insertBefore(dataCard.el, topLeftEl.firstChild)
+    dataCard.el.after(coloursFold.el)
+    const rows = renderDataCard(dataCard.body)
     rows.group.control.appendChild(pickerEl)
     // WINDOWS.md #8: `committed` already carries the restored colormap,
     // reverse, scale and limits state (or the fresh-run defaults, when
@@ -3878,6 +3909,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     // D-01, D-02: one button per ingested iteration, in the Data card's Iteration row; absent below two.
     const iterations = iterationsFrom(opts.state)
+    iterationCount = iterations.length
     if (iterations.length >= 2) {
       const toggleEl = document.createElement('div')
       rows.iteration.control.appendChild(toggleEl)
