@@ -507,6 +507,18 @@ def test_a_malformed_world_file_offers_the_numbers_form_naming_the_line(opened):
     assert "line 4 of map.pgw" in placement["reason"]
 
 
+@pytest.mark.parametrize("scale", [1e308, 1e300])
+def test_a_world_file_with_a_huge_scale_offers_the_numbers_form_with_a_reason(opened, scale):
+    put_png(opened.images, "map.png", 100, 50)
+    put_world_file(opened.images, "map.pgw", a=scale)
+    response = _inspect(opened, "map.png")
+    assert response.status_code == 200
+    placement = response.json()["placement"]
+    assert placement["by"] == "numbers"
+    assert placement["world_files"] == ["map.pgw"]
+    assert "outside the range pesto can draw" in placement["reason"]
+
+
 def test_a_world_file_far_from_the_mesh_offers_the_numbers_form(opened):
     put_png(opened.images, "map.png", 100, 50)
     put_world_file(opened.images, "map.pgw", c=500000.0, f=7000000.0)

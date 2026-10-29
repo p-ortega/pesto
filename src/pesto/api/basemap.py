@@ -271,6 +271,9 @@ def _place(
         if refusal.code in ("rotated", "mirrored"):
             return _refuse(422, refusal.code, refusal.reason, detail=f"the world file is {name}")
         return _numbers(refusal.reason, [name]), name, wf_stat
+    if not all(math.isfinite(v) and abs(v) <= _NUMBER_LIMIT for v in extent):
+        reason = f"the world file {name} places the image outside the range pesto can draw (within 1e12 of zero)"
+        return _numbers(reason, [name]), name, wf_stat
     if not _overlaps(extent, model_extent):
         return _numbers(NO_OVERLAP_REASON, [name]), name, wf_stat
     return {"by": "world_file", "world_file": name, "extent": list(extent)}, name, wf_stat
