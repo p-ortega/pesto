@@ -530,8 +530,11 @@ describe('the plan comes back as it was and nothing about the line is saved', ()
     const labels = lastLabels(recording.calls)
     expect(labels.A).toBeDefined()
     expect(labels.B).toBeDefined()
+    const shownFrom = recording.calls.length
     await showSection(m)
     const planDraws = m.layer.draw.mock.calls.length
+    // The section's own axes letter A and B too; only the plan's line labels are compared.
+    const shownTo = recording.calls.length
 
     planToggle(m.root).click()
     await settle()
@@ -540,7 +543,7 @@ describe('the plan comes back as it was and nothing about the line is saved', ()
     expect(MeshLayer.mock.instances[0]).toBe(m.layer)
     expect(MeshLayer.mock.calls).toHaveLength(2)
     expect(m.layer.draw.mock.calls.length).toBeGreaterThan(planDraws)
-    expect(lastLabels(recording.calls)).toEqual(labels)
+    expect(lastLabels([...recording.calls.slice(0, shownFrom), ...recording.calls.slice(shownTo)])).toEqual(labels)
   })
 
   it('writes no line or plan/section choice to the view state, and a reopened map starts on the plan with no line', async () => {

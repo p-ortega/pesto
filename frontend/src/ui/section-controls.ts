@@ -2,9 +2,13 @@
 // reason as text, while the run cannot have a section, while the server refuses the line, and
 // until a line exists, in that order. Every word reaches the DOM through textContent.
 
+import type { VeMode } from '../gl/section-camera'
+
 export interface SectionControlsOptions {
   onPlan(): void
   onSection(): void
+  /** The exaggeration the user picked; only offered while the section shows (D-20). */
+  onVe?(mode: VeMode): void
 }
 
 export interface SectionControlsHandle {
@@ -19,6 +23,8 @@ export interface SectionControlsHandle {
 
 export const NO_LINE_REASON = 'draw a section line on the plan first'
 export const LOADING_TEXT = 'loading the section'
+export const VE_LABEL = 'Vertical exaggeration'
+export const VE_CHOICES: readonly VeMode[] = ['fitted', 1, 2, 5, 10, 20, 50, 100]
 
 export function renderSectionControls(host: HTMLElement, opts: SectionControlsOptions): SectionControlsHandle {
   const wrap = document.createElement('div')
@@ -37,7 +43,23 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   row.appendChild(sectionButton)
   const reasonEl = document.createElement('div')
   reasonEl.classList.add('label', 'wrap-note')
+  const veRow = document.createElement('label')
+  veRow.classList.add('section-ve-row', 'label')
+  const veText = document.createElement('span')
+  veText.textContent = VE_LABEL
+  const veSelect = document.createElement('select')
+  veSelect.setAttribute('aria-label', VE_LABEL)
+  for (const choice of VE_CHOICES) {
+    const option = document.createElement('option')
+    option.value = String(choice)
+    option.textContent = choice === 'fitted' ? 'fitted' : `${choice}×`
+    veSelect.appendChild(option)
+  }
+  veSelect.value = 'fitted'
+  veRow.appendChild(veText)
+  veRow.appendChild(veSelect)
   wrap.appendChild(row)
+  wrap.appendChild(veRow)
   wrap.appendChild(reasonEl)
   host.appendChild(wrap)
 
@@ -56,6 +78,7 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     const text = blocked ?? (loading ? LOADING_TEXT : '')
     reasonEl.textContent = text
     reasonEl.hidden = text === ''
+    veRow.hidden = !shown
   }
   paint()
 
@@ -63,8 +86,13 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
   const onSectionClick = () => {
     if (!sectionButton.disabled) opts.onSection()
   }
+  const onVeChange = () => {
+    const value = veSelect.value
+    opts.onVe?.(value === 'fitted' ? 'fitted' : Number(value))
+  }
   planButton.addEventListener('click', onPlanClick)
   sectionButton.addEventListener('click', onSectionClick)
+  veSelect.addEventListener('change', onVeChange)
 
   return {
     setHasLine(on) {
@@ -90,6 +118,7 @@ export function renderSectionControls(host: HTMLElement, opts: SectionControlsOp
     dispose() {
       planButton.removeEventListener('click', onPlanClick)
       sectionButton.removeEventListener('click', onSectionClick)
+      veSelect.removeEventListener('change', onVeChange)
       wrap.remove()
     },
   }
