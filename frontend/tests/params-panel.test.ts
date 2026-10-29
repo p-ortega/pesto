@@ -267,6 +267,19 @@ describe('renderParamsPanel', () => {
     expect(el.textContent).toContain('one realization dropped')
   })
 
+  it('puts the Selected parameters section first, under the heading and above the groups table', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk')]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+
+    const kids = [...el.children] as HTMLElement[]
+    expect(kids[0].classList.contains('heading')).toBe(true)
+    expect(kids[0].textContent).toBe('Params')
+    expect(kids[1].classList.contains('params-selected')).toBe(true)
+    expect(kids[2].classList.contains('params-groups')).toBe(true)
+    expect(kids.indexOf(el.querySelector<HTMLElement>('.params-table')!)).toBeGreaterThan(2)
+  })
+
   it('lets Tab reach each scrolling list, so a keyboard user can scroll it', async () => {
     const el = mount()
     parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('G1')]))
@@ -314,7 +327,7 @@ describe('the group summary', () => {
     expect(rows.map((r) => r.dataset.group)).toEqual(['hk', 'ghb_layer0_pp'])
     expect(cell(rows[0], 'group').textContent).toContain('hk')
     expect(cell(rows[0], 'type').textContent).toBe('array')
-    expect(cell(rows[0], 'layer').textContent).toBe('0')
+    expect(cell(rows[0], 'layer').textContent).toBe('1 (0)')
     expect(cell(rows[0], 'n_par').textContent).toBe('3')
     expect(cell(rows[0], 'pesto').textContent).toContain('12.5')
     expect(cell(rows[0], 'pestpp').textContent).toContain('11.8')
@@ -353,6 +366,39 @@ describe('the group summary', () => {
     expect(cell(row, 'type').title).toContain('no ptype tag')
     expect(cell(row, 'layer').textContent).toBe('several')
     expect(cell(row, 'layer').title).toContain('placed on layers 0, 1')
+  })
+
+  it('shows a placement layer in both numbers and a layer from the group name as written, never converted', async () => {
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([
+        groupRow('placed', { layer: { value: 3, source: 'placement rule grid', note: null } }),
+        groupRow('placed_bare', { layer: { value: 3, source: 'placement', note: null } }),
+        groupRow('hk_layer3', {
+          layer: { value: 3, source: 'group name, as written', note: 'the number in the group name, shown as written and not converted' },
+        }),
+        groupRow('odd', { layer: { value: 3, source: 'somewhere else', note: null } }),
+        groupRow('blank', { layer: { value: null, source: 'not stated', note: 'no grid placement and no layer number in the group name' } }),
+      ]),
+    )
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(5))
+    const layers = groupRows(el).map((r) => cell(r, 'layer').textContent)
+    expect(layers).toEqual(['4 (3)', '4 (3)', '3 as written', '3', 'not stated'])
+    const written = groupRows(el).find((r) => r.dataset.group === 'hk_layer3')!
+    expect(cell(written, 'layer').title).toContain('group name, as written')
+    expect(cell(written, 'layer').title).toContain('not converted')
+  })
+
+  it('titles the Layer heading with how layers are counted', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk')]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(1))
+    const heading = el.querySelector<HTMLElement>('.group-header [data-column="layer"]')!
+    expect(heading.title).toBe('Layer counted from 1; the index from 0 is in brackets.')
   })
 
   it('shows a dash for a missing pestpp figure and keeps the stated reason as the cell title', async () => {
@@ -610,7 +656,7 @@ describe('the drill-down list and the groups that are not on the map', () => {
     renderParamsPanel(el, panelOptions({ parTable: Promise.resolve(parTableBuffer(TWO_GROUPS)) }))
 
     await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
-    expect(el.textContent).toContain('Choose a group above to list its parameters')
+    expect(el.textContent).toContain('Click a group above to list its parameters.')
     expect(el.querySelectorAll('.param-row').length).toBe(0)
   })
 
