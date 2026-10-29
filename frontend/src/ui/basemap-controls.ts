@@ -43,6 +43,8 @@ export const NOT_FINITE = 'each of the four numbers must be a finite number'
 
 const NUMBER_FIELDS = ['x min', 'x max', 'y min', 'y max'] as const
 
+const ADD_HINT = 'A PNG or JPEG. A world file beside it (.pgw, .jgw) places it; otherwise you type four numbers.'
+
 export function formatCoordinate(value: number): string {
   return String(Number(value.toFixed(3)))
 }
@@ -245,6 +247,7 @@ export function renderBasemapControls(host: HTMLElement, opts: BasemapControlsOp
     switch (view.kind) {
       case 'none':
         button('Add basemap', () => opts.onAdd())
+        line(ADD_HINT, 'label', 'wrap-note', 'basemap-hint')
         return
       case 'busy':
         line(view.text, 'basemap-muted')

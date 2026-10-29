@@ -124,14 +124,14 @@ body {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-md);
-  padding: var(--space-lg) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
 }
 
 .status-bar {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-md);
-  padding: var(--space-lg) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
 }
 
 /* A status-bar or header field is a label span next to a value span --
@@ -208,6 +208,19 @@ body {
   background: var(--surface);
   border: 1px solid var(--hairline);
   padding: var(--space-sm);
+}
+
+/* Card controls use the body type, not the browser's 13.33px default. Placed early so a later
+   rule of the same weight, such as tabular figures in the basemap numbers, still wins. */
+.floating button,
+.floating select,
+.floating input {
+  font: inherit;
+  font-size: 14px;
+}
+
+.floating button {
+  min-height: 32px;
 }
 
 /* D-09/visual contract §6: the map area is the positioning context every
@@ -309,6 +322,7 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: auto;
+  scrollbar-color: var(--axis) var(--gridline);
 }
 
 .params-groups .group-header,
@@ -377,6 +391,11 @@ body {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* A background, not a shadow, so the selected row's accent bar still shows under the pointer. */
+.group-row:hover {
+  background: var(--gridline);
+}
+
 /* The group summary's columns: group and type share the stretch, the rest keep a width. */
 .group-row > :nth-child(1),
 .group-header > :nth-child(1) {
@@ -424,6 +443,7 @@ body {
   /* Scrolls sideways as one piece, like the group grid, so a narrow panel
      never squeezes the name columns to nothing or widens the page. */
   overflow-x: auto;
+  scrollbar-color: var(--axis) var(--gridline);
 }
 
 .params-table > .param-header,
@@ -471,9 +491,9 @@ body {
   overflow: hidden;
 }
 
-/* The Obs tab is a column: heading, capability notices, the group table, the
-   plot hosts, the site list, then the spaghetti. The group table keeps the
-   room; the lists and notices below it give way first. */
+/* The Obs tab is a column: heading, capability notices, selected sites, the group
+   table, the site list, the spaghetti, then the group fit. The group table keeps
+   the room; the lists, plots and notices give way first. */
 .obs-panel {
   display: flex;
   flex-direction: column;
@@ -530,6 +550,7 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: auto;
+  scrollbar-color: var(--axis) var(--gridline);
 }
 
 .obs-sites .obs-grid {
@@ -582,6 +603,10 @@ body {
 .obs-grid-row[aria-selected='true'] {
   font-weight: 600;
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.obs-grid-row:hover {
+  background: var(--gridline);
 }
 
 .obs-grid-header > [aria-sort='ascending'] .sort-button,
@@ -921,6 +946,10 @@ body {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.param-row:hover {
+  background: var(--gridline);
+}
+
 /* The detail under the group table and under the parameter list: text and one chart. */
 .params-detail-host {
   /* Gives way before the tables do, and scrolls inside itself. */
@@ -1044,7 +1073,7 @@ body {
   /* The floor keeps the title and two rows; without it the group detail squeezed this to 3 px. */
   flex: 0 1 auto;
   min-height: 4.5rem;
-  max-height: 30%;
+  max-height: 40%;
   overflow: hidden;
   margin-top: var(--space-sm);
 }
@@ -1068,6 +1097,7 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: auto;
+  scrollbar-color: var(--axis) var(--gridline);
 }
 
 .params-selected .scroll-pane,
@@ -1324,7 +1354,13 @@ body {
   display: none;
 }
 
+/* The glyph carries the warning colour so the reason itself stays readable; textContent is unchanged. */
 .basemap-picker-status.refused {
+  color: var(--ink-primary);
+}
+
+.basemap-picker-status.refused::before {
+  content: '⚠ ';
   color: var(--status-warning);
 }
 
@@ -1433,6 +1469,11 @@ body {
 }
 
 .basemap-warning {
+  color: var(--ink-primary);
+}
+
+.basemap-warning::before {
+  content: '⚠ ';
   color: var(--status-warning);
 }
 
@@ -1508,6 +1549,11 @@ body {
   min-height: 24px;
   padding: 0 var(--space-xs);
   cursor: pointer;
+}
+
+/* The fold card is itself .floating, so this outranks the 32px card-button rule. */
+.floating .fold-button {
+  min-height: 24px;
 }
 
 .fold-button[aria-expanded='true']::before {

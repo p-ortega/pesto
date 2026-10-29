@@ -113,6 +113,24 @@ describe('renderBasemapControls', () => {
     expect(opts.onAdd).toHaveBeenCalledTimes(1)
   })
 
+  it('says under Add basemap what file to pick and how it gets placed', () => {
+    const { host } = mount()
+    const group = host.querySelector('.basemap-controls')
+    const hint = group?.querySelector('.basemap-hint')
+    expect(hint?.textContent).toBe(
+      'A PNG or JPEG. A world file beside it (.pgw, .jgw) places it; otherwise you type four numbers.',
+    )
+    expect(hint?.classList.contains('label')).toBe(true)
+    expect(hint?.classList.contains('wrap-note')).toBe(true)
+    expect(hint?.previousElementSibling?.textContent).toBe('Add basemap')
+  })
+
+  it('drops the hint once an image is under way', () => {
+    const { host, handle } = mount()
+    handle.show({ kind: 'busy', text: 'reading map.png…' })
+    expect(host.querySelector('.basemap-hint')).toBeNull()
+  })
+
   it('shows only the text while busy', () => {
     const { host, handle } = mount()
     handle.show({ kind: 'busy', text: 'reading map.png…' })
