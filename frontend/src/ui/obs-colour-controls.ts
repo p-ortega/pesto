@@ -4,6 +4,7 @@
 
 import { OBS_STATS, OBS_STAT_LABEL, type ObsGroupsResult, type ObsStat } from '../data/obs'
 import { ramp } from '../gl/colormap'
+import { layerWords } from '../data/layer-words'
 import type { SelectionStore } from '../state/selection'
 import type { ObsDotCounts, TimeCounts } from '../views/observation-stat-source'
 
@@ -337,7 +338,7 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
     line(el, `${sitesText(counts.unknownLayerHidden)} with an unknown layer, shown only under all layers`, 'wrap-note')
   }
   if (opts.layerMoved !== null) {
-    line(el, `moved to layer ${opts.layerMoved}, the lowest layer with a site of this group`, 'wrap-note')
+    line(el, `moved to ${layerWords(opts.layerMoved)}, the lowest layer with a site of this group`, 'wrap-note')
   }
   for (const note of opts.notes) line(el, note, 'wrap-note')
 }
