@@ -112,8 +112,10 @@ function appendCell<T>(rowEl: HTMLElement, column: GridColumn<T>, row: T): void 
   cell.classList.add('obs-col', `obs-col-${column.kind}`)
   if (column.kind === 'name') cell.classList.add('body', 'truncate')
   else if (column.kind === 'figure') cell.classList.add('tabular-nums')
+  // A wrapped text cell ran over the rows below it; the full text stays in the title.
+  else cell.classList.add('truncate')
   cell.textContent = column.text(row)
-  const title = column.title ? column.title(row) : column.kind === 'name' ? column.text(row) : ''
+  const title = column.title ? column.title(row) : column.kind === 'figure' ? '' : column.text(row)
   if (title !== '') cell.title = title
   column.decorate?.(cell, row)
   rowEl.appendChild(cell)
@@ -724,7 +726,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
         kind: 'text',
         text: (r) => r.timeKind,
         sortValue: (r) => r.timeKind,
-        title: (r) => `inequality: ${r.inequality}`,
+        title: (r) => `${r.timeKind}; inequality: ${r.inequality}`,
       },
       {
         key: 'rmse_first',

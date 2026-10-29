@@ -211,6 +211,14 @@ describe('the group summary', () => {
     expect(cell(first, 'rmse_last').textContent).toBe('1.250')
   })
 
+  it('keeps a text cell on one line and carries its full text in the title', async () => {
+    const { host } = mount()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
+    const kind = cell(groupRows(host)[0], 'time_kind')
+    expect(kind.classList.contains('truncate')).toBe(true)
+    expect(kind.title.startsWith('datetime; ')).toBe(true)
+  })
+
   it('names the RMSE rule and the iteration in the two RMSE headings', async () => {
     const { host } = mount()
     await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
