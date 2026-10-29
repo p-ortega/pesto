@@ -497,6 +497,26 @@ describe('why the map offers no section', () => {
     expect((await meshLayerMock()).mock.calls).toHaveLength(2)
   })
 
+  it('says why the section layer could not be built instead of failing in silence, and builds it on the next click', async () => {
+    const m = await mounted()
+    drawLine(m)
+    const MeshLayer = await meshLayerMock()
+    const real = MeshLayer.getMockImplementation()!
+    MeshLayer.mockImplementationOnce(() => {
+      throw new Error('the graphics context could not create a shader')
+    })
+    sectionToggle(m.root).click()
+    await vi.waitFor(() => expect(controlsCard(m.root)).toContain('the graphics context could not create a shader'))
+    await settle()
+    expect(sectionToggle(m.root).getAttribute('aria-pressed')).toBe('false')
+    expect(sectionToggle(m.root).disabled).toBe(false)
+
+    MeshLayer.mockImplementation(real)
+    await showSection(m)
+    expect(m.stub.section).toHaveLength(1)
+    expect(controlsCard(m.root)).not.toContain('could not create a shader')
+  })
+
   it('says why a one-off failure stopped the section and tries the same line again on the next click', async () => {
     const m = await mounted()
     m.stub.failure = 'server'

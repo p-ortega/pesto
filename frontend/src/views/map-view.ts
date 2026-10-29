@@ -513,7 +513,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     canvas,
     controlsHost: topRightEl,
     runId: opts.state.runId ?? null,
-    gl: () => ctx?.gl ?? null,
+    // A lost context still hands out its object, but nothing can be built on it.
+    gl: () => (contextLost ? null : (ctx?.gl ?? null)),
     plan: () => ({
       fullField,
       limits: drawnLimits,

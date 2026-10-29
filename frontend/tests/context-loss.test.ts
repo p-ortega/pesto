@@ -358,4 +358,48 @@ describe('the section through a lost and restored context', () => {
     expect(stub.calls.length).toBe(callsBefore)
     expect(stub.sections).toBe(1)
   })
+
+  it('says the graphics context is not ready while it is lost, builds nothing, and builds the section once it is back', async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((type: string) =>
+      type === 'webgl2' ? (FAKE_GL as unknown as WebGL2RenderingContext) : type === '2d' ? createRecording2d().ctx : null) as typeof HTMLCanvasElement.prototype.getContext)
+    stubMatchMedia()
+    stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    const state = baseState()
+    state.capabilities.section = { available: true, blockedBy: [] }
+    mountMap(root, { config: CONFIG, state })
+    await vi.waitFor(() => expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull())
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+    const plan = new Camera(canvas.width, canvas.height)
+    plan.fit([0, 100, 0, 100])
+    const [x0, y0] = plan.screenToWorld(0, 0)
+    const [x1, y1] = plan.screenToWorld(1, 1)
+    const client = (wx: number, wy: number): [number, number] => [(wx - x0) / (x1 - x0), (wy - y0) / (y1 - y0)]
+    const click = ([x, y]: [number, number]) => {
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true }))
+      canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true }))
+      canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true }))
+    }
+    ;(root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
+    click(client(25, 50))
+    click(client(75, 50))
+    const toggle = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Section view') as HTMLButtonElement
+    const controls = () => root.querySelector('.section-controls')?.textContent ?? ''
+    const { MeshLayer } = await import('../src/gl/mesh-layer')
+
+    canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    toggle.click()
+    await vi.waitFor(() => expect(controls()).toContain('the graphics context is not ready'))
+    expect(vi.mocked(MeshLayer).mock.instances).toHaveLength(1)
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(toggle.disabled).toBe(false)
+
+    canvas.dispatchEvent(new Event('webglcontextrestored'))
+    toggle.click()
+    await vi.waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'))
+    expect(vi.mocked(MeshLayer).mock.instances).toHaveLength(2)
+    expect(controls()).not.toContain('not ready')
+  })
 })

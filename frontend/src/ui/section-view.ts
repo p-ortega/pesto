@@ -275,7 +275,12 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
         fail('the graphics context is not ready')
         return
       }
-      sectionLayer = new SectionLayer(gl, answer)
+      try {
+        sectionLayer = new SectionLayer(gl, answer)
+      } catch (error) {
+        fail(`the section could not be drawn: ${describeError(error)}`)
+        return
+      }
       opts.paintColours(sectionLayer.layer)
       paint()
       ring()
