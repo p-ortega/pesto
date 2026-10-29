@@ -339,7 +339,8 @@ def test_the_section_is_available_or_names_the_grid_or_elev_artifact_that_blocks
     else:
         assert found["blocked_by"], "the section is unavailable with no reason"
         for fact in found["blocked_by"]:
-            assert fact["artifact"] in {"elev", *session.ing.grid_names}, fact
+            # A run with no grid file plans no grid artifact, so the route names "grid" itself.
+            assert fact["artifact"] in {"elev", "grid", *session.ing.grid_names}, fact
             assert fact["reason"], f"{fact['artifact']} blocks the section with an empty reason"
         if any(fact["artifact"] == "elev" for fact in found["blocked_by"]):
             # The route refuses on the elev record before it reads the line, so any line will do.
