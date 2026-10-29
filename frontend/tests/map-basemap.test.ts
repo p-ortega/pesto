@@ -402,6 +402,18 @@ describe('a registered basemap drawn when the run opens', () => {
     expect(root.querySelector('.floating-top-left')?.contains(box)).toBe(true)
   })
 
+  it('names the image on the folded basemap card', async () => {
+    serveReady()
+    const root = await openMap()
+    await vi.waitFor(() => expect(view(root)).toBe('ready'))
+    const card = root.querySelector('[data-fold="basemap"]') as HTMLElement
+    expect(card.contains(controls(root))).toBe(true)
+    expect(card.querySelector('.fold-button')?.getAttribute('aria-label')).toBe('Basemap')
+    ;(card.querySelector('.fold-button') as HTMLButtonElement).click()
+    expect(card.getAttribute('data-folded')).toBe('true')
+    expect(card.querySelector('.fold-summary')?.textContent).toBe('Basemap: map.png')
+  })
+
   it('shows why a registered basemap is unavailable, offers Remove, and builds no layer', async () => {
     basemapRoutes['GET /api/run/basemap'] = () => ({
       status: 200,
