@@ -5,6 +5,8 @@
 import { OBS_STATS, OBS_STAT_LABEL, type ObsGroupsResult, type ObsStat } from '../data/obs'
 import { ramp } from '../gl/colormap'
 import { layerWords } from '../data/layer-words'
+import type { DataCardRows } from './data-card'
+import { paintNote } from './note-line'
 import type { SelectionStore } from '../state/selection'
 import type { ObsDotCounts, TimeCounts } from '../views/observation-stat-source'
 
@@ -27,6 +29,9 @@ export interface ObsColourControlsOptions {
   onAllLayersChange?: (on: boolean) => void
 }
 
+/** The Data card rows the controls fill instead of one host of their own. */
+export type ObsColourRows = Pick<DataCardRows, 'colourBy' | 'group' | 'statistic' | 'allLayers'>
+
 export interface ObsColourControlsHandle {
   setAllLayers(on: boolean): void
   allLayers(): boolean
@@ -41,10 +46,14 @@ function labelled(text: string, control: HTMLElement): HTMLLabelElement {
   return label
 }
 
-export function renderObsColourControls(host: HTMLElement, opts: ObsColourControlsOptions): ObsColourControlsHandle {
+function obsOnly<T extends HTMLElement>(el: T): T {
+  el.setAttribute('data-colour-source', 'obs')
+  return el
+}
+
+/** Renders into one host of its own, or, given the Data card's rows, into those rows. */
+export function renderObsColourControls(target: HTMLElement | ObsColourRows, opts: ObsColourControlsOptions): ObsColourControlsHandle {
   const { store } = opts
-  host.textContent = ''
-  host.classList.add('floating', 'obs-colour')
 
   const switchEl = document.createElement('div')
   switchEl.classList.add('obs-colour-switch')
@@ -58,10 +67,6 @@ export function renderObsColourControls(host: HTMLElement, opts: ObsColourContro
   obsButton.textContent = 'Observations'
   switchEl.appendChild(parButton)
   switchEl.appendChild(obsButton)
-
-  const rows = document.createElement('div')
-  rows.classList.add('obs-colour-rows')
-  rows.setAttribute('data-colour-source', 'obs')
 
   const groupSelect = document.createElement('select')
   groupSelect.setAttribute('aria-label', 'Observation group')
@@ -83,14 +88,37 @@ export function renderObsColourControls(host: HTMLElement, opts: ObsColourContro
   const groupNote = document.createElement('div')
   groupNote.classList.add('label', 'wrap-note')
   groupNote.setAttribute('role', 'status')
-  groupNote.style.color = 'var(--status-warning)'
+  paintNote(groupNote, null)
 
-  rows.appendChild(labelled('Observation group', groupSelect))
-  rows.appendChild(labelled('Statistic', statSelect))
-  rows.appendChild(allLabel)
-  rows.appendChild(groupNote)
-  host.appendChild(switchEl)
-  host.appendChild(rows)
+  // Each element that shows only while Observations is chosen.
+  const obsParts: HTMLElement[] = []
+  if (target instanceof HTMLElement) {
+    target.textContent = ''
+    target.classList.add('floating', 'obs-colour')
+    const rows = obsOnly(document.createElement('div'))
+    rows.classList.add('obs-colour-rows')
+    rows.appendChild(labelled('Observation group', groupSelect))
+    rows.appendChild(labelled('Statistic', statSelect))
+    rows.appendChild(allLabel)
+    rows.appendChild(groupNote)
+    target.appendChild(switchEl)
+    target.appendChild(rows)
+    obsParts.push(rows)
+  } else {
+    // The map's tests find the observation controls by this class, whichever way they are laid out.
+    const groupBox = obsOnly(document.createElement('div'))
+    groupBox.classList.add('obs-colour')
+    groupBox.append(groupSelect, groupNote)
+    target.colourBy.control.appendChild(switchEl)
+    target.group.control.appendChild(groupBox)
+    target.statistic.control.appendChild(obsOnly(statSelect))
+    target.allLayers.control.appendChild(allLabel)
+    obsParts.push(groupBox, statSelect, allLabel)
+  }
+
+  function warn(text: string | null): void {
+    paintNote(groupNote, text === null ? null : { kind: 'warning', text })
+  }
 
   let lastParStat = 'value'
   let lastObsStat: ObsStat = 'resid_mean'
@@ -115,7 +143,7 @@ export function renderObsColourControls(host: HTMLElement, opts: ObsColourContro
     const source = selection.colour.source
     parButton.setAttribute('aria-pressed', String(source === 'par'))
     obsButton.setAttribute('aria-pressed', String(source === 'obs'))
-    rows.hidden = source !== 'obs'
+    for (const part of obsParts) part.hidden = source !== 'obs'
     statSelect.value = isObsStat(selection.colour.stat) ? selection.colour.stat : lastObsStat
     paintGroups()
     if (source === 'obs') requestGroups()
@@ -138,10 +166,10 @@ export function renderObsColourControls(host: HTMLElement, opts: ObsColourContro
         if (!answer.ok) {
           groupsRequested = false
           groupNames = []
-          groupNote.textContent = `${answer.artifact}: ${answer.reason}`
+          warn(`${answer.artifact}: ${answer.reason}`)
           return
         }
-        groupNote.textContent = ''
+        warn(null)
         groupNames = answer.rows.map((row) => row.group)
         const none = document.createElement('option')
         none.setAttribute('value', '')
@@ -156,14 +184,14 @@ export function renderObsColourControls(host: HTMLElement, opts: ObsColourContro
           groupSelect.appendChild(option)
         }
         groupSelect.disabled = answer.rows.length === 0
-        if (answer.rows.length === 0) groupNote.textContent = 'obs_index: this run has no observation groups'
+        if (answer.rows.length === 0) warn('obs_index: this run has no observation groups')
         paintGroups()
       },
       (error: unknown) => {
         if (disposed) return
         groupsRequested = false
         groupSelect.textContent = ''
-        groupNote.textContent = error instanceof Error ? error.message : String(error)
+        warn(error instanceof Error ? error.message : String(error))
       },
     )
   }

@@ -67,8 +67,8 @@ import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } fro
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
-import { isShortMap, renderFold, type FoldHandle } from '../ui/fold'
-import { renderDataCard, type DataCardRows } from '../ui/data-card'
+import { foldOthersToFit, isShortMap, renderFold, settleStack, type FoldHandle, type FoldOptions } from '../ui/fold'
+import { dataSummary, renderDataCard } from '../ui/data-card'
 import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
@@ -393,22 +393,43 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   canvas.setAttribute('aria-label', 'Model grid map: drag to pan, scroll to zoom, arrow keys pan, + and - zoom, Home fits to extent')
   const mapNotice = document.createElement('div')
   mapNotice.setAttribute('data-testid', 'map-notices')
-  // Visual contract §6: controls top-left, legend bottom-left, readout
-  // bottom-right. The group picker isn't in that diagram -- it rides in
-  // the same top-left cluster as the controls, stacked under them, since
-  // it's a selection control too and has no other place the contract names.
+  // Visual contract §6: controls top-left, legend bottom-left, readout bottom-right. The top-left
+  // stack holds the Data, Colours, Overlays and Basemap cards and nothing else (UI-SPEC, LD-2).
   const topLeftEl = document.createElement('div')
   topLeftEl.classList.add('floating-top-left')
+  // The stack's cards, top to bottom, for the rules that keep every card in sight (LD-3).
+  const stackCards: FoldHandle[] = []
+  const stackOverflows = (): boolean => topLeftEl.scrollHeight > topLeftEl.clientHeight
+  // Scrolls the stack alone, as scrollIntoView with block 'nearest' would, but never an ancestor of it.
+  function scrollIntoStack(el: HTMLElement): void {
+    const top = el.offsetTop
+    const bottom = top + el.offsetHeight
+    if (top < topLeftEl.scrollTop) topLeftEl.scrollTop = top
+    else if (bottom > topLeftEl.scrollTop + topLeftEl.clientHeight) topLeftEl.scrollTop = Math.min(top, bottom - topLeftEl.clientHeight)
+  }
+  // Opening a card that no longer fits folds the others, then brings it into view; the map never moves (LD-4).
+  function stackFold(options: Omit<FoldOptions, 'onUserToggle'>): FoldHandle {
+    const fold = renderFold({
+      ...options,
+      onUserToggle: (folded) => {
+        if (folded) return
+        foldOthersToFit(fold, stackCards, stackOverflows)
+        scrollIntoStack(fold.el)
+      },
+    })
+    stackCards.push(fold)
+    return fold
+  }
   // The legend folds to its ramp and drawn group; its lines are redrawn into the body on every draw.
   const legendFold = renderFold({ key: 'legend', name: 'Legend', mode: 'lines' })
   legendFold.el.classList.add('floating-bottom-left')
   const legendEl = legendFold.body
+  // The parameter group picker, placed in the Data card's Group row once that card is made.
   const pickerEl = document.createElement('div')
   // Hidden by the .colour-obs rules while the map is coloured by observations.
   pickerEl.setAttribute('data-colour-source', 'par')
   const readoutEl = document.createElement('div')
   readoutEl.classList.add('floating-bottom-right')
-  topLeftEl.appendChild(pickerEl)
   // Two notices about the shown iteration. Each is replaced on every switch,
   // never stacked: the drawn realization or group is missing (D-04), and how
   // many selected realizations are missing (D-03).
@@ -1181,8 +1202,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
   let controlsHandle: SelectionControlsHandle | null = null
-  // The Data card's rows; plan 14-11 places the group picker, iteration toggle and observation controls into them.
-  let dataCardRows: DataCardRows | null = null
+  // The Data card, whose folded line the legend paints keep saying what is drawn.
+  let dataFold: FoldHandle | null = null
+  // How many iterations the run holds; the folded Data line names the iteration only with two or more.
+  let iterationCount = 0
   let toggleHandle: IterationToggleHandle | null = null
   // The iteration whose tables, cell arrays and names the view holds now.
   let loadedIteration = 0
@@ -1366,7 +1389,35 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let drawnStyle: EffectiveStyle = CONTINUOUS
   let drawnLimits: [number, number] = [0, 1]
 
+  function paintDataSummary(): void {
+    if (dataFold === null) return
+    if (obsActive) {
+      dataFold.setSummary(
+        dataSummary({
+          source: 'obs',
+          group: obsGroupInUse,
+          statistic: OBS_STAT_LABEL[obsStat],
+          layer: committed.layer,
+          allLayers: obsAllLayers,
+          time: obsSlider?.currentText() ?? null,
+        }),
+      )
+      return
+    }
+    dataFold.setSummary(
+      dataSummary({
+        source: 'par',
+        group: drawnGroup,
+        layer: committed.layer,
+        drawn: selectionLabel(committed),
+        iterations: iterationCount,
+        iteration: committed.iteration,
+      }),
+    )
+  }
+
   function paintLegend(legend: LegendOptions | null): void {
+    paintDataSummary()
     shownLegend = legend
     if (sectionView.shown()) {
       repaintLegend()
@@ -1379,6 +1430,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let obsLegendKept: ObsLegendOptions | null = null
 
   function showObsLegend(legend: ObsLegendOptions | null): void {
+    paintDataSummary()
     obsLegendKept = legend
     if (!sectionView.shown()) renderObsLegend(legendEl, legend)
   }
@@ -2139,7 +2191,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   function paintPicker(state: GroupPickerState): void {
     paintedPicker = state
-    renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange })
+    renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange, bare: true })
   }
 
   // A group change re-runs classifyCells (via applyLayer, which reads
@@ -3843,12 +3895,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // order, both visually and in tab order (LD-2).
     // On a short map the two cards would cover most of it, so they start folded unless the viewer chose.
     const startFolded = isShortMap(mapCanvasArea.clientHeight)
-    const dataFold = renderFold({ key: 'data', name: 'Data', startFolded })
-    const coloursFold = renderFold({ key: 'colours', name: 'Colours', startFolded })
-    topLeftEl.insertBefore(dataFold.el, topLeftEl.firstChild)
-    dataFold.el.after(coloursFold.el)
-    const rows = renderDataCard(dataFold.body)
-    dataCardRows = rows
+    const dataCard = stackFold({ key: 'data', name: 'Data', startFolded })
+    dataFold = dataCard
+    const coloursFold = stackFold({ key: 'colours', name: 'Colours', startFolded })
+    topLeftEl.insertBefore(dataCard.el, topLeftEl.firstChild)
+    dataCard.el.after(coloursFold.el)
+    const rows = renderDataCard(dataCard.body)
+    rows.group.control.appendChild(pickerEl)
     // WINDOWS.md #8: `committed` already carries the restored colormap,
     // reverse, scale and limits state (or the fresh-run defaults, when
     // there is none) -- passed straight through so the checkbox and
@@ -3877,14 +3930,16 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     controlsHandle.setLayer(committed.layer)
     coloursFold.setSummary(controlsHandle.coloursSummary())
 
-    // D-01, D-02: one button per ingested iteration, right after the controls; absent below two.
+    // D-01, D-02: one button per ingested iteration, in the Data card's Iteration row; absent below two.
     const iterations = iterationsFrom(opts.state)
+    iterationCount = iterations.length
     if (iterations.length >= 2) {
       const toggleEl = document.createElement('div')
-      topLeftEl.insertBefore(toggleEl, pickerEl)
+      rows.iteration.control.appendChild(toggleEl)
       toggleHandle = renderIterationToggle(toggleEl, {
         iterations,
         current: iteration,
+        bare: true,
         onChange: (next) => {
           store.set({ iteration: next }, 'iteration-toggle')
           toggleHandle?.setCurrent(next)
@@ -3896,11 +3951,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const obsCapability = opts.state.capabilities.obs
     if (obsCapability !== undefined && obsCapability.available) {
       const sliderEl = document.createElement('div')
-      topLeftEl.insertBefore(sliderEl, pickerEl)
-      obsSlider = renderTimeSlider(sliderEl, { onChange: stepObsTime })
-      const colourEl = document.createElement('div')
-      topLeftEl.insertBefore(colourEl, sliderEl)
-      obsControls = renderObsColourControls(colourEl, {
+      rows.time.control.appendChild(sliderEl)
+      obsSlider = renderTimeSlider(sliderEl, { onChange: stepObsTime, bare: true })
+      obsControls = renderObsColourControls(rows, {
         store,
         loadGroups: loadObsGroups,
         onAllLayersChange: (on) => {
@@ -3974,7 +4027,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     )
 
     // D-22: the overlay toggles come right after the Colours card; they ask nothing until the first field draws.
-    const overlayFold = renderFold({ key: 'overlays', name: 'Overlays' })
+    const overlayFold = stackFold({ key: 'overlays', name: 'Overlays' })
     coloursFold.el.after(overlayFold.el)
     overlayControls = renderOverlayControls(overlayFold.body, {
       onToggle: () => {
@@ -4001,14 +4054,16 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     pending = committed
     await performFetch(committed)
     mountBasemap()
+    // First look: what would not fit starts folded, unless the viewer chose; nothing is stored.
+    settleStack(stackCards, stackOverflows)
     if (canvas.getAttribute('data-drawn') === 'true') schedulePickIndex(meshGeom)
     if (store.get().colour.source === 'obs') void drawObservations()
   }
 
   // MAPX-04: mounted and read after the first draw, so a run without a basemap opens as fast as before.
   function mountBasemap(): void {
-    basemapFold = renderFold({ key: 'basemap', name: 'Basemap' })
-    topLeftEl.insertBefore(basemapFold.el, pickerEl)
+    basemapFold = stackFold({ key: 'basemap', name: 'Basemap' })
+    topLeftEl.appendChild(basemapFold.el)
     basemapControls = renderBasemapControls(basemapFold.body, {
       onAdd: addBasemap,
       onConfirm: confirmBasemap,
