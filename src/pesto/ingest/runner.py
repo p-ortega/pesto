@@ -27,6 +27,7 @@ from pesto.cache.runconfig import build_config, config_outdated, write_config
 from pesto.ingest.aggregate import write_par_agg
 from pesto.ingest.control import read_control
 from pesto.ingest.discover import RunLayout, discover
+from pesto.ingest.elev import write_elev_from_adapter
 from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import read_ensemble
 from pesto.ingest.failures import ReadFailure
@@ -83,7 +84,7 @@ class PlannedArtifact:
     """
 
     name: str
-    # "control" | "grid" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
+    # "control" | "grid" | "elev" | "par_cell" | "obs_index" | "obs_cell" | "noise_agg" | "par_ens"
     # | "par_agg" | "par_change" | "par_groups" | "par_hist" | "obs_ens" | "obs_agg" | "pdc" | "phi_check"
     # | "obs_1to1" | "pp_factors" | "config"
     kind: str
@@ -554,6 +555,19 @@ def _write_grid_artifact(
     layout = CacheLayout(root=Path(cache_root))
     adapter = Mf6Adapter(Path(grid_path))
     return write_grid_from_adapter(adapter, layout)
+
+
+def _write_elev_artifact(
+    grid_path: str, cache_root: str
+) -> "WrittenArtifact | ReadFailure | None":
+    """The worker for the ``elev`` artifact: the float64 cell rings and the
+    layer elevations the section view reads. It parses the grid file in its
+    own adapter, so a bad file costs this artifact alone."""
+    from pesto.model.mf6 import Mf6Adapter
+
+    layout = CacheLayout(root=Path(cache_root))
+    adapter = Mf6Adapter(Path(grid_path))
+    return write_elev_from_adapter(adapter, layout)
 
 
 def _write_pp_factors_artifact(
@@ -1040,6 +1054,23 @@ def plan_artifacts(
                 source_bytes=grid_bytes,
             )
         )
+        # Built from the grid's stored origin, so it waits for grid; an old cache
+        # with grid ok and no elev entry then reads stale for elev alone.
+        artifacts.append(
+            PlannedArtifact(
+                name="elev",
+                kind="elev",
+                sources=(str(grid_path),),
+                outputs=(
+                    str(layout.grid / "elev.f32"),
+                    str(layout.grid / "ring.f64"),
+                    str(layout.grid / "ring_start.u32"),
+                    str(layout.grid / "elev.json"),
+                ),
+                source_bytes=grid_bytes,
+                needs=("grid",),
+            )
+        )
         artifacts.append(
             PlannedArtifact(
                 name="par_cell",
@@ -1403,6 +1434,12 @@ def estimate_bytes(
 
     if run.grid is not None:
         notes.append(
+            "elev: its size follows from the grid's cell and layer counts, not from the grid "
+            "file's size -- excluded rather than guessed"
+        )
+
+    if run.grid is not None:
+        notes.append(
             "par_cell: one row per parameter, whose size follows from the control table "
             "rather than from any source file's size -- excluded rather than guessed"
         )
@@ -1536,6 +1573,8 @@ def _dispatch(
         return _write_control_artifact, (pst_path, cache_root)
     if artifact.kind == "grid":
         return _write_grid_artifact, (grid_path, cache_root)
+    if artifact.kind == "elev":
+        return _write_elev_artifact, (grid_path, cache_root)
     if artifact.kind == "par_cell":
         return _write_par_cell_artifact, (grid_path, cache_root)
     if artifact.kind == "obs_index":

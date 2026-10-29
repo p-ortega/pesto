@@ -166,3 +166,26 @@ def test_a_coordinate_that_is_not_a_finite_number_is_refused(tmp_path, run_dir):
     response = client.get("/api/run/grid/section", params={**LINE, "bx": "nan"})
 
     assert response.status_code == 422
+
+
+def test_the_synthetic_run_carries_an_elev_artifact_the_section_route_reads(tmp_path):
+    from fixtures.synthetic_run import write_synthetic_run
+    from pesto.cache.layout import for_run
+
+    dest = write_synthetic_run(tmp_path / "run")
+    layout = for_run(dest)
+    assert Manifest.load(layout).artifacts["elev"].state == "ok"
+    client = _client(layout)
+    origin = client.get("/api/run/grid/mesh").json()["origin"]
+
+    # Along the middle of the row of six unit squares, end to end.
+    response = client.get(
+        "/api/run/grid/section",
+        params={"ax": origin[0] - 3.5, "ay": origin[1], "bx": origin[0] + 3.5, "by": origin[1]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["cell"] == [0, 1, 2, 3, 4, 5]
+    assert body["s0"] == pytest.approx([0.5, 1.5, 2.5, 3.5, 4.5, 5.5], abs=1e-9)
+    assert body["has_idomain"] is False

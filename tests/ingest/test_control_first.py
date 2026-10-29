@@ -27,7 +27,7 @@ from pesto.ingest.discover import discover
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.runner import Progress, ingest_run, plan_artifacts
 from pesto.ingest.tables import load_control_tables, write_control
-from pesto.model import GridShape, GroupResolution, ObsCells, ParCells, fan_polygons
+from pesto.model import Geometry, GridShape, GroupResolution, ObsCells, ParCells, fan_polygons
 
 from .fixtures import make_run, write_control_file
 from .obs_fixtures import make_obs_run
@@ -46,6 +46,19 @@ class _StubAdapter:
 
     def grid_shape(self):
         return GridShape(ncpl=2, nlay=1, nrow=None, ncol=None)
+
+    def geometry(self):
+        # The elev worker reads the float64 rings and elevations from here.
+        mesh = self.grid_mesh()
+        positions = np.asarray(mesh.positions, dtype=np.float64) + np.array(mesh.origin)
+        return Geometry(
+            positions=positions,
+            cell_index=mesh.cell_index,
+            indices=mesh.indices,
+            top=np.full(2, 1.0),
+            botm=np.zeros((1, 2)),
+            grid_type="vertex",
+        )
 
     def idomain(self):
         return None
@@ -175,6 +188,7 @@ def test_the_plan_for_a_two_iteration_run_with_a_grid_starts_with_control_then_g
     assert [a.name for a in planned] == [
         "control",
         "grid",
+        "elev",
         "par_cell",
         "obs_index",
         "obs_cell",
@@ -221,6 +235,7 @@ def test_pilot_point_factors_come_after_the_iterations_and_before_config(tmp_pat
     assert names == [
         "control",
         "grid",
+        "elev",
         "par_cell",
         "obs_index",
         "obs_cell",
