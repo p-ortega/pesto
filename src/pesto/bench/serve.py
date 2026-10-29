@@ -1,4 +1,4 @@
-"""Measuring pesto's own server: grid/values latency, reopen share, browser targets.
+"""Measuring pesto's own server: grid/values, obs/frame and grid/section latency, reopen share, browser targets.
 
 The server runs in this process on a daemon thread, bound to 127.0.0.1 only.
 The session token stays inside `BenchServer`; it is never printed, stored or
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from pesto.bench.report import (
     PilotPointTarget,
     ReopenShare,
     RouteTiming,
+    SectionLatency,
     ValuesLatency,
 )
 
@@ -360,6 +362,89 @@ def measure_obs_frames(server: BenchServer, samples: int) -> ObsFramesLatency:
         iteration=iteration,
         n_sites=axis["n_sites"],
         n_times=len(times),
+        summary=summary,
+        notes=[note] if note else [],
+    )
+
+
+def _section_not_measured(note: str) -> SectionLatency:
+    return SectionLatency(n_pieces=None, nlay=None, quads=None, summary=None, notes=[note])
+
+
+def _problem_detail(timed: Timed, body: bytes) -> str:
+    """The problem's status and title, then its detail, which names why a section is refused."""
+    reason = _problem_reason(timed, body)
+    try:
+        detail = json.loads(body).get("detail")
+    except (ValueError, AttributeError):
+        detail = None
+    return reason + (f" ({detail})" if isinstance(detail, str) and detail else "")
+
+
+def _mesh_diagonal(body: bytes) -> tuple[float, float, float, float]:
+    """(ax, ay, bx, by): the mesh bounds' lower-left to upper-right corner, in world coordinates."""
+    mesh = json.loads(body)
+    xmin, xmax, ymin, ymax = (float(v) for v in mesh["bounds"])
+    ox, oy = (float(v) for v in mesh["origin"])
+    ends = (xmin + ox, ymin + oy, xmax + ox, ymax + oy)
+    if not all(math.isfinite(v) for v in ends):
+        raise ValueError("a bound or the origin is not a finite number")
+    return ends
+
+
+def _whole_number(answer: dict, key: str) -> int:
+    value = answer[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{key} is not a whole number")
+    return value
+
+
+def measure_section(server: BenchServer, samples: int) -> SectionLatency:
+    """Time grid/section on the diagonal from the mesh's lower-left corner to its upper-right one.
+
+    One untimed request reads the piece and layer counts, then `samples` requests are timed.
+    The time is recorded with no verdict. Every way this cannot run gives no summary and one
+    note that starts "section:".
+    """
+    if samples < 1:
+        return _section_not_measured("section: no section requests were asked for, so none was timed")
+    timed, body = server.get("/api/run/grid/mesh")
+    if timed.status != 200:
+        return _section_not_measured(
+            f"section: could not read the mesh ({_problem_reason(timed, body)}), "
+            "so the section route is not measured"
+        )
+    try:
+        ends = _mesh_diagonal(body)
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        return _section_not_measured(
+            f"section: the mesh answer could not be read ({type(exc).__name__}: {exc}), "
+            "so the section route is not measured"
+        )
+    # repr keeps every digit of each float; quote keeps a "+" in an exponent from reading as a space.
+    query = "&".join(f"{key}={quote(repr(value), safe='')}" for key, value in zip(("ax", "ay", "bx", "by"), ends))
+    path = f"/api/run/grid/section?{query}"
+
+    timed, body = server.get(path)
+    if timed.status != 200:
+        return _section_not_measured(
+            f"section: the route refused the whole-mesh diagonal ({_problem_detail(timed, body)}), "
+            "so it is not measured"
+        )
+    try:
+        answer = json.loads(body)
+        n_pieces, nlay = _whole_number(answer, "n_pieces"), _whole_number(answer, "nlay")
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        return _section_not_measured(
+            f"section: the section answer could not be read ({type(exc).__name__}: {exc}), "
+            "so the section route is not measured"
+        )
+
+    summary, note = _time_kind(server, [path] * samples, "section")
+    return SectionLatency(
+        n_pieces=n_pieces,
+        nlay=nlay,
+        quads=n_pieces * nlay,
         summary=summary,
         notes=[note] if note else [],
     )
