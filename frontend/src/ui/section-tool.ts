@@ -7,6 +7,10 @@ import type { Chart2D } from './charts/histogram'
 
 export type SectionToolAvailability = { ok: true } | { ok: false; reason: string }
 
+// Two clicks closer than this make no line; the server keeps its own floor (D-42). CSS pixels.
+export const MIN_END_GAP_CSS_PX = 3
+export const SAME_SPOT_REASON = 'the two ends are on the same spot'
+
 export interface SectionToolOptions {
   /** The positioned box holding the map canvas; the line canvas goes in it. */
   area: HTMLElement
@@ -19,6 +23,8 @@ export interface SectionToolOptions {
   worldToScreen(x: number, y: number): [number, number]
   /** Both ends in plan world units; the caller adds the mesh origin. */
   onLine(a: [number, number], b: [number, number]): void
+  /** Told when the button arms the tool, so the map can disarm any other armed tool. */
+  onArm?(): void
   /** The line's 2D context; tests pass a recording one, since jsdom has none. */
   context?: (overlay: HTMLCanvasElement) => Chart2D | null
 }
@@ -27,7 +33,7 @@ export interface SectionToolHandle {
   armed(): boolean
   disarm(): void
   setAvailable(state: SectionToolAvailability): void
-  /** True while armed: every click on the canvas then belongs to the tool, never to the plan. */
+  /** True while armed, and once right after the click that sets B, so that click picks nothing. */
   consumeClick(): boolean
   /** Draws the line again from its world points, after a pan or zoom. */
   redraw(): void
@@ -65,19 +71,34 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
 
   let isArmed = false
   let available = false
+  let unavailableReason: string | null = null
+  // A refusal of the last click, shown under the button while the tool stays armed.
+  let notice: string | null = null
+  let swallowClick = false
   let disposed = false
   // End A of a line being drawn, and where the pointer is, both in plan world units.
   let pendingA: [number, number] | null = null
+  // Where A was clicked, in client CSS pixels, for the too-close check.
+  let pendingClient: [number, number] | null = null
   let pointerAt: [number, number] | null = null
   // The line last finished; it stays until a new one replaces it (D-03).
   let line: { a: [number, number]; b: [number, number] } | null = null
+
+  function paintReason(): void {
+    const text = unavailableReason ?? notice
+    reasonEl.textContent = text ?? ''
+    reasonEl.hidden = text === null
+  }
 
   function setArmed(on: boolean): void {
     isArmed = on
     button.setAttribute('aria-pressed', String(on))
     area.classList.toggle('section-armed', on)
+    notice = null
+    paintReason()
     if (!on) {
       pendingA = null
+      pendingClient = null
       pointerAt = null
       paint()
     }
@@ -119,7 +140,11 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   }
 
   function onPointerDown(event: PointerEvent): void {
-    if (!isArmed) return
+    if (!isArmed) {
+      // A new press starts a new gesture, so the click that set B can no longer be swallowed.
+      swallowClick = false
+      return
+    }
     // Stops the pan handler on the same canvas from seeing an armed press at all.
     event.stopImmediatePropagation()
     event.preventDefault()
@@ -134,20 +159,34 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   }
 
   function onClick(event: MouseEvent): void {
-    if (!isArmed) return
+    if (!isArmed) {
+      swallowClick = false
+      return
+    }
     // The plan's own click handler never sees a click that places an end.
     event.stopImmediatePropagation()
     event.preventDefault()
     const point = worldAt(event)
-    if (pendingA === null) {
+    if (pendingA === null || pendingClient === null) {
       pendingA = point
+      pendingClient = [event.clientX, event.clientY]
       pointerAt = null
+      notice = null
+      paintReason()
       paint()
+      return
+    }
+    const gap = Math.hypot(event.clientX - pendingClient[0], event.clientY - pendingClient[1])
+    if (gap < MIN_END_GAP_CSS_PX) {
+      // A is kept and the tool stays armed, so only B needs clicking again.
+      notice = SAME_SPOT_REASON
+      paintReason()
       return
     }
     const a = pendingA
     line = { a, b: point }
     setArmed(false)
+    swallowClick = true
     opts.onLine(a, point)
   }
 
@@ -158,7 +197,9 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
 
   function onButtonClick(): void {
     if (disposed || !available) return
-    setArmed(!isArmed)
+    const arming = !isArmed
+    setArmed(arming)
+    if (arming) opts.onArm?.()
   }
 
   const capture = { capture: true }
@@ -172,16 +213,10 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
     if (disposed) return
     available = state.ok
     button.disabled = !state.ok
-    if (state.ok) {
-      reasonEl.textContent = ''
-      reasonEl.hidden = true
-      button.title = 'Click two points on the plan to draw a section line; Esc stops'
-    } else {
-      reasonEl.textContent = state.reason
-      reasonEl.hidden = false
-      button.title = state.reason
-      if (isArmed) setArmed(false)
-    }
+    unavailableReason = state.ok ? null : state.reason
+    button.title = state.ok ? 'Click two points on the plan to draw a section line; Esc stops' : state.reason
+    if (!state.ok && isArmed) setArmed(false)
+    paintReason()
   }
   setAvailable({ ok: false, reason: 'the map is still loading' })
 
@@ -191,7 +226,12 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
       if (isArmed) setArmed(false)
     },
     setAvailable,
-    consumeClick: () => isArmed,
+    consumeClick() {
+      if (isArmed) return true
+      if (!swallowClick) return false
+      swallowClick = false
+      return true
+    },
     redraw() {
       if (line === null && pendingA === null) return
       paint()

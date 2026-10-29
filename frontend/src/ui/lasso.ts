@@ -29,12 +29,16 @@ export interface LassoOptions {
   onRelease(path: [number, number][], keys: LassoKeys): void
   /** A release whose path has fewer than 3 points after thinning. */
   onTooSmall(): void
+  /** Told when the button arms the lasso, so the map can disarm any other armed tool. */
+  onArm?(): void
   /** The outline's 2D context; tests pass a recording one, since jsdom has none. */
   context?: (overlay: HTMLCanvasElement) => Chart2D | null
 }
 
 export interface LassoHandle {
   armed(): boolean
+  /** Stops an armed lasso; the outline it left stays. */
+  disarm(): void
   setAvailable(state: LassoAvailability): void
   /** True once right after an armed gesture ends, so the click it fires selects nothing. */
   consumeClick(): boolean
@@ -202,7 +206,9 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
 
   function onButtonClick(): void {
     if (disposed || !available) return
-    setArmed(!isArmed)
+    const arming = !isArmed
+    setArmed(arming)
+    if (arming) opts.onArm?.()
   }
 
   const capture = { capture: true }
@@ -232,6 +238,9 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
 
   return {
     armed: () => isArmed,
+    disarm() {
+      if (isArmed) setArmed(false)
+    },
     setAvailable,
     consumeClick() {
       if (!isArmed || !swallowClick) return false
