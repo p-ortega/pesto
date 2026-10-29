@@ -739,6 +739,9 @@ body {
   /* With every card open the stack ran off the bottom of the map; a wheel over a card scrolls it instead. */
   max-height: calc(100% - 3 * var(--space-md) - var(--legend-height, 0px));
   overflow-y: auto;
+  /* A default scrollbar drew a tall white bar over the map. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
   /* Its see-through parts swallowed drags and wheels meant for the map. */
   pointer-events: none;
 }
