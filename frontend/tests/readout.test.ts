@@ -368,7 +368,6 @@ describe('renderReadout section pick', () => {
       { kind: 'valued', row: 0 },
       { kind: 'contested', rows: [0, 1] },
       { kind: 'no-parameter' },
-      { kind: 'points', rows: [0] },
     ]
     for (const classification of classifications) {
       const plan = mount()
@@ -377,6 +376,18 @@ describe('renderReadout section pick', () => {
       renderReadout(plan, { ...common, pick: cellPick(classification) })
       renderReadout(section, { ...common, pick: sectionPick(classification) })
       expect(lines(section)).toEqual([...lines(plan), ...SECTION_LINES])
+    }
+  })
+
+  it('says the dots of a dot group are on the plan, never asking for a click on a dot the section does not draw', () => {
+    for (const [rows, said] of [
+      [[0], '1 parameter of G1 sits in this cell; it is drawn as a dot on the plan, and the section shows no value for it.'],
+      [[0, 1], '2 parameters of G1 sit in this cell; they are drawn as dots on the plan, and the section shows no value for them.'],
+    ] as Array<[number[], string]>) {
+      const el = mount()
+      renderReadout(el, { pick: sectionPick({ kind: 'points', rows }), group: 'G1', joined: [G1, G1B], field: new Float32Array([2, 3]), classLine: LINE })
+      expect(lines(el)).toEqual([said, 'layer 1, cell 3 · r001', ...SECTION_LINES])
+      expect(el.textContent).not.toContain('Click a dot')
     }
   })
 
