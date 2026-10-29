@@ -61,10 +61,15 @@ def walk(vx, vy, start, a, b, tol, bbox=None):
 
     Returns ``(cell, s0, s1, counts)``; ``counts`` holds ``candidates`` (cells
     whose box the line meets), ``zero_length_dropped`` and ``ties_resolved``.
-    Raises ``LineTooShort`` when the line is no longer than ``tol``.
+    Raises ``LineTooShort`` when the line is no longer than ``tol``, and
+    ``TypeError`` when ``vx`` or ``vy`` is not float64.
     """
-    vx = np.asarray(vx, dtype=np.float64)
-    vy = np.asarray(vy, dtype=np.float64)
+    vx = np.asarray(vx)
+    vy = np.asarray(vy)
+    for name, ring in (("vx", vx), ("vy", vy)):
+        # Upcasting here would hide rings already rounded, which can move an edge by half a metre.
+        if ring.dtype != np.float64:
+            raise TypeError(f"the walk needs float64 rings, but {name} is {ring.dtype}")
     start = np.asarray(start, dtype=np.int64)
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
