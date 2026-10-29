@@ -22,6 +22,8 @@ from typing import Any
 
 import numpy as np
 
+from pesto.layer_words import layer_span_words, layer_words
+
 SIM_NAME_FILE = "mfsim.nam"
 PLACEABLE_TYPES = ("HEAD", "DRAWDOWN", "CONCENTRATION")
 TWO_CELL_TYPES = ("FLOW-JA-FACE",)
@@ -551,7 +553,7 @@ def _boundname_outcome(entry: ObsEntry, observations: ObsInput, shape: Any, look
     layers = sorted({layer for layer, _ in rows})
     if len(layers) == 1:
         return "ok", cells.pop(), layers[0], ""
-    return "ok", cells.pop(), -1, f"spans layers {layers[0]} to {layers[-1]} (zero-based)"
+    return "ok", cells.pop(), -1, f"spans {layer_span_words(layers[0], layers[-1])}"
 
 
 def _entry_outcome(entry: ObsEntry, observations: ObsInput, shape: Any, lookups: dict, notes: list[str]) -> tuple:
@@ -704,8 +706,8 @@ def place_sites(
         if placed:
             if outcome[0] == "ok" and (first != cell[row] or (layer[row] >= 0 and second >= 0 and second != layer[row])):
                 text = (
-                    f"columns say cell {int(cell[row])} layer {int(layer[row])}, "
-                    f"{entry.name} in {entry.file} says cell {first} layer {second}"
+                    f"columns say cell {int(cell[row])} {layer_words(int(layer[row]))}, "
+                    f"{entry.name} in {entry.file} says cell {first} {layer_words(second)}"
                 )
                 disagree.append(f"{site!r}: {text}")
                 site_note[row] = f"the control file's columns were kept; {text}"
