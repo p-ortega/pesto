@@ -250,6 +250,189 @@ def test_pieces_claimed_from_the_same_start_go_to_the_lower_index_in_either_orde
     assert counts["ties_resolved"] == 1
 
 
+@pytest.mark.parametrize("which", ["vx", "vy"])
+def test_rings_rounded_to_float32_are_refused_by_name(which):
+    vx, vy, start = _two_unit_squares()
+    rings = {"vx": vx, "vy": vy}
+    rings[which] = rings[which].astype(np.float32)
+
+    with pytest.raises(TypeError, match="float32"):
+        walk(rings["vx"], rings["vy"], start, (-0.5, 0.5), (2.5, 0.5), 1e-9)
+
+
+def test_float64_rings_are_accepted():
+    vx, vy, start = _two_unit_squares()
+    assert vx.dtype == np.float64 and vy.dtype == np.float64
+
+    cell, _, _, _ = walk(vx, vy, start, (-0.5, 0.5), (2.5, 0.5), 1e-9)
+
+    assert cell.tolist() == [0, 1]
+
+
+# --- seeded grids checked against a dense-sampling reference -------------------------------
+
+N_SAMPLES = 8001
+N_LINES = 40
+HIGH_NORTHING = np.array([5.0e5, 7.02e6])
+
+
+def _rotated_square_grid():
+    """An 8 x 6 DIS-shaped grid of 50-unit squares, rotated 30 degrees about its corner."""
+    ncol, nrow, size = 8, 6, 50.0
+    theta = np.deg2rad(30.0)
+    rot = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+    rings = []
+    for r in range(nrow):
+        for c in range(ncol):
+            sq = np.array(_square(c, r), dtype=np.float64) * size
+            rings.append([tuple(p) for p in sq @ rot.T])
+    return rings
+
+
+def _mixed_polygon_grid(seed=11):
+    """A DISV-shaped tiling of [0, 600] x [0, 400] with an L and a U (both concave), the square
+    filling the U's notch, triangles and squares, on a 100-unit lattice jittered by a fixed seed.
+    """
+    rng = np.random.default_rng(seed)
+    jitter = rng.uniform(-0.15, 0.15, size=(7, 5, 2))
+    jitter[[0, -1], :, 0] = 0.0
+    jitter[:, [0, -1], 1] = 0.0
+
+    def pt(i, j):
+        return (100.0 * (i + jitter[i, j, 0]), 100.0 * (j + jitter[i, j, 1]))
+
+    lattice_rings = [
+        [(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)],  # L, concave at (1, 1)
+        [(3, 0), (6, 0), (6, 2), (5, 2), (5, 1), (4, 1), (4, 2), (3, 2)],  # U, notch at x 4..5
+        [(4, 1), (5, 1), (5, 2), (4, 2)],  # fills the U's notch
+        [(2, 0), (3, 0), (3, 1), (2, 1)],
+        [(1, 1), (2, 1), (2, 2), (1, 2)],
+        [(2, 1), (3, 1), (3, 2), (2, 2)],
+    ]
+    for j in (2, 3):
+        for i in range(6):
+            if (i + j) % 2 == 0:
+                lattice_rings.append([(i, j), (i + 1, j), (i + 1, j + 1)])
+                lattice_rings.append([(i, j), (i + 1, j + 1), (i, j + 1)])
+            else:
+                lattice_rings.append([(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)])
+    return [[pt(i, j) for i, j in ring] for ring in lattice_rings]
+
+
+def _centred(rings, shift):
+    """Move the rings by ``shift`` and take off their own bounds centre, in float64, the way
+    fan_polygons builds the cache frame."""
+    vx, vy, start = _pack(rings)
+    wx, wy = vx + shift[0], vy + shift[1]
+    centre = np.array([(wx.min() + wx.max()) / 2.0, (wy.min() + wy.max()) / 2.0])
+    return wx - centre[0], wy - centre[1], start, centre
+
+
+def _reference(vx, vy, start, a, b, tol):
+    """Each sample's cell by an even-odd test (-1 for none), and whether it lies within
+    2 * tol of any cell edge, where the walk's answer is allowed to differ."""
+    ts = np.linspace(0.0, 1.0, N_SAMPLES)
+    qx = a[0] + ts * (b[0] - a[0])
+    qy = a[1] + ts * (b[1] - a[1])
+    owner = np.full(N_SAMPLES, -1, dtype=np.int64)
+    n_owners = np.zeros(N_SAMPLES, dtype=np.int64)
+    near_edge = np.zeros(N_SAMPLES, dtype=bool)
+    for c in range(start.size - 1):
+        x, y = vx[start[c] : start[c + 1]], vy[start[c] : start[c + 1]]
+        x1, y1 = np.roll(x, -1), np.roll(y, -1)
+        crossings = np.zeros(N_SAMPLES, dtype=np.int64)
+        for i in range(x.size):
+            straddle = (y[i] > qy) != (y1[i] > qy)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                xc = x[i] + (qy - y[i]) * (x1[i] - x[i]) / (y1[i] - y[i])
+            crossings += straddle & (qx < xc)
+            ex, ey = x1[i] - x[i], y1[i] - y[i]
+            u = np.clip(((qx - x[i]) * ex + (qy - y[i]) * ey) / (ex * ex + ey * ey), 0.0, 1.0)
+            near_edge |= np.hypot(qx - (x[i] + u * ex), qy - (y[i] + u * ey)) <= 2.0 * tol
+        inside = crossings % 2 == 1
+        owner[inside] = c
+        n_owners += inside
+    return ts * np.hypot(b[0] - a[0], b[1] - a[1]), owner, n_owners, near_edge
+
+
+def _check_against_reference(vx, vy, start, a, b, tol):
+    cell, s0, s1, counts = walk(vx, vy, start, a, b, tol)
+    s, owner, n_owners, near_edge = _reference(vx, vy, start, a, b, tol)
+    assert (n_owners <= 1).all(), "the test grid has overlapping cells"
+
+    mismatches = []
+    for k in np.nonzero(~near_edge)[0]:
+        covering = cell[(s0 - tol <= s[k]) & (s[k] <= s1 + tol)]
+        expected = [] if owner[k] < 0 else [int(owner[k])]
+        if covering.tolist() != expected:
+            mismatches.append((float(s[k]), expected, covering.tolist()))
+    assert mismatches == [], f"line {a} -> {b}: first mismatches {mismatches[:3]}"
+
+    # Pieces are in order along the line and never overlap.
+    assert (np.diff(s0) >= 0).all()
+    assert (s0[1:] >= s1[:-1] - tol).all()
+    assert ((s1 - s0) > tol).all()
+    return cell, s0, s1, counts
+
+
+def _random_lines(vx, vy, seed):
+    rng = np.random.default_rng(seed)
+    pad = 0.1 * max(vx.max() - vx.min(), vy.max() - vy.min())
+    lo = np.array([vx.min() - pad, vy.min() - pad])
+    hi = np.array([vx.max() + pad, vy.max() + pad])
+    return [(rng.uniform(lo, hi), rng.uniform(lo, hi)) for _ in range(N_LINES)]
+
+
+SEEDED_GRIDS = {
+    "rotated_square_dis": (_rotated_square_grid, 3),
+    "mixed_polygon_disv": (_mixed_polygon_grid, 5),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SEEDED_GRIDS))
+def test_random_lines_match_a_dense_sampling_reference(name):
+    build, seed = SEEDED_GRIDS[name]
+    rings = build()
+    vx, vy, start = _pack(rings)
+    tol = _tol(rings)
+
+    for a, b in _random_lines(vx, vy, seed):
+        _check_against_reference(vx, vy, start, a, b, tol)
+
+
+def test_the_mixed_polygon_grid_has_at_least_two_concave_cells():
+    vx, vy, start = _pack(_mixed_polygon_grid())
+    concave = 0
+    for c in range(start.size - 1):
+        x, y = vx[start[c] : start[c + 1]], vy[start[c] : start[c + 1]]
+        ex, ey = np.roll(x, -1) - x, np.roll(y, -1) - y
+        turn = np.sign(ex * np.roll(ey, -1) - ey * np.roll(ex, -1))
+        concave += int((turn > 0).any() and (turn < 0).any())
+    assert concave >= 2
+
+
+@pytest.mark.parametrize("name", sorted(SEEDED_GRIDS))
+def test_a_grid_moved_to_a_northing_of_7_02e6_walks_the_same_as_at_the_origin(name):
+    build, seed = SEEDED_GRIDS[name]
+    rings = build()
+    vx, vy, start = _pack(rings)
+    tol = _tol(rings)
+    mx, my, mstart, centre = _centred(rings, HIGH_NORTHING)
+    assert centre[1] > 7.0e6
+
+    for a, b in _random_lines(vx, vy, seed):
+        cell, s0, s1, _ = walk(vx, vy, start, a, b, tol)
+        # The ends go into the moved grid's frame in float64, as the route does.
+        ma = (a + HIGH_NORTHING) - centre
+        mb = (b + HIGH_NORTHING) - centre
+        m_cell, m_s0, m_s1, _ = _check_against_reference(mx, my, mstart, ma, mb, tol)
+        assert m_cell.tolist() == cell.tolist()
+        # Within the walk's own tolerance, 1e-9 of the extent: a flat 1e-9 is finer than float64
+        # can hold at 7.02e6, where one step is 9.3e-10. Float32 would be off by half a unit.
+        np.testing.assert_allclose(m_s0, s0, rtol=0, atol=tol)
+        np.testing.assert_allclose(m_s1, s1, rtol=0, atol=tol)
+
+
 def test_nothing_under_pesto_section_names_pesto_model_or_a_heavy_library_at_module_scope():
     offenders = []
     for path in sorted(SECTION_PACKAGE.rglob("*.py")):
