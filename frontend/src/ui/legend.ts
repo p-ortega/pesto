@@ -232,6 +232,9 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
   const noValueEl = document.createElement('span')
   noValueEl.classList.add('tabular-nums')
   noValueEl.textContent = `${opts.noValue} cells no value`
+  // A zero count is no warning, so the folded legend leaves it out and keeps the line on one row.
+  if (opts.contested === 0) contestedEl.classList.add('legend-zero')
+  if (opts.noValue === 0) noValueEl.classList.add('legend-zero')
   countsLine.appendChild(contestedEl)
   countsLine.appendChild(noValueEl)
   if (opts.contested > 0 || opts.noValue > 0) countsLine.classList.add('legend-keep')
