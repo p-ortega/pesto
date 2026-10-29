@@ -2,6 +2,8 @@
 // why it is off. They report clicks and draw nothing; the map view hatches. Every word reaches
 // the DOM through textContent.
 
+import { paintNote } from './note-line'
+
 export type OverlayKind = 'atBounds' | 'conflict'
 
 export type OverlayStatus =
@@ -28,7 +30,12 @@ export interface OverlayControlsHandle {
   dispose(): void
 }
 
-const NAME: Record<OverlayKind, string> = { atBounds: '45° at bounds', conflict: '135° conflict' }
+// The angle lives in the hatch swatch beside each name, so the name says only what is hatched.
+const NAME: Record<OverlayKind, string> = { atBounds: 'At bounds', conflict: 'Prior-data conflict' }
+const TOOLTIP: Record<OverlayKind, string> = {
+  atBounds: 'Hatch the cells whose parameters sit at a bound in the drawn realization.',
+  conflict: 'Hatch the sites whose observations conflict with the prior.',
+}
 const SWATCH: Record<OverlayKind, string> = { atBounds: 'at-bounds', conflict: 'conflict' }
 
 interface Toggle {
@@ -51,6 +58,15 @@ export function renderOverlayControls(host: HTMLElement, opts: OverlayControlsOp
   let disposed = false
   const toggles = {} as Record<OverlayKind, Toggle>
 
+  function showReason(t: Toggle, text: string | null): void {
+    paintNote(t.reason, text === null ? null : { kind: 'reason', text })
+    t.reason.hidden = text === null
+  }
+
+  function withTooltip(kind: OverlayKind, detail: string): string {
+    return detail === '' ? TOOLTIP[kind] : `${TOOLTIP[kind]}\n${detail}`
+  }
+
   function paint(kind: OverlayKind): void {
     const t = toggles[kind]
     const { status } = t
@@ -58,23 +74,19 @@ export function renderOverlayControls(host: HTMLElement, opts: OverlayControlsOp
     t.button.setAttribute('aria-pressed', String(status.kind === 'shown' && t.wanted))
     if (status.kind === 'shown') {
       t.count.textContent = status.label
-      t.reason.textContent = ''
-      t.reason.hidden = true
-      t.button.title = status.title
+      showReason(t, null)
+      t.button.title = withTooltip(kind, status.title)
     } else if (status.kind === 'suppressed') {
       t.count.textContent = status.label
-      t.reason.textContent = status.reason
-      t.reason.hidden = false
-      t.button.title = status.title
+      showReason(t, status.reason)
+      t.button.title = withTooltip(kind, status.title)
     } else if (status.kind === 'off') {
       t.count.textContent = NAME[kind]
-      t.reason.textContent = status.reason
-      t.reason.hidden = false
+      showReason(t, status.reason)
       t.button.title = status.reason
     } else {
       t.count.textContent = NAME[kind]
-      t.reason.textContent = 'reading…'
-      t.reason.hidden = false
+      showReason(t, 'reading…')
       t.button.title = `${NAME[kind]}: reading…`
     }
     opts.onChange?.()
