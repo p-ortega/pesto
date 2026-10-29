@@ -26,7 +26,7 @@ from pesto.cache.manifest import Manifest
 from pesto.ingest.elev import ELEV_PREDATES, load_elev
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import load_idomain, load_mesh_extent
-from pesto.section.assemble import STATUS_TEXT, assemble
+from pesto.section.assemble import STATUS_TEXT, answer_notes, assemble
 from pesto.section.walk import LineTooShort, walk
 
 router = APIRouter(prefix="/api/run/grid")
@@ -91,6 +91,7 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
         return problem(502, "the section could not be assembled", artifact="elev", detail=str(exc))
 
     length = math.hypot(params.bx - params.ax, params.by - params.ay)
+    counts = {**walk_counts, **built.counts}
     body = {
         "line": {"a": [params.ax, params.ay], "b": [params.bx, params.by], "length": length},
         "nlay": elev.nlay,
@@ -104,8 +105,8 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
         "has_idomain": idomain is not None,
         "grid_type": elev.grid_type,
         "length_units": None,
-        "counts": {**walk_counts, **built.counts},
-        "notes": [],
+        "counts": counts,
+        "notes": answer_notes(counts),
         "tag": cache_tag(manifest, "elev"),
     }
     return Response(
