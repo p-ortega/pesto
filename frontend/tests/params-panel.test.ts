@@ -1467,10 +1467,12 @@ describe('the Selected parameters section in the panel', () => {
     return { el, store, handle }
   }
 
-  it('is hidden while pars is empty and lists another view\'s pars grouped by the table\'s pargp', async () => {
+  it('shows its title and hint while pars is empty and lists another view\'s pars grouped by the table\'s pargp', async () => {
     const { el, store } = await mountMixed()
     const section = el.querySelector<HTMLElement>('.params-selected')!
-    expect(section.style.display).toBe('none')
+    expect(section.style.display).not.toBe('none')
+    expect(section.querySelector('.params-selected-title')!.textContent).toBe('Selected parameters')
+    expect(section.querySelector('[role="grid"]')).toBeNull()
 
     store.set({ pars: new Set(['b1', 'a2']) }, 'map')
     store.flush()
