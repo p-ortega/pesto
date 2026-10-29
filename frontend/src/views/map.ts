@@ -140,6 +140,22 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
     },
   })
 
+  // The counts are the store's sets by name, so a cell picked from the map shows on a tab not in view.
+  const paintParsCount = (n: number): void =>
+    tabs.setCount('params', n, n === 1 ? '1 parameter selected' : `${n} parameters selected`)
+  const paintSitesCount = (n: number): void =>
+    tabs.setCount('obs', n, n === 1 ? '1 site selected' : `${n} sites selected`)
+  paintParsCount(store.get().pars.size)
+  paintSitesCount(store.get().sites.size)
+  store.subscribe(
+    (s) => s.pars,
+    (next) => paintParsCount(next.pars.size),
+  )
+  store.subscribe(
+    (s) => s.sites,
+    (next) => paintSitesCount(next.sites.size),
+  )
+
   obsHandle = renderObsPanel(tabs.panel('obs'), {
     store,
     capabilities: opts.state.capabilities,
