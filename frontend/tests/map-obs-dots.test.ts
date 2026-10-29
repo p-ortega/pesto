@@ -513,6 +513,23 @@ describe('colouring the map by observations', () => {
     })
   })
 
+  describe('the folded Colours line', () => {
+    it('says the Colours settings are not used while the map shows observation dots, and names them again on the way back', async () => {
+      const { root } = await mounted()
+      const colours = root.querySelector('[data-fold="colours"]') as HTMLElement
+      const line = () => colours.querySelector(':scope > .fold-summary')?.textContent
+      ;(colours.querySelector(':scope > .fold-button') as HTMLButtonElement).click()
+      const parLine = line()
+      expect(parLine).toContain('viridis')
+
+      await enterObservations(root)
+      expect(line()).toBe('Colours: not used for observation dots')
+
+      switchButton(root, 'Parameters').click()
+      await vi.waitFor(() => expect(line()).toBe(parLine))
+    })
+  })
+
   describe('back to parameters', () => {
     it('draws the parameter field exactly as before', async () => {
       const { root, store } = await mounted()
