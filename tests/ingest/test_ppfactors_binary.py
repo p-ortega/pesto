@@ -52,7 +52,8 @@ def test_a_binary_factor_file_no_group_matches_is_refused_not_dropped(tmp_path):
     ((name, reason),) = index.not_interpolable
     assert name == "factors.m.bnd.layer0.bin"
     assert "no parameter group" in reason
-    assert reason.endswith("and its layer 1 (index 0)")
+    # The layer number is quoted from the file name as written, with how pesto read it.
+    assert reason.endswith("and the layer in its name (layer0 as written, read as index 0)")
 
 
 def test_a_points_file_whose_tag_is_only_part_of_a_name_segment_is_not_matched(tmp_path):
