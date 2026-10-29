@@ -18,6 +18,7 @@ import {
   type StackStatus,
 } from '../data/section-siblings'
 import type { PpIndex } from '../data/fields'
+import { layerListWords, layerWords } from '../data/layer-words'
 import { LatestWins } from '../data/latest-wins'
 import type { ParIdentity } from '../data/parmap'
 import { isPointGroup } from '../data/points'
@@ -134,8 +135,8 @@ function appendLine(el: HTMLElement, text: string, ...classes: string[]): HTMLEl
 
 function pinchedLine(layers: number[]): string | null {
   if (layers.length === 0) return null
-  const which = layers.length === 1 ? `layer ${layers[0]}` : `layers ${layers.join(', ')}`
-  return `pinched out in this cell: ${which} (zero thickness)`
+  const which = layers.length === 1 ? layerWords(layers[0]) : layerListWords(layers)
+  return `pinched out in this cell (zero thickness): ${which}`
 }
 
 const OBS_LINE = 'the section colours parameter fields only'
@@ -521,9 +522,9 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function fillLine(stack: Stack, fill: LayerFill, layer: number): string | null {
     if (fill.kind === 'contested') return contestedLine(layer, fill.groups)
-    if (fill.kind === 'loading') return `${fill.group} is still being read for layer ${layer}`
-    if (fill.kind === 'failed') return `${fill.group} could not be read, so layer ${layer} has no value`
-    if (fill.kind === 'none') return `no group of ${stack.siblings.key} fills layer ${layer}`
+    if (fill.kind === 'loading') return `${fill.group} is still being read for ${layerWords(layer)}`
+    if (fill.kind === 'failed') return `${fill.group} could not be read, so ${layerWords(layer)} has no value`
+    if (fill.kind === 'none') return `no group of ${stack.siblings.key} fills ${layerWords(layer)}`
     return null
   }
 
@@ -598,7 +599,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function legendEntries(): LegendEntry[] {
     if (answer === null || !fitted) return []
-    const entries: LegendEntry[] = [{ text: camera.veText() }]
+    const entries: LegendEntry[] = [{ text: camera.veText() }, { text: `plan ${layerWords(planLayer)}` }]
     const push = (...texts: string[]) => entries.push(...texts.map((text) => ({ text })))
     if (painted !== null) {
       const { out, plan, stack } = painted
@@ -682,10 +683,12 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     readoutSource,
     selectionChanged,
     refresh,
-    // Moves the band only; the section's colours do not depend on the plan's layer.
+    // Moves the band and the legend's plan layer line only; the section's colours do not depend on the plan's layer.
     planLayerChanged(layer) {
+      const moved = layer !== planLayer
       planLayer = layer
       paintFrame()
+      if (moved && isShown) opts.repaintLegend()
     },
     reupload() {
       sectionLayer?.reupload()

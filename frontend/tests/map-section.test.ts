@@ -545,7 +545,7 @@ describe('the section tracer on the map', () => {
 
 interface SectionHooks {
   refresh: Mocked
-  planLayerChanged: Mocked
+  planLayerChanged: Mocked & ((layer: number) => void)
 }
 
 async function sectionHooks(): Promise<SectionHooks> {
