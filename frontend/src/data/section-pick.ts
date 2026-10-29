@@ -40,3 +40,16 @@ export function pickSection(answer: SectionAnswer, s: number, z: number): Sectio
   }
   return null
 }
+
+// Status 3 is the server's "pinched out (zero thickness)"; those quads are never picked (D-41).
+const PINCHED = 3
+
+/** The layers of one piece that are pinched out, in order, so a readout can list them. */
+export function pinchedLayers(answer: SectionAnswer, piece: number): number[] {
+  const layers: number[] = []
+  if (!Number.isInteger(piece) || piece < 0 || piece >= answer.nPieces) return layers
+  for (let k = 0; k < answer.nlay; k++) {
+    if (answer.status[piece * answer.nlay + k] === PINCHED) layers.push(k)
+  }
+  return layers
+}
