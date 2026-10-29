@@ -437,7 +437,7 @@ const legendText = (root: HTMLElement): string => root.querySelector('.floating-
 const readoutText = (root: HTMLElement): string => root.querySelector('.floating-bottom-right')?.textContent ?? ''
 
 function drawLine(m: Mounted, ay = 0.5, by = 0.5): void {
-  ;(m.root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
+  ;(m.root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement).click()
   clickAt(m.canvas, clientAtPlan(m.canvas, 0.25, ay))
   clickAt(m.canvas, clientAtPlan(m.canvas, 2.75, by))
 }

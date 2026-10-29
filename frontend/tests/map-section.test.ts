@@ -403,7 +403,7 @@ function buttonByText(root: HTMLElement, text: string): HTMLButtonElement {
 }
 
 const toolButton = (root: HTMLElement): HTMLButtonElement =>
-  root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement
+  root.querySelector('button[aria-label="Draw section line"]') as HTMLButtonElement
 const sectionToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Section view')
 const planToggle = (root: HTMLElement): HTMLButtonElement => buttonByText(root, 'Plan view')
 const legendText = (root: HTMLElement): string => root.querySelector('.floating-bottom-left')?.textContent ?? ''
@@ -444,7 +444,7 @@ describe('the section tracer on the map', () => {
     const m = await mounted()
     expect(sectionToggle(m.root).disabled).toBe(true)
     expect(m.root.querySelector('.section-controls')?.textContent).toContain('draw a section line on the plan first')
-    expect(toolButton(m.root).textContent).toBe('Section')
+    expect(toolButton(m.root).textContent).toBe('Draw section line')
   })
 
   it('sets the line from two armed clicks without picking a cell or moving the plan, then enables Section view', async () => {
