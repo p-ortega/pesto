@@ -21,6 +21,8 @@ export interface SectionValues {
   /** Other absent quads the field holds a value for: no usable thickness, or outside the model with no idomain. */
   absentWithValue: number
   contested: number
+  /** Quads on a cell id the plan does not hold: the plan and the section disagree about the grid. */
+  unknownCell: number
   /** The zero-based layers the drawn group sets anywhere in the model, sorted. */
   layersSet: number[]
 }
@@ -78,10 +80,14 @@ export function sectionValues(answer: SectionAnswer, plan: SectionValuesInput): 
   const nCells = plan.nCells
   const useReferenced = !plan.hasIdomain && plan.referenced !== null
 
+  let unknownCell = 0
   for (let q = 0; q < n; q++) {
     const c = cell[Math.floor(q / nlay)]
-    const outside = useReferenced && !(c >= 0 && c < nCells && plan.referenced![c])
-    absence[q] = status[q] !== 0 || outside ? 1 : 0
+    // The plan holds nothing to say about such a cell, so it is drawn as absence and counted.
+    const unknown = !(c >= 0 && c < nCells)
+    if (unknown) unknownCell += 1
+    const outside = useReferenced && (unknown || !plan.referenced![c])
+    absence[q] = status[q] !== 0 || outside || unknown ? 1 : 0
   }
 
   // The value each quad would take before absence, NaN where the drawn group gives none.
@@ -148,7 +154,7 @@ export function sectionValues(answer: SectionAnswer, plan: SectionValuesInput): 
     if (v < lo || v > hi) beyondLimits += 1
   }
 
-  return { values, noValue, absence, contestedMask, beyondLimits, inactiveWithValue, absentWithValue, contested, layersSet }
+  return { values, noValue, absence, contestedMask, beyondLimits, inactiveWithValue, absentWithValue, contested, unknownCell, layersSet }
 }
 
 /**
@@ -162,7 +168,8 @@ export function classifyQuad(answer: SectionAnswer, plan: SectionValuesInput, qu
   const c = cell[Math.floor(quad / nlay)]
   const k = quad % nlay
   const nCells = plan.nCells
-  const outside = !plan.hasIdomain && plan.referenced !== null && !(c >= 0 && c < nCells && plan.referenced[c])
+  if (c < 0 || c >= nCells) return { kind: 'outside-model' }
+  const outside = !plan.hasIdomain && plan.referenced !== null && !plan.referenced[c]
   if (status[quad] !== 0 || outside) return { kind: 'outside-model' }
   const field = plan.fullField
   if (plan.obsActive || field === null || plan.drawnGroup === null) return null

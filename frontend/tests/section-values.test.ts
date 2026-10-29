@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { ParIdentity } from '../src/data/parmap'
 import { parseSection, type SectionAnswer } from '../src/data/section'
-import { layersSetLine, sectionValues, type SectionValuesInput } from '../src/data/section-values'
+import { classifyQuad, layersSetLine, sectionValues, type SectionValuesInput } from '../src/data/section-values'
 
 // Three pieces on cells 0, 1 and 2, two layers; quad q is piece * 2 + layer and quad 3 (cell 1,
 // layer 1) is idomain 0.
@@ -144,7 +144,20 @@ describe('sectionValues for a block group', () => {
     // With two cells, cell 2 on layer 0 and cell 0 on layer 1 would share a key.
     const out = sectionValues(answer(), blockPlan(G_ROWS.slice(0, 2), { nCells: 2 }))
     expect(list(out.values)).toEqual([10, 20, null, null, null, null])
-    expect(out.noValue[4]).toBe(1)
+  })
+
+  it('draws an answer cell the plan does not hold as absence and counts it, never as a quiet no value', () => {
+    const out = sectionValues(answer(), blockPlan(G_ROWS.slice(0, 2), { nCells: 2 }))
+    expect(list(out.absence)).toEqual([0, 0, 0, 1, 1, 1])
+    expect(list(out.noValue)).toEqual([0, 0, 1, 0, 0, 0])
+    expect(out.unknownCell).toBe(2)
+    expect(sectionValues(answer(), blockPlan(G_ROWS)).unknownCell).toBe(0)
+  })
+
+  it('classifies a quad on a cell the plan does not hold as outside the model, not as holding no parameter', () => {
+    const plan = blockPlan(G_ROWS.slice(0, 2), { nCells: 2 })
+    expect(classifyQuad(answer(), plan, 4)).toEqual({ kind: 'outside-model' })
+    expect(classifyQuad(answer(), plan, 2)).toEqual({ kind: 'no-parameter' })
   })
 
   it('returns one entry per quad of the answer however large the model is', () => {
