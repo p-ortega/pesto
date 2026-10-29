@@ -128,6 +128,16 @@ def test_a_group_placed_on_two_layers_is_several():
 
     assert result["value"] == "several"
     assert result["source"] == "placement rule idx-layer"
+    assert result["note"] == "placed on layers 2, 3 (index 1, 2)"
+
+
+def test_a_group_placed_on_more_than_ten_layers_shows_the_first_ten_in_both_numbers():
+    result = group_layer(list(range(12)), "idx-layer", "g")
+
+    assert result["note"] == (
+        "placed on layers 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and more "
+        "(index 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 and more)"
+    )
 
 
 def test_an_unplaced_group_reads_the_layer_from_its_name_as_written_and_never_converts_it():
@@ -136,6 +146,7 @@ def test_an_unplaced_group_reads_the_layer_from_its_name_as_written_and_never_co
 
     assert (zero["value"], zero["source"]) == (0, "group name, as written")
     assert (three["value"], three["source"]) == (3, "group name, as written")
+    assert three["note"] == "the number in the group name, shown as written and not converted"
 
 
 def test_a_group_name_naming_two_layers_is_several():
@@ -143,6 +154,7 @@ def test_a_group_name_naming_two_layers_is_several():
 
     assert result["value"] == "several"
     assert result["source"] == "group name, as written"
+    assert result["note"] == "the group name names layers 1, 2, shown as written and not converted"
 
 
 def test_a_group_with_no_placement_and_no_layer_in_its_name_says_not_stated():
