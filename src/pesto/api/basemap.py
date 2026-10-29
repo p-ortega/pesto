@@ -48,7 +48,8 @@ NO_OVERLAP_REASON = "the image does not overlap the model; reprojection is not s
 LINK_REASON = "this entry's target resolves outside the folder being listed"
 
 _MEDIA_TYPES = {"png": "image/png", "jpeg": "image/jpeg"}
-_SERVE_MIN, _SERVE_MAX = 512, 16384
+# Few fixed sizes keep the shrunk copies in the home store to a handful per image.
+_SERVE_STEPS = (512, 1024, 2048, 4096, 8192)
 
 
 def _refuse(status: int, code: str, title: str, *, detail: str | None = None) -> JSONResponse:
@@ -500,8 +501,10 @@ class _ImageQuery(RunQuery):
 
 
 def _serve_limit(requested: int) -> int:
-    """The longest side the browser can take, from the size it asked for (D-34)."""
-    return min(max(requested, _SERVE_MIN), _SERVE_MAX, TEXTURE_CAP)
+    """The longest side to serve: the largest fixed step within the size the
+    browser asked for, never above the texture cap (D-34)."""
+    ceiling = min(requested, TEXTURE_CAP)
+    return max((step for step in _SERVE_STEPS if step <= ceiling), default=_SERVE_STEPS[0])
 
 
 @router.get("/image")

@@ -416,3 +416,48 @@ def test_shrinking_and_removing_touch_nothing_but_the_store(opened, tmp_path):
     assert list(_store(opened).iterdir()) == []
     assert [snapshot(f) for f in guarded] == before
     assert_no_path_leaked(opened)
+
+
+@pytest.mark.parametrize(
+    "requested, expected",
+    [(-5, 512), (0, 512), (511, 512), (512, 512), (1023, 512), (1500, 1024), (4096, 4096), (5000, 4096), (16384, 8192)],
+)
+def test_the_serve_limit_snaps_down_to_a_fixed_step(requested, expected):
+    from pesto.api.basemap import _serve_limit
+
+    assert _serve_limit(requested) == expected
+
+
+def test_many_different_max_values_make_only_a_few_copies(opened):
+    _wide(opened, size=(9000, 30))
+    _register(opened, "wide.png")
+    for requested in range(600, 8000, 250):
+        assert opened.get("/api/run/basemap/image", params={"max": requested}).status_code == 200
+    assert len(list(_store(opened).glob("image_*.png"))) <= 4
+
+
+def test_registering_again_clears_the_copies_of_the_old_tag_and_keeps_the_new_ones(opened):
+    _wide(opened)
+    first = _register(opened, "wide.png")
+    assert opened.get("/api/run/basemap/image", params={"max": 1024}).status_code == 200
+    old_copy = _store(opened) / f"image_{first['tag']}_1024.png"
+    assert old_copy.exists()
+    (_store(opened) / "keep.txt").write_text("not pesto's to delete")
+
+    put_world_file(opened.images, "wide.pgw", a=0.01, e=-0.01, c=1001.0, f=2001.0)
+    second = _register(opened, "wide.png")
+
+    assert second["tag"] != first["tag"]
+    assert not old_copy.exists()
+    assert sorted(p.name for p in _store(opened).iterdir()) == ["basemap.json", "keep.txt"]
+
+
+def test_remove_also_clears_a_temp_file_a_crashed_write_left_and_leaves_the_rest(opened):
+    _wide(opened)
+    _register(opened, "wide.png")
+    (_store(opened) / ".ingest-abc123.tmp").write_bytes(b"half a write")
+    (_store(opened) / "keep.txt").write_text("not pesto's to delete")
+
+    assert opened.post("/api/run/basemap/remove").json() == {"status": "none"}
+
+    assert [p.name for p in _store(opened).iterdir()] == ["keep.txt"]

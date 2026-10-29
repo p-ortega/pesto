@@ -86,11 +86,34 @@ def store_inside(run_dir: Path, cache_root: Path) -> bool:
     return False
 
 
+def _sweep(folder: Path, patterns: tuple[str, ...], keep_prefix: str | None = None) -> None:
+    """Delete pesto's own leftovers directly inside the store folder. A link
+    among them goes as a link, never followed, and nothing outside is touched."""
+    if folder.is_symlink() or not folder.is_dir():
+        return
+    resolved = folder.resolve()
+    for pattern in patterns:
+        for path in folder.glob(pattern):
+            if keep_prefix is not None and path.name.startswith(keep_prefix):
+                continue
+            if path.parent.resolve() != resolved:
+                continue
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+
+
 def write_registration(run_dir: Path, record: dict) -> None:
-    """Raises OSError when the store cannot be written; the caller reports it."""
+    """Raises OSError when the store cannot be written; the caller reports it.
+
+    Once the new record is down, the shrunk copies of any older tag go: they
+    can never be served again and would only pile up."""
     folder = basemap_dir(run_dir)
     folder.mkdir(parents=True, exist_ok=True)
     write_atomic_text(folder / _RECORD_NAME, json.dumps(record, indent=2))
+    try:
+        _sweep(folder, ("image_*.png",), keep_prefix=f"image_{record['tag']}_")
+    except OSError:
+        pass  # Clearing old copies is housekeeping; the new record is already saved.
 
 
 def read_registration(run_dir: Path) -> dict | None | StoreFailure:
@@ -172,20 +195,18 @@ class StoreLinkError(Exception):
 def remove_registration(run_dir: Path) -> None:
     """Delete this run's record and its downscaled copies, and nothing else.
 
-    Only ``basemap.json`` and ``image_*.png`` directly inside the store folder
-    go; a link among them is removed as a link, never followed. Raises
-    StoreLinkError when the folder itself is a link and OSError when a delete
-    fails. The caller checks ``store_inside`` first.
+    Only ``basemap.json``, ``image_*.png`` and the ``.ingest-*.tmp`` a crashed
+    write leaves, directly inside the store folder, go; a link among them is
+    removed as a link, never followed. Raises StoreLinkError when the folder
+    itself is a link and OSError when a delete fails. The caller checks
+    ``store_inside`` first.
     """
     folder = basemap_dir(run_dir)
     if folder.is_symlink():
         raise StoreLinkError(folder.name)
     if not folder.is_dir():
         return
-    resolved = folder.resolve()
-    doomed = [folder / _RECORD_NAME, *folder.glob("image_*.png")]
-    for path in doomed:
-        if path.parent.resolve() != resolved:
-            continue
-        if path.is_symlink() or path.is_file():
-            path.unlink(missing_ok=True)
+    record = folder / _RECORD_NAME
+    if record.is_symlink() or record.is_file():
+        record.unlink(missing_ok=True)
+    _sweep(folder, ("image_*.png", ".ingest-*.tmp"))
