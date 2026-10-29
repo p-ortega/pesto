@@ -689,7 +689,7 @@ describe('the folding map cards', () => {
     const colours = foldButton(root, 'colours') as HTMLButtonElement
     expect(data.getAttribute('aria-expanded')).toBe('false')
     expect(colours.getAttribute('aria-expanded')).toBe('false')
-    expect(root.querySelector('[data-fold="data"] > .fold-summary')?.textContent).toBe('Data')
+    expect(root.querySelector('[data-fold="data"] > .fold-summary')?.textContent).toBe('Data: G1 · layer 1 (0) · base')
     expect(root.querySelector('[data-fold="colours"] > .fold-summary')?.textContent).toBe(
       'Colours: viridis · linear · robust 2–98% · smooth',
     )
@@ -698,6 +698,8 @@ describe('the folding map cards', () => {
     data.click()
     expect(data.getAttribute('aria-expanded')).toBe('true')
     expect(colours.getAttribute('aria-expanded')).toBe('false')
+    // Open, the line is the card's title alone.
+    expect(root.querySelector('[data-fold="data"] > .fold-summary')?.textContent).toBe('Data')
     colours.click()
     expect(colours.getAttribute('aria-expanded')).toBe('true')
   })

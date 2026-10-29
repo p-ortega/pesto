@@ -4,7 +4,7 @@
 // keeps the viewer's choice in localStorage when it can, and works the same when storage throws.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SHORT_MAP_HEIGHT, isShortMap, renderFold } from '../src/ui/fold'
+import { SHORT_MAP_HEIGHT, foldOthersToFit, isShortMap, renderFold, settleStack, type FoldHandle } from '../src/ui/fold'
 import { basemapSummary } from '../src/ui/basemap-controls'
 import { renderOverlayControls } from '../src/ui/overlay-controls'
 import { loadRealStylesheet } from './support/run-together'
@@ -66,14 +66,37 @@ describe('a foldable card', () => {
     fold.body.style.display = 'flex'
     fold.body.textContent = 'Add basemap'
     fold.setSummary('grid.png')
-    expect(getComputedStyle(summary(fold.el)).display).toBe('none')
 
     button(fold.el).click()
     expect(getComputedStyle(fold.body).display).toBe('none')
     expect(getComputedStyle(summary(fold.el)).display).not.toBe('none')
     expect(summary(fold.el).textContent).toBe('Basemap: grid.png')
+    expect(summary(fold.el).title).toBe('Basemap: grid.png')
     fold.setSummary(null)
     expect(summary(fold.el).textContent).toBe('Basemap')
+  })
+
+  it('shows its name alone as the title while open, with the body under it, and the full line again when folded', () => {
+    loadRealStylesheet()
+    const fold = renderFold({ key: 'basemap', name: 'Basemap' })
+    document.body.appendChild(fold.el)
+    fold.body.textContent = 'Add basemap'
+    fold.setSummary('grid.png')
+    const title = summary(fold.el)
+    expect(title.textContent).toBe('Basemap')
+    expect(title.title).toBe('Basemap')
+    const style = getComputedStyle(title)
+    expect(style.display).not.toBe('none')
+    expect(style.fontSize).toBe('14px')
+    expect(style.fontWeight).toBe('600')
+    expect(style.color).toBe('var(--ink-primary)')
+    expect(getComputedStyle(fold.body).gridArea.startsWith('2')).toBe(true)
+    expect(getComputedStyle(button(fold.el)).gridArea.startsWith('1')).toBe(true)
+
+    button(fold.el).click()
+    expect(title.textContent).toBe('Basemap: grid.png')
+    button(fold.el).click()
+    expect(title.textContent).toBe('Basemap')
   })
 
   it('folds the legend to its ramp and group name, hiding only its other text lines', () => {
@@ -88,14 +111,18 @@ describe('a foldable card', () => {
     scale.classList.add('label')
     scale.textContent = 'Scale: Linear'
     fold.body.append(ramp, name, scale)
-    // The legend's own lines name it, so its folded line adds no text.
-    expect(fold.el.textContent).toBe('G1Scale: Linear')
+    // Open, it carries its title like every card; a detail never joins it, since its lines say what it draws.
+    fold.setSummary('ignored')
+    expect(fold.el.textContent).toBe('LegendG1Scale: Linear')
+    expect(getComputedStyle(summary(fold.el)).display).not.toBe('none')
 
     button(fold.el).click()
     expect(getComputedStyle(fold.body).display).not.toBe('none')
     expect(getComputedStyle(ramp).display).not.toBe('none')
     expect(getComputedStyle(name).display).not.toBe('none')
     expect(getComputedStyle(scale).display).toBe('none')
+    // Folded, the ramp and group name say what it is, so the title goes.
+    expect(getComputedStyle(summary(fold.el)).display).toBe('none')
   })
 
   it('shows nothing while its body is empty, such as the legend before the first field', () => {
@@ -142,6 +169,41 @@ describe('a foldable card', () => {
     expect(fold.folded()).toBe(false)
     expect(button(fold.el).getAttribute('aria-expanded')).toBe('true')
     expect(renderFold({ key: 'controls', name: 'Controls' }).folded()).toBe(false)
+  })
+
+  it('folds from code and stores it, or opens without storing when told not to remember', () => {
+    const fold = renderFold({ key: 'colours', name: 'Colours' })
+    expect(fold.chosen()).toBe(false)
+    fold.setFolded(true)
+    expect(fold.folded()).toBe(true)
+    expect(button(fold.el).getAttribute('aria-expanded')).toBe('false')
+    expect(localStorage.getItem('pesto.fold.colours')).toBe('folded')
+    expect(fold.chosen()).toBe(true)
+
+    const quiet = renderFold({ key: 'overlays', name: 'Overlays', startFolded: true })
+    quiet.setFolded(false, { remember: false })
+    expect(quiet.folded()).toBe(false)
+    expect(quiet.el.getAttribute('data-folded')).toBe('false')
+    expect(localStorage.getItem('pesto.fold.overlays')).toBeNull()
+    expect(quiet.chosen()).toBe(false)
+  })
+
+  it('counts a stored value or a click as chosen', () => {
+    localStorage.setItem('pesto.fold.data', 'open')
+    expect(renderFold({ key: 'data', name: 'Data' }).chosen()).toBe(true)
+    const clicked = renderFold({ key: 'basemap', name: 'Basemap' })
+    button(clicked.el).click()
+    expect(clicked.chosen()).toBe(true)
+  })
+
+  it('tells onUserToggle about a click, with the new state, and not about setFolded', () => {
+    const told: boolean[] = []
+    const fold = renderFold({ key: 'data', name: 'Data', onUserToggle: (folded) => told.push(folded) })
+    button(fold.el).click()
+    button(fold.el).click()
+    fold.setFolded(true)
+    fold.setFolded(false, { remember: false })
+    expect(told).toEqual([true, false])
   })
 
   it('ignores a stored value it does not recognise', () => {
@@ -208,5 +270,63 @@ describe('what a folded card says', () => {
     ;(host.querySelector('[data-overlay="atBounds"]') as HTMLButtonElement).click()
     expect(handle.summary()).toBe('At bounds: 19 parameters (turned off) · Prior-data conflict: no prior data conflict file')
     expect(seen.length).toBeGreaterThanOrEqual(4)
+  })
+})
+
+describe('keeping the stack in sight', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const stack = () => ['data', 'colours', 'overlays', 'basemap'].map((key) => renderFold({ key, name: key }))
+  // Too tall while more than `room` cards are open.
+  const openMoreThan = (cards: FoldHandle[], room: number) => () => cards.filter((c) => !c.folded()).length > room
+
+  it('folds the other open cards while the stack is too tall, stores each, and keeps the opened one open', () => {
+    const [data, colours, overlays, basemap] = stack()
+    basemap.setFolded(true, { remember: false })
+    const folded = foldOthersToFit(colours, [data, colours, overlays, basemap], () => true)
+    expect(folded).toEqual([overlays, data])
+    expect(colours.folded()).toBe(false)
+    expect([data, overlays].map((c) => c.folded())).toEqual([true, true])
+    expect(localStorage.getItem('pesto.fold.data')).toBe('folded')
+    expect(localStorage.getItem('pesto.fold.overlays')).toBe('folded')
+    expect(localStorage.getItem('pesto.fold.basemap')).toBeNull()
+  })
+
+  it('folds nothing when the stack fits, and stops as soon as it does', () => {
+    const cards = stack()
+    expect(foldOthersToFit(cards[0], cards, () => false)).toEqual([])
+    expect(cards.every((c) => !c.folded())).toBe(true)
+    const folded = foldOthersToFit(cards[0], cards, openMoreThan(cards, 2))
+    expect(folded).toEqual([cards[3], cards[2]])
+    expect(cards.map((c) => c.folded())).toEqual([false, false, true, true])
+  })
+
+  it('folds nothing and ends when the opened card is the only one open', () => {
+    const cards = stack()
+    for (const card of cards.slice(1)) card.setFolded(true)
+    expect(foldOthersToFit(cards[0], cards, () => true)).toEqual([])
+  })
+
+  it('at first look folds the lowest unchosen cards quietly, never the first, and stops when it fits', () => {
+    const cards = stack()
+    const folded = settleStack(cards, openMoreThan(cards, 2))
+    expect(folded).toEqual([cards[3], cards[2]])
+    expect(cards.map((c) => c.folded())).toEqual([false, false, true, true])
+    for (const key of ['data', 'colours', 'overlays', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+  })
+
+  it('at first look leaves a card the viewer chose, and the first card, open even when nothing fits', () => {
+    localStorage.setItem('pesto.fold.overlays', 'open')
+    const cards = stack()
+    const folded = settleStack(cards, () => true)
+    expect(folded).toEqual([cards[3], cards[1]])
+    expect(cards.map((c) => c.folded())).toEqual([false, true, false, true])
+    expect(cards[1].chosen()).toBe(false)
   })
 })

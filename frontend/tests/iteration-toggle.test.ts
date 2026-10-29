@@ -536,7 +536,7 @@ describe('a realization or group the new iteration lacks', () => {
     const instance = await meshLayerInstance()
     setInput(root, 'Realization', '1')
     await vi.waitFor(() => expect(stub.valuesCalls.at(-1)?.realization).toBe('r001'))
-    await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left')?.textContent).not.toBe(''))
+    await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left > .fold-body')?.textContent).not.toBe(''))
     const callsBefore = stub.valuesCalls.length
 
     await choose(root, store, '3')
@@ -547,7 +547,7 @@ describe('a realization or group the new iteration lacks', () => {
     const values = lastValues(instance)
     expect(values.length).toBe(2)
     expect(values.every((v) => Number.isNaN(v))).toBe(true)
-    expect(root.querySelector('.floating-bottom-left')?.textContent).toBe('')
+    expect(root.querySelector('.floating-bottom-left > .fold-body')?.textContent).toBe('')
     expect(selectedNotice(root)).toBe('')
     expect(sliderLabel(root)).toBe('—')
   })
@@ -651,7 +651,7 @@ describe('a realization or group the new iteration lacks', () => {
     await vi.waitFor(() => expect(drawnNotice(root)).toContain('group sy has nothing to draw in iteration 3'))
     expect(stub.valuesCalls.length).toBe(callsBefore)
     expect(lastValues(instance).every((v) => Number.isNaN(v))).toBe(true)
-    expect(root.querySelector('.floating-bottom-left')?.textContent).toBe('')
+    expect(root.querySelector('.floating-bottom-left > .fold-body')?.textContent).toBe('')
 
     // Picking a group that does draw in this iteration fetches its field.
     setInput(root, 'Parameter group', 'hk', 'change')

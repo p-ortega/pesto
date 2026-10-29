@@ -130,6 +130,17 @@ function stubMapHeight(height: number): void {
   })
 }
 
+// The left stack always holds more than its room, whatever is folded.
+function stubStackOverflow(): void {
+  const inStack = (el: HTMLElement) => el.classList.contains('floating-top-left')
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return inStack(this) ? 1000 : 0
+  })
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return inStack(this) ? 400 : 0
+  })
+}
+
 async function mountReady(): Promise<HTMLElement> {
   stubEnvironment()
   const { mountMap } = await import('../src/views/map')
@@ -256,6 +267,9 @@ describe('the Data and Colours cards', () => {
     const select = card(root, 'colours').querySelector('select[aria-label="Colormap"]') as HTMLSelectElement
     select.value = 'magma'
     select.dispatchEvent(new Event('change'))
+    // Open, the line is the title alone; folding shows the settings it kept up with meanwhile.
+    expect(summary(root, 'colours')).toBe('Colours')
+    foldButton(root, 'colours').click()
     expect(summary(root, 'colours')).toBe('Colours: magma · linear · robust 2–98% · smooth')
   })
 
@@ -273,6 +287,45 @@ describe('the Data and Colours cards', () => {
     const root = await mountReady()
     expect(foldButton(root, 'data').getAttribute('aria-expanded')).toBe('true')
     expect(foldButton(root, 'colours').getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('folds the other open cards and stores them when an opened card would not fit, and keeps it open', async () => {
+    const root = await mountReady()
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    foldButton(root, 'colours').click()
+    expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
+    stubStackOverflow()
+    foldButton(root, 'colours').click()
+    expect(card(root, 'colours').getAttribute('data-folded')).toBe('false')
+    expect(card(root, 'data').getAttribute('data-folded')).toBe('true')
+    expect(localStorage.getItem('pesto.fold.data')).toBe('folded')
+    expect(localStorage.getItem('pesto.fold.colours')).toBe('open')
+    // Folding a card never makes room for anything, so it folds nothing else.
+    foldButton(root, 'colours').click()
+    expect(card(root, 'data').getAttribute('data-folded')).toBe('true')
+  })
+
+  it('at first look folds Basemap, Overlays and then Colours when the stack would not fit, keeps Data open and stores nothing', async () => {
+    stubStackOverflow()
+    const root = await mountReady()
+    await vi.waitFor(() => expect(card(root, 'basemap')?.getAttribute('data-folded')).toBe('true'))
+    expect(['data', 'colours', 'overlays', 'basemap'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
+      'false',
+      'true',
+      'true',
+      'true',
+    ])
+    for (const key of ['data', 'colours', 'overlays', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+  })
+
+  it('at first look leaves a card the viewer chose open', async () => {
+    localStorage.setItem('pesto.fold.overlays', 'open')
+    stubStackOverflow()
+    const root = await mountReady()
+    await vi.waitFor(() => expect(card(root, 'basemap')?.getAttribute('data-folded')).toBe('true'))
+    expect(card(root, 'overlays').getAttribute('data-folded')).toBe('false')
+    expect(card(root, 'colours').getAttribute('data-folded')).toBe('true')
+    expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
   })
 
   it('starts both cards open on a tall map', async () => {
