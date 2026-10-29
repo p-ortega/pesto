@@ -7,6 +7,7 @@ import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
+import { loadRealStylesheet } from './support/run-together'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -75,7 +76,9 @@ function metaHeader(dtype: string): Record<string, string> {
   return { 'X-Pesto-Meta': JSON.stringify({ dtype }) }
 }
 
-function stubEnvironment(): void {
+type Reply = { status: number; bytes?: Uint8Array; body?: unknown; headers?: Record<string, string> }
+
+function stubEnvironment(overrides: Record<string, Reply> = {}): void {
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
   vi.stubGlobal(
     'fetch',
@@ -91,6 +94,7 @@ function stubEnvironment(): void {
           headers: { get: (name: string) => result.headers?.[name] ?? null },
         }
       }
+      if (overrides[path] !== undefined) return respond(overrides[path])
       switch (path) {
         case '/api/run/grid/mesh':
           return respond({ status: 200, body: MESH_BODY })
@@ -141,8 +145,8 @@ function stubStackOverflow(): void {
   })
 }
 
-async function mountReady(): Promise<HTMLElement> {
-  stubEnvironment()
+async function mountReady(overrides: Record<string, Reply> = {}): Promise<HTMLElement> {
+  stubEnvironment(overrides)
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
@@ -176,6 +180,7 @@ describe('the Data and Colours cards', () => {
   })
 
   afterEach(() => {
+    for (const style of Array.from(document.head.querySelectorAll('style'))) style.remove()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.clearAllMocks()
@@ -379,6 +384,22 @@ describe('the Data and Colours cards', () => {
       'true',
     ])
     for (const key of ['data', 'colours', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+  })
+
+  it('at first look folds the legend quietly but keeps its no-value count readable', async () => {
+    loadRealStylesheet()
+    stubStackOverflow()
+    // The one parameter sits on layer 2 (index 1), so the drawn top layer has a cell with no value.
+    const root = await mountReady({ '/api/run/grid/cells/layer': { status: 200, bytes: bytesOf(new Int32Array([1])) } })
+    await vi.waitFor(() => expect(card(root, 'legend')?.getAttribute('data-folded')).toBe('true'))
+    expect(localStorage.getItem('pesto.fold.legend')).toBeNull()
+    const lines = Array.from(card(root, 'legend').querySelectorAll('.fold-body .label')) as HTMLElement[]
+    const counts = lines.find((el) => el.textContent?.includes('cells no value'))
+    expect(counts?.textContent).toContain('1 cells no value')
+    expect(getComputedStyle(counts!).display).not.toBe('none')
+    // A line that only restates a setting still folds away.
+    const scale = lines.find((el) => el.textContent?.startsWith('Scale:'))
+    expect(getComputedStyle(scale!).display).toBe('none')
   })
 
   it('starts both cards open on a tall map', async () => {

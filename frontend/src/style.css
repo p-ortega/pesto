@@ -1604,8 +1604,8 @@ body {
   display: none !important;
 }
 
-/* The folded legend keeps its ramp, end values and drawn group name. */
-.fold-card[data-fold-mode='lines'][data-folded='true'] .fold-body .label:not(.legend-name) {
+/* The folded legend keeps its ramp, end values and drawn group name, and every warning line, so no failure is folded out of sight. */
+.fold-card[data-fold-mode='lines'][data-folded='true'] .fold-body .label:not(.legend-name):not(.legend-keep) {
   display: none;
 }
 

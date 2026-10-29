@@ -145,6 +145,14 @@ describe('the stacked legend', () => {
     expect(stackLegend(plan, { loading: [], failed: [] })[0].title).toContain('layer 2 (index 1): klayer2pp and klayer5pp (contested)')
   })
 
+  it('marks every line that says what is not drawn as one the folded legend keeps, and the mapping as one it folds', () => {
+    const plan = planSiblings('klayer1pp', input(['klayer1pp', 'klayer2pp', 'klayer5pp'], [pp('klayer1pp', 0), pp('klayer2pp', 1), pp('klayer5pp', 1)], [], 3))!
+    const entries = stackLegend(plan, { loading: [2], failed: [{ group: 'klayer9pp', layers: [2], reason: 'the field is missing' }] })
+    expect(entries[0].keep).toBeUndefined()
+    expect(entries.slice(1).every((e) => e.keep === true)).toBe(true)
+    expect(entries.find((e) => e.text.startsWith('klayer9pp could not be read'))?.keep).toBe(true)
+  })
+
   it('writes runs of layers as ranges, one-based with the index beside them', () => {
     expect(layerRangeWords([3])).toBe('layer 4 (index 3)')
     expect(layerRangeWords([0, 1, 2, 3, 5, 7, 8])).toBe('layers 1–4, 6 and 8–9 (index 0–3, 5 and 7–8)')
