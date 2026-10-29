@@ -189,3 +189,104 @@ def test_the_synthetic_run_carries_an_elev_artifact_the_section_route_reads(tmp_
     assert body["cell"] == [0, 1, 2, 3, 4, 5]
     assert body["s0"] == pytest.approx([0.5, 1.5, 2.5, 3.5, 4.5, 5.5], abs=1e-9)
     assert body["has_idomain"] is False
+
+
+# --- refusals and the cap -------------------------------------------------
+
+
+def test_a_line_wholly_outside_the_mesh_is_refused_rather_than_drawn_empty(tmp_path, run_dir):
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    client = _client(layout)
+
+    response = client.get(
+        "/api/run/grid/section", params={"ax": 990.0, "ay": 1990.0, "bx": 991.0, "by": 1990.0}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["title"] == "the line crosses no model cell"
+
+
+def test_a_line_with_both_ends_off_the_mesh_keeps_the_part_over_cells(tmp_path, run_dir):
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    client = _client(layout)
+
+    response = client.get("/api/run/grid/section", params={**LINE, "bx": 1004.5})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["line"]["length"] == pytest.approx(5.0, abs=1e-12)
+    assert body["s0"][0] > 0
+    assert body["s0"][0] == pytest.approx(0.5, abs=1e-9)
+    assert body["s1"][-1] < body["line"]["length"]
+    assert body["s1"][-1] == pytest.approx(4.0, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("params", "field"),
+    [
+        ({**LINE, "ax": "nan"}, "ax"),
+        ({**LINE, "ay": "inf"}, "ay"),
+        ({k: v for k, v in LINE.items() if k != "by"}, "by"),
+        ({**LINE, "cx": 1.0}, "cx"),
+    ],
+)
+def test_a_bad_query_is_refused_naming_the_field_and_not_the_value(
+    tmp_path, run_dir, params, field
+):
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    client = _client(layout)
+
+    response = client.get("/api/run/grid/section", params=params)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert f"query.{field}" in detail
+    assert "nan" not in detail and "inf" not in detail
+
+
+def test_an_answer_over_the_quad_cap_is_refused_naming_its_size(tmp_path, run_dir, monkeypatch):
+    import pesto.api.section as section_route
+
+    monkeypatch.setattr(section_route, "MAX_SECTION_QUADS", 4)
+    layout = _build_cache(run_dir, tmp_path / "cache")
+    client = _client(layout)
+
+    response = client.get("/api/run/grid/section", params=LINE)
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["title"] == "the section would hold too many cells"
+    assert "3 pieces over 2 layers" in body["detail"]
+    assert "6 section cells" in body["detail"]
+
+
+def test_the_quad_cap_is_four_hundred_thousand():
+    import pesto.api.section as section_route
+
+    assert section_route.MAX_SECTION_QUADS == 400_000
+
+
+def test_an_elev_artifact_recorded_failed_is_refused_with_its_reason(tmp_path, run_dir):
+    layout = _build_cache(run_dir, tmp_path / "cache", with_elev=False)
+    manifest = Manifest.load(layout)
+    manifest.mark_failed("elev", "the grid file records no layer bottoms")
+    manifest.save(layout)
+    client = _client(layout)
+
+    response = client.get("/api/run/grid/section", params=LINE)
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["artifact"] == "elev"
+    assert body["detail"] == "the grid file records no layer bottoms"
+
+
+def test_no_open_run_is_refused():
+    app, token = create_app()
+    client = TestClient(app, base_url=BASE_URL)
+    client.headers["x-pesto-token"] = token
+
+    response = client.get("/api/run/grid/section", params=LINE)
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "no run is open"
