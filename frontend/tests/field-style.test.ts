@@ -160,11 +160,11 @@ describe('classLabel', () => {
   const nine = { classes: 9, symmetric: false, texture: false }
 
   it('names the class and its edges', () => {
-    expect(classLabel(2.5, [0, 9], nine, 'linear')).toBe('class 3 of 9 (2 to 3)')
+    expect(classLabel(2.5, [0, 9], nine, 'linear')).toBe('step 3 of 9 (2 to 3)')
   })
 
   it('says the edges are log10 numbers on a log10 scale', () => {
-    expect(classLabel(0.5, [-1, 2], { ...nine, classes: 3 }, 'log10')).toBe('class 2 of 3 (log₁₀ 0 to 1)')
+    expect(classLabel(0.5, [-1, 2], { ...nine, classes: 3 }, 'log10')).toBe('step 2 of 3 (log₁₀ 0 to 1)')
   })
 
   it('gives nothing while continuous or for a value that is not finite', () => {
@@ -173,7 +173,7 @@ describe('classLabel', () => {
   })
 
   it('names the one class by the limits', () => {
-    expect(classLabel(5, [5, 5], { ...nine, classes: 1 }, 'linear')).toBe('class 1 of 1 (5 to 5)')
+    expect(classLabel(5, [5, 5], { ...nine, classes: 1 }, 'linear')).toBe('step 1 of 1 (5 to 5)')
   })
 })
 
@@ -259,7 +259,7 @@ describe('followLimits', () => {
   })
 
   it('has a prefix that reads as a full line with the reason', () => {
-    expect(SYMMETRIC_TURNED_OFF_PREFIX + SYMMETRIC_LOG_REASON).toBe('symmetric was turned off: a log scale has no zero to centre on')
+    expect(SYMMETRIC_TURNED_OFF_PREFIX + SYMMETRIC_LOG_REASON).toBe('centre on zero was turned off: a log scale has no zero to centre on')
   })
 })
 

@@ -419,7 +419,7 @@ describe('the saved field style (classes, symmetric, texture)', () => {
     expect(symmetricBox(root).checked).toBe(false)
     expect(symmetricBox(root).disabled).toBe(true)
     expect((root.querySelector('#symmetric-reason') as HTMLElement).textContent).toBe(
-      'symmetric was turned off: a log scale has no zero to centre on',
+      'centre on zero was turned off: a log scale has no zero to centre on',
     )
     expect((await lastStyle()).symmetric).toBe(false)
 
