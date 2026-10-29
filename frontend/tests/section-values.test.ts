@@ -140,6 +140,13 @@ describe('sectionValues for a block group', () => {
     expect(list(out.noValue)).toEqual([0, 0, 0, 0, 1, 0])
   })
 
+  it('gives no value to an answer cell the plan does not hold, rather than another layer of a held cell', () => {
+    // With two cells, cell 2 on layer 0 and cell 0 on layer 1 would share a key.
+    const out = sectionValues(answer(), blockPlan(G_ROWS.slice(0, 2), { nCells: 2 }))
+    expect(list(out.values)).toEqual([10, 20, null, null, null, null])
+    expect(out.noValue[4]).toBe(1)
+  })
+
   it('returns one entry per quad of the answer however large the model is', () => {
     const rows = [...G_ROWS, { group: 'G', cell: 49_999_999, layer: 99, value: 1 }]
     const out = sectionValues(answer(), blockPlan(rows, { nCells: 50_000_000 }))
