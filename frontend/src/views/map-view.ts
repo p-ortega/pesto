@@ -1976,6 +1976,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // goes through here (visual contract §11).
   function fitToExtent(): void {
     if (!camera || !mesh) return
+    userMovedPlan = true
     camera.fitAnimated(mesh.bounds, redrawFromCamera, { reduced: prefersReducedMotion(), inset: planInset() })
   }
 
@@ -1993,6 +1994,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   // The band the last plan fit used, so the first draw can tell whether the cards settled elsewhere.
   let fittedBandCss = 0
+  // The first draw's second fit must not undo a pan, zoom or fit the user made while the field loaded.
+  let userMovedPlan = false
 
   function planInset(): Inset {
     fittedBandCss = leftBandCss()
@@ -2012,6 +2015,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (!camera) return
+    userMovedPlan = true
     camera.pan(dx, dy)
     redrawFromCamera()
   }
@@ -2022,6 +2026,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (!camera) return
+    userMovedPlan = true
     camera.zoomAt(x, y, factor)
     redrawFromCamera()
   }
@@ -4079,6 +4084,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     // LD-4: the first fit into the free area, once the Data, Colours and Overlays cards exist.
     camera.fit(mesh.bounds, 0.04, planInset())
+    userMovedPlan = false
     layer.setMatrix(camera.matrix())
     pending = committed
     await performFetch(committed)
@@ -4093,7 +4099,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
     }
     // Still the first draw: the Basemap card and the folds above can move the band, so fit once more if they did.
-    if (camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
+    if (!userMovedPlan && camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
       camera.fit(mesh.bounds, 0.04, planInset())
       redrawFromCamera()
     }

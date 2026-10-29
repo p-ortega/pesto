@@ -289,6 +289,24 @@ describe('the plan fits into the area the left cards leave free (LD-4)', () => {
     expect(Array.from(camera().matrix())).toEqual(before)
   })
 
+  it('keeps a pan the user made while the first field loaded, even when the cards settle wider', async () => {
+    layout.stack = { left: 16, width: 200 }
+    layout.legend = { left: 16, width: 0 }
+    let afterPan: number[] | null = null
+    onValues = () => {
+      layout.legend = { left: 16, width: 256 }
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement
+      canvas.focus()
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))
+      afterPan = Array.from(camera().matrix())
+    }
+    await mountAndDraw()
+
+    expect(afterPan).not.toBeNull()
+    expect(bandFits()).toHaveLength(1)
+    expect(Array.from(camera().matrix())).toEqual(afterPan)
+  })
+
   it('fits again to the band measured at that moment on Fit to extent and on Home', async () => {
     const fitAnimated = vi.spyOn(Camera.prototype, 'fitAnimated')
     const { root, canvas } = await mountAndDraw()
