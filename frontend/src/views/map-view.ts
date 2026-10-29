@@ -103,6 +103,7 @@ import {
   type MaskCache,
   type ParameterFieldSource,
   type RecordedPlacement,
+  type Statistic,
   type UnmappedEntry,
 } from './parameter-field-source'
 import {
@@ -246,6 +247,15 @@ function describeError(error: unknown): string {
 // than a generic message -- the "No cell mapping" designed state names
 // both, never a bare "could not be read" (CLAUDE.md's second and third
 // hard rules).
+// The iteration, statistic and realization of the held field, read back from the key it was fetched under.
+function heldChoiceOf(key: string | null): { iteration: number; stat: string; realization: string | null } | null {
+  if (key === null) return null
+  const parts = JSON.parse(key) as unknown[]
+  const [, , iteration, stat, realization] = parts
+  if (typeof iteration !== 'number' || typeof stat !== 'string') return null
+  return { iteration, stat, realization: typeof realization === 'string' ? realization : null }
+}
+
 function problemArtifactAndReason(error: unknown): { artifact: string | null; reason: string } {
   if (error instanceof ApiError) {
     return { artifact: error.problem.artifact ?? null, reason: error.problem.detail ?? error.problem.title }
@@ -539,7 +549,20 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       meshNotes: mesh?.notes ?? [],
       referenced: idomain === null && mesh !== null ? activeMaskFor(0) : null,
       selectionLabel: selectionLabel(committed),
+      ppIndex,
+      identities: allIdentities,
+      pointXy,
+      heldChoice: heldChoiceOf(heldKey),
     }),
+    loadField: async (request, signal) => {
+      try {
+        return await source.loadField({ ...request, stat: request.stat as Statistic }, signal)
+      } catch (error) {
+        // Named by what the server said, so the legend says why a sibling layer has no value.
+        if (error instanceof ApiError) throw new Error(problemArtifactAndReason(error).reason)
+        throw error
+      }
+    },
     paintColours: (target) => {
       paintLayerColours(target)
     },
@@ -558,6 +581,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     onPick: (hit, mode) => handleSectionPick(hit, mode),
     requestRedraw: () => redraw(),
     repaintLegend: () => repaintLegend(),
+    refreshReadout: () => updateReadout(),
   })
   // The ends are kept in world coordinates: the plan point plus the mesh origin, in doubles (D-02).
   const sectionTool = renderSectionTool({
@@ -1102,6 +1126,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // The points behind an interpolated cell, fetched on click and kept until
   // the drawn field changes.
   const contributorsMemo = new Map<number, Contributor[] | { failed: string }>()
+  // The same for a section click on a sibling group's layer, keyed by iteration, group and cell.
+  const siblingContributors = new Map<string, Contributor[] | { failed: string }>()
 
   // Observation colouring (D-21 to D-26): one group's sites as dots, coloured from a frame.
   const obsSource = createObservationStatSource({ runId: opts.state.runId ?? null })
@@ -1384,15 +1410,19 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function updateReadout(): void {
     if (sectionView.shown()) {
       const pick = sectionView.readoutPick()
-      const field = rawFullField ?? new Float32Array(0)
-      const entry = fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
+      // A stacked layer is read from the sibling group that fills it, and named by it.
+      const sibling = sectionView.readoutSource()
+      const field = sibling?.field ?? rawFullField ?? new Float32Array(0)
+      const entry = sibling !== null ? interpolatedEntry(sibling.group) : fieldKind === 'cell' ? interpolatedEntry(fieldGroup) : null
+      const memo = (cell: number) =>
+        sibling !== null ? siblingContributors.get(siblingContributorKey(sibling.group, cell)) : contributorsMemo.get(cell)
       const interpolated =
         pick !== null && pick.classification?.kind === 'interpolated' && entry !== null
-          ? { value: field[pick.cellId], nPoints: entry.n_pp, contributors: contributorsMemo.get(pick.cellId) ?? null }
+          ? { value: field[pick.cellId], nPoints: entry.n_pp, contributors: memo(pick.cellId) ?? null }
           : undefined
       renderReadout(readoutEl, {
         pick: pick ?? { kind: 'none' },
-        group: drawnGroup ?? '',
+        group: sibling?.group ?? drawnGroup ?? '',
         joined,
         field,
         interpolated,
@@ -1450,6 +1480,22 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         ? null
         : classLabel(fullField[classIndex] ?? Number.NaN, drawnLimits, drawnStyle, scaledFieldScale ?? committed.scale)
     renderReadout(readoutEl, { pick, group, joined, field, interpolated, classLine })
+  }
+
+  function siblingContributorKey(group: string, cellId: number): string {
+    return JSON.stringify([committed.iteration, group, cellId])
+  }
+
+  function fetchSiblingContributors(group: string, cellId: number): void {
+    const key = siblingContributorKey(group, cellId)
+    if (siblingContributors.has(key)) return
+    void fieldContributors(committed.iteration, group, cellId)
+      .then((list): Contributor[] | { failed: string } => list)
+      .catch((error: unknown) => ({ failed: problemArtifactAndReason(error).reason }))
+      .then((result) => {
+        siblingContributors.set(key, result)
+        if (sectionView.readoutPick()?.cellId === cellId) updateReadout()
+      })
   }
 
   function fetchContributors(cellId: number): void {
@@ -1575,7 +1621,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     selectedCellId = mode === 'remove' ? null : hit.cell
     updateReadout()
     clearLassoOutline()
-    if (sectionView.readoutPick()?.classification?.kind === 'interpolated') fetchContributors(hit.cell)
+    if (sectionView.readoutPick()?.classification?.kind === 'interpolated') {
+      const sibling = sectionView.readoutSource()
+      if (sibling !== null) fetchSiblingContributors(sibling.group, hit.cell)
+      else fetchContributors(hit.cell)
+    }
     const current = store.get()
     const base = pendingCells ?? current.cells
     const next = selectCells({ ...current, cells: new Set(base) }, [hit.cell], mode).cells
