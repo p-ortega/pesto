@@ -429,6 +429,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const pickerEl = document.createElement('div')
   // Hidden by the .colour-obs rules while the map is coloured by observations.
   pickerEl.setAttribute('data-colour-source', 'par')
+  // Until the Data card exists the picker sits in the stack, so its loading and no-group states are seen.
+  topLeftEl.appendChild(pickerEl)
   const readoutEl = document.createElement('div')
   readoutEl.classList.add('floating-bottom-right')
   // Two notices about the shown iteration. Each is replaced on every switch,
@@ -2214,6 +2216,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   function paintPicker(state: GroupPickerState): void {
     paintedPicker = state
     renderGroupPicker(pickerEl, { state, onGroupChange: handleGroupChange, bare: true })
+    pickerEl.classList.toggle('floating', pickerEl.parentElement === topLeftEl && state.kind !== 'failed')
   }
 
   // A group change re-runs classifyCells (via applyLayer, which reads
@@ -3924,6 +3927,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     dataCard.el.after(coloursFold.el)
     const rows = renderDataCard(dataCard.body)
     rows.group.control.appendChild(pickerEl)
+    pickerEl.classList.remove('floating')
     // WINDOWS.md #8: `committed` already carries the restored colormap,
     // reverse, scale and limits state (or the fresh-run defaults, when
     // there is none) -- passed straight through so the checkbox and
