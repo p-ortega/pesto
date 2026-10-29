@@ -6,6 +6,8 @@ import { formatTimeValue, timeAxisTitle } from './charts/time-axis'
 
 export interface TimeSliderOptions {
   onChange: (index: number) => void
+  /** A row inside a labelled card: no floating card of its own and no Time word. */
+  bare?: boolean
 }
 
 export interface TimeSliderHandle {
@@ -18,22 +20,27 @@ export interface TimeSliderHandle {
   setIndex(index: number): void
   /** A line about the frame being read or why it could not be; null clears it. */
   setStatus(text: string | null): void
+  /** The shown time without its place among the times, or null when no time is shown. */
+  currentText(): string | null
 }
 
 export function renderTimeSlider(host: HTMLElement, opts: TimeSliderOptions): TimeSliderHandle {
   host.textContent = ''
-  host.classList.add('floating', 'time-slider')
+  if (!opts.bare) host.classList.add('floating')
+  host.classList.add('time-slider')
   host.hidden = true
 
   const label = document.createElement('label')
   label.classList.add('label')
-  const title = document.createElement('span')
-  title.textContent = 'Time'
   const textEl = document.createElement('span')
   textEl.classList.add('tabular-nums', 'time-slider-text')
   const slot = document.createElement('span')
   slot.classList.add('time-slider-slot')
-  label.appendChild(title)
+  if (!opts.bare) {
+    const title = document.createElement('span')
+    title.textContent = 'Time'
+    label.appendChild(title)
+  }
   label.appendChild(slot)
   label.appendChild(textEl)
 
@@ -53,10 +60,12 @@ export function renderTimeSlider(host: HTMLElement, opts: TimeSliderOptions): Ti
   let times: number[] = []
   let kind = ''
   let input: HTMLInputElement | null = null
+  let shown: string | null = null
 
   function paintText(index: number): void {
     const time = times[index]
-    textEl.textContent = time === undefined ? '' : `${formatTimeValue(kind, time)} · ${index + 1} of ${times.length}`
+    shown = time === undefined ? null : formatTimeValue(kind, time)
+    textEl.textContent = shown === null ? '' : `${shown} · ${index + 1} of ${times.length}`
   }
 
   function clearLines(): void {
@@ -69,6 +78,7 @@ export function renderTimeSlider(host: HTMLElement, opts: TimeSliderOptions): Ti
     slot.textContent = ''
     input = null
     times = []
+    shown = null
     clearLines()
   }
 
@@ -130,6 +140,9 @@ export function renderTimeSlider(host: HTMLElement, opts: TimeSliderOptions): Ti
     },
     setStatus(text) {
       statusEl.textContent = text ?? ''
+    },
+    currentText() {
+      return shown
     },
   }
 }
