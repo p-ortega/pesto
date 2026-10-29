@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import { classColour, ramp, swatchCssAngle, textureAngles } from '../src/gl/colormap'
 import { ONE_CLASS_EQUAL } from '../src/gl/field-style'
-import { renderLegend, type LegendOptions } from '../src/ui/legend'
+import { edgeRows, renderLegend, type LegendOptions } from '../src/ui/legend'
 
 const BASE_OPTIONS: LegendOptions = {
   colormap: 'viridis',
@@ -86,6 +86,19 @@ describe('renderLegend', () => {
   })
 })
 
+describe('edgeRows', () => {
+  it('keeps two rows for a few steps and adds rows so each number keeps about 4rem of a 15rem card body', () => {
+    expect(edgeRows(3)).toBe(2)
+    expect(edgeRows(5)).toBe(2)
+    expect(edgeRows(7)).toBe(3)
+    expect(edgeRows(11)).toBe(4)
+    for (const n of [3, 5, 7, 9, 11]) {
+      const halfColumnRem = 15 / (2 * n + 2 * edgeRows(n))
+      expect(2 * edgeRows(n) * halfColumnRem).toBeGreaterThanOrEqual(4)
+    }
+  })
+})
+
 describe('renderLegend with classes', () => {
   const NO_NOTES = { classes: null, symmetric: null, texture: null }
 
@@ -95,11 +108,12 @@ describe('renderLegend with classes', () => {
     const swatches = [...el.querySelectorAll('.legend-class')] as HTMLElement[]
     const edges = [...el.querySelectorAll('.legend-edge')] as HTMLElement[]
     expect(edges).toHaveLength(swatches.length + 1)
-    // Edge j spans half-columns 2j+1..2j+4 so its centre is grid line 2j+3, where swatch j starts.
-    swatches.forEach((swatch, k) => expect(swatch.style.gridColumn).toBe(`${2 * k + 3} / span 2`))
-    edges.forEach((edge, j) => expect(edge.style.gridColumn).toBe(`${2 * j + 1} / span 4`))
+    // Edge j spans half-columns 2j+1..2j+2r so its centre is grid line 2j+r+1, where swatch j starts.
+    const r = edgeRows(7)
+    swatches.forEach((swatch, k) => expect(swatch.style.gridColumn).toBe(`${2 * k + r + 1} / span 2`))
+    edges.forEach((edge, j) => expect(edge.style.gridColumn).toBe(`${2 * j + 1} / span ${2 * r}`))
     // Neighbouring edges sit on different rows, so their numbers never touch.
-    edges.forEach((edge, j) => expect(edge.style.gridRow).toBe(String(2 + (j % 2))))
+    edges.forEach((edge, j) => expect(edge.style.gridRow).toBe(String(2 + (j % r))))
     expect((el.querySelector('.legend-class-grid') as HTMLElement).style.width).toBe('100%')
   })
 
