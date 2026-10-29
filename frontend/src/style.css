@@ -1390,3 +1390,72 @@ body {
   flex-wrap: wrap;
   gap: var(--space-sm);
 }
+
+/* A foldable card: the button sits top-right, and the folded line takes the body's place. */
+.fold-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--space-sm);
+}
+
+.fold-summary,
+.fold-body {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.fold-button {
+  grid-area: 1 / 2;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 var(--space-xs);
+  cursor: pointer;
+}
+
+.fold-button[aria-expanded='true']::before {
+  content: '▾';
+}
+
+.fold-button[aria-expanded='false']::before {
+  content: '▸';
+}
+
+/* The fold card is the surface, so the card drawn inside it loses its own frame. */
+.fold-body.floating,
+.fold-body > .floating,
+.fold-body > .basemap-controls {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.fold-card[data-fold-mode='card'][data-folded='false'] > .fold-summary,
+.fold-card[data-fold-mode='lines'] > .fold-summary {
+  display: none;
+}
+
+/* !important because the controls set their own display inline. */
+.fold-card[data-fold-mode='card'][data-folded='true'] > .fold-body {
+  display: none !important;
+}
+
+/* The folded legend keeps its ramp, end values and drawn group name. */
+.fold-card[data-fold-mode='lines'][data-folded='true'] .fold-body .label:not(.legend-name) {
+  display: none;
+}
+
+/* A card with nothing drawn in it, such as the legend before the first field, shows nothing. */
+.fold-card:has(> .fold-body:empty) {
+  display: none;
+}
+
+/* Long legend lines wrap inside the card instead of running past its edge. */
+.floating-bottom-left .fold-body {
+  max-width: 22rem;
+}
+
+.section-legend-line {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

@@ -202,7 +202,7 @@ function renderLines(el: HTMLElement, opts: LegendOptions): void {
   // panel. textContent only, so a non-ASCII or markup-bearing name from
   // the control file renders exactly as recorded, never as markup.
   const groupLine = document.createElement('div')
-  groupLine.classList.add('label', 'truncate')
+  groupLine.classList.add('label', 'truncate', 'legend-name')
   groupLine.textContent = opts.group
   groupLine.title = opts.group
   el.appendChild(groupLine)

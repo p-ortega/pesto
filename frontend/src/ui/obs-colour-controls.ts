@@ -281,12 +281,12 @@ export function renderObsLegend(el: HTMLElement, opts: ObsLegendOptions | null):
   }
   el.appendChild(ends)
 
-  line(el, `${OBS_STAT_LABEL[opts.stat]}, iteration ${opts.iteration}`, 'wrap-note')
+  line(el, `${OBS_STAT_LABEL[opts.stat]}, iteration ${opts.iteration}`, 'wrap-note', 'legend-name')
   if (opts.stat === 'resid_mean') {
     line(el, `simulated minus observed; ${highEndWord(opts.stat)} means simulated above observed`, 'wrap-note')
   }
   if (opts.group !== undefined) {
-    const group = line(el, opts.group, 'truncate')
+    const group = line(el, opts.group, 'truncate', 'legend-name')
     group.title = opts.group
   }
   line(el, opts.timeText, 'wrap-note')
