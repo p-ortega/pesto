@@ -26,12 +26,14 @@ from pesto.cache.manifest import Manifest
 from pesto.ingest.elev import ELEV_PREDATES, load_elev
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import load_idomain, load_mesh_extent
-from pesto.section.assemble import STATUS_TEXT, assemble
+from pesto.section.assemble import STATUS_TEXT, answer_notes, assemble
 from pesto.section.walk import LineTooShort, walk
 
 router = APIRouter(prefix="/api/run/grid")
 
 _UNAVAILABLE = "the section is not available"
+# About 10 MB of JSON. Looked up at request time, so a test can lower it.
+MAX_SECTION_QUADS = 400_000
 
 
 class SectionQuery(RunQuery):
@@ -81,6 +83,26 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
         )
     except LineTooShort as exc:
         return problem(422, "the two ends are on the same spot", detail=str(exc))
+    if cell.size == 0:
+        near = walk_counts["candidates"]
+        detail = (
+            f"the line passes the bounding box of {near} cells but crosses none of them"
+            if near
+            else "the line does not reach the bounding box of any cell"
+        )
+        return problem(422, "the line crosses no model cell", detail=detail)
+    n_quads = int(cell.size) * elev.nlay
+    # Checked before any elevation is gathered, so an oversized line costs no more than the walk.
+    if n_quads > MAX_SECTION_QUADS:
+        return problem(
+            422,
+            "the section would hold too many cells",
+            detail=(
+                f"the line crosses {cell.size} pieces over {elev.nlay} layers, "
+                f"{n_quads} section cells, more than the {MAX_SECTION_QUADS} one answer may hold; "
+                "draw a shorter line"
+            ),
+        )
 
     idomain = load_idomain(layout)
     if isinstance(idomain, ReadFailure):
@@ -91,6 +113,7 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
         return problem(502, "the section could not be assembled", artifact="elev", detail=str(exc))
 
     length = math.hypot(params.bx - params.ax, params.by - params.ay)
+    counts = {**walk_counts, **built.counts}
     body = {
         "line": {"a": [params.ax, params.ay], "b": [params.bx, params.by], "length": length},
         "nlay": elev.nlay,
@@ -104,8 +127,8 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
         "has_idomain": idomain is not None,
         "grid_type": elev.grid_type,
         "length_units": None,
-        "counts": {**walk_counts, **built.counts},
-        "notes": [],
+        "counts": counts,
+        "notes": answer_notes(counts),
         "tag": cache_tag(manifest, "elev"),
     }
     return Response(

@@ -65,8 +65,9 @@ def assemble(
     bot = z[:, 1:]
 
     non_finite = ~(np.isfinite(top) & np.isfinite(bot))
-    above = bot > top
-    pinched = bot == top
+    # A quad with no finite elevation is counted once, as non-finite, not also as pinched.
+    above = (bot > top) & ~non_finite
+    pinched = (bot == top) & ~non_finite
 
     status = np.full((cell.size, nlay), ACTIVE, dtype=np.int8)
     status[pinched] = PINCHED
@@ -93,3 +94,50 @@ def assemble(
         "non_finite": int(non_finite.sum()),
     }
     return Assembled(z=z, status=status, counts=counts)
+
+
+# (count key, singular sentence, plural sentence), in the order the notes are read.
+_NOTES = (
+    (
+        "zero_length_dropped",
+        "{n} piece of zero length was dropped where the line only touches a cell at a corner",
+        "{n} pieces of zero length were dropped where the line only touches a cell at a corner",
+    ),
+    (
+        "ties_resolved",
+        "{n} stretch lies on an edge shared by two cells; it went to the lower cell index",
+        "{n} stretches lie on an edge shared by two cells; they went to the lower cell index",
+    ),
+    (
+        "bottom_above_top",
+        "{n} section cell has its bottom above its top; drawn as absence",
+        "{n} section cells have their bottom above their top; drawn as absence",
+    ),
+    (
+        "pinched",
+        "{n} section cell is pinched out (zero thickness); drawn as absence",
+        "{n} section cells are pinched out (zero thickness); drawn as absence",
+    ),
+    (
+        "idomain_below_minus_1",
+        "{n} section cell has an idomain below -1; read as vertical pass-through (idomain -1)",
+        "{n} section cells have an idomain below -1; read as vertical pass-through (idomain -1)",
+    ),
+    (
+        "non_finite",
+        "{n} section cell has no finite elevation; drawn as absence",
+        "{n} section cells have no finite elevation; drawn as absence",
+    ),
+)
+
+
+def answer_notes(counts: dict[str, int]) -> list[str]:
+    """One plain sentence for every count above zero, so nothing the walk or
+    the statuses dropped, resolved or read as absence goes without a trace.
+    ``candidates`` is bookkeeping, not a defect, and never gives a note."""
+    notes = []
+    for key, one, many in _NOTES:
+        n = int(counts.get(key, 0))
+        if n > 0:
+            notes.append((one if n == 1 else many).format(n=n))
+    return notes
