@@ -31,6 +31,7 @@ from pesto.ingest.failures import ReadFailure
 from pesto.ingest.obsindex import usable_mask
 from pesto.ingest.parcell import load_par_cell
 from pesto.ingest.ppfactors import PpGroup, load_pp_index
+from pesto.layer_words import grid_layer_count_words, layer_words
 
 router = APIRouter(prefix="/api/run")
 
@@ -231,7 +232,7 @@ def _sites(table, centres, layer: int, cells: list[int], ring: np.ndarray) -> tu
 
 def _sites_reason(these: str, layer: int) -> str:
     whose = "its" if these == "this cell" else "their"
-    return f"no observation site in {these} or {whose} neighbours on layer {layer}"
+    return f"no observation site in {these} or {whose} neighbours on {layer_words(layer)}"
 
 
 @router.get("/link/cell")
@@ -247,11 +248,10 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
         return shape
     layer = params.layer
     if layer < 0 or layer >= shape.nlay:
-        noun = "layer" if shape.nlay == 1 else "layers"
         return problem(
             422,
             "the layer is outside the grid",
-            detail=f"layer {layer} is outside the grid, which has {shape.nlay} {noun}",
+            detail=f"layer index {layer} is outside the grid, which has {grid_layer_count_words(shape.nlay)}",
         )
     try:
         cells = _parse_cells(params.cells, shape.ncpl)
@@ -283,12 +283,12 @@ async def get_link_cell(request: Request, params: Annotated[LinkCellQuery, Query
         pars_total = len(pars)
         if pars_total > PARS_CAP:
             par_notes.append(
-                f"{pars_total} parameters set {these} on layer {layer}; the first {PARS_CAP} are "
+                f"{pars_total} parameters set {these} on {layer_words(layer)}; the first {PARS_CAP} are "
                 "listed, by parameter group, direct parameters in control-file order and then "
                 "pilot points by largest factor"
             )
             pars = pars[:PARS_CAP]
-        pars_reason = f"no parameter sets {these} on layer {layer}"
+        pars_reason = f"no parameter sets {these} on {layer_words(layer)}"
 
     sites: list[dict] = []
     sites_total = 0

@@ -96,7 +96,7 @@ describe('renderSelectedParams after a cell click', () => {
     const store = makeStore({ pars: found.pars.map((p) => p.parnme), cells: [1234] })
     const { host } = render(store)
 
-    expect(host.querySelector('.params-selected-title')!.textContent).toContain('Parameters that set cell 1234 on layer 3')
+    expect(host.querySelector('.params-selected-title')!.textContent).toContain('Parameters that set cell 1234 on layer 4 (index 3)')
     expect(groupRows(host).map((g) => g.dataset.group)).toEqual(['hk', 'pp_k', 'rch'])
     expect(groupRows(host)[1].textContent).toContain('2 parameters')
     expect(groupRows(host)[0].textContent).toContain('1 parameter')
@@ -110,7 +110,7 @@ describe('renderSelectedParams after a cell click', () => {
     linkApi.recentCellLink.mockReturnValue(found)
     const { host } = render(makeStore({ pars: ['a1'], cells: [12, 13] }))
 
-    expect(host.querySelector('.params-selected-title')!.textContent).toContain('Parameters that set cells 12, 13 on layer 3')
+    expect(host.querySelector('.params-selected-title')!.textContent).toContain('Parameters that set cells 12, 13 on layer 4 (index 3)')
   })
 
   it('lists the par_notes under the heading', () => {
@@ -133,13 +133,22 @@ describe('renderSelectedParams after a cell click', () => {
   })
 
   it('shows the answer reason when no parameter sets the cell, never an empty section', () => {
-    const reason = 'no parameter sets cell 1234 on layer 3'
+    const reason = 'no parameter sets cell 1234 on layer 4 (index 3)'
     linkApi.recentCellLink.mockReturnValue(answer({ reasons: { pars: reason, sites: null } }))
     const { host } = render(makeStore({ pars: [], cells: [1234] }))
 
     expect(host.textContent).toContain(reason)
     expect(host.style.display).not.toBe('none')
     expect(parRows(host).length).toBe(0)
+  })
+
+  it('words the cell and layer itself when the server gave notes but no reason', () => {
+    const note = 'group pp_k: its factor file could not be read'
+    linkApi.recentCellLink.mockReturnValue(answer({ parNotes: [note], reasons: { pars: null, sites: null } }))
+    const { host } = render(makeStore({ pars: [], cells: [1234] }))
+
+    expect(host.querySelector('.params-selected-title')!.textContent).toContain('no parameter listed for cell 1234 on layer 4 (index 3)')
+    expect(host.textContent).toContain(note)
   })
 
   it('draws 500 rows windowed, with only the visible rows and the overscan in the DOM', () => {
