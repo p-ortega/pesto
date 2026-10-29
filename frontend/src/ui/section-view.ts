@@ -11,9 +11,10 @@ import type { ParIdentity } from '../data/parmap'
 import type { ColormapName } from '../gl/colormap'
 import type { EffectiveStyle } from '../gl/field-style'
 import type { MeshLayer } from '../gl/mesh-layer'
-import { SectionCamera, formatVe } from '../gl/section-camera'
+import { SectionCamera } from '../gl/section-camera'
 import { SectionLayer } from '../gl/section-layer'
 import type { SelectMode } from '../state/rules'
+import { prefersReducedMotion } from './chrome'
 import { renderSectionControls, type SectionControlsHandle } from './section-controls'
 
 /** What the plan draws now, read on every refresh. */
@@ -161,6 +162,14 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   const controls = renderSectionControls(opts.controlsHost, {
     onPlan: () => show(false),
     onSection: () => show(true),
+    // A purely visual choice: kept for the page's life, never written to the view state (D-04).
+    onVe: (mode) => {
+      camera.setVe(mode)
+      if (isShown) {
+        opts.requestRedraw()
+        opts.repaintLegend()
+      }
+    },
   })
 
   function dropAnswer(): void {
@@ -343,7 +352,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function legendLines(): string[] {
     if (answer === null || !fitted) return []
-    const lines = [`vertical exaggeration ${formatVe(camera.ve())}× (fitted)`]
+    const lines = [camera.veText()]
     if (painted !== null) {
       const { out, plan } = painted
       if (plan.obsActive) lines.push(OBS_LINE)
@@ -386,12 +395,22 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     },
     fit() {
       if (answer === null) return
-      camera.fit(fitBounds(answer))
       fitted = true
-      if (isShown) {
-        opts.requestRedraw()
-        opts.repaintLegend()
-      }
+      let stated = camera.veText()
+      // Eases like the plan's fit, and jumps when reduced motion is asked for (D-21).
+      camera.fitAnimated(
+        fitBounds(answer),
+        () => {
+          if (!isShown) return
+          opts.requestRedraw()
+          const text = camera.veText()
+          if (text !== stated) {
+            stated = text
+            opts.repaintLegend()
+          }
+        },
+        { reduced: prefersReducedMotion() },
+      )
     },
     resize(width, height) {
       camera.resize(width, height)
