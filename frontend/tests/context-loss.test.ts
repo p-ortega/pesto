@@ -9,17 +9,25 @@
 // are real DOM events dispatched at the real canvas, exercising the
 // actual listener gl/context.ts registers.
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
+import { Camera } from '../src/gl/camera'
 import { CONTEXT_RECOVERY_WINDOW_MS, type RunConfig } from '../src/views/map'
 import { createContext } from '../src/gl/context'
+import { createRecording2d } from './support/recording-2d'
 
 vi.mock('../src/gl/mesh-layer', async (importOriginal) =>
   (await import('./support/mesh-layer-mock')).meshLayerMockModule(await importOriginal()),
 )
 
 const FAKE_GL = { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 }
+const SECTION_ANSWER = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'section-tracer-answer.json'), 'utf8'),
+) as Record<string, unknown>
 
 const CONFIG: RunConfig = {
   case: 'test_run',
@@ -77,8 +85,8 @@ const VIEW_STATE_BODY = {
   stat: 'value',
 }
 
-function stubEnvironment(): { calls: string[] } {
-  const stub = { calls: [] as string[] }
+function stubEnvironment(): { calls: string[]; sections: number } {
+  const stub = { calls: [] as string[], sections: 0 }
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
@@ -122,6 +130,9 @@ function stubEnvironment(): { calls: string[] } {
           return respond({ status: 200, body: VIEW_STATE_BODY })
         case '/api/run/grid/values':
           return respond({ status: 200, bytes: bytesOf(FIELD) })
+        case '/api/run/grid/section':
+          stub.sections += 1
+          return respond({ status: 200, body: SECTION_ANSWER })
         default:
           throw new Error(`unhandled fetch in test: ${path}`)
       }
@@ -280,5 +291,71 @@ describe('the lost-and-restored cycle', () => {
     await vi.advanceTimersByTimeAsync(CONTEXT_RECOVERY_WINDOW_MS + 1)
 
     expect(root.textContent ?? '').not.toContain("couldn't be restored")
+  })
+})
+
+describe('the section through a lost and restored context', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('brings back the section, its axes and its band from held copies, with no new section request', async () => {
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((type: string) =>
+      type === 'webgl2' ? (FAKE_GL as unknown as WebGL2RenderingContext) : type === '2d' ? recording.ctx : null) as typeof HTMLCanvasElement.prototype.getContext)
+    stubMatchMedia()
+    const stub = stubEnvironment()
+    const { mountMap } = await import('../src/views/map')
+    const root = mountFreshRoot()
+    const state = baseState()
+    state.capabilities.section = { available: true, blockedBy: [] }
+    mountMap(root, { config: CONFIG, state })
+    await vi.waitFor(() => expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull())
+    const canvas = root.querySelector('canvas') as HTMLCanvasElement
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: canvas.width, height: canvas.height }) as DOMRect
+
+    // Two armed clicks across the one cell, through a camera fitted the way the map fits the mesh.
+    const plan = new Camera(canvas.width, canvas.height)
+    plan.fit([0, 100, 0, 100])
+    const [x0, y0] = plan.screenToWorld(0, 0)
+    const [x1, y1] = plan.screenToWorld(1, 1)
+    const client = (wx: number, wy: number): [number, number] => [(wx - x0) / (x1 - x0), (wy - y0) / (y1 - y0)]
+    const click = ([x, y]: [number, number]) => {
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true }))
+      canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: x, clientY: y, pointerId: 1, button: 0, bubbles: true }))
+      canvas.dispatchEvent(new MouseEvent('click', { clientX: x, clientY: y, bubbles: true }))
+    }
+    ;(root.querySelector('button[aria-label="Draw a section line"]') as HTMLButtonElement).click()
+    click(client(25, 50))
+    click(client(75, 50))
+    const toggle = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Section view') as HTMLButtonElement
+    toggle.click()
+    await vi.waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'))
+
+    const { MeshLayer } = await import('../src/gl/mesh-layer')
+    const section = vi.mocked(MeshLayer).mock.instances[1] as unknown as { reupload: ReturnType<typeof vi.fn>; draw: ReturnType<typeof vi.fn> }
+    expect(stub.sections).toBe(1)
+    const callsBefore = stub.calls.length
+    const drawsBefore = section.draw.mock.calls.length
+    recording.calls.length = 0
+
+    canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    canvas.dispatchEvent(new Event('webglcontextrestored'))
+
+    expect(section.reupload).toHaveBeenCalledTimes(1)
+    expect(section.draw.mock.calls.length).toBeGreaterThan(drawsBefore)
+    const said = recording.calls.filter((c) => c.method === 'fillText').map((c) => c.args[0])
+    expect(said).toContain('distance from A (model units)')
+    expect(said).toContain('elevation (model units)')
+    expect(recording.calls.some((c) => c.method === 'strokeRect' && c.state.dash.length > 0)).toBe(true)
+    expect(stub.calls.length).toBe(callsBefore)
+    expect(stub.sections).toBe(1)
   })
 })

@@ -14,6 +14,16 @@ export type VeMode = 'fitted' | number
 
 type Bounds = [number, number, number, number]
 
+/** Pixels at each edge a fit leaves clear, so the axes do not sit over the section. */
+export interface SectionInset {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+const NO_INSET: SectionInset = { left: 0, right: 0, top: 0, bottom: 0 }
+
 interface Target {
   scaleX: number
   exaggeration: number
@@ -30,6 +40,7 @@ export class SectionCamera {
   private fitScale: number | null = null
   private mode: VeMode = 'fitted'
   private lastFit: { bounds: Bounds; padding: number } | null = null
+  private inset: SectionInset = NO_INSET
   // Bumped by every move, so an ease still running stops instead of undoing it.
   private motion = 0
 
@@ -46,13 +57,21 @@ export class SectionCamera {
     this.height = height
   }
 
+  /** The edges the next fit leaves clear; pan and zoom ignore it. */
+  setInset(inset: SectionInset): void {
+    this.inset = { ...inset }
+  }
+
   // Shared by fit and fitAnimated, so the eased path lands exactly where the jump does.
   private targetFor(bounds: Bounds, padding: number): Target {
     const [sMin, sMax, zMin, zMax] = bounds
+    const { left, right, top, bottom } = this.inset
+    const boxW = Math.max(this.width - left - right, 1)
+    const boxH = Math.max(this.height - top - bottom, 1)
     const spanS = Math.max(sMax - sMin, 1e-9)
     const spanZ = Math.max(zMax - zMin, 1e-9)
-    const fillS = ((1 - padding) * this.width) / spanS
-    const fillZ = ((1 - padding) * this.height) / spanZ
+    const fillS = ((1 - padding) * boxW) / spanS
+    const fillZ = ((1 - padding) * boxH) / spanZ
     let scaleX: number
     let exaggeration: number
     if (this.mode === 'fitted') {
@@ -67,8 +86,8 @@ export class SectionCamera {
     return {
       scaleX,
       exaggeration,
-      tx: this.width / 2 - (scaleX * (sMin + sMax)) / 2,
-      ty: this.height / 2 + (scaleZ * (zMin + zMax)) / 2,
+      tx: left + boxW / 2 - (scaleX * (sMin + sMax)) / 2,
+      ty: top + boxH / 2 + (scaleZ * (zMin + zMax)) / 2,
     }
   }
 

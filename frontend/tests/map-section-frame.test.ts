@@ -16,6 +16,7 @@ import { SectionCamera, type VeMode } from '../src/gl/section-camera'
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
+import { axesInset } from '../src/ui/section-axes'
 import { createRecording2d } from './support/recording-2d'
 import { loadRealStylesheet } from './support/run-together'
 
@@ -314,6 +315,7 @@ function choose(m: Mounted, value: string): void {
 
 function expectedMatrix(canvas: HTMLCanvasElement, mode: VeMode): Float32Array {
   const camera = new SectionCamera(canvas.width, canvas.height)
+  camera.setInset(axesInset(1))
   camera.setVe(mode)
   camera.fit(SECTION_BOUNDS)
   return camera.matrix(SECTION_REF)
@@ -448,5 +450,100 @@ describe('the exaggeration choice lasts while the page is open', () => {
     colormap.dispatchEvent(new Event('change', { bubbles: true }))
     await vi.waitFor(() => expect(m.stub.puts.at(-1)?.colormap).toBe('magma'), { timeout: 3000 })
     for (const put of m.stub.puts) expect(Object.keys(put).sort()).toEqual(VIEW_KEYS)
+  })
+})
+
+interface FrameHooks {
+  planLayerChanged(layer: number): void
+}
+
+async function frameHooks(): Promise<FrameHooks> {
+  const { createSectionView } = await import('../src/ui/section-view')
+  return vi.mocked(createSectionView).mock.results[0].value as unknown as FrameHooks
+}
+
+// The dashed outlines the frame drew last: one per piece.
+function lastBand(): number[][] {
+  return recording.calls
+    .filter((c) => c.method === 'strokeRect' && c.state.dash.length > 0)
+    .slice(-3)
+    .map((c) => c.args as number[])
+}
+
+function expectBandOver(canvas: HTMLCanvasElement, top: number, bottom: number): void {
+  const camera = new SectionCamera(canvas.width, canvas.height)
+  camera.setInset(axesInset(1))
+  camera.fit(SECTION_BOUNDS)
+  const pieces: Array<[number, number]> = [
+    [0.5, 1.5],
+    [1.5, 2.5],
+    [3.0, 3.5],
+  ]
+  const band = lastBand()
+  expect(band).toHaveLength(3)
+  for (const [i, [s0, s1]] of pieces.entries()) {
+    const [x0, y0] = camera.worldToScreen(s0, top)
+    const [x1, y1] = camera.worldToScreen(s1, bottom)
+    expect(band[i][0]).toBeCloseTo(x0, 4)
+    expect(band[i][1]).toBeCloseTo(y0, 4)
+    expect(band[i][2]).toBeCloseTo(x1 - x0, 4)
+    expect(band[i][3]).toBeCloseTo(y1 - y0, 4)
+  }
+}
+
+function texts(): unknown[] {
+  return recording.calls.filter((c) => c.method === 'fillText').map((c) => c.args[0])
+}
+
+// The x of the last time a text was painted.
+function lastText(text: string): number {
+  return recording.calls.filter((c) => c.method === 'fillText' && c.args[0] === text).at(-1)?.args[1] as number
+}
+
+describe('the frame over the section', () => {
+  beforeEach(prepare)
+  afterEach(cleanUp)
+
+  it('shows its axes only while the section shows', async () => {
+    const m = await mounted()
+    drawLine(m)
+    const overlay = m.root.querySelector('canvas.section-axes-overlay') as HTMLCanvasElement
+    expect(overlay).not.toBeNull()
+    expect(overlay.hidden).toBe(true)
+    // The map canvas is still the first canvas in the map area.
+    expect(m.root.querySelector('canvas')).toBe(m.canvas)
+
+    await showSection(m)
+    expect(overlay.hidden).toBe(false)
+    expect(texts()).toContain('distance from A (model units)')
+    expect(texts()).toContain('elevation (model units)')
+
+    planToggle(m.root).click()
+    expect(overlay.hidden).toBe(true)
+  })
+
+  it('outlines the plan layer in every piece and follows a layer change without recolouring the section', async () => {
+    const { m, section } = await shownSection()
+    expectBandOver(m.canvas, 10, 5)
+
+    m.store.set({ layer: 1 }, 'other')
+    await settle()
+    expectBandOver(m.canvas, 5, 0)
+
+    const hooks = await frameHooks()
+    const values = section.setValues.mock.calls.length
+    hooks.planLayerChanged(0)
+    expectBandOver(m.canvas, 10, 5)
+    expect(section.setValues.mock.calls.length).toBe(values)
+    expect(m.stub.section).toHaveLength(1)
+  })
+
+  it('repaints the axes from the moved camera after a pan', async () => {
+    const { m } = await shownSection()
+    const aBefore = lastText('A')
+    m.canvas.dispatchEvent(pointer('pointerdown', [400, 240]))
+    m.canvas.dispatchEvent(pointer('pointermove', [440, 240]))
+    m.canvas.dispatchEvent(pointer('pointerup', [440, 240]))
+    expect(lastText('A') - aBefore).toBeCloseTo(40, 4)
   })
 })

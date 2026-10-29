@@ -15,6 +15,7 @@ import { SectionCamera } from '../gl/section-camera'
 import { SectionLayer } from '../gl/section-layer'
 import type { SelectMode } from '../state/rules'
 import { prefersReducedMotion } from './chrome'
+import { axesInset, renderSectionAxes } from './section-axes'
 import { renderSectionControls, type SectionControlsHandle } from './section-controls'
 
 /** What the plan draws now, read on every refresh. */
@@ -154,16 +155,30 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   let fitted = false
   let refusal: string | null = null
   let picked: SectionReadout | null = null
-  // Kept for the layer band a later plan draws (D-19).
+  // The plan's layer, outlined across the section by the frame (D-19).
   let planLayer = 0
   // What the last paint drew, so the legend describes the colours on screen.
   let painted: { out: SectionValues; plan: SectionPlanState } | null = null
+
+  const frame = renderSectionAxes({ area: opts.area })
+
+  // The fit keeps clear of the axes, read at each fit since the pixel ratio can change.
+  function fitInset(): void {
+    camera.setInset(axesInset(window.devicePixelRatio || 1))
+  }
+
+  // Reads only the camera and the held answer, never the plan layer's own GL state.
+  function paintFrame(): void {
+    if (!isShown || answer === null) return
+    frame.paint({ camera, answer, planLayer, width: opts.canvas.width, height: opts.canvas.height })
+  }
 
   const controls = renderSectionControls(opts.controlsHost, {
     onPlan: () => show(false),
     onSection: () => show(true),
     // A purely visual choice: kept for the page's life, never written to the view state (D-04).
     onVe: (mode) => {
+      fitInset()
       camera.setVe(mode)
       if (isShown) {
         opts.requestRedraw()
@@ -242,10 +257,12 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       paint()
     }
     if (!fitted) {
+      fitInset()
       camera.fit(fitBounds(answer))
       fitted = true
     }
     isShown = true
+    frame.setVisible(true)
     controls.setShown(true)
     opts.onShownChange(true)
     opts.requestRedraw()
@@ -254,6 +271,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function hide(): void {
     isShown = false
+    frame.setVisible(false)
     controls.setShown(false)
     opts.onShownChange(false)
     opts.requestRedraw()
@@ -384,6 +402,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       if (!isShown || sectionLayer === null) return
       sectionLayer.setCamera(camera)
       sectionLayer.draw()
+      paintFrame()
     },
     pan(dx, dy) {
       camera.pan(dx, dy)
@@ -396,6 +415,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     fit() {
       if (answer === null) return
       fitted = true
+      fitInset()
       let stated = camera.veText()
       // Eases like the plan's fit, and jumps when reduced motion is asked for (D-21).
       camera.fitAnimated(
@@ -419,8 +439,10 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     readoutPick: () => picked,
     paintReadout,
     refresh,
+    // Moves the band only; the section's colours do not depend on the plan's layer.
     planLayerChanged(layer) {
       planLayer = layer
+      paintFrame()
     },
     reupload() {
       sectionLayer?.reupload()
@@ -435,6 +457,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     controls: () => controls,
     dispose() {
       dropAnswer()
+      frame.dispose()
       controls.dispose()
     },
   }
