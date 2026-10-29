@@ -23,7 +23,7 @@ from pesto.api.problem import problem, problem_from_failure
 from pesto.api.query import RunQuery
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import Manifest
-from pesto.ingest.elev import ELEV_PREDATES, load_elev
+from pesto.ingest.elev import ELEV_PREDATES, elev_grid_mismatch, load_elev
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.mesh import load_idomain, load_mesh_extent
 from pesto.section.assemble import STATUS_TEXT, answer_notes, assemble
@@ -63,6 +63,10 @@ def get_section(request: Request, params: Annotated[SectionQuery, Query()]) -> R
     if recorded.state != "ok":
         reason = recorded.reason or f"the elev artifact is recorded as {recorded.state}"
         return problem(409, _UNAVAILABLE, artifact="elev", detail=reason)
+    # Otherwise the answer's cell numbers would be looked up in a mesh built from another grid.
+    mismatch = elev_grid_mismatch(manifest.artifacts.get("grid"), recorded)
+    if mismatch is not None:
+        return problem(409, _UNAVAILABLE, artifact="elev", detail=mismatch)
 
     elev = load_elev(layout)
     if isinstance(elev, ReadFailure):

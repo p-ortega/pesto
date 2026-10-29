@@ -19,14 +19,18 @@ import numpy as np
 
 from pesto.cache._atomic import write_atomic_bytes, write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
-from pesto.cache.manifest import CacheFile, WrittenArtifact
+from pesto.cache.manifest import Artifact, CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
-from pesto.ingest.mesh import load_mesh_origin
+from pesto.ingest.mesh import load_mesh_origin, load_mesh_shape
 
 # Geometry and SpatialAdapter live in pesto.model, which nothing under
 # pesto.ingest may import, even for typing; the annotations stay strings.
 
 ELEV_PREDATES = "this cache predates the section view; it is added on the next ingest"
+ELEV_OTHER_GRID = (
+    "the layer elevations were built from another version of the grid file than the plan mesh; "
+    "they are rebuilt on the next ingest"
+)
 
 _NAME = "elev"
 _ELEV_DTYPE = "<f8"
@@ -294,6 +298,17 @@ def _read_binary(layout: CacheLayout, entry: object, label: str) -> "np.ndarray 
     return array
 
 
+def elev_grid_mismatch(grid: "Artifact | None", elev: Artifact) -> str | None:
+    """Why an ``ok`` elev record cannot be served beside the grid record, or
+    ``None``. Each is a separate artifact, so an ingest stopped between them
+    can leave one built from an older grid file than the other."""
+    if grid is None or grid.state != "ok":
+        return "the plan mesh is not recorded as read, so the layer elevations have no mesh to match"
+    if {(s.path, s.checksum) for s in grid.sources} != {(s.path, s.checksum) for s in elev.sources}:
+        return ELEV_OTHER_GRID
+    return None
+
+
 def _stored_elev_dtype(raw: object) -> object:
     try:
         return raw["files"]["elev"]["dtype"]  # type: ignore[index]
@@ -349,12 +364,22 @@ def load_elev(layout: CacheLayout) -> ElevArrays | ReadFailure:
             name=_NAME, path=str(json_path), reason=f"elev.json has an unexpected shape: {exc}"
         )
 
-    mesh_origin = load_mesh_origin(layout)
-    if isinstance(mesh_origin, ReadFailure):
+    mesh_shape = load_mesh_shape(layout)
+    if isinstance(mesh_shape, ReadFailure):
         return ReadFailure(
             name=_NAME,
-            path=mesh_origin.path,
-            reason=f"the grid artifact's origin could not be read: {mesh_origin.reason}",
+            path=mesh_shape.path,
+            reason=f"the grid artifact's origin and shape could not be read: {mesh_shape.reason}",
+        )
+    mesh_origin, mesh_ncpl, mesh_nlay = mesh_shape
+    if (mesh_ncpl, mesh_nlay) != (ncpl, nlay):
+        return ReadFailure(
+            name=_NAME,
+            path=str(json_path),
+            reason=(
+                f"elev.json holds {ncpl} cells per layer over {nlay} layers but mesh.json holds "
+                f"{mesh_ncpl} over {mesh_nlay}, so the two were built from different grids"
+            ),
         )
     if mesh_origin != origin:
         return ReadFailure(

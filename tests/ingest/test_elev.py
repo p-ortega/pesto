@@ -366,8 +366,28 @@ def test_load_elev_refuses_counts_that_disagree_with_the_shape_naming_both(tmp_p
     layout, _, payload = _write(tmp_path, [10.0, 10.0], [[5.0, 5.0], [0.0, 0.0]])
     payload["nlay"] = 3
     (layout.grid / "elev.json").write_text(json.dumps(payload))
+    # mesh.json agrees, so the shape is caught by the file sizes and not by the mesh check.
+    mesh = json.loads((layout.grid / "mesh.json").read_text())
+    mesh["nlay"] = 3
+    (layout.grid / "mesh.json").write_text(json.dumps(mesh))
 
     result = load_elev(layout)
     assert isinstance(result, ReadFailure)
     assert "elev.f64 holds 6 values" in result.reason
     assert "(nlay + 1) * ncpl = 8" in result.reason
+
+
+def test_load_elev_refuses_a_layer_count_that_is_not_the_meshs_naming_both(tmp_path):
+    from pesto.ingest.elev import load_elev
+
+    layout, _, _ = _write(tmp_path, [10.0, 10.0], [[5.0, 5.0], [0.0, 0.0]])
+    mesh = json.loads((layout.grid / "mesh.json").read_text())
+    mesh["nlay"] = 3
+    (layout.grid / "mesh.json").write_text(json.dumps(mesh))
+
+    result = load_elev(layout)
+    assert isinstance(result, ReadFailure)
+    assert result.reason == (
+        "elev.json holds 2 cells per layer over 2 layers but mesh.json holds 2 over 3, "
+        "so the two were built from different grids"
+    )

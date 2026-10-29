@@ -472,6 +472,27 @@ def test_capability_section_carries_the_elev_artifacts_own_refusal(tmp_path):
     }
 
 
+def test_capability_section_is_blocked_when_elev_was_built_from_another_version_of_the_grid_file(
+    tmp_path,
+):
+    run_dir = _make_run(tmp_path, iterations=(0,))
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+    grid_file = discover(run_dir).grid
+    old = SourceFingerprint.of(grid_file)
+    grid_file.write_bytes(grid_file.read_bytes() + b"edited")
+    new = SourceFingerprint.of(grid_file)
+    manifest = Manifest.empty(str(run_dir))
+    _mark_ok_with_file(manifest, layout, "grid", sources=[new])
+    _mark_ok_with_file(manifest, layout, "elev", sources=[old])
+    manifest.save(layout)
+
+    section = _section_state(run_dir, cache_root)["capabilities"]["section"]
+    assert section["available"] is False
+    assert section["blocked_by"][0]["artifact"] == "elev"
+    assert "another version of the grid file" in section["blocked_by"][0]["reason"]
+
+
 def test_capability_section_names_the_grid_and_its_reason_when_the_grid_failed(tmp_path):
     run_dir = _make_run(tmp_path, iterations=(0,))
     cache_root = tmp_path / "cache"

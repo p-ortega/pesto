@@ -234,6 +234,22 @@ def load_mesh_origin(layout: CacheLayout) -> "tuple[float, float] | ReadFailure"
         )
 
 
+def load_mesh_shape(layout: CacheLayout) -> "tuple[tuple[float, float], int, int] | ReadFailure":
+    """The origin, cells per layer and layer count from ``mesh.json`` alone,
+    with no binary read. A missing field is a failure, never a default."""
+    raw = _read_sidecar(layout)
+    if isinstance(raw, ReadFailure):
+        return raw
+    try:
+        return _parse_origin(raw["origin"]), int(raw["n_cells"]), int(raw["nlay"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReadFailure(
+            name="grid",
+            path=str(layout.grid / "mesh.json"),
+            reason=f"mesh.json has an unexpected shape: {exc}",
+        )
+
+
 def load_mesh_extent(layout: CacheLayout) -> "tuple[float, float, float, float] | ReadFailure":
     """``(xmin, xmax, ymin, ymax)`` of the mesh in world coordinates, in
     float64: the stored bounds plus the origin. A missing origin or bounds is
