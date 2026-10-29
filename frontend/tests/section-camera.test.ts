@@ -84,6 +84,22 @@ describe('the vertical exaggeration', () => {
     expect(camera.veMode()).toBe('fitted')
   })
 
+  it('fits inside the inset it is given, so the axes never sit over the section', () => {
+    for (const mode of ['fitted', 10] as const) {
+      const camera = new SectionCamera(800, 480)
+      camera.setInset({ left: 64, right: 0, top: 0, bottom: 44 })
+      camera.setVe(mode)
+      camera.fit(BOUNDS)
+      const [left, right, top, bottom] = boxOnScreen(camera)
+      expect(left).toBeGreaterThanOrEqual(64)
+      expect(right).toBeLessThanOrEqual(800)
+      expect(top).toBeGreaterThanOrEqual(0)
+      expect(bottom).toBeLessThanOrEqual(480 - 44)
+      expect(((left + right) / 2 - 64) / (800 - 64)).toBeCloseTo(0.5, 9)
+      expect((top + bottom) / 2 / (480 - 44)).toBeCloseTo(0.5, 9)
+    }
+  })
+
   it('ignores an exaggeration that is not a positive finite number', () => {
     const camera = fitted()
     const before = camera.ve()

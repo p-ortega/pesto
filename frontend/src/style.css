@@ -761,8 +761,12 @@ body {
 .section-ve-row {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
   margin-top: var(--space-sm);
+}
+
+/* A margin, not a gap, so the label and the choice stay apart even while the row is hidden. */
+.section-ve-row select {
+  margin-left: var(--space-sm);
 }
 
 .section-ve-row[hidden] {
@@ -1169,6 +1173,25 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
+}
+
+/* The section's axes and layer band, shown only with the section. */
+.section-axes-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.map-area:not(.showing-section) .section-axes-overlay {
+  display: none;
+}
+
+/* The axes fill their strips, so the floating cards are lifted above them while the section shows. */
+.map-area.showing-section > .floating-top-left,
+.map-area.showing-section > .floating-top-right,
+.map-area.showing-section > .floating-bottom-left,
+.map-area.showing-section > .floating-bottom-right {
+  z-index: 1;
 }
 
 /* The plan's own outlines are not drawn over the section; they come back unchanged with the plan. */
