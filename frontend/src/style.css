@@ -1159,6 +1159,12 @@ body {
   pointer-events: none;
 }
 
+/* The plan's own outlines are not drawn over the section; they come back unchanged with the plan. */
+.map-area.showing-section .lasso-overlay,
+.map-area.showing-section .section-line-overlay {
+  display: none;
+}
+
 /* Which iteration the residual histogram brush selects on. */
 .brush-switch {
   display: flex;
