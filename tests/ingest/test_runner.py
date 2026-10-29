@@ -168,7 +168,7 @@ def _raise_runtime_error(pool):
 # The synthetic fixture's grid file is a placeholder flopy cannot parse, so
 # the artifacts that read it always fail. Whole-run tests exclude them.
 # obs_cell is here for the same reason par_cell is.
-_GRID_BOUND = ("grid", "par_cell", "obs_cell")
+_GRID_BOUND = ("grid", "elev", "par_cell", "obs_cell")
 
 
 def _assert_only_par_ens_0_and_grid_are_not_ok(manifest):
@@ -435,6 +435,7 @@ def test_plan_artifacts_returns_a_deterministic_order_for_a_two_iteration_run(tm
     assert names == [
         "control",
         "grid",
+        "elev",
         "par_cell",
         "obs_index",
         "obs_cell",
@@ -474,6 +475,7 @@ def test_plan_artifacts_puts_noise_agg_after_obs_cell_and_before_the_iteration_a
     assert names == [
         "control",
         "grid",
+        "elev",
         "par_cell",
         "obs_index",
         "obs_cell",
@@ -745,6 +747,7 @@ def test_plan_artifacts_with_no_grid_file_plans_no_grid_artifact(tmp_path):
 
     names = [a.name for a in planned]
     assert "grid" not in names
+    assert "elev" not in names
     assert "par_cell" not in names
     config = next(a for a in planned if a.name == "config")
     control_sources = (str(run.pst_path), *(str(p) for p in run.external_tables))
@@ -958,6 +961,9 @@ def test_estimate_bytes_sizes_every_artifact_without_opening_a_source_file(tmp_p
         *obs_names,
     }
     assert any(note.startswith("par_cell:") for note in estimate.notes)
+    # elev is sized by the grid's counts, not its file, so it is named rather than guessed.
+    assert any(note.startswith("elev:") for note in estimate.notes)
+    assert "elev" not in names
     assert any("control" in note for note in estimate.notes)
 
 
@@ -1520,3 +1526,68 @@ def test_estimate_bytes_names_par_change_and_par_groups_as_following_the_paramet
         for note in estimate.notes
     )
     assert all(not name.startswith("par_change") for name, _ in estimate.per_artifact)
+
+
+# ---------------------------------------------------------------------------
+# The elev artifact: planned after grid, built in its own worker.
+# ---------------------------------------------------------------------------
+
+
+def test_plan_artifacts_plans_elev_right_after_grid_from_the_grid_file_alone(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0,))
+    run = discover(run_dir)
+    layout = CacheLayout(root=tmp_path / "cache")
+
+    planned = plan_artifacts(run, layout)
+    names = [a.name for a in planned]
+
+    assert names[names.index("grid") + 1] == "elev"
+    elev = planned[names.index("elev")]
+    assert elev.kind == "elev"
+    assert elev.sources == (str(run.grid),)
+    assert elev.needs == ("grid",)
+    assert elev.source_bytes == run.grid.stat().st_size
+    assert elev.outputs == tuple(
+        str(layout.grid / name) for name in ("elev.f32", "ring.f64", "ring_start.u32", "elev.json")
+    )
+
+
+def test_dispatch_hands_elev_to_its_own_worker_with_the_grid_file_and_the_cache_root(tmp_path):
+    artifact = PlannedArtifact(
+        name="elev", kind="elev", sources=("g.grb",), outputs=(), source_bytes=0, needs=("grid",)
+    )
+
+    worker, args = runner_module._dispatch(
+        artifact, "run", "case.pst", str(tmp_path), None, "g.grb", None
+    )
+
+    assert worker is runner_module._write_elev_artifact
+    assert args == ("g.grb", str(tmp_path))
+
+
+def test_the_elev_worker_writes_its_four_files_under_the_cache_root_and_nothing_in_the_run(
+    tmp_path,
+):
+    from model.fixtures import write_disv_grb
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    grb = write_disv_grb(run_dir / "model.disv.grb")
+    before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.iterdir()}
+    cache_root = tmp_path / "cache"
+    CacheLayout(root=cache_root).ensure()
+
+    grid = runner_module._write_grid_artifact(str(grb), str(cache_root))
+    elev = runner_module._write_elev_artifact(str(grb), str(cache_root))
+
+    assert not isinstance(grid, ReadFailure), grid
+    assert not isinstance(elev, ReadFailure), elev
+    assert sorted(f.path for f in elev.files) == sorted(
+        str(Path("grid") / name) for name in ("elev.f32", "ring.f64", "ring_start.u32", "elev.json")
+    )
+    for f in elev.files:
+        assert (cache_root / f.path).stat().st_size == f.bytes
+    after = {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.iterdir()}
+    assert after == before

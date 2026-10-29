@@ -37,6 +37,7 @@ from pesto.cache.runconfig import FACTS_VERSION, NoiseFact, RunConfig, make_fact
 from pesto.ingest.aggregate import write_par_agg
 from pesto.ingest.control import ControlTables
 from pesto.ingest.discover import discover
+from pesto.ingest.elev import write_elev
 from pesto.ingest.ensembles import write_par_ensemble
 from pesto.ingest.ensfile import EnsembleData
 from pesto.ingest.failures import ReadFailure
@@ -202,7 +203,7 @@ def _ensemble_data(iteration: int) -> EnsembleData:
     )
 
 
-def _mesh():
+def _rings():
     # Six unit squares in a row: ncpl=6, no CRS recorded. Columns of two
     # vertices each (bottom, top) at x = 0..NCPL; cell i's ring is its own
     # bottom-left, bottom-right, top-right, top-left corners.
@@ -212,7 +213,30 @@ def _mesh():
         bl, tl = 2 * i, 2 * i + 1
         br, tr = 2 * (i + 1), 2 * (i + 1) + 1
         iverts.append([bl, br, tr, tl])
+    return verts, iverts
+
+
+def _mesh():
+    verts, iverts = _rings()
     return fan_polygons(verts, iverts, nlay=NLAY, crs=None)
+
+
+def _write_elev(mesh, layout: CacheLayout):
+    # The same rings the mesh fans, in float64 and relative to the mesh origin.
+    verts, iverts = _rings()
+    ring = np.concatenate([verts[np.asarray(cell)] for cell in iverts]) - np.array(mesh.origin)
+    ring_start = np.arange(0, 4 * NCPL + 1, 4)
+    top = np.full(NCPL, 10.0)
+    botm = np.array([np.full(NCPL, 5.0), np.full(NCPL, 0.0)])
+    return write_elev(
+        ring=ring,
+        ring_start=ring_start,
+        top=top,
+        botm=botm,
+        grid_type="vertex",
+        origin=mesh.origin,
+        layout=layout,
+    )
 
 
 def _build_config(run_dir: Path) -> RunConfig:
@@ -303,6 +327,8 @@ def write_synthetic_run(dest: Path) -> Path:
             written = write_control(tables, layout)
         elif artifact.kind == "grid":
             written = write_mesh(mesh, grid_shape, layout)
+        elif artifact.kind == "elev":
+            written = _write_elev(mesh, layout)
         elif artifact.kind == "par_cell":
             written = write_par_cell(_cells(), tables.par, layout)
         elif artifact.kind == "obs_index":
