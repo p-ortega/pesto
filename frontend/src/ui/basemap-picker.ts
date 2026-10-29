@@ -25,6 +25,8 @@ interface Level {
   skipped: ImageListing['skipped'] | null
 }
 
+const INTRO = 'Pick a PNG or JPEG. Images with a world file are placed for you.'
+
 const KIND_LABEL: Record<ImageEntry['kind'], string> = {
   folder: 'folder',
   png: 'PNG',
@@ -119,6 +121,8 @@ export function openBasemapPicker(host: HTMLElement, opts: BasemapPickerOptions)
   const startSlot = new LatestWins<Answer<{ folder: BasemapFolder }>>()
   let crumbs: Crumb[] = [{ id: null, name: 'Start' }]
   let closed = false
+  // Only the first level painted after opening says what to pick; later levels keep their own lines.
+  let introPending = true
 
   function setStatus(text: string, tone: 'quiet' | 'refused'): void {
     status.textContent = text
@@ -195,7 +199,8 @@ export function openBasemapPicker(host: HTMLElement, opts: BasemapPickerOptions)
       skippedArea.appendChild(el)
     }
     if (level.entries.length === 0) setStatus('this folder holds no folders or image files', 'quiet')
-    else setStatus('', 'quiet')
+    else setStatus(introPending ? INTRO : '', 'quiet')
+    introPending = false
     const first = list.querySelector<HTMLButtonElement>('button:not(:disabled)')
     ;(first ?? cancel).focus()
   }

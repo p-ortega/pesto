@@ -115,6 +115,28 @@ describe('openBasemapPicker', () => {
     expect(document.activeElement).toBe(row(host, 'maps'))
   })
 
+  it('opens with a line saying what to pick, and clears it on the next level', async () => {
+    const { host } = await open()
+    const status = () => dialog(host).querySelector('.basemap-picker-status')
+    expect(status()?.textContent).toBe('Pick a PNG or JPEG. Images with a world file are placed for you.')
+    expect(status()?.classList.contains('refused')).toBe(false)
+
+    row(host, 'maps').click()
+    await settle()
+    expect(status()?.textContent).toBe('')
+    button(host, 'my-run').click()
+    await settle()
+    expect(status()?.textContent).toBe('')
+  })
+
+  it('says an empty first level is empty instead of showing the opening line', async () => {
+    mocks.listImages.mockResolvedValueOnce(listing([]))
+    const { host } = await open()
+    expect(dialog(host).querySelector('.basemap-picker-status')?.textContent).toBe(
+      'this folder holds no folders or image files',
+    )
+  })
+
   it('enters a folder, adds a crumb, and shows an earlier level from the cache with no new request', async () => {
     const { host } = await open()
     row(host, 'maps').click()

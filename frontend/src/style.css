@@ -1354,7 +1354,13 @@ body {
   display: none;
 }
 
+/* The glyph carries the warning colour so the reason itself stays readable; textContent is unchanged. */
 .basemap-picker-status.refused {
+  color: var(--ink-primary);
+}
+
+.basemap-picker-status.refused::before {
+  content: '⚠ ';
   color: var(--status-warning);
 }
 
@@ -1463,6 +1469,11 @@ body {
 }
 
 .basemap-warning {
+  color: var(--ink-primary);
+}
+
+.basemap-warning::before {
+  content: '⚠ ';
   color: var(--status-warning);
 }
 
