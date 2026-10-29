@@ -56,6 +56,8 @@ const LAYER_REASON_ID = 'layer-reason'
 
 const LAYER_ONE_REASON = 'the grid has one layer'
 const OBS_LINE = 'Colormap, value scale, limits, colour steps, centring and patterns apply to parameter fields only.'
+/** The folded Colours line while dots are drawn, since none of its settings colour them. */
+export const COLOURS_OBS_SUMMARY = 'not used for observation dots'
 
 const STEPS_TITLE =
   'Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.'

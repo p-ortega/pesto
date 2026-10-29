@@ -59,7 +59,7 @@ import {
   type FieldStyle,
 } from '../gl/field-style'
 import { pickAtWorld, preparePickIndex } from '../gl/picking'
-import { renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
+import { COLOURS_OBS_SUMMARY, renderSelectionControls, type FieldChoice, type SelectionControlsHandle } from '../ui/controls'
 import { renderLegend, type LegendOptions } from '../ui/legend'
 import { renderLasso, type LassoKeys } from '../ui/lasso'
 import { renderSectionTool, type SectionToolAvailability } from '../ui/section-tool'
@@ -1218,6 +1218,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let controlsHandle: SelectionControlsHandle | null = null
   // The Data card, whose folded line the legend paints keep saying what is drawn.
   let dataFold: FoldHandle | null = null
+  let coloursFold: FoldHandle | null = null
   // How many iterations the run holds; the folded Data line names the iteration only with two or more.
   let iterationCount = 0
   let toggleHandle: IterationToggleHandle | null = null
@@ -1403,7 +1404,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let drawnStyle: EffectiveStyle = CONTINUOUS
   let drawnLimits: [number, number] = [0, 1]
 
+  // The parameter settings' line, or in observation mode a line saying none of them is used.
+  function paintColoursSummary(parLine: string | null = controlsHandle?.coloursSummary() ?? null): void {
+    coloursFold?.setSummary(obsActive ? COLOURS_OBS_SUMMARY : parLine)
+  }
+
   function paintDataSummary(): void {
+    paintColoursSummary()
     if (dataFold === null) return
     if (obsActive) {
       dataFold.setSummary(
@@ -3943,9 +3950,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const startFolded = isShortMap(mapCanvasArea.clientHeight)
     const dataCard = stackFold({ key: 'data', name: 'Data', startFolded })
     dataFold = dataCard
-    const coloursFold = stackFold({ key: 'colours', name: 'Colours', startFolded })
+    const coloursCard = stackFold({ key: 'colours', name: 'Colours', startFolded })
+    coloursFold = coloursCard
     topLeftEl.insertBefore(dataCard.el, topLeftEl.firstChild)
-    dataCard.el.after(coloursFold.el)
+    dataCard.el.after(coloursCard.el)
     const rows = renderDataCard(dataCard.body)
     rows.group.control.appendChild(pickerEl)
     pickerEl.classList.remove('floating')
@@ -3954,13 +3962,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // there is none) -- passed straight through so the checkbox and
     // selects the user sees never disagree with what performFetch is
     // about to draw.
-    controlsHandle = renderSelectionControls(coloursFold.body, {
+    controlsHandle = renderSelectionControls(coloursCard.body, {
       nlay: mesh.nlay,
       iteration,
       realNames,
       partrans: drawnPartrans,
       dataRows: { layer: rows.layer, statistic: rows.statistic, realization: rows.realization },
-      onColoursChange: (line) => coloursFold.setSummary(line),
+      onColoursChange: (line) => paintColoursSummary(line),
       initial: {
         colormap: committed.colormap,
         reverseColormap: committed.reverseColormap,
@@ -3975,7 +3983,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       onSelectionChange: handleSelectionChange,
     })
     controlsHandle.setLayer(committed.layer)
-    coloursFold.setSummary(controlsHandle.coloursSummary())
+    paintColoursSummary()
 
     // D-01, D-02: one button per ingested iteration, in the Data card's Iteration row; absent below two.
     const iterations = iterationsFrom(opts.state)
@@ -4075,7 +4083,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     // D-22: the overlay toggles come right after the Colours card; they ask nothing until the first field draws.
     const overlayFold = stackFold({ key: 'overlays', name: 'Overlays' })
-    coloursFold.el.after(overlayFold.el)
+    coloursCard.el.after(overlayFold.el)
     overlayControls = renderOverlayControls(overlayFold.body, {
       onToggle: () => {
         overlayBuiltFrom = null
