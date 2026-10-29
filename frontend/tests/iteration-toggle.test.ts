@@ -737,7 +737,7 @@ describe('the Go to realization box on the map', () => {
 
   const refusalOf = (root: HTMLElement): string => {
     const id = (root.querySelector('[aria-label="Go to realization"]') as HTMLElement).getAttribute('aria-describedby')
-    return (id ? root.querySelector(`#${id}`)?.textContent : '') ?? ''
+    return (id ? root.querySelector(`#${id} .note-text`)?.textContent : '') ?? ''
   }
 
   it('refuses a name the shown iteration lacks and draws nothing in its place', async () => {

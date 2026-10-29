@@ -443,7 +443,7 @@ describe('a colour choice made while an iteration switch loads its field', () =>
     expect(instance.setColormap.mock.calls.at(-1)).toEqual(['cividis', false])
     expect(lastFrame()?.colormap).toBe('cividis')
     expect(lastFrame()?.limits).toBe('minmax')
-    expect(legendText(root)).toContain('Min-max')
+    expect(legendText(root)).toContain('Min–max')
     expect(stub.valuesCalls.length).toBe(callsBefore)
   })
 })

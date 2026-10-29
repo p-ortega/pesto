@@ -14,6 +14,8 @@ import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
 
+const noteText = (line: Element | null | undefined): string => line?.querySelector('.note-text')?.textContent ?? ''
+
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
     gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), finish: vi.fn(), COLOR_BUFFER_BIT: 0 },
@@ -392,7 +394,7 @@ function toggle(root: HTMLElement, kind: 'atBounds' | 'conflict'): HTMLButtonEle
 
 const toggleText = (root: HTMLElement, kind: 'atBounds' | 'conflict'): string => toggle(root, kind).textContent ?? ''
 
-const textureBox = (root: HTMLElement): HTMLInputElement => root.querySelector('input[aria-label="Texture fill"]') as HTMLInputElement
+const textureBox = (root: HTMLElement): HTMLInputElement => root.querySelector('input[aria-label="Patterns instead of colours"]') as HTMLInputElement
 
 function setTexture(root: HTMLElement, on: boolean): void {
   textureBox(root).checked = on
@@ -661,7 +663,7 @@ describe('the overlays on the map', () => {
 
     const box = textureBox(root)
     expect(box.disabled).toBe(true)
-    expect((root.querySelector('#texture-reason') as HTMLElement).textContent).toBe(TEXTURE_DOTS_REASON)
+    expect(noteText(root.querySelector('#texture-reason'))).toBe(TEXTURE_DOTS_REASON)
     expect(layer.setStyle.mock.calls.at(-1)?.[0]).toEqual({ classes: 7, symmetric: false, texture: false })
     // No texture is drawn, so the overlays stay as they were.
     expect(toggle(root, 'atBounds').disabled).toBe(false)

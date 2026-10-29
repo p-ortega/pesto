@@ -19,6 +19,7 @@ import {
   type FieldStyle,
   type StyleNotes,
 } from '../gl/field-style'
+import { paintNote } from './note-line'
 
 export const STATISTICS = ['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'] as const
 export type Statistic = (typeof STATISTICS)[number]
@@ -49,6 +50,12 @@ const GO_TO_REFUSAL_ID = 'go-to-realization-refusal'
 const CLASSES_NOTE_ID = 'classes-note'
 const SYMMETRIC_REASON_ID = 'symmetric-reason'
 const TEXTURE_REASON_ID = 'texture-reason'
+
+const STEPS_TITLE =
+  'Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.'
+const CENTRE_TITLE = 'Puts zero in the middle of the colour ramp, so values above and below zero get matching colours.'
+const PATTERNS_TITLE =
+  'Draws each colour step as its own line pattern, for black-and-white printing, colour-blind readers, or seeing a basemap through the field. Uses colour steps.'
 
 export interface FieldChoice {
   iteration: number
@@ -133,6 +140,21 @@ export interface SelectionControlsHandle {
 function parameterOnly<T extends HTMLElement>(el: T): T {
   el.setAttribute('data-colour-source', 'par')
   return el
+}
+
+function noteLine(id?: string): HTMLDivElement {
+  const line = parameterOnly(document.createElement('div'))
+  line.classList.add('label', 'wrap-note')
+  if (id !== undefined) line.id = id
+  return line
+}
+
+function hintLine(text: string): HTMLDivElement {
+  const line = parameterOnly(document.createElement('div'))
+  line.classList.add('label', 'wrap-note', 'card-hint')
+  line.style.color = 'var(--ink-secondary)'
+  line.textContent = text
+  return line
 }
 
 function isStatistic(value: string): value is Statistic {
@@ -256,11 +278,8 @@ export function renderSelectionControls(
   namesList.id = REAL_NAMES_LIST_ID
   goLabel.appendChild(goInput)
   // Always in the page, empty until a refusal, so a screen reader hears the text arrive.
-  const refusalLine = parameterOnly(document.createElement('div'))
-  refusalLine.classList.add('label')
-  refusalLine.id = GO_TO_REFUSAL_ID
+  const refusalLine = noteLine(GO_TO_REFUSAL_ID)
   refusalLine.setAttribute('role', 'status')
-  refusalLine.style.color = 'var(--status-warning)'
 
   let realNames: string[] = []
   let warningLine: HTMLElement | null = null
@@ -286,6 +305,12 @@ export function renderSelectionControls(
   function updateRealDisabled(): void {
     realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
     goInput.disabled = realInput.disabled
+  }
+
+  // The slider is disabled for this reason, so hovering it says so too.
+  function showNotRecorded(line: HTMLElement, text: string): void {
+    paintNote(line, { kind: 'reason', text })
+    realInput.title = text
   }
 
   function clearRefusal(): void {
@@ -321,10 +346,8 @@ export function renderSelectionControls(
     realInput.disabled = true
     goInput.disabled = true
     showReal()
-    warningLine = parameterOnly(document.createElement('div'))
-    warningLine.classList.add('label')
-    warningLine.style.color = 'var(--status-warning)'
-    warningLine.textContent = notRecordedText(opts.realNames.iteration)
+    warningLine = noteLine()
+    showNotRecorded(warningLine, notRecordedText(opts.realNames.iteration))
   }
 
   // Colormap: the nine names colormap.ts's STOPS declares. jet is offered,
@@ -390,16 +413,14 @@ export function renderSelectionControls(
   scaleSelect.value = opts.initial ? opts.initial.scale : defaultScale(opts.partrans)
   scaleLabel.appendChild(scaleSelect)
 
-  // The log10-unavailable line: hidden until setLogUsability reports a
-  // non-zero count. UI-SPEC's exact copy, warning ink, no icon.
+  // The log10-unavailable line: hidden until setLogUsability reports a non-zero count.
   const logWarningLine = document.createElement('div')
-  logWarningLine.classList.add('label')
+  logWarningLine.classList.add('label', 'wrap-note')
   logWarningLine.id = LOG_WARNING_ID
-  logWarningLine.style.color = 'var(--status-warning)'
   logWarningLine.style.display = 'none'
   scaleLabel.appendChild(logWarningLine)
 
-  // Limits mode: robust 2-98% by default, with min-max and manual as the
+  // Limits mode: robust 2–98% by default, with min–max and manual as the
   // two alternatives. The manual pair is two number inputs, revealed only
   // in manual mode.
   const limitsLabel = parameterOnly(document.createElement('label'))
@@ -408,8 +429,8 @@ export function renderSelectionControls(
   const limitsSelect = document.createElement('select')
   limitsSelect.setAttribute('aria-label', 'Limits')
   const LIMITS_OPTIONS: Array<[LimitsMode, string]> = [
-    ['robust', 'Robust 2-98%'],
-    ['minmax', 'Min-max'],
+    ['robust', 'Robust 2–98%'],
+    ['minmax', 'Min–max'],
     ['manual', 'Manual'],
   ]
   for (const [value, label] of LIMITS_OPTIONS) {
@@ -439,87 +460,92 @@ export function renderSelectionControls(
   }
   updateManualVisibility()
 
-  // Classes: continuous or 7, 9, 11 equal steps between the limits (D-04).
+  // Colour steps: smooth or 7, 9, 11 equal steps between the limits (D-04).
   const classesLabel = parameterOnly(document.createElement('label'))
   classesLabel.classList.add('label')
-  classesLabel.textContent = 'Classes'
+  classesLabel.textContent = 'Colour steps'
+  classesLabel.title = STEPS_TITLE
   const classesSelect = document.createElement('select')
-  classesSelect.setAttribute('aria-label', 'Colour classes')
+  classesSelect.setAttribute('aria-label', 'Colour steps')
+  classesSelect.title = STEPS_TITLE
   for (const n of CLASS_CHOICES) {
     const option = document.createElement('option')
     option.setAttribute('value', String(n))
-    option.textContent = n === 0 ? 'Continuous' : String(n)
+    option.textContent = n === 0 ? 'Smooth' : `${n} steps`
     classesSelect.appendChild(option)
   }
   classesSelect.value = String(opts.initial?.style?.classes ?? DEFAULT_STYLE.classes)
   classesLabel.appendChild(classesSelect)
+  const classesHint = hintLine('Bands values like a contour map.')
 
-  const classesNote = parameterOnly(document.createElement('div'))
-  classesNote.classList.add('label')
-  classesNote.id = CLASSES_NOTE_ID
-  classesNote.style.color = 'var(--status-warning)'
+  const classesNote = noteLine(CLASSES_NOTE_ID)
   classesNote.style.display = 'none'
 
-  // Symmetric about 0 (D-08): disabled with its reason on log10 or manual limits (D-09, D-10).
+  // Centre on zero (D-08): disabled with its reason on log10 or manual limits (D-09, D-10).
   const symmetricLabel = parameterOnly(document.createElement('label'))
   symmetricLabel.classList.add('label')
-  symmetricLabel.textContent = 'Symmetric about 0'
+  symmetricLabel.textContent = 'Centre on zero'
+  symmetricLabel.title = CENTRE_TITLE
   const symmetricInput = document.createElement('input')
   symmetricInput.type = 'checkbox'
-  symmetricInput.setAttribute('aria-label', 'Symmetric about 0')
+  symmetricInput.setAttribute('aria-label', 'Centre on zero')
+  symmetricInput.title = CENTRE_TITLE
   symmetricInput.checked = opts.initial?.style?.symmetric ?? DEFAULT_STYLE.symmetric
   symmetricLabel.appendChild(symmetricInput)
+  const symmetricHint = hintLine('For changes and residuals.')
 
-  const symmetricReason = parameterOnly(document.createElement('div'))
-  symmetricReason.classList.add('label')
-  symmetricReason.id = SYMMETRIC_REASON_ID
+  const symmetricReason = noteLine(SYMMETRIC_REASON_ID)
   symmetricReason.setAttribute('role', 'status')
-  symmetricReason.style.color = 'var(--status-warning)'
 
   // A "was turned off" line outlives redraws, so a dropped request always leaves a trace; only a user move clears it.
   let turnedOffLine: string | null = opts.styleNote ?? null
   let symmetricNote: string | null = null
 
   function showSymmetricReason(): void {
-    const text = turnedOffLine ?? symmetricNote ?? ''
-    symmetricReason.textContent = text
-    symmetricReason.style.display = text === '' ? 'none' : ''
-    if (text === '') symmetricInput.removeAttribute('aria-describedby')
+    // A turned-off request is a change made for the user; a bare refusal only says why the box is grey.
+    const note =
+      turnedOffLine !== null
+        ? { kind: 'warning' as const, text: turnedOffLine }
+        : symmetricNote !== null
+          ? { kind: 'reason' as const, text: symmetricNote }
+          : null
+    paintNote(symmetricReason, note)
+    symmetricInput.title = symmetricNote ?? CENTRE_TITLE
+    if (note === null) symmetricInput.removeAttribute('aria-describedby')
     else symmetricInput.setAttribute('aria-describedby', SYMMETRIC_REASON_ID)
   }
   showSymmetricReason()
 
-  // Texture fill (D-12): needs classes, so Continuous is off the list while it is on (D-13).
+  // Patterns (D-12): need colour steps, so Smooth is off the list while they are on (D-13).
   const textureLabel = parameterOnly(document.createElement('label'))
   textureLabel.classList.add('label')
-  textureLabel.textContent = 'Texture fill'
+  textureLabel.textContent = 'Patterns instead of colours'
+  textureLabel.title = PATTERNS_TITLE
   const textureInput = document.createElement('input')
   textureInput.type = 'checkbox'
-  textureInput.setAttribute('aria-label', 'Texture fill')
+  textureInput.setAttribute('aria-label', 'Patterns instead of colours')
+  textureInput.title = PATTERNS_TITLE
   textureInput.checked = opts.initial?.style?.texture ?? DEFAULT_STYLE.texture
   textureLabel.appendChild(textureInput)
+  const textureHint = hintLine('For print, colour-blind readers, or a basemap underneath.')
 
-  const textureReason = parameterOnly(document.createElement('div'))
-  textureReason.classList.add('label')
-  textureReason.id = TEXTURE_REASON_ID
+  const textureReason = noteLine(TEXTURE_REASON_ID)
   textureReason.setAttribute('role', 'status')
-  textureReason.style.color = 'var(--status-warning)'
   textureReason.style.display = 'none'
 
   const continuousOption = classesSelect.querySelector('option[value="0"]') as HTMLOptionElement
-  // The "raised to 7" line outlives redraws (the request already says 7) until the user moves classes or texture.
+  // The "7 steps are drawn" line outlives redraws (the request already says 7) until the user moves steps or patterns.
   let raisedNote: string | null = null
   let classesReason: string | null = null
 
   function showClassesNote(): void {
     const text = classesReason ?? raisedNote
-    classesNote.textContent = text ?? ''
-    classesNote.style.display = text === null ? 'none' : ''
+    paintNote(classesNote, text === null ? null : { kind: 'warning', text })
     if (text === null) classesSelect.removeAttribute('aria-describedby')
     else classesSelect.setAttribute('aria-describedby', CLASSES_NOTE_ID)
   }
 
-  // Called after the texture box or the classes select is set from outside or by the user.
+  // Called after the patterns box or the steps select is set from outside or by the user.
   function followTexture(): void {
     if (textureInput.checked && classesSelect.value === '0') {
       classesSelect.value = String(TEXTURE_DEFAULT_CLASSES)
@@ -618,7 +644,7 @@ export function renderSelectionControls(
     const index = realNames.indexOf(typed)
     if (index < 0) {
       // The quotes make a stray space in the typed name visible.
-      refusalLine.textContent = `realization "${typed}" is not in iteration ${iteration}`
+      paintNote(refusalLine, { kind: 'warning', text: `realization "${typed}" is not in iteration ${iteration}` })
       goInput.setAttribute('aria-invalid', 'true')
       goInput.setAttribute('aria-describedby', GO_TO_REFUSAL_ID)
       return
@@ -708,10 +734,13 @@ export function renderSelectionControls(
   el.appendChild(manualLower)
   el.appendChild(manualUpper)
   el.appendChild(classesLabel)
+  el.appendChild(classesHint)
   el.appendChild(classesNote)
   el.appendChild(symmetricLabel)
+  el.appendChild(symmetricHint)
   el.appendChild(symmetricReason)
   el.appendChild(textureLabel)
+  el.appendChild(textureHint)
   el.appendChild(textureReason)
 
   return {
@@ -721,11 +750,10 @@ export function renderSelectionControls(
         if (scaleSelect.value === 'log10') {
           scaleSelect.value = 'linear'
         }
-        logWarningLine.textContent = `Log₁₀ unavailable — ${count} cells are zero or negative. Showing linear.`
-        logWarningLine.style.display = ''
+        paintNote(logWarningLine, { kind: 'warning', text: `Log₁₀ unavailable — ${count} cells are zero or negative. Showing linear.` })
         scaleSelect.setAttribute('aria-describedby', LOG_WARNING_ID)
       } else {
-        logWarningLine.style.display = 'none'
+        paintNote(logWarningLine, null)
         scaleSelect.removeAttribute('aria-describedby')
       }
     },
@@ -776,18 +804,17 @@ export function renderSelectionControls(
         realValue.textContent = '—'
         const text = notRecordedText(names.iteration)
         if (warningLine === null) {
-          warningLine = parameterOnly(document.createElement('div'))
-          warningLine.classList.add('label')
-          warningLine.style.color = 'var(--status-warning)'
+          warningLine = noteLine()
           refusalLine.after(warningLine)
         }
-        warningLine.textContent = text
+        showNotRecorded(warningLine, text)
         realMissing = true
         showReal()
         return null
       }
       warningLine?.remove()
       warningLine = null
+      realInput.removeAttribute('title')
       realNames = names.names
       rebuildNamesList()
       realInput.min = '0'
@@ -811,8 +838,8 @@ export function renderSelectionControls(
       showClassesNote()
       const refusal = notes.texture === TEXTURE_CLASSES_NOTE ? null : notes.texture
       textureInput.disabled = refusal !== null
-      textureReason.textContent = refusal ?? ''
-      textureReason.style.display = refusal === null ? 'none' : ''
+      paintNote(textureReason, refusal === null ? null : { kind: 'reason', text: refusal })
+      textureInput.title = refusal ?? PATTERNS_TITLE
       if (refusal === null) textureInput.removeAttribute('aria-describedby')
       else textureInput.setAttribute('aria-describedby', TEXTURE_REASON_ID)
       symmetricNote = notes.symmetric

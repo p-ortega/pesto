@@ -391,7 +391,7 @@ describe('a click on the section reads and selects like a plan click', () => {
 
   it('reads the value, its class, the layer, the distance and the elevations, and asks about the clicked layer', async () => {
     const m = await mounted()
-    choose(m.root, 'Colour classes', '7')
+    choose(m.root, 'Colour steps', '7')
     await settle()
     await showSection(m)
     const heard = vi.fn()
@@ -400,7 +400,7 @@ describe('a click on the section reads and selects like a plan click', () => {
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 2.5))
     const text = readoutText(m.root)
     expect(text).toContain('p2 (G1): 30.00')
-    expect(text).toMatch(/class \d of 7/)
+    expect(text).toMatch(/step \d of 7/)
     expect(text).toContain('layer 1, cell 0')
     expect(text).toContain('distance from A: 1 model units')
     expect(text).toContain('top 5, bottom 0 model units')
