@@ -301,7 +301,7 @@ describe('a group placed by x/y draws as dots', () => {
     canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 2, clientY: canvas.height / 2 }))
     const readout = root.querySelector('.floating-bottom-right')?.textContent ?? ''
     expect(readout).toContain('pb')
-    expect(readout).toContain('x 1, y 1 · layer 0')
+    expect(readout).toContain('x 1, y 1 · layer 1 (index 0)')
     expect(readout).not.toMatch(/\bpa\b/)
   })
 
@@ -317,7 +317,7 @@ describe('a group placed by x/y draws as dots', () => {
     canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 7, clientY: canvas.height / 2 }))
     expect(readout()).toContain('pb')
     canvas.dispatchEvent(new MouseEvent('click', { clientX: x + 9, clientY: canvas.height / 2 }))
-    expect(readout()).not.toContain('x 1, y 1 · layer 0')
+    expect(readout()).not.toContain('x 1, y 1 · layer 1 (index 0)')
   })
 
   it('a click on a dot writes its parameter name to the store and clears the cell', async () => {

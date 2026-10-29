@@ -775,7 +775,7 @@ describe('colouring the map by observations', () => {
       expect(text.indexOf('s_b (heads)')).toBeLessThan(text.indexOf('s_c (heads)'))
       // The mesh origin is added back: 0.75 + 1000 and 0.6 + 2000.
       expect(text).toContain('x 1001, y 2001 (own coordinates)')
-      expect(text).toContain('layer 0, cell 0 · placed by own xy')
+      expect(text).toContain('layer 1 (index 0), cell 0 · placed by own xy')
       expect(text).toContain('day 10 (model time)')
       expect(text).toContain('mean residual (simulated minus observed), iteration 0: -0.5000')
       expect(text).toContain('mean residual (simulated minus observed), iteration 0: no value at this time')
@@ -893,7 +893,7 @@ describe('colouring the map by observations', () => {
       expect(text).not.toContain('sites at this spot')
       expect(text).toContain('s_d (heads)')
       expect(text).toContain("(centre of the cell's vertices)")
-      expect(text).toContain('layer 1, cell 1 · placed by cell only')
+      expect(text).toContain('layer 2 (index 1), cell 1 · placed by cell only')
     })
 
     it('leaves a parameter-mode click as it was: the cell, and nothing asked of /obs', async () => {

@@ -401,7 +401,7 @@ describe('a click on the section reads and selects like a plan click', () => {
     const text = readoutText(m.root)
     expect(text).toContain('p2 (G1): 30.00')
     expect(text).toMatch(/step \d of 7/)
-    expect(text).toContain('layer 1, cell 0')
+    expect(text).toContain('layer 2 (index 1), cell 0')
     expect(text).toContain('distance from A: 1 model units')
     expect(text).toContain('top 5, bottom 0 model units')
 
@@ -456,17 +456,17 @@ describe('a click on the section reads and selects like a plan click', () => {
     const m = await mounted()
     clickAt(m.canvas, clientAtPlan(m.canvas, 1.5, 0.5))
     await answerLink(m, 0)
-    expect(readoutText(m.root)).toContain('layer 0, cell 1')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 1')
     await showSection(m)
 
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 2.5))
     await answerLink(m, 1)
-    expect(readoutText(m.root)).toContain('layer 1, cell 0')
+    expect(readoutText(m.root)).toContain('layer 2 (index 1), cell 0')
     buttonByText(m.root, 'Plan view').click()
     await settle()
 
     // The plan reads the same cell on its own layer, not the cell it was clicked on before.
-    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 0')
     expect(readoutText(m.root)).not.toContain('cell 1')
   })
 
@@ -475,7 +475,7 @@ describe('a click on the section reads and selects like a plan click', () => {
     await showSection(m)
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5))
     await answerLink(m, 0)
-    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 0')
 
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5), { altKey: true })
     await settle()
@@ -496,7 +496,7 @@ describe('a click on the section reads and selects like a plan click', () => {
     expect(text).toContain('Contested cell')
     expect(text).toContain('p2 (G1): 30.00')
     expect(text).toContain('p3 (G1): 40.00')
-    expect(text).toContain('layer 1, cell 0')
+    expect(text).toContain('layer 2 (index 1), cell 0')
   })
 
   it('shows a pilot-point value and the points behind the cell through the plan\'s contributors fetch', async () => {
@@ -519,7 +519,7 @@ describe('a click on the section reads and selects like a plan click', () => {
     // Layer 0 of the same cell has no value from this group.
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 7.5))
     expect(readoutText(m.root)).toContain('No parameter of G3 sits on this cell.')
-    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 0')
   })
 
   it('names absence by its reason and leaves the selection as it was', async () => {
@@ -535,7 +535,7 @@ describe('a click on the section reads and selects like a plan click', () => {
       clickAt(m.canvas, clientAtSection(m.canvas, 2.0, 2.5), init)
       await settle()
       expect(readoutText(m.root)).toContain('inactive (idomain 0)')
-      expect(readoutText(m.root)).toContain('layer 1, cell 1')
+      expect(readoutText(m.root)).toContain('layer 2 (index 1), cell 1')
     }
     expect(m.stub.link).toHaveLength(1)
     expect(linkCallCount(m)).toBe(1)
@@ -570,15 +570,15 @@ describe('a click on the section reads and selects like a plan click', () => {
     })
     await showSection(m)
     clickAt(m.canvas, clientAtSection(m.canvas, 1.0, 9, [0, 10]))
-    expect(readoutText(m.root)).toContain('layer 0, cell 0')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 0')
     expect(readoutText(m.root)).toContain('pinched out in this cell (zero thickness): layers 4, 5 (index 3, 4)')
 
     clickAt(m.canvas, clientAtSection(m.canvas, 2.0, 9, [0, 10]))
-    expect(readoutText(m.root)).toContain('layer 0, cell 1')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 1')
     expect(readoutText(m.root)).not.toContain('pinched out')
 
     clickAt(m.canvas, clientAtSection(m.canvas, 3.25, 9, [0, 10]))
-    expect(readoutText(m.root)).toContain('layer 0, cell 2')
+    expect(readoutText(m.root)).toContain('layer 1 (index 0), cell 2')
     expect(readoutText(m.root)).toContain('pinched out in this cell (zero thickness): layer 5 (index 4)')
   })
 
@@ -605,7 +605,7 @@ describe('a click on the section reads and selects like a plan click', () => {
     expect(m.store.get().cells.size).toBe(0)
     expect(m.store.get().pars.size).toBe(0)
     expect(m.store.get().sites.size).toBe(0)
-    expect(readoutText(m.root)).toBe('Click a cell to see its value.')
+    expect(readoutText(m.root)).toBe('Click a cell to see its value. The Params and Obs tabs then list what sets it.')
     expect(m.stub.link).toHaveLength(1)
   })
 })

@@ -6,6 +6,7 @@
 
 import type { Contributor } from '../data/fields'
 import type { CellClass, ParIdentity } from '../data/parmap'
+import { layerWords } from '../data/layer-words'
 
 const CONTESTED_ROW_CAP = 20
 const SITE_CAP = 20
@@ -112,7 +113,7 @@ function appendClassLine(el: HTMLElement, classLine: string | null | undefined):
 }
 
 function appendFooter(el: HTMLElement, layer: number, cellId: number, selectionLabel: string): void {
-  appendLine(el, `layer ${layer}, cell ${cellId} · ${selectionLabel}`, 'label')
+  appendLine(el, `${layerWords(layer)}, cell ${cellId} · ${selectionLabel}`, 'label')
 }
 
 function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
@@ -121,8 +122,7 @@ function appendSite(el: HTMLElement, site: SiteReadoutEntry): void {
   name.title = site.name
   const where = site.xySource === 'own' ? 'own coordinates' : "centre of the cell's vertices"
   appendLine(block, `x ${site.x.toFixed(0)}, y ${site.y.toFixed(0)} (${where})`, 'label')
-  const layer = site.layer === null ? 'layer unknown' : `layer ${site.layer}`
-  appendLine(block, `${layer}, cell ${site.cell} · placed by ${site.rule}`, 'label', 'truncate').title = site.rule
+  appendLine(block, `${layerWords(site.layer)}, cell ${site.cell} · placed by ${site.rule}`, 'label', 'truncate').title = site.rule
   appendLine(block, site.timeText, 'label')
   appendObserved(block, site)
   if (site.stat !== undefined) {
@@ -160,7 +160,7 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
   el.classList.add('floating')
 
   if (opts.pick.kind === 'none') {
-    const line = appendLine(el, 'Click a cell to see its value.', 'label')
+    const line = appendLine(el, 'Click a cell to see its value. The Params and Obs tabs then list what sets it.', 'label')
     line.style.color = 'var(--ink-muted)'
     return
   }
@@ -179,7 +179,7 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
     appendRow(el, row, opts.joined, opts.field)
     appendClassLine(el, opts.classLine)
     // x and y reach this module in world coordinates; the map view adds the mesh origin back.
-    appendLine(el, `x ${x.toFixed(0)}, y ${y.toFixed(0)} · layer ${layer} · ${selectionLabel}`, 'label')
+    appendLine(el, `x ${x.toFixed(0)}, y ${y.toFixed(0)} · ${layerWords(layer)} · ${selectionLabel}`, 'label')
     return
   }
 
