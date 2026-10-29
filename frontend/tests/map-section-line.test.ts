@@ -492,3 +492,171 @@ describe('why the map offers no section', () => {
     expect((await meshLayerMock()).mock.calls).toHaveLength(2)
   })
 })
+
+function lastMatrix(layer: LayerDouble): Float32Array {
+  return layer.setMatrix.mock.calls.at(-1)?.[0] as Float32Array
+}
+
+// Where the line's A and B labels were last painted.
+function lastLabels(calls: RecordedCall[]): { A: unknown[] | undefined; B: unknown[] | undefined } {
+  const texts = calls.filter((c) => c.method === 'fillText')
+  return { A: texts.filter((c) => c.args[0] === 'A').at(-1)?.args, B: texts.filter((c) => c.args[0] === 'B').at(-1)?.args }
+}
+
+const overlayToggle = (root: HTMLElement, kind: 'atBounds' | 'conflict'): HTMLButtonElement =>
+  root.querySelector(`button[data-overlay="${kind}"]`) as HTMLButtonElement
+
+async function colourByObservations(m: Mounted): Promise<void> {
+  m.store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+  await vi.waitFor(() => {
+    const call = m.layer.setPoints.mock.calls.at(-1) as [Float32Array, Float32Array] | undefined
+    expect(call?.[1].length).toBe(2)
+  })
+  await settle()
+  await vi.waitFor(() => expect(lassoButton(m.root).disabled).toBe(false))
+}
+
+// The keys the map and the shell write to the view state; nothing about the section is among them.
+const VIEW_KEYS = ['classes', 'colormap', 'divider', 'group', 'layer', 'limits_mode', 'reverse', 'scale', 'stat', 'symmetric', 'tab', 'texture']
+
+describe('the plan comes back as it was and nothing about the line is saved', () => {
+  beforeEach(prepare)
+  afterEach(cleanUp)
+
+  it('returns the same camera, layer and line after Section view then Plan view', async () => {
+    const m = await mounted()
+    drawLine(m)
+    const matrix = Float32Array.from(lastMatrix(m.layer))
+    const labels = lastLabels(recording.calls)
+    expect(labels.A).toBeDefined()
+    expect(labels.B).toBeDefined()
+    await showSection(m)
+    const planDraws = m.layer.draw.mock.calls.length
+
+    planToggle(m.root).click()
+    await settle()
+    expect(Array.from(lastMatrix(m.layer))).toEqual(Array.from(matrix))
+    const MeshLayer = await meshLayerMock()
+    expect(MeshLayer.mock.instances[0]).toBe(m.layer)
+    expect(MeshLayer.mock.calls).toHaveLength(2)
+    expect(m.layer.draw.mock.calls.length).toBeGreaterThan(planDraws)
+    expect(lastLabels(recording.calls)).toEqual(labels)
+  })
+
+  it('writes no line or plan/section choice to the view state, and a reopened map starts on the plan with no line', async () => {
+    const m = await mounted()
+    drawLine(m)
+    await showSection(m)
+    planToggle(m.root).click()
+    const select = m.root.querySelector('select[aria-label="Colormap"]') as HTMLSelectElement
+    select.value = 'magma'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(m.stub.puts.at(-1)?.colormap).toBe('magma'), { timeout: 3000 })
+    for (const put of m.stub.puts) expect(Object.keys(put).sort()).toEqual(VIEW_KEYS)
+    const body = m.stub.puts.at(-1)!
+
+    cleanUp()
+    prepare()
+    const again = await mounted({ saved: body })
+    await settle()
+    expect(again.stub.calls).toContain('/api/run/view')
+    expect(planToggle(again.root).getAttribute('aria-pressed')).toBe('true')
+    expect(sectionToggle(again.root).disabled).toBe(true)
+    expect(controlsCard(again.root)).toContain(NO_LINE)
+    expect(again.stub.section).toHaveLength(0)
+    expect(recording.calls.filter((c) => c.method === 'fillText')).toHaveLength(0)
+  })
+})
+
+describe('the plan-only tools step aside while the section shows', () => {
+  beforeEach(prepare)
+  afterEach(cleanUp)
+
+  it('says the overlays are drawn on the plan only, keeping counts and choices, and puts them back on the plan', async () => {
+    const m = await mounted()
+    await vi.waitFor(() => {
+      expect(overlayToggle(m.root, 'atBounds').disabled).toBe(false)
+      expect(overlayToggle(m.root, 'conflict').disabled).toBe(false)
+    })
+    // The user turns one off; the choice must outlive the visit to the section.
+    overlayToggle(m.root, 'atBounds').click()
+    const before = { atBounds: overlayToggle(m.root, 'atBounds').textContent ?? '', conflict: overlayToggle(m.root, 'conflict').textContent ?? '' }
+    expect(before.atBounds).toContain(':')
+    drawLine(m)
+    await showSection(m)
+
+    for (const kind of ['atBounds', 'conflict'] as const) {
+      const toggle = overlayToggle(m.root, kind)
+      expect(toggle.textContent).toContain(before[kind])
+      expect(toggle.textContent).toContain(PLAN_ONLY)
+      expect(toggle.disabled).toBe(true)
+    }
+
+    planToggle(m.root).click()
+    await settle()
+    for (const kind of ['atBounds', 'conflict'] as const) {
+      expect(overlayToggle(m.root, kind).textContent).toBe(before[kind])
+      expect(overlayToggle(m.root, kind).disabled).toBe(false)
+    }
+    expect(overlayToggle(m.root, 'atBounds').getAttribute('aria-pressed')).toBe('false')
+    expect(overlayToggle(m.root, 'conflict').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('disables the line tool and the lasso with a reason while the section shows, and gives back what they had', async () => {
+    const m = await mounted()
+    await colourByObservations(m)
+    drawLine(m)
+    await showSection(m)
+
+    expect(toolButton(m.root).disabled).toBe(true)
+    expect(toolCard(m.root)).toContain(TOOLS_ON_PLAN)
+    expect(lassoButton(m.root).disabled).toBe(true)
+    expect(lassoCard(m.root)).toContain(TOOLS_ON_PLAN)
+
+    planToggle(m.root).click()
+    expect(toolButton(m.root).disabled).toBe(false)
+    expect(toolCard(m.root)).not.toContain(TOOLS_ON_PLAN)
+    expect(lassoButton(m.root).disabled).toBe(false)
+    expect(lassoCard(m.root)).not.toContain(TOOLS_ON_PLAN)
+  })
+
+  it('puts the lasso back to its own reason when no site dots are drawn', async () => {
+    const m = await mounted()
+    drawLine(m)
+    await showSection(m)
+    expect(lassoCard(m.root)).toContain(TOOLS_ON_PLAN)
+    planToggle(m.root).click()
+    expect(lassoButton(m.root).disabled).toBe(true)
+    expect(lassoCard(m.root)).toContain(LASSO_NO_DOTS)
+  })
+
+  it('keeps one tool armed: arming either disarms the other', async () => {
+    const m = await mounted()
+    await colourByObservations(m)
+    lassoButton(m.root).click()
+    expect(lassoButton(m.root).getAttribute('aria-pressed')).toBe('true')
+    toolButton(m.root).click()
+    expect(toolButton(m.root).getAttribute('aria-pressed')).toBe('true')
+    expect(lassoButton(m.root).getAttribute('aria-pressed')).toBe('false')
+    lassoButton(m.root).click()
+    expect(lassoButton(m.root).getAttribute('aria-pressed')).toBe('true')
+    expect(toolButton(m.root).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('disarms an armed lasso when the section shows, so a drag pans the section', async () => {
+    const m = await mounted()
+    await colourByObservations(m)
+    drawLine(m)
+    lassoButton(m.root).click()
+    expect(lassoButton(m.root).getAttribute('aria-pressed')).toBe('true')
+    await showSection(m)
+    expect(lassoButton(m.root).getAttribute('aria-pressed')).toBe('false')
+
+    const section = (await meshLayerMock()).mock.instances[1] as unknown as LayerDouble
+    const fitted = Float32Array.from(lastMatrix(section))
+    m.canvas.dispatchEvent(pointer('pointerdown', [400, 240]))
+    m.canvas.dispatchEvent(pointer('pointermove', [450, 240]))
+    m.canvas.dispatchEvent(pointer('pointerup', [450, 240]))
+    expect(lastMatrix(section)[6]).not.toBeCloseTo(fitted[6], 5)
+  })
+})
