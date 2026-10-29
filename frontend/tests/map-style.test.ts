@@ -15,6 +15,8 @@ import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
 
+const noteText = (line: Element | null | undefined): string => line?.querySelector('.note-text')?.textContent ?? ''
+
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
     gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 },
@@ -174,7 +176,7 @@ async function mounted(): Promise<{ root: HTMLElement; store: SelectionStore }> 
 }
 
 function chooseClasses(root: HTMLElement, value: string): void {
-  const select = root.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
+  const select = root.querySelector('select[aria-label="Colour steps"]') as HTMLSelectElement
   select.value = value
   select.dispatchEvent(new Event('change'))
 }
@@ -191,7 +193,7 @@ function clickAtWorld(canvas: HTMLCanvasElement, wx: number, wy: number): void {
   canvas.dispatchEvent(new MouseEvent('click', { clientX: (wx - x0) / (x1 - x0), clientY: (wy - y0) / (y1 - y0) }))
 }
 
-describe('the Classes control on the map', () => {
+describe('the Colour steps control on the map', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
     field = new Float32Array([10, 20])
@@ -216,7 +218,7 @@ describe('the Classes control on the map', () => {
     expect(valueFetches).toBe(before)
   })
 
-  it('puts the smooth ramp back on Continuous', async () => {
+  it('puts the smooth ramp back on Smooth', async () => {
     const { root } = await mounted()
     chooseClasses(root, '9')
     chooseClasses(root, '0')
@@ -236,7 +238,7 @@ describe('the Classes control on the map', () => {
     expect(legend(root).querySelectorAll('.legend-class')).toHaveLength(1)
     expect(legend(root).textContent).toContain(ONE_CLASS_EQUAL)
     const note = root.querySelector('#classes-note') as HTMLElement
-    expect(note.textContent).toBe(ONE_CLASS_EQUAL)
+    expect(noteText(note)).toBe(ONE_CLASS_EQUAL)
     expect(note.style.display).toBe('')
 
     chooseClasses(root, '0')
@@ -269,18 +271,18 @@ describe('the Classes control on the map', () => {
     expect(readout(root)).not.toContain('step ')
   })
 
-  it('draws the observation look continuous and hides the Classes row there', async () => {
+  it('draws the observation look continuous and hides the Colour steps row there', async () => {
     const { root, store } = await mounted()
     chooseClasses(root, '9')
     store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'test')
     await vi.waitFor(() => expect(lastStyle().classes).toBe(0))
 
-    const label = (root.querySelector('select[aria-label="Colour classes"]') as HTMLElement).closest('label')
+    const label = (root.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('label')
     expect(label?.getAttribute('data-colour-source')).toBe('par')
   })
 })
 
-describe('the Texture fill switch on the map', () => {
+describe('the Patterns switch on the map', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
     field = new Float32Array([10, 20])
@@ -291,7 +293,7 @@ describe('the Texture fill switch on the map', () => {
     vi.clearAllMocks()
   })
 
-  const box = (root: HTMLElement) => root.querySelector('input[aria-label="Texture fill"]') as HTMLInputElement
+  const box = (root: HTMLElement) => root.querySelector('input[aria-label="Patterns instead of colours"]') as HTMLInputElement
 
   function setTexture(root: HTMLElement, on: boolean): void {
     box(root).checked = on
@@ -308,7 +310,7 @@ describe('the Texture fill switch on the map', () => {
     const swatches = [...legend(root).querySelectorAll('.legend-class')] as HTMLElement[]
     expect(swatches).toHaveLength(7)
     for (const swatch of swatches) expect(swatch.style.background).toContain('repeating-linear-gradient(')
-    expect((root.querySelector('#classes-note') as HTMLElement).textContent).toBe(TEXTURE_CLASSES_NOTE)
+    expect(noteText(root.querySelector('#classes-note'))).toBe(TEXTURE_CLASSES_NOTE)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(valueFetches).toBe(before)
   })
@@ -327,7 +329,7 @@ describe('the Texture fill switch on the map', () => {
   })
 })
 
-describe('the Symmetric about 0 switch on the map', () => {
+describe('the Centre on zero switch on the map', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
     field = new Float32Array([-2, 5])
@@ -340,7 +342,7 @@ describe('the Symmetric about 0 switch on the map', () => {
     vi.clearAllMocks()
   })
 
-  const box = (root: HTMLElement) => root.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
+  const box = (root: HTMLElement) => root.querySelector('input[aria-label="Centre on zero"]') as HTMLInputElement
   const reason = (root: HTMLElement) => root.querySelector('#symmetric-reason') as HTMLElement
   const symmetricLine = (root: HTMLElement) =>
     [...legend(root).querySelectorAll('div.label')].some((d) => d.textContent === 'centred on zero')
@@ -396,7 +398,7 @@ describe('the Symmetric about 0 switch on the map', () => {
     expect(lastStyle().symmetric).toBe(false)
     expect(box(root).checked).toBe(false)
     expect(box(root).disabled).toBe(true)
-    expect(reason(root).textContent).toBe('centre on zero was turned off: manual limits are used as typed')
+    expect(noteText(reason(root))).toBe('centre on zero was turned off: manual limits are used as typed')
     expect(symmetricLine(root)).toBe(false)
   })
 
@@ -408,7 +410,7 @@ describe('the Symmetric about 0 switch on the map', () => {
 
     expect(lastStyle().symmetric).toBe(false)
     expect(box(root).disabled).toBe(true)
-    expect(reason(root).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+    expect(noteText(reason(root))).toBe('centre on zero was turned off: a log scale has no zero to centre on')
     expect(symmetricLine(root)).toBe(false)
   })
 
@@ -424,7 +426,7 @@ describe('the Symmetric about 0 switch on the map', () => {
     await vi.waitFor(() => expect(lastStyle().symmetric).toBe(false))
     expect(box(root).checked).toBe(false)
     expect(box(root).disabled).toBe(true)
-    expect(reason(root).textContent).toBe('centre on zero was turned off: a log scale has no zero to centre on')
+    expect(noteText(reason(root))).toBe('centre on zero was turned off: a log scale has no zero to centre on')
   })
 
   it('keeps symmetric on when the inferred log10 is refused and the group is drawn linear', async () => {
@@ -436,6 +438,6 @@ describe('the Symmetric about 0 switch on the map', () => {
 
     expect(lastStyle().symmetric).toBe(true)
     expect(box(root).checked).toBe(true)
-    expect(reason(root).textContent).toBe('')
+    expect(noteText(reason(root))).toBe('')
   })
 })

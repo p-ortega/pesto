@@ -528,12 +528,12 @@ describe('the section coloured with what the plan draws', () => {
     drawLine(m)
     const section = await showSection(m)
     const steps: Array<[string, () => void]> = [
-      ['9 classes', () => select(m.root, 'Colour classes', '9')],
+      ['9 classes', () => select(m.root, 'Colour steps', '9')],
       ['colormap', () => select(m.root, 'Colormap', 'magma')],
       ['log10', () => select(m.root, 'Value scale', 'log10')],
       ['linear again', () => select(m.root, 'Value scale', 'linear')],
-      ['symmetric', () => check(m.root, 'Symmetric about 0', true)],
-      ['texture', () => check(m.root, 'Texture fill', true)],
+      ['symmetric', () => check(m.root, 'Centre on zero', true)],
+      ['texture', () => check(m.root, 'Patterns instead of colours', true)],
     ]
     for (const [name, step] of steps) {
       const styles = section.setStyle.mock.calls.length

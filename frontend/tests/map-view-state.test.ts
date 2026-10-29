@@ -13,6 +13,8 @@ import type { IngestState } from '../src/data/client'
 import type { RunConfig } from '../src/views/map'
 import { storeWithGroup } from './support/chosen-group'
 
+const noteText = (line: Element | null | undefined): string => line?.querySelector('.note-text')?.textContent ?? ''
+
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
     gl: { clearColor: vi.fn(), clear: vi.fn(), viewport: vi.fn(), COLOR_BUFFER_BIT: 0 },
@@ -384,8 +386,8 @@ describe('the saved field style (classes, symmetric, texture)', () => {
     return instance.setStyle.mock.calls.at(-1)?.[0]
   }
 
-  const classesSelect = (root: HTMLElement) => root.querySelector('select[aria-label="Colour classes"]') as HTMLSelectElement
-  const symmetricBox = (root: HTMLElement) => root.querySelector('input[aria-label="Symmetric about 0"]') as HTMLInputElement
+  const classesSelect = (root: HTMLElement) => root.querySelector('select[aria-label="Colour steps"]') as HTMLSelectElement
+  const symmetricBox = (root: HTMLElement) => root.querySelector('input[aria-label="Centre on zero"]') as HTMLInputElement
 
   function moveLayer(root: HTMLElement): void {
     const layerInput = root.querySelector('input[aria-label="Layer"]') as HTMLInputElement
@@ -418,7 +420,7 @@ describe('the saved field style (classes, symmetric, texture)', () => {
 
     expect(symmetricBox(root).checked).toBe(false)
     expect(symmetricBox(root).disabled).toBe(true)
-    expect((root.querySelector('#symmetric-reason') as HTMLElement).textContent).toBe(
+    expect(noteText(root.querySelector('#symmetric-reason'))).toBe(
       'centre on zero was turned off: a log scale has no zero to centre on',
     )
     expect((await lastStyle()).symmetric).toBe(false)
