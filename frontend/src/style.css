@@ -1033,7 +1033,8 @@ body {
 }
 
 /* The hatch swatches: lines in ink over the page plane, never a colour of
-   their own; 45 degrees at bounds, 135 degrees for a prior-data conflict. */
+   their own. The CSS angles are the map hatch's 45 (at bounds) and 135 (prior-data
+   conflict) mirrored with swatchCssAngle, because CSS turns clockwise from up. */
 .hatch-swatch,
 .conflict-mark {
   display: inline-block;
@@ -1047,7 +1048,7 @@ body {
 
 .hatch-swatch.at-bounds {
   background-image: repeating-linear-gradient(
-    45deg,
+    315deg,
     var(--ink-primary) 0,
     var(--ink-primary) 1px,
     transparent 1px,
@@ -1058,7 +1059,7 @@ body {
 .hatch-swatch.conflict,
 .conflict-mark {
   background-image: repeating-linear-gradient(
-    135deg,
+    225deg,
     var(--ink-primary) 0,
     var(--ink-primary) 1px,
     transparent 1px,
