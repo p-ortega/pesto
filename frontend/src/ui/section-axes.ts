@@ -36,9 +36,10 @@ export function tickCount(pixels: number, ratio: number): number {
   return Math.max(2, Math.floor(pixels / (TICK_SPACING_CSS_PX * ratio)))
 }
 
-/** The inset the section's fit leaves for the axes, in canvas pixels. */
-export function axesInset(ratio: number): SectionInset {
-  return { left: AXIS_LEFT_CSS_PX * ratio, right: 0, top: 0, bottom: AXIS_BOTTOM_CSS_PX * ratio }
+/** The inset the section's fit leaves for the axes, in canvas pixels, right of a left band of
+ *  `bandCss` CSS pixels that the map's cards cover (LD-4). */
+export function axesInset(ratio: number, bandCss = 0): SectionInset {
+  return { left: (bandCss + AXIS_LEFT_CSS_PX) * ratio, right: 0, top: 0, bottom: AXIS_BOTTOM_CSS_PX * ratio }
 }
 
 export interface SectionAxesPaint {
@@ -48,6 +49,8 @@ export interface SectionAxesPaint {
   planLayer: number
   width: number
   height: number
+  /** The left band the last fit kept clear, in CSS px; the elevation axis is drawn right of it. */
+  bandCss?: number
 }
 
 export interface SectionAxesOptions {
@@ -95,8 +98,9 @@ export function renderSectionAxes(opts: SectionAxesOptions): SectionAxesHandle {
     ctx.restore()
   }
 
-  function axes(ctx: SectionAxes2D, { camera, answer, width, height }: SectionAxesPaint, ratio: number): void {
-    const left = AXIS_LEFT_CSS_PX * ratio
+  function axes(ctx: SectionAxes2D, { camera, answer, width, height, bandCss = 0 }: SectionAxesPaint, ratio: number): void {
+    const bandLeft = bandCss * ratio
+    const left = (bandCss + AXIS_LEFT_CSS_PX) * ratio
     const base = height - AXIS_BOTTOM_CSS_PX * ratio
     const tick = TICK_CSS_PX * ratio
     const font = `${FONT_CSS_PX * ratio}px system-ui, sans-serif`
@@ -171,7 +175,7 @@ export function renderSectionAxes(opts: SectionAxesOptions): SectionAxesHandle {
     ctx.textBaseline = 'bottom'
     ctx.fillText(distanceTitle(answer.lengthUnits), (left + width) / 2, height - 2 * ratio)
     ctx.save()
-    ctx.translate(2 * ratio, base / 2)
+    ctx.translate(bandLeft + 2 * ratio, base / 2)
     ctx.rotate(-Math.PI / 2)
     ctx.textBaseline = 'top'
     ctx.fillText(elevationTitle(answer.lengthUnits), 0, 0)

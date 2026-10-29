@@ -96,12 +96,9 @@ async function pixelAt(page: Page, dataUrl: string, x: number, y: number): Promi
   )
 }
 
-// The synthetic run's six unit cells lie in a row, x from 0 to 6 and y from
-// 0 to 1 (tests/fixtures/synthetic_run.py). Camera.fit centres that row on
-// the canvas with 4% padding, so every cell's screen box follows from the
-// canvas's own size -- computed here from Camera.fit's own math, never a
-// magic number, because the canvas takes the size of the frame it sits in
-// rather than a fixed 800x480.
+// The synthetic run's six unit cells lie in a row, x from 0 to 6 and y from 0 to 1
+// (tests/fixtures/synthetic_run.py), drawn relative to the centre of the mesh, so at x -3 to 3 and
+// y -0.5 to 0.5. Every position below comes from the matrix the map last uploaded.
 interface CellLayout {
   width: number
   height: number
@@ -114,31 +111,50 @@ interface CellLayout {
   clear: [number, number]
 }
 
-// The six-cell row fills the map's width, so the floating cards on the left cover cells 0 and 1.
-// One wheel step of 700 px zooms out by 1.1^-7 about a point at three quarters of the width, which
-// moves the whole row into the uncovered right half; every position below follows from that.
-const CLEAR_ZOOM = 1.1 ** -7
-const CLEAR_WHEEL_PX = 700
+// The matrix once it has stopped moving: two reads two animation frames apart agree.
+async function settledMatrix(page: Page): Promise<number[]> {
+  await expect
+    .poll(async () => {
+      const first = await cameraMatrix(page)
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      const second = await cameraMatrix(page)
+      return first !== null && second !== null && first.join(',') === second.join(',')
+    })
+    .toBe(true)
+  return (await cameraMatrix(page))!
+}
 
+// Cell positions from the drawn camera (Camera.matrix, column-major, drawn coordinates to clip
+// space), checked to be on the canvas so a card over a cell fails by name, not by a wrong pixel.
 async function cellLayout(page: Page): Promise<CellLayout> {
   const box = await page.locator(MAP_CANVAS).boundingBox()
   if (!box) throw new Error('no canvas on the page')
+  const m = await settledMatrix(page)
+  const screenX = (rx: number, ry: number) => ((m[0] * rx + m[3] * ry + m[6] + 1) / 2) * box.width
+  const screenY = (rx: number, ry: number) => ((1 - (m[1] * rx + m[4] * ry + m[7])) / 2) * box.height
   const width = Math.round(box.width)
   const height = Math.round(box.height)
-  const fitCell = 0.96 * Math.min(width / 6, height / 1)
-  const px = Math.round(width * 0.75)
-  const py = Math.round(height / 2)
-  await page.mouse.move(box.x + px, box.y + py)
-  await page.mouse.wheel(0, CLEAR_WHEEL_PX)
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
-  // zoomAt holds (px, py) still and scales every other screen offset from it.
-  const zoomX = (x: number) => px + CLEAR_ZOOM * (x - px)
-  const cell = fitCell * CLEAR_ZOOM
-  const left = (i: number) => Math.round(zoomX(width / 2 + fitCell * (i - 3)))
-  const centreX = (i: number) => Math.round(zoomX(width / 2 + fitCell * (i - 2.5)))
-  const midY = py
+  const cell = (m[0] * box.width) / 2
+  const left = (i: number) => Math.round(screenX(i - 3, 0))
+  const centreX = (i: number) => Math.round(screenX(i - 2.5, 0))
+  const midY = Math.round(screenY(0, 0))
   const clear: [number, number] = [centreX(3), Math.min(height - 2, Math.round(midY + cell))]
   if (clear[1] <= midY + cell / 2) throw new Error('the canvas is too short to have a point clear of the row of cells')
+
+  const points = [0, 1, 2, 3, 4, 5].map((i) => ({ name: `cell ${i}`, x: box.x + centreX(i), y: box.y + midY }))
+  points.push({ name: 'the clear point', x: box.x + clear[0], y: box.y + clear[1] })
+  const covered = await page.evaluate((list) => {
+    for (const point of list) {
+      const hit = document.elementFromPoint(point.x, point.y)
+      if (hit?.tagName !== 'CANVAS') {
+        const classes = hit && typeof hit.className === 'string' && hit.className !== '' ? `.${hit.className.split(' ').join('.')}` : ''
+        const what = hit === null ? 'nothing' : `${hit.tagName.toLowerCase()}${classes}`
+        return `${point.name} at (${Math.round(point.x)}, ${Math.round(point.y)}) is under ${what}, not the map canvas`
+      }
+    }
+    return null
+  }, points)
+  if (covered !== null) throw new Error(covered)
   return { width, height, cell, left, centreX, midY, clear }
 }
 
@@ -181,6 +197,16 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     launched?.proc.kill()
   })
 
+  // Every test reads the drawn camera, and starts with Data open and the other left cards folded
+  // (the UI-SPEC backstop state), so a short 1280x720 map does not start Data folded.
+  test.beforeEach(async ({ page }) => {
+    await installCameraHook(page)
+    await page.addInitScript(() => {
+      localStorage.setItem('pesto.fold.data', 'open')
+      for (const key of ['colours', 'overlays', 'basemap']) localStorage.setItem(`pesto.fold.${key}`, 'folded')
+    })
+  })
+
   test('draws the model grid coloured by one group field, on a themed canvas', async ({ page }) => {
     await page.goto(pestoUrl)
 
@@ -201,7 +227,7 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator('select[aria-label="Colormap"]')).toBeAttached()
     await expect(page.locator('select[aria-label="Value scale"]')).toBeAttached()
     expect(bodyText).toMatch(/Scale: Log₁₀ \(inferred from partrans\)/)
-    expect(bodyText).toMatch(/Limits: Robust 2-98%/)
+    expect(bodyText).toMatch(/Limits: Robust 2–98%/)
     expect(bodyText).toMatch(/1 cells contested/)
     expect(bodyText).toMatch(/3 cells no value/)
     await expect(page.locator('[role="separator"][aria-label="Resize panel"]')).toBeAttached()
@@ -210,17 +236,16 @@ test.describe('the map draws a synthetic run end to end, through the real routes
     await expect(page.locator(MAP_CANVAS)).toHaveScreenshot('mesh-synthetic-run.png', { maxDiffPixels: 60 })
   })
 
-  // Regression for WINDOWS.md #3: the four overlays used to all resolve to
-  // the same computed corner (auto/auto offsets with no positioning context
-  // on the map area) and sit on top of each other. This reads real
-  // getBoundingClientRect() geometry -- a check that only checking for
-  // `.floating`'s presence would not have caught, since every overlay
-  // already carried that class before the fix.
-  test('the controls, group picker, legend and readout sit in four distinct corners and never overlap', async ({
+  // Regression for WINDOWS.md #3: the overlays used to resolve to one computed corner and sit on top
+  // of each other. This reads real getBoundingClientRect() geometry: the left stack holds the Data,
+  // Colours, Overlays and Basemap cards in that order, and the tools card sits top right.
+  test('the left cards, the tools card, the legend and the readout sit in four distinct corners and never overlap', async ({
     page,
   }) => {
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+    // The Basemap card mounts after the first draw.
+    await expect(page.locator('.floating-top-left > [data-fold="basemap"]')).toBeAttached()
 
     const geometry = await page.evaluate(() => {
       function rectOf(el: Element | null): DOMRect | null {
@@ -228,53 +253,80 @@ test.describe('the map draws a synthetic run end to end, through the real routes
       }
       const canvas = document.querySelector('canvas')
       const topLeft = document.querySelector('.floating-top-left')
-      const bottomLeft = document.querySelector('.floating-bottom-left')
-      const bottomRight = document.querySelector('.floating-bottom-right')
-      const topLeftChildren = topLeft ? Array.from(topLeft.children) : []
       return {
         canvas: rectOf(canvas)?.toJSON() ?? null,
         topLeft: rectOf(topLeft)?.toJSON() ?? null,
-        bottomLeft: rectOf(bottomLeft)?.toJSON() ?? null,
-        bottomRight: rectOf(bottomRight)?.toJSON() ?? null,
-        controls: rectOf(topLeftChildren[0] ?? null)?.toJSON() ?? null,
-        picker: rectOf(topLeftChildren[1] ?? null)?.toJSON() ?? null,
+        topRight: rectOf(document.querySelector('.floating-top-right'))?.toJSON() ?? null,
+        bottomLeft: rectOf(document.querySelector('.floating-bottom-left'))?.toJSON() ?? null,
+        bottomRight: rectOf(document.querySelector('.floating-bottom-right'))?.toJSON() ?? null,
+        cards: (topLeft ? Array.from(topLeft.children) : []).map((card) => ({
+          fold: card.getAttribute('data-fold'),
+          rect: card.getBoundingClientRect().toJSON() as DOMRect,
+        })),
       }
     })
 
-    const { canvas, topLeft, bottomLeft, bottomRight, controls, picker } = geometry
+    const { canvas, topLeft, topRight, bottomLeft, bottomRight, cards } = geometry
     expect(canvas).not.toBeNull()
     expect(topLeft).not.toBeNull()
+    expect(topRight).not.toBeNull()
     expect(bottomLeft).not.toBeNull()
     expect(bottomRight).not.toBeNull()
-    expect(controls).not.toBeNull()
-    expect(picker).not.toBeNull()
 
-    // Each cluster anchors to its own named corner of the canvas, not to a
-    // shared default position.
-    expect(topLeft!.top).toBeLessThan(canvas!.top + canvas!.height / 2)
-    expect(topLeft!.left).toBeLessThan(canvas!.left + canvas!.width / 2)
-    expect(bottomLeft!.bottom).toBeGreaterThan(canvas!.top + canvas!.height / 2)
-    expect(bottomLeft!.left).toBeLessThan(canvas!.left + canvas!.width / 2)
-    expect(bottomRight!.bottom).toBeGreaterThan(canvas!.top + canvas!.height / 2)
-    expect(bottomRight!.right).toBeGreaterThan(canvas!.left + canvas!.width / 2)
+    // The left stack holds the four cards, top to bottom, each below the one before it.
+    expect(cards.map((card) => card.fold)).toEqual(['data', 'colours', 'overlays', 'basemap'])
+    for (let i = 1; i < cards.length; i++) expect(cards[i].rect.top).toBeGreaterThanOrEqual(cards[i - 1].rect.bottom)
 
-    // The three clusters carry three distinct corners -- no two share the
-    // same computed top-left origin, which is exactly what the bug did.
-    expect(`${topLeft!.top},${topLeft!.left}`).not.toBe(`${bottomLeft!.top},${bottomLeft!.left}`)
-    expect(`${bottomLeft!.top},${bottomLeft!.left}`).not.toBe(`${bottomRight!.top},${bottomRight!.left}`)
-    expect(`${topLeft!.top},${topLeft!.left}`).not.toBe(`${bottomRight!.top},${bottomRight!.left}`)
+    // Each cluster anchors to its own named corner of the canvas, not to a shared default position.
+    const midX = canvas!.left + canvas!.width / 2
+    const midY = canvas!.top + canvas!.height / 2
+    expect(topLeft!.top).toBeLessThan(midY)
+    expect(topLeft!.left).toBeLessThan(midX)
+    expect(topRight!.top).toBeLessThan(midY)
+    expect(topRight!.right).toBeGreaterThan(midX)
+    expect(bottomLeft!.bottom).toBeGreaterThan(midY)
+    expect(bottomLeft!.left).toBeLessThan(midX)
+    expect(bottomRight!.bottom).toBeGreaterThan(midY)
+    expect(bottomRight!.right).toBeGreaterThan(midX)
 
-    // The group picker rides under the controls, in DOM order and on
-    // screen, not stacked on top of them.
-    expect(picker!.top).toBeGreaterThanOrEqual(controls!.bottom)
-
-    // No two of the three corner clusters overlap each other's box.
+    // Four distinct origins, which is exactly what the bug did not have, and no two boxes overlap.
+    const clusters: DOMRect[] = [topLeft!, topRight!, bottomLeft!, bottomRight!]
+    expect(new Set(clusters.map((r) => `${r.top},${r.left}`)).size).toBe(4)
     function overlaps(a: DOMRect, b: DOMRect): boolean {
       return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
     }
-    expect(overlaps(topLeft!, bottomLeft!)).toBe(false)
-    expect(overlaps(bottomLeft!, bottomRight!)).toBe(false)
-    expect(overlaps(topLeft!, bottomRight!)).toBe(false)
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) expect(overlaps(clusters[i], clusters[j]), `clusters ${i} and ${j}`).toBe(false)
+    }
+  })
+
+  // LD-4: the plan fits into the area the left cards leave free, on first draw and on Fit to
+  // extent, and folding a card never moves it (UI-SPEC verification hint 3).
+  test('the mesh sits right of the left cards after the first draw and after Fit to extent, and folding a card does not move it', async ({
+    page,
+  }) => {
+    await page.goto(pestoUrl)
+    await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('.floating-top-left > [data-fold="basemap"]')).toBeAttached()
+    const box = (await page.locator(MAP_CANVAS).boundingBox())!
+    const bandRight = () =>
+      page.evaluate(() =>
+        Math.max(...['.floating-top-left', '.floating-bottom-left'].map((sel) => document.querySelector(sel)?.getBoundingClientRect().right ?? 0)),
+      )
+
+    let layout = await cellLayout(page)
+    expect(box.x + layout.left(0)).toBeGreaterThanOrEqual(await bandRight())
+
+    const before = await settledMatrix(page)
+    const dataFold = page.locator('button[aria-controls="fold-body-data"]')
+    await dataFold.click()
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    expect(await cameraMatrix(page)).toEqual(before)
+
+    await dataFold.click()
+    await page.locator('button', { hasText: 'Fit to extent' }).click()
+    layout = await cellLayout(page)
+    expect(box.x + layout.left(0)).toBeGreaterThanOrEqual(await bandRight())
   })
 
   // Plan 05.1-08/D-16: the synthetic run's mesh already carries no CRS
@@ -474,7 +526,6 @@ test.describe('the map draws a synthetic run end to end, through the real routes
   // G-07-3: the top-left cluster is a see-through box. A press in its gaps used to
   // land on the box, not the canvas, so a drag there did nothing.
   test('a press in the see-through part of the top-left cluster lands on the canvas and pans', async ({ page }) => {
-    await installCameraHook(page)
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
     const before = await drawnMatrix(page)
@@ -504,7 +555,6 @@ test.describe('the map draws a synthetic run end to end, through the real routes
 
   // G-07-3: every pan ended with a click that selected the cell under the release point.
   test('the click that ends a drag selects nothing', async ({ page }) => {
-    await installCameraHook(page)
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
     const readout = page.locator('.floating-bottom-right')
@@ -532,7 +582,6 @@ test.describe('the map draws a synthetic run end to end, through the real routes
 
   // G-07-3: the zoom followed the number of wheel events, not the distance scrolled.
   test('a small wheel step zooms less than a mouse notch, and a sideways swipe does not zoom', async ({ page }) => {
-    await installCameraHook(page)
     await page.goto(pestoUrl)
     await expect(page.locator('canvas[data-drawn="true"]')).toBeVisible({ timeout: 30_000 })
     const box = (await page.locator(MAP_CANVAS).boundingBox())!
