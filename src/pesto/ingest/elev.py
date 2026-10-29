@@ -30,6 +30,22 @@ ELEV_PREDATES = "this cache predates the section view; it is added on the next i
 
 _NAME = "elev"
 _NO_ELEVATIONS = "the grid file records no layer elevations"
+# flopy's words for a DIS and a DISV grid; a DISU grid's cells have no shared layer stack.
+_SECTION_GRID_TYPES = ("structured", "vertex")
+
+
+def _grid_type_refusal(grid_type: str | None) -> str | None:
+    if grid_type in _SECTION_GRID_TYPES:
+        return None
+    if grid_type is None:
+        return (
+            "the grid file does not say which grid type it is; "
+            "the section reads MODFLOW 6 DIS and DISV grids only"
+        )
+    return (
+        f"this run's grid is of type {grid_type!r}; "
+        "the section reads MODFLOW 6 DIS and DISV grids only"
+    )
 
 
 @dataclass(frozen=True)
@@ -59,6 +75,45 @@ def _elev_counts(stacked: np.ndarray) -> dict[str, int]:
         "zero_thickness": int((lower == upper).sum()),
         "non_finite": int((~np.isfinite(stacked)).sum()),
     }
+
+
+_UNIT_NOTE = "the grid file records no length unit, so distances and elevations are in model units"
+
+
+def _count_note(n: int, one: str, many: str) -> str:
+    return one if n == 1 else many.format(n=n)
+
+
+def _elev_notes(counts: dict[str, int]) -> list[str]:
+    notes: list[str] = []
+    if counts["bottom_above_top"]:
+        notes.append(
+            _count_note(
+                counts["bottom_above_top"],
+                "1 cell has its bottom above its top; drawn as absence in the section",
+                "{n} cells have their bottom above their top; drawn as absence in the section",
+            )
+        )
+    if counts["zero_thickness"]:
+        notes.append(
+            _count_note(
+                counts["zero_thickness"],
+                "1 cell has zero thickness; drawn as absence (pinched out) in the section",
+                "{n} cells have zero thickness; drawn as absence (pinched out) in the section",
+            )
+        )
+    if counts["non_finite"]:
+        notes.append(
+            _count_note(
+                counts["non_finite"],
+                "1 elevation is not a finite number; the cells it bounds are drawn as absence "
+                "in the section",
+                "{n} elevations are not finite numbers; the cells they bound are drawn as "
+                "absence in the section",
+            )
+        )
+    notes.append(_UNIT_NOTE)
+    return notes
 
 
 def write_elev(
@@ -107,7 +162,7 @@ def write_elev(
         ring_bytes = write_atomic_bytes(ring_path, lambda f: f.write(ring64.tobytes()))
         start_bytes = write_atomic_bytes(start_path, lambda f: f.write(starts32.tobytes()))
 
-        notes: list[str] = []
+        notes = _elev_notes(counts)
         payload = {
             "cache_version": CACHE_VERSION,
             "grid_type": grid_type,
@@ -177,6 +232,15 @@ def write_elev_from_adapter(
     if isinstance(geometry, ReadFailure):
         return geometry
 
+    # Both refusals come before any write: a missing elevation is never filled.
+    grid_type = getattr(geometry, "grid_type", None)
+    refusal = _grid_type_refusal(grid_type)
+    if refusal is not None:
+        return ReadFailure(name=_NAME, path=str(layout.grid), reason=refusal)
+    if geometry.top is None or geometry.botm is None:
+        reason = getattr(geometry, "elevation_note", None) or _NO_ELEVATIONS
+        return ReadFailure(name=_NAME, path=str(layout.grid), reason=reason)
+
     origin = load_mesh_origin(layout)
     if isinstance(origin, ReadFailure):
         return ReadFailure(
@@ -184,8 +248,6 @@ def write_elev_from_adapter(
             path=origin.path,
             reason=f"the grid artifact's origin could not be read: {origin.reason}",
         )
-    if geometry.top is None or geometry.botm is None:
-        return ReadFailure(name=_NAME, path=str(layout.grid), reason=_NO_ELEVATIONS)
 
     ncpl = int(np.asarray(geometry.top).reshape(-1).shape[0])
     starts = _ring_starts(geometry.cell_index, ncpl)
@@ -199,7 +261,7 @@ def write_elev_from_adapter(
         ring_start=starts,
         top=geometry.top,
         botm=geometry.botm,
-        grid_type=getattr(geometry, "grid_type", None),
+        grid_type=grid_type,
         origin=origin,
         layout=layout,
     )
@@ -295,12 +357,20 @@ def load_elev(layout: CacheLayout) -> ElevArrays | ReadFailure:
     starts = _read_binary(layout, files.get("ring_start"), "ring_start")
     if isinstance(starts, ReadFailure):
         return starts
-    if elev.size != (nlay + 1) * ncpl or ring.size != 2 * n_ring or starts.size != ncpl + 1:
-        return ReadFailure(
-            name=_NAME,
-            path=str(json_path),
-            reason="elev.json's counts disagree with its nlay, ncpl and ring vertex count",
-        )
+    for array, filename, expected, rule in (
+        (elev, files["elev"]["name"], (nlay + 1) * ncpl, "(nlay + 1) * ncpl"),
+        (ring, files["ring"]["name"], 2 * n_ring, "2 * n_ring_vertices"),
+        (starts, files["ring_start"]["name"], ncpl + 1, "ncpl + 1"),
+    ):
+        if array.size != expected:
+            return ReadFailure(
+                name=_NAME,
+                path=str(json_path),
+                reason=(
+                    f"{filename} holds {array.size} values, but elev.json's shape needs "
+                    f"{rule} = {expected}"
+                ),
+            )
     starts64 = starts.astype(np.int64)
     if starts64[0] != 0 or starts64[-1] != n_ring or np.any(np.diff(starts64) <= 0):
         return ReadFailure(

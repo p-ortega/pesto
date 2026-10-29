@@ -453,3 +453,78 @@ def test_locate_par_keeps_full_precision_at_real_world_northings(tmp_path):
     )
     cells = adapter.locate_par(par)
     assert cells.cell.tolist() == [0, 4]
+
+
+def _adapter_on_stand_in_grid(tmp_path, **overrides):
+    # flopy cannot be made to write a grid file without TOP or BOTM here, so the
+    # adapter's parsed grid is swapped for a plain object with the same attributes.
+    from types import SimpleNamespace
+
+    from pesto.model.mf6 import Mf6Adapter
+
+    real = Mf6Adapter(write_disv_grb(tmp_path / "g.disv.grb", nlay=2))
+    grid = real._grid_or_failure()
+    fields = {
+        "verts": np.asarray(grid.verts),
+        "iverts": [list(cell) for cell in grid.iverts],
+        "nlay": int(grid.nlay),
+        "ncpl": int(grid.ncpl),
+        "top": np.asarray(grid.top),
+        "botm": np.asarray(grid.botm),
+        "xoffset": grid.xoffset,
+        "yoffset": grid.yoffset,
+        "angrot": grid.angrot,
+        "grid_type": grid.grid_type,
+        "crs": None,
+    }
+    fields.update(overrides)
+    adapter = Mf6Adapter(tmp_path / "g.disv.grb")
+    adapter._grid = SimpleNamespace(**fields)
+    return adapter
+
+
+def test_a_good_grid_gives_no_elevation_note(tmp_path):
+    geom = _adapter_on_stand_in_grid(tmp_path).geometry()
+    assert not isinstance(geom, ReadFailure)
+    assert geom.elevation_note is None
+    assert geom.top is not None and geom.botm is not None
+
+
+def test_a_real_grid_file_gives_no_elevation_note(tmp_path):
+    from pesto.model.mf6 import Mf6Adapter
+
+    geom = Mf6Adapter(write_dis_grb(tmp_path / "g.grb", nlay=2, nrow=3, ncol=4)).geometry()
+    assert geom.elevation_note is None
+
+
+def test_a_grid_with_no_top_says_so_and_drops_both_arrays(tmp_path):
+    geom = _adapter_on_stand_in_grid(tmp_path, top=None).geometry()
+    assert geom.top is None and geom.botm is None
+    assert geom.elevation_note == "the grid file records no top elevations"
+
+
+def test_a_grid_with_no_bottoms_says_so_and_drops_both_arrays(tmp_path):
+    geom = _adapter_on_stand_in_grid(tmp_path, botm=None).geometry()
+    assert geom.top is None and geom.botm is None
+    assert geom.elevation_note == "the grid file records no layer bottoms"
+
+
+def test_a_top_of_the_wrong_length_names_both_lengths(tmp_path):
+    geom = _adapter_on_stand_in_grid(tmp_path, top=np.array([10.0, 10.0])).geometry()
+    assert geom.top is None and geom.botm is None
+    assert geom.elevation_note == "the grid file's top holds 2 values, not ncpl = 3"
+
+
+def test_bottoms_of_the_wrong_width_name_both_widths(tmp_path):
+    geom = _adapter_on_stand_in_grid(tmp_path, botm=np.zeros((2, 4))).geometry()
+    assert geom.top is None and geom.botm is None
+    assert geom.elevation_note == "the grid file's bottoms hold 4 values per layer, not ncpl = 3"
+
+
+def test_bottoms_that_do_not_split_into_layers_are_refused_not_raised(tmp_path):
+    geom = _adapter_on_stand_in_grid(tmp_path, botm=np.zeros(7)).geometry()
+    assert not isinstance(geom, ReadFailure)
+    assert geom.top is None and geom.botm is None
+    assert geom.elevation_note == (
+        "the grid file's bottoms hold 7 values, which do not split into 2 layers of ncpl = 3"
+    )
