@@ -80,6 +80,8 @@ class Geometry:
     xoff: float = 0.0
     yoff: float = 0.0
     angrot: float = 0.0
+    # flopy's own word, "structured" or "vertex"; None from a stand-in that does not say.
+    grid_type: str | None = None
 
 
 @dataclass(frozen=True)

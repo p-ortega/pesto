@@ -111,6 +111,11 @@ def _site_rule_and_note(
     return tuple(rules), tuple(notes)
 
 
+def _grid_type(grid: Any) -> str | None:
+    value = getattr(grid, "grid_type", None)
+    return None if value is None else str(value)
+
+
 class Mf6Adapter:
     """The spatial adapter for a MODFLOW 6 run, built from its binary grid
     file (``.grb``). ``model_dir`` is the run folder; when given, sites the
@@ -253,6 +258,7 @@ class Mf6Adapter:
             xoff=float(grid.xoffset or 0.0),
             yoff=float(grid.yoffset or 0.0),
             angrot=float(grid.angrot or 0.0),
+            grid_type=_grid_type(grid),
         )
 
     def locate_par(self, par: pd.DataFrame) -> ParCells | ReadFailure:

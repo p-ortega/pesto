@@ -51,8 +51,12 @@ _PROBE_LABEL = "information only, not part of ingest"
 _READS_NOTE = (
     "counted from the artifact plan: an artifact that names a source reads it once in its "
     "worker and once more to checksum it, unless the control artifact or an artifact it "
-    "builds on already read that file, in which case it reads the cache instead"
+    "builds on already read that file, in which case it reads the cache instead; elev is the "
+    "exception, since it parses the grid file again after grid has"
 )
+
+# Workers that parse their own sources again, even though an artifact they build on read them too.
+_REREADS_UPSTREAM_SOURCES = frozenset({"elev"})
 
 
 def _size(path: Path) -> int:
@@ -133,8 +137,10 @@ def _reads_by_artifact(plan: Sequence[PlannedArtifact]) -> dict[str, tuple[Path,
         paths = tuple(dict.fromkeys(Path(source).resolve() for source in artifact.sources))
         listed[artifact.name] = set(paths)
         # A file an upstream artifact also lists was read there; this one reads the cache.
-        already_read = set().union(
-            *(listed.get(name, set()) for name in upstream_artifacts(artifact, plan))
+        already_read = (
+            set()
+            if artifact.kind in _REREADS_UPSTREAM_SOURCES
+            else set().union(*(listed.get(name, set()) for name in upstream_artifacts(artifact, plan)))
         )
         if artifact.name == "control":
             control_files.update(paths)
