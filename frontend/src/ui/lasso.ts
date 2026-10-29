@@ -4,10 +4,15 @@
 
 import { MIN_LASSO_POINTS, thinPath, type LassoPoint } from '../data/lasso'
 import { readColorToken } from '../gl/color-token'
+import { removeKeyName } from '../state/modifiers'
 import type { Chart2D } from './charts/histogram'
+import { paintNote } from './note-line'
 
 // Path points closer than this are dropped, so a slow drag does not make a huge outline (CSS px).
 const THIN_CSS_PX = 3
+
+export const LASSO_NAME = 'Lasso sites'
+export const LASSO_REASON_ID = 'lasso-reason'
 
 export type LassoAvailability = { ok: true } | { ok: false; reason: string }
 
@@ -21,6 +26,8 @@ export interface LassoOptions {
   area: HTMLElement
   canvas: HTMLCanvasElement
   buttonHost: HTMLElement
+  /** Where the reason line goes; the button's host when absent. */
+  reasonHost?: HTMLElement
   /** Client CSS pixels to the map canvas's own pixels. */
   canvasPoint(event: { clientX: number; clientY: number }): [number, number]
   screenToWorld(x: number, y: number): [number, number]
@@ -56,20 +63,17 @@ function cssColour(name: string): string {
 export function renderLasso(opts: LassoOptions): LassoHandle {
   const { area, canvas } = opts
 
-  const wrap = document.createElement('div')
-  // A card, so the disabled reason reads over any colour ramp.
-  wrap.classList.add('floating', 'lasso-control')
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('lasso-button')
-  button.textContent = 'Lasso sites'
+  button.textContent = LASSO_NAME
   button.setAttribute('aria-pressed', 'false')
   const reasonEl = document.createElement('div')
+  reasonEl.id = LASSO_REASON_ID
   reasonEl.classList.add('label', 'wrap-note')
   reasonEl.hidden = true
-  wrap.appendChild(button)
-  wrap.appendChild(reasonEl)
-  opts.buttonHost.appendChild(wrap)
+  opts.buttonHost.appendChild(button)
+  ;(opts.reasonHost ?? opts.buttonHost).appendChild(reasonEl)
 
   const overlay = document.createElement('canvas')
   overlay.classList.add('lasso-overlay')
@@ -223,13 +227,14 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
     if (disposed) return
     available = state.ok
     button.disabled = !state.ok
+    // The line names its button, since the tools card shows several buttons' lines together.
+    paintNote(reasonEl, state.ok ? null : { kind: 'reason', text: `${LASSO_NAME}: ${state.reason}` })
+    reasonEl.hidden = state.ok
     if (state.ok) {
-      reasonEl.textContent = ''
-      reasonEl.hidden = true
-      button.title = 'Drag around site dots to select them; shift adds, option removes; Esc stops'
+      button.removeAttribute('aria-describedby')
+      button.title = `Drag around site dots to select them. Shift adds, ${removeKeyName()} removes. Esc stops.`
     } else {
-      reasonEl.textContent = state.reason
-      reasonEl.hidden = false
+      button.setAttribute('aria-describedby', LASSO_REASON_ID)
       button.title = state.reason
       if (isArmed) setArmed(false)
     }
@@ -266,7 +271,8 @@ export function renderLasso(opts: LassoOptions): LassoHandle {
       button.removeEventListener('click', onButtonClick)
       area.classList.remove('lasso-armed')
       overlay.remove()
-      wrap.remove()
+      button.remove()
+      reasonEl.remove()
     },
   }
 }

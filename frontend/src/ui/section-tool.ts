@@ -4,18 +4,24 @@
 
 import { readColorToken } from '../gl/color-token'
 import type { Chart2D } from './charts/histogram'
+import { paintNote, type Note } from './note-line'
 
 export type SectionToolAvailability = { ok: true } | { ok: false; reason: string }
 
 // Two clicks closer than this make no line; the server keeps its own floor (D-42). CSS pixels.
 export const MIN_END_GAP_CSS_PX = 3
 export const SAME_SPOT_REASON = 'the two ends are on the same spot'
+export const SECTION_TOOL_NAME = 'Draw section line'
+export const SECTION_TOOL_TITLE = 'Click two points on the plan to draw a section line. Esc stops.'
+export const SECTION_TOOL_REASON_ID = 'section-tool-reason'
 
 export interface SectionToolOptions {
   /** The positioned box holding the map canvas; the line canvas goes in it. */
   area: HTMLElement
   canvas: HTMLCanvasElement
   buttonHost: HTMLElement
+  /** Where the reason line goes; the button's host when absent. */
+  reasonHost?: HTMLElement
   /** Client CSS pixels to the map canvas's own pixels. */
   canvasPoint(event: { clientX: number; clientY: number }): [number, number]
   /** Plan screen to plan world units (relative to the mesh origin), and back. */
@@ -48,20 +54,18 @@ function cssColour(name: string): string {
 export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   const { area, canvas } = opts
 
-  const wrap = document.createElement('div')
-  wrap.classList.add('floating', 'section-tool')
   const button = document.createElement('button')
   button.type = 'button'
   button.classList.add('section-button')
-  button.textContent = 'Section'
-  button.setAttribute('aria-label', 'Draw a section line')
+  button.textContent = SECTION_TOOL_NAME
+  button.setAttribute('aria-label', SECTION_TOOL_NAME)
   button.setAttribute('aria-pressed', 'false')
   const reasonEl = document.createElement('div')
+  reasonEl.id = SECTION_TOOL_REASON_ID
   reasonEl.classList.add('label', 'wrap-note')
   reasonEl.hidden = true
-  wrap.appendChild(button)
-  wrap.appendChild(reasonEl)
-  opts.buttonHost.appendChild(wrap)
+  opts.buttonHost.appendChild(button)
+  ;(opts.reasonHost ?? opts.buttonHost).appendChild(reasonEl)
 
   const overlay = document.createElement('canvas')
   overlay.classList.add('section-line-overlay')
@@ -84,10 +88,18 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
   // The line last finished; it stays until a new one replaces it (D-03).
   let line: { a: [number, number]; b: [number, number] } | null = null
 
+  // The line names its button, since the tools card shows several buttons' lines together.
   function paintReason(): void {
-    const text = unavailableReason ?? notice
-    reasonEl.textContent = text ?? ''
-    reasonEl.hidden = text === null
+    const note: Note | null =
+      unavailableReason !== null
+        ? { kind: 'reason', text: `${SECTION_TOOL_NAME}: ${unavailableReason}` }
+        : notice !== null
+          ? { kind: 'warning', text: `${SECTION_TOOL_NAME}: ${notice}` }
+          : null
+    paintNote(reasonEl, note)
+    reasonEl.hidden = note === null
+    if (note === null) button.removeAttribute('aria-describedby')
+    else button.setAttribute('aria-describedby', SECTION_TOOL_REASON_ID)
   }
 
   function setArmed(on: boolean): void {
@@ -214,7 +226,7 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
     available = state.ok
     button.disabled = !state.ok
     unavailableReason = state.ok ? null : state.reason
-    button.title = state.ok ? 'Click two points on the plan to draw a section line; Esc stops' : state.reason
+    button.title = state.ok ? SECTION_TOOL_TITLE : state.reason
     if (!state.ok && isArmed) setArmed(false)
     paintReason()
   }
@@ -245,7 +257,8 @@ export function renderSectionTool(opts: SectionToolOptions): SectionToolHandle {
       button.removeEventListener('click', onButtonClick)
       area.classList.remove('section-armed')
       overlay.remove()
-      wrap.remove()
+      button.remove()
+      reasonEl.remove()
     },
   }
 }

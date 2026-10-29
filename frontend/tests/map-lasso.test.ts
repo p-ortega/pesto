@@ -524,11 +524,11 @@ describe('the lasso on the map', () => {
     const reason = 'no observation site dots are drawn; colour the map by observations'
     expect(lassoButton(root).disabled).toBe(true)
     expect(lassoButton(root).title).toBe(reason)
-    expect(root.querySelector('.lasso-control')?.textContent).toContain(reason)
+    expect(root.querySelector('#lasso-reason')?.textContent).toContain(reason)
 
     await enterObservations(store, layer)
     expect(lassoButton(root).disabled).toBe(false)
-    expect(root.querySelector('.lasso-control')?.textContent).not.toContain(reason)
+    expect(root.querySelector('#lasso-reason')?.textContent).not.toContain(reason)
 
     arm(root)
     store.set({ colour: { source: 'par', stat: 'value' } }, 'other')
