@@ -27,7 +27,6 @@ from pesto.cache._atomic import write_atomic_text
 from pesto.cache.layout import CacheLayout
 from pesto.cache.manifest import CACHE_VERSION, CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
-from pesto.layer_words import layer_words
 
 # GridShape lives in pesto.model, which nothing under pesto.ingest may import,
 # even for typing; the annotations below stay unresolved forward references.
@@ -210,7 +209,7 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
     return groups, refused
 
 
-_BINARY_LAYER = re.compile(r"\.layer(\d+)\.bin$", re.IGNORECASE)
+_BINARY_LAYER = re.compile(r"\.(layer(\d+))\.bin$", re.IGNORECASE)
 
 
 def _binary_header(path: Path) -> tuple[int, int]:
@@ -238,7 +237,7 @@ def _binary_groups(run_dir, factor_files, par, shape):
             layer_match = _BINARY_LAYER.search(path.name)
             if not layer_match:
                 raise _Refused(f"{path.name} carries no layer number in its name")
-            layer = int(layer_match.group(1))
+            layer = int(layer_match.group(2))
             # The tag must be whole dot-separated segments of the factor file's name.
             matches = [pf for pf in point_files if f".{pf.stem.split('.', 1)[1]}." in f".{path.name}"]
             if not matches:
@@ -287,7 +286,8 @@ def _binary_groups(run_dir, factor_files, par, shape):
             if len(groups) == found_before:
                 raise _Refused(
                     f"no parameter group in the control table matches {path.name}'s points "
-                    f"in {tag.name} and its {layer_words(layer)}"
+                    # The number is part of a file name, so it is quoted as written, not counted from one.
+                    f"in {tag.name} and the layer in its name ({layer_match.group(1)} as written, read as index {layer})"
                 )
         except _Refused as exc:
             refused.append((path.name, str(exc)))
