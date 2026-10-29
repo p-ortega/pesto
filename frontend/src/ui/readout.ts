@@ -48,6 +48,18 @@ export type ReadoutPick =
     }
   | { kind: 'point'; row: number; layer: number; x: number; y: number; selectionLabel: string }
   | { kind: 'sites'; entries: SiteReadoutEntry[]; total: number }
+  | {
+      kind: 'section'
+      cellId: number
+      layer: number
+      selectionLabel: string
+      /** What a plan click on this cell and layer would read, or null when no parameter field is drawn. */
+      classification: CellClass | null
+      /** The server's reason the clicked quad is absence, else null. */
+      absence: string | null
+      /** The section's own lines: distance from A, top and bottom, pinched layers. */
+      lines: string[]
+    }
 
 export interface ReadoutOptions {
   pick: ReadoutPick
@@ -161,7 +173,33 @@ export function renderReadout(el: HTMLElement, opts: ReadoutOptions): void {
     return
   }
 
-  const { cellId, layer, selectionLabel, classification } = opts.pick
+  if (opts.pick.kind === 'section') {
+    const { cellId, layer, selectionLabel, classification, absence, lines } = opts.pick
+    if (absence !== null) {
+      appendLine(el, absence, 'body')
+      appendFooter(el, layer, cellId, selectionLabel)
+    } else if (classification !== null) {
+      renderCell(el, opts, { cellId, layer, selectionLabel, classification })
+    } else {
+      appendFooter(el, layer, cellId, selectionLabel)
+    }
+    for (const text of lines) appendLine(el, text, 'label', 'tabular-nums')
+    return
+  }
+
+  renderCell(el, opts, opts.pick)
+}
+
+interface CellPick {
+  cellId: number
+  layer: number
+  selectionLabel: string
+  classification: CellClass
+}
+
+// A plan cell and a section quad read the same, so both go through here.
+function renderCell(el: HTMLElement, opts: ReadoutOptions, pick: CellPick): void {
+  const { cellId, layer, selectionLabel, classification } = pick
 
   if (classification.kind === 'no-parameter' || classification.kind === 'outside-model') {
     appendLine(el, `No parameter of ${opts.group} sits on this cell.`, 'body')

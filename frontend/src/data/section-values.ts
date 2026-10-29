@@ -2,7 +2,7 @@
 // rules (D-08, D-09). Only the quads in the answer are visited, so no nlay x ncells array is
 // built (D-27), and every quad left uncoloured is counted for the legend.
 
-import type { ParIdentity } from './parmap'
+import type { CellClass, ParIdentity } from './parmap'
 import type { SectionAnswer } from './section'
 
 export interface SectionValues {
@@ -48,9 +48,25 @@ export interface SectionValuesInput {
   referenced: Uint8Array | null
 }
 
-// A row index per quad (block), -1 for none and -2 for contested.
-const NONE = -1
-const CONTESTED = -2
+// The drawn group's block rows on the given cells, keyed by layer * nCells + cell, and every layer
+// the group sets anywhere. The colours and the click readout both read this one map (D-23).
+function blockRows(plan: SectionValuesInput, nlay: number, cells: ReadonlySet<number>): { rows: Map<number, number[]>; layers: Set<number> } {
+  const { nCells } = plan
+  const rows = new Map<number, number[]>()
+  const layers = new Set<number>()
+  for (let i = 0; i < plan.joined.length; i++) {
+    if (plan.joined[i]?.pargp !== plan.drawnGroup) continue
+    const l = plan.layerArray[i]
+    const c = plan.cellArray[i]
+    if (l >= 0) layers.add(l)
+    if (!cells.has(c) || c < 0 || c >= nCells || l < 0 || l >= nlay) continue
+    const key = l * nCells + c
+    const held = rows.get(key)
+    if (held) held.push(i)
+    else rows.set(key, [i])
+  }
+  return { rows, layers }
+}
 
 export function sectionValues(answer: SectionAnswer, plan: SectionValuesInput): SectionValues {
   const { nlay, nPieces, cell, status } = answer
@@ -78,26 +94,17 @@ export function sectionValues(answer: SectionAnswer, plan: SectionValuesInput): 
   if (canColour && plan.fieldKind === 'block') {
     const inAnswer = new Set<number>()
     for (let p = 0; p < nPieces; p++) inAnswer.add(cell[p])
-    const rowAt = new Map<number, number>()
-    const layers = new Set<number>()
-    for (let i = 0; i < plan.joined.length; i++) {
-      if (plan.joined[i]?.pargp !== group) continue
-      const l = plan.layerArray[i]
-      const c = plan.cellArray[i]
-      if (l >= 0) layers.add(l)
-      if (!inAnswer.has(c) || c < 0 || c >= nCells || l < 0 || l >= nlay) continue
-      const key = l * nCells + c
-      rowAt.set(key, rowAt.has(key) ? CONTESTED : i)
-    }
-    layersSet = Array.from(layers).sort((x, y) => x - y)
+    const blocks = blockRows(plan, nlay, inAnswer)
+    layersSet = Array.from(blocks.layers).sort((x, y) => x - y)
     if (!plan.drawsAsPoints) {
       for (let q = 0; q < n; q++) {
         const c = cell[Math.floor(q / nlay)]
         // A cell id the plan does not hold would alias another layer's key.
         if (c < 0 || c >= nCells) continue
-        const row = rowAt.get((q % nlay) * nCells + c) ?? NONE
-        if (row === CONTESTED) contestedMask[q] = 1
-        else if (row !== NONE) raw[q] = field[row]
+        const rows = blocks.rows.get((q % nlay) * nCells + c)
+        if (rows === undefined) continue
+        if (rows.length > 1) contestedMask[q] = 1
+        else raw[q] = field[rows[0]]
       }
     }
   } else if (canColour && plan.fieldKind === 'cell' && plan.ppLayer !== null) {
@@ -142,6 +149,33 @@ export function sectionValues(answer: SectionAnswer, plan: SectionValuesInput): 
   }
 
   return { values, noValue, absence, contestedMask, beyondLimits, inactiveWithValue, absentWithValue, contested, layersSet }
+}
+
+/**
+ * The class a plan click would give the quad's cell on the quad's layer, by the same rules the
+ * colours use (D-23): absence reads as outside the model, and null means no parameter field is
+ * drawn (observations, or nothing yet), so there is nothing to classify against.
+ */
+export function classifyQuad(answer: SectionAnswer, plan: SectionValuesInput, quad: number): CellClass | null {
+  const { nlay, nPieces, cell, status } = answer
+  if (!Number.isInteger(quad) || quad < 0 || quad >= nPieces * nlay) return null
+  const c = cell[Math.floor(quad / nlay)]
+  const k = quad % nlay
+  const nCells = plan.nCells
+  const outside = !plan.hasIdomain && plan.referenced !== null && !(c >= 0 && c < nCells && plan.referenced[c])
+  if (status[quad] !== 0 || outside) return { kind: 'outside-model' }
+  const field = plan.fullField
+  if (plan.obsActive || field === null || plan.drawnGroup === null) return null
+  if (plan.fieldKind === 'block') {
+    if (c < 0 || c >= nCells) return { kind: 'no-parameter' }
+    const rows = blockRows(plan, nlay, new Set([c])).rows.get(k * nCells + c) ?? []
+    if (rows.length === 0) return { kind: 'no-parameter' }
+    if (plan.drawsAsPoints) return { kind: 'points', rows }
+    return rows.length === 1 ? { kind: 'valued', row: rows[0] } : { kind: 'contested', rows }
+  }
+  if (plan.ppLayer === null) return null
+  if (plan.drawsAsPoints || k !== plan.ppLayer || c < 0 || c >= field.length) return { kind: 'no-parameter' }
+  return Number.isFinite(field[c]) ? { kind: 'interpolated' } : { kind: 'no-parameter' }
 }
 
 function joinList(items: number[]): string {

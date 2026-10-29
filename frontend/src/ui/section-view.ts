@@ -4,17 +4,18 @@
 // state through getters, so this module computes no limits or style of its own (D-10).
 
 import { fetchSection, sectionKey, type SectionAnswer, type SectionResult } from '../data/section'
-import { pickSection, type SectionHit } from '../data/section-pick'
-import { layersSetLine, sectionValues, type SectionValues } from '../data/section-values'
+import { pickSection, pinchedLayers, type SectionHit } from '../data/section-pick'
+import { classifyQuad, layersSetLine, sectionValues, type SectionValues } from '../data/section-values'
 import { LatestWins } from '../data/latest-wins'
 import type { ParIdentity } from '../data/parmap'
-import type { ColormapName } from '../gl/colormap'
-import type { EffectiveStyle } from '../gl/field-style'
+import type { ColormapName, ValueScale } from '../gl/colormap'
+import { classLabel, type EffectiveStyle } from '../gl/field-style'
 import type { MeshLayer } from '../gl/mesh-layer'
 import { SectionCamera } from '../gl/section-camera'
 import { SectionLayer } from '../gl/section-layer'
 import type { SelectMode } from '../state/rules'
 import { prefersReducedMotion } from './chrome'
+import type { ReadoutPick } from './readout'
 import { axesInset, renderSectionAxes } from './section-axes'
 import { renderSectionControls, type SectionControlsHandle } from './section-controls'
 
@@ -23,6 +24,8 @@ export interface SectionPlanState {
   fullField: Float32Array | null
   limits: [number, number]
   style: EffectiveStyle
+  /** The scale the drawn field is in, for the class line. */
+  scale: ValueScale
   colormap: ColormapName
   reverse: boolean
   fieldKind: 'block' | 'cell'
@@ -57,13 +60,7 @@ export interface SectionViewOptions {
   repaintLegend(): void
 }
 
-export interface SectionReadout {
-  hit: SectionHit
-  selectionLabel: string
-  /** The server's status text when the clicked quad is absence, else null. */
-  absence: string | null
-  lines: string[]
-}
+export type SectionReadoutPick = Extract<ReadoutPick, { kind: 'section' }>
 
 export interface SectionViewHandle {
   shown(): boolean
@@ -77,8 +74,12 @@ export interface SectionViewHandle {
   fit(): void
   resize(width: number, height: number): void
   click(x: number, y: number, mode: SelectMode): void
-  readoutPick(): SectionReadout | null
-  paintReadout(el: HTMLElement): void
+  /** What the last click names, read again from the plan's current state; null when it hit nothing. */
+  readoutPick(): SectionReadoutPick | null
+  /** The class the picked value is drawn in, or null while continuous or with no value. */
+  readoutClassLine(): string | null
+  /** Rings every layer of each selected cell's pieces (D-22, D-33). */
+  selectionChanged(cells: ReadonlySet<number>): void
   refresh(): void
   planLayerChanged(layer: number): void
   reupload(): void
@@ -100,6 +101,12 @@ function appendLine(el: HTMLElement, text: string, ...classes: string[]): HTMLEl
   line.textContent = text
   el.appendChild(line)
   return line
+}
+
+function pinchedLine(layers: number[]): string | null {
+  if (layers.length === 0) return null
+  const which = layers.length === 1 ? `layer ${layers[0]}` : `layers ${layers.join(', ')}`
+  return `pinched out in this cell: ${which} (zero thickness)`
 }
 
 const OBS_LINE = 'the section colours parameter fields only'
@@ -154,7 +161,10 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
   let fetching: string | null = null
   let fitted = false
   let refusal: string | null = null
-  let picked: SectionReadout | null = null
+  let picked: SectionHit | null = null
+  // The selected cells, kept so a section built later rings them too.
+  let selected: ReadonlySet<number> = new Set()
+  let ringedKey = ''
   // The plan's layer, outlined across the section by the frame (D-19).
   let planLayer = 0
   // What the last paint drew, so the legend describes the colours on screen.
@@ -196,6 +206,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     fitted = false
     picked = null
     painted = null
+    ringedKey = ''
   }
 
   function setLine(a: [number, number], b: [number, number]): void {
@@ -255,6 +266,7 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       sectionLayer = new SectionLayer(gl, answer)
       opts.paintColours(sectionLayer.layer)
       paint()
+      ring()
     }
     if (!fitted) {
       fitInset()
@@ -342,30 +354,61 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
     if (answer === null) return
     const [s, z] = camera.screenToWorld(x, y)
     const hit = pickSection(answer, s, z)
-    if (hit === null) {
-      picked = null
-    } else {
-      const u = units()
-      picked = {
-        hit,
-        selectionLabel: opts.plan().selectionLabel,
-        absence: hit.status === 0 ? null : (answer.statusText.get(hit.status) ?? `status ${hit.status}`),
-        lines: [`distance from A: ${formatNumber(hit.s)} ${u}`, `top ${formatNumber(hit.top)}, bottom ${formatNumber(hit.bottom)} ${u}`],
-      }
-    }
+    // A shift or alt click on empty space changes nothing, the readout included (D-24).
+    if (hit === null && mode !== 'replace') return
+    picked = hit
     opts.onPick(hit, mode)
   }
 
-  function paintReadout(el: HTMLElement): void {
-    el.textContent = ''
-    el.classList.add('floating')
-    if (picked === null) {
-      appendLine(el, 'Click a cell to see its value.', 'label').style.color = 'var(--ink-muted)'
-      return
+  function readoutPick(): SectionReadoutPick | null {
+    if (picked === null || answer === null) return null
+    const hit = picked
+    const plan = opts.plan()
+    const u = units()
+    const lines = [`distance from A: ${formatNumber(hit.s)} ${u}`, `top ${formatNumber(hit.top)}, bottom ${formatNumber(hit.bottom)} ${u}`]
+    const pinched = pinchedLine(pinchedLayers(answer, hit.piece))
+    if (pinched !== null) lines.push(pinched)
+    return {
+      kind: 'section',
+      cellId: hit.cell,
+      layer: hit.layer,
+      selectionLabel: plan.selectionLabel,
+      classification: classifyQuad(answer, plan, hit.piece * answer.nlay + hit.layer),
+      absence: hit.status === 0 ? null : (answer.statusText.get(hit.status) ?? `status ${hit.status}`),
+      lines,
     }
-    if (picked.absence !== null) appendLine(el, picked.absence, 'body')
-    appendLine(el, `layer ${picked.hit.layer}, cell ${picked.hit.cell} · ${picked.selectionLabel}`, 'label')
-    for (const text of picked.lines) appendLine(el, text, 'label', 'tabular-nums')
+  }
+
+  // The class lives in the drawn scale, so it is read from the plan's scaled field.
+  function readoutClassLine(): string | null {
+    const pick = readoutPick()
+    if (pick === null || pick.absence !== null || pick.classification === null) return null
+    const plan = opts.plan()
+    if (plan.obsActive || plan.fullField === null) return null
+    const c = pick.classification
+    const index = c.kind === 'valued' ? c.row : c.kind === 'interpolated' ? pick.cellId : null
+    if (index === null) return null
+    return classLabel(plan.fullField[index] ?? Number.NaN, plan.limits, plan.style, plan.scale)
+  }
+
+  // Every layer of every piece on a selected cell: the whole column (D-33).
+  function ring(): boolean {
+    if (sectionLayer === null || answer === null) return false
+    const ids: number[] = []
+    for (let p = 0; p < answer.nPieces; p++) {
+      if (!selected.has(answer.cell[p])) continue
+      for (let k = 0; k < answer.nlay; k++) ids.push(p * answer.nlay + k)
+    }
+    const key = ids.join(',')
+    if (key === ringedKey) return false
+    ringedKey = key
+    sectionLayer.layer.setSelectedCells(ids)
+    return true
+  }
+
+  function selectionChanged(cells: ReadonlySet<number>): void {
+    selected = new Set(cells)
+    if (ring() && isShown) opts.requestRedraw()
   }
 
   function legendLines(): string[] {
@@ -436,8 +479,9 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
       camera.resize(width, height)
     },
     click,
-    readoutPick: () => picked,
-    paintReadout,
+    readoutPick,
+    readoutClassLine,
+    selectionChanged,
     refresh,
     // Moves the band only; the section's colours do not depend on the plan's layer.
     planLayerChanged(layer) {
