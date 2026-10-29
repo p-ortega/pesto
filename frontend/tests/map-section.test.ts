@@ -56,6 +56,7 @@ function baseState(): IngestState {
       stats: { available: true, blockedBy: [] },
       chips: { available: true, blockedBy: [] },
       obs: { available: true, blockedBy: [] },
+      section: { available: true, blockedBy: [] },
     },
     ingestSeconds: null,
     cacheBytes: null,
