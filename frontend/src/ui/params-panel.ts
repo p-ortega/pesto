@@ -23,6 +23,7 @@ import {
   type ParValuesResult,
 } from '../data/par'
 import { isDimmed } from '../data/dim'
+import { layerCompact } from '../data/layer-words'
 import { fetchAtBounds, type AtBoundsResult } from '../data/overlays'
 import { modeOf } from '../state/modifiers'
 import { selectPars } from '../state/rules'
@@ -368,9 +369,15 @@ function typeText(row: ParGroupRow): string {
   return row.type.value ?? NOT_STATED
 }
 
+// Reads the fixed source labels of src/pesto/ingest/parview.py group_layer. Only a placement
+// layer is a known zero-based index; a number of any other source is shown as sent.
 function layerText(row: ParGroupRow): string {
-  const value = row.layer.value
-  return value === null ? NOT_STATED : String(value)
+  const { value, source } = row.layer
+  if (value === null) return NOT_STATED
+  if (typeof value !== 'number') return String(value)
+  if (source.startsWith('placement')) return layerCompact(value)
+  if (source === 'group name, as written') return `${value} as written`
+  return String(value)
 }
 
 function pestoText(row: ParGroupRow): string {
@@ -481,10 +488,12 @@ function atBoundsHeading(state: AtBoundsState): { label: string; title: string }
 type SortKey = 'group' | 'type' | 'layer' | 'n_par' | 'pesto' | 'pestpp' | 'sigma' | 'at_bounds'
 type SortDirection = 'ascending' | 'descending'
 
-const COLUMN_HEADINGS: { column: SortKey; label: string }[] = [
+const LAYER_HEADING_TITLE = 'Layer counted from 1; the index from 0 is in brackets.'
+
+const COLUMN_HEADINGS: { column: SortKey; label: string; title?: string }[] = [
   { column: 'group', label: 'Group' },
   { column: 'type', label: 'Type' },
-  { column: 'layer', label: 'Layer' },
+  { column: 'layer', label: 'Layer', title: LAYER_HEADING_TITLE },
   { column: 'n_par', label: 'Parameters' },
   { column: 'pesto', label: 'Mean change, pesto' },
   { column: 'pestpp', label: 'Mean change, pestpp' },
@@ -644,13 +653,14 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   title.textContent = 'Params'
   el.appendChild(title)
 
-  const groupsHost = document.createElement('div')
-  groupsHost.classList.add('params-groups')
-  el.appendChild(groupsHost)
-
+  // The selected section comes first, so a cell click's answer is where a user looks.
   const selectedHost = document.createElement('div')
   selectedHost.classList.add('params-selected')
   el.appendChild(selectedHost)
+
+  const groupsHost = document.createElement('div')
+  groupsHost.classList.add('params-groups')
+  el.appendChild(groupsHost)
 
   const detailHost = document.createElement('div')
   detailHost.classList.add('params-detail-host')
@@ -766,11 +776,12 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     const header = document.createElement('div')
     header.classList.add('group-header')
     header.setAttribute('role', 'row')
-    for (const { column, label } of COLUMN_HEADINGS) {
+    for (const { column, label, title: why } of COLUMN_HEADINGS) {
       const heading = document.createElement('span')
       heading.setAttribute('role', 'columnheader')
       heading.setAttribute('aria-sort', 'none')
       heading.dataset.column = column
+      if (why !== undefined) heading.title = why
       const button = document.createElement('button')
       button.type = 'button'
       button.classList.add('label', 'sort-button')
@@ -850,7 +861,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     const chosen = chosenGroups()
     if (chosen.size === 0) {
       renderNotice(tableHost, {
-        title: 'Choose a group above to list its parameters',
+        title: 'Click a group above to list its parameters.',
         tone: 'info',
       })
       return
