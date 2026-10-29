@@ -17,6 +17,7 @@ import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
 import { createRecording2d } from './support/recording-2d'
+import { loadRealStylesheet } from './support/run-together'
 
 vi.mock('../src/gl/context', () => ({
   createContext: vi.fn(() => ({
@@ -29,6 +30,20 @@ vi.mock('../src/gl/context', () => ({
 vi.mock('../src/gl/mesh-layer', async (importOriginal) =>
   (await import('./support/mesh-layer-mock')).meshLayerMockModule(await importOriginal()),
 )
+
+// The real controller, with the hooks the map calls counted.
+vi.mock('../src/ui/section-view', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ui/section-view')>()
+  return {
+    ...actual,
+    createSectionView: vi.fn((opts: Parameters<typeof actual.createSectionView>[0]) => {
+      const handle = actual.createSectionView(opts)
+      handle.refresh = vi.fn(handle.refresh)
+      handle.planLayerChanged = vi.fn(handle.planLayerChanged)
+      return handle
+    }),
+  }
+})
 
 const FIXTURE = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'section-tracer-answer.json'), 'utf8'),
@@ -292,7 +307,29 @@ interface Mounted {
   layer: LayerDouble
 }
 
+// Every ResizeObserver the map makes, so a test can say the map box changed size.
+const observers: { callback: ResizeObserverCallback; target: Element | null }[] = []
+
+function stubResizeObserver(): void {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      private entry: { callback: ResizeObserverCallback; target: Element | null }
+      constructor(callback: ResizeObserverCallback) {
+        this.entry = { callback, target: null }
+        observers.push(this.entry)
+      }
+      observe(target: Element): void {
+        this.entry.target = target
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  )
+}
+
 async function mounted(): Promise<Mounted> {
+  stubResizeObserver()
   const stub = stubEnvironment()
   vi.stubGlobal(
     'requestAnimationFrame',
@@ -497,5 +534,196 @@ describe('the section tracer on the map', () => {
     await settle()
     expect(sectionToggle(m.root).getAttribute('aria-pressed')).toBe('true')
     expect(m.stub.section).toHaveLength(1)
+  })
+})
+
+interface SectionHooks {
+  refresh: Mocked
+  planLayerChanged: Mocked
+}
+
+async function sectionHooks(): Promise<SectionHooks> {
+  const { createSectionView } = await import('../src/ui/section-view')
+  return vi.mocked(createSectionView).mock.results[0].value as unknown as SectionHooks
+}
+
+function lastMatrix(layer: LayerDouble): Float32Array {
+  return layer.setMatrix.mock.calls.at(-1)?.[0] as Float32Array
+}
+
+function key(canvas: HTMLCanvasElement, name: string): void {
+  canvas.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }))
+}
+
+async function shownSection(): Promise<{ m: Mounted; section: LayerDouble }> {
+  const m = await mounted()
+  drawLine(m)
+  await showSection(m)
+  return { m, section: await sectionLayer() }
+}
+
+describe('the section behaves like the map it replaces', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    document.head.textContent = ''
+    recording.calls.length = 0
+    observers.length = 0
+    stubOverlayContext()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('pans, zooms and fits the section camera, never the plan one, and the plan comes back as it was', async () => {
+    const m = await mounted()
+    drawLine(m)
+    const planMatrix = lastMatrix(m.layer)
+    const planMatrixCalls = m.layer.setMatrix.mock.calls.length
+    await showSection(m)
+    const section = await sectionLayer()
+    const fitted = Float32Array.from(lastMatrix(section))
+
+    // A drag of 50 pixels moves the section 2 * 50 / 800 in clip space.
+    m.canvas.dispatchEvent(pointer('pointerdown', [400, 240]))
+    m.canvas.dispatchEvent(pointer('pointermove', [450, 240]))
+    m.canvas.dispatchEvent(pointer('pointerup', [450, 240]))
+    expect(lastMatrix(section)[6] - fitted[6]).toBeCloseTo(0.125, 5)
+
+    const beforeWheel = lastMatrix(section)[0]
+    m.canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, deltaMode: 0, clientX: 400, clientY: 240, cancelable: true }))
+    expect(lastMatrix(section)[0] / beforeWheel).toBeCloseTo(1.1, 5)
+
+    m.canvas.focus()
+    const beforeKeys = Float32Array.from(lastMatrix(section))
+    key(m.canvas, 'ArrowLeft')
+    expect(lastMatrix(section)[6] - beforeKeys[6]).toBeCloseTo(0.1, 5)
+    key(m.canvas, '+')
+    expect(lastMatrix(section)[0] / beforeKeys[0]).toBeCloseTo(1.1, 5)
+    key(m.canvas, '-')
+    expect(lastMatrix(section)[0] / beforeKeys[0]).toBeCloseTo(1, 5)
+
+    key(m.canvas, 'Home')
+    expect(Array.from(lastMatrix(section))).toEqual(Array.from(fitted))
+    key(m.canvas, 'ArrowUp')
+    expect(Array.from(lastMatrix(section))).not.toEqual(Array.from(fitted))
+    buttonByText(m.root, 'Fit to extent').click()
+    expect(Array.from(lastMatrix(section))).toEqual(Array.from(fitted))
+
+    expect(m.layer.setMatrix.mock.calls.length).toBe(planMatrixCalls)
+    const planDraws = m.layer.draw.mock.calls.length
+    planToggle(m.root).click()
+    expect(lastMatrix(m.layer)).toEqual(planMatrix)
+    expect(m.layer.draw.mock.calls.length).toBeGreaterThan(planDraws)
+    // Back on the plan, a drag moves the plan again.
+    m.canvas.dispatchEvent(pointer('pointerdown', [400, 240]))
+    m.canvas.dispatchEvent(pointer('pointermove', [450, 240]))
+    m.canvas.dispatchEvent(pointer('pointerup', [450, 240]))
+    expect(m.layer.setMatrix.mock.calls.length).toBeGreaterThan(planMatrixCalls)
+  })
+
+  it('resizes the section camera with the canvas and keeps the view centre', async () => {
+    const { m, section } = await shownSection()
+    const before = Float32Array.from(lastMatrix(section))
+    const area = m.root.querySelector('.map-area') as HTMLElement
+    area.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 600 }) as DOMRect
+    for (const o of observers) if (o.target === area) o.callback([], {} as ResizeObserver)
+
+    expect(m.canvas.width).toBe(1000)
+    const after = lastMatrix(section)
+    // The scales are untouched, so they span less clip space on a larger canvas.
+    expect(after[0] / before[0]).toBeCloseTo(0.8, 5)
+    expect(after[4] / before[4]).toBeCloseTo(0.8, 5)
+    // The reference sits at the view centre, so it still maps to the middle of the canvas.
+    expect(after[6]).toBeCloseTo(before[6], 5)
+    expect(after[7]).toBeCloseTo(before[7], 5)
+  })
+
+  it('re-uploads the section from held copies on a restored context, with the theme colours and no request', async () => {
+    const { m, section } = await shownSection()
+    const { createContext } = await import('../src/gl/context')
+    const ctx = vi.mocked(createContext).mock.results[0].value as { onRestored: Mocked }
+    const restored = ctx.onRestored.mock.calls[0][0] as () => void
+    const calls = m.stub.calls.length
+    const colours = section.setFootprintColor.mock.calls.length
+    const draws = section.draw.mock.calls.length
+
+    restored()
+
+    expect(section.reupload).toHaveBeenCalledTimes(1)
+    expect(section.setFootprintColor.mock.calls.length).toBe(colours + 1)
+    expect(section.draw.mock.calls.length).toBeGreaterThan(draws)
+    expect(m.stub.calls.length).toBe(calls)
+    expect(m.stub.section).toHaveLength(1)
+  })
+
+  it('refreshes the section on a colormap change, with no new request', async () => {
+    const { m, section } = await shownSection()
+    const hooks = await sectionHooks()
+    const refreshes = hooks.refresh.mock.calls.length
+    const values = section.setValues.mock.calls.length
+    const select = m.root.querySelector('select[aria-label="Colormap"]') as HTMLSelectElement
+    select.value = 'magma'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+
+    expect(hooks.refresh.mock.calls.length).toBeGreaterThan(refreshes)
+    expect(section.setValues.mock.calls.length).toBeGreaterThan(values)
+    expect(m.stub.section).toHaveLength(1)
+  })
+
+  it('tells the section about a plan layer change, with no new request', async () => {
+    const { m } = await shownSection()
+    const hooks = await sectionHooks()
+    m.store.set({ layer: 1 }, 'other')
+    await settle()
+
+    expect(hooks.planLayerChanged).toHaveBeenLastCalledWith(1)
+    expect(m.stub.section).toHaveLength(1)
+  })
+
+  it('shows only the section lines while coloured by observations, and the observation legend again on the plan', async () => {
+    const m = await mounted()
+    m.store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+    await vi.waitFor(() => {
+      const call = m.layer.setPoints.mock.calls.at(-1) as [Float32Array, Float32Array] | undefined
+      expect(call?.[1].length).toBe(2)
+    })
+    await settle()
+    const obsLegend = legendText(m.root)
+    expect(obsLegend).toContain('heads')
+
+    drawLine(m)
+    await showSection(m)
+    expect(legendText(m.root)).toContain('vertical exaggeration')
+    expect(legendText(m.root)).not.toContain('heads')
+
+    planToggle(m.root).click()
+    expect(legendText(m.root)).toBe(obsLegend)
+  })
+
+  it('marks the map area while the section shows, and hides the plan outlines only then', async () => {
+    loadRealStylesheet()
+    const m = await mounted()
+    drawLine(m)
+    const area = m.root.querySelector('.map-area') as HTMLElement
+    const lassoOverlay = area.querySelector('.lasso-overlay') as HTMLElement
+    const lineOverlay = area.querySelector('.section-line-overlay') as HTMLElement
+    expect(getComputedStyle(lineOverlay).display).not.toBe('none')
+
+    await showSection(m)
+    expect(area.classList.contains('showing-section')).toBe(true)
+    expect(getComputedStyle(lassoOverlay).display).toBe('none')
+    expect(getComputedStyle(lineOverlay).display).toBe('none')
+    // The tool waits on the plan while the section shows.
+    expect(toolButton(m.root).disabled).toBe(true)
+
+    planToggle(m.root).click()
+    expect(area.classList.contains('showing-section')).toBe(false)
+    expect(getComputedStyle(lassoOverlay).display).not.toBe('none')
+    expect(getComputedStyle(lineOverlay).display).not.toBe('none')
+    expect(toolButton(m.root).disabled).toBe(false)
   })
 })
