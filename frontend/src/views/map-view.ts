@@ -1700,6 +1700,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => fitCanvasToFrame()).observe(mapCanvasArea)
+    // The top-left stack stops above the legend, so an open legend never covers its last cards.
+    new ResizeObserver(() => {
+      topLeftEl.style.setProperty('--legend-height', `${legendFold.el.offsetHeight}px`)
+    }).observe(legendFold.el)
   }
 
   // MAP-11/D-15: the button and the Home key call exactly this, both

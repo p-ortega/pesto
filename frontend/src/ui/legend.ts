@@ -77,13 +77,15 @@ export function renderLegend(el: HTMLElement, opts: LegendOptions | null): void 
 // indices come from, and one edge value per class boundary (D-06, D-07).
 // Under texture fill each swatch is ink lines at its class angle over the surface (D-15).
 function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [number, number], texture: boolean): void {
-  // One grid of half-columns: edge j is centred on line 2j+2 and swatch k runs from edge k to edge k+1,
-  // so each number sits under its boundary however wide the labels are.
+  // One grid of half-columns with a spare at each end: edge j is centred on line 2j+3, where swatch j starts.
+  // Edges alternate between two rows, so each number gets two swatches of width and the ramp fits the card.
   const grid = document.createElement('div')
   grid.classList.add('legend-class-grid')
   grid.style.display = 'grid'
-  grid.style.width = 'max-content'
-  grid.style.gridTemplateColumns = `repeat(${2 * (n + 1)}, 1fr)`
+  grid.style.width = '100%'
+  // Wide enough that an edge number like 0.00267 clears its same-row neighbour.
+  grid.style.minWidth = `${2 * (n + 1)}rem`
+  grid.style.gridTemplateColumns = `repeat(${2 * (n + 2)}, 1fr)`
   grid.style.columnGap = '0'
   const angles = textureAngles(n)
   for (let k = 0; k < n; k++) {
@@ -91,7 +93,7 @@ function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [n
     swatch.classList.add('legend-class')
     swatch.setAttribute('aria-hidden', 'true')
     swatch.style.gridRow = '1'
-    swatch.style.gridColumn = `${2 * k + 2} / span 2`
+    swatch.style.gridColumn = `${2 * k + 3} / span 2`
     if (texture) {
       swatch.style.height = '12px'
       swatch.style.boxSizing = 'border-box'
@@ -109,8 +111,8 @@ function renderClasses(el: HTMLElement, table: Uint8Array, n: number, limits: [n
   classEdges(limits, n).forEach((value, j) => {
     const edge = document.createElement('span')
     edge.classList.add('legend-edge', 'tabular-nums')
-    edge.style.gridRow = '2'
-    edge.style.gridColumn = `${2 * j + 1} / span 2`
+    edge.style.gridRow = String(2 + (j % 2))
+    edge.style.gridColumn = `${2 * j + 1} / span 4`
     edge.style.textAlign = 'center'
     edge.style.whiteSpace = 'nowrap'
     edge.style.padding = '0 2px'
