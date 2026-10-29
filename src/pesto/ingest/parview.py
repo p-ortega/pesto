@@ -40,6 +40,7 @@ from pesto.ingest.recfile import RecFacts, RecGroupRow, read_rec
 from pesto.ingest.reinflate import ReinflationVerdict, assess_reinflation
 from pesto.ingest.runopts import ControlOptions, scan_options
 from pesto.ingest.tables import _write_parquet_atomic, load_control_table
+from pesto.layer_words import layer_list_words
 
 CHUNK_PARAMS = 4096
 # A first mean smaller than this share of the first sd is too close to zero for a percent change.
@@ -913,11 +914,10 @@ def group_layer(placed_layers, rule: str | None, group_name: str, placement_note
         source = f"placement rule {rule}" if rule else "placement"
         if len(layers) == 1:
             return {"value": layers[0], "source": source, "note": None}
-        shown = ", ".join(str(v) for v in layers[:10]) + (" and more" if len(layers) > 10 else "")
         return {
             "value": "several",
             "source": source,
-            "note": f"placed on layers {shown} (zero-based)",
+            "note": f"placed on {layer_list_words(layers, cap=10)}",
         }
     written = sorted({int(v) for v in re.findall(LAYER_PATTERN, group_name or "", re.IGNORECASE)})
     extra = f"; {placement_note}" if placement_note else ""

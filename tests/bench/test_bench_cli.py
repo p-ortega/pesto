@@ -371,3 +371,41 @@ def test_the_bench_modules_use_the_public_name_for_the_source_path_helper() -> N
     # The old private name, spelled so this file does not match itself.
     assert not any("_source" + "_paths" in body for body in text)
     assert "source_paths," in (root / "src/pesto/bench/cli.py").read_text()
+
+
+def test_the_browser_target_lines_name_each_layer_one_based_with_the_index() -> None:
+    from pesto.bench.report import (
+        BenchResult,
+        BrowserTargets,
+        CacheSize,
+        HeaviestTarget,
+        PilotPointTarget,
+        RunFacts,
+        format_table,
+    )
+
+    result = BenchResult(
+        pesto_version="0",
+        measured_at="now",
+        machine={},
+        run=RunFacts("p", "run", [0], [], None, 0, []),
+        cache={"parent_dir": "p", "as_found_dir": "a", "warm_dir": "w"},
+        ingests=[],
+        read_floor=None,
+        source_reads=None,
+        source_reads_note="",
+        cache_size=CacheSize("c", 10, 10, 10, 1.0, []),
+        verdicts=[],
+        browser_targets=BrowserTargets(
+            iteration=1,
+            iteration_note="",
+            heaviest=HeaviestTarget("G1", 3, 120),
+            heaviest_note="",
+            pilot_point=PilotPointTarget("G4", 0, 30),
+            pilot_point_note="",
+        ),
+    )
+
+    lines = format_table(result).splitlines()
+    assert "  heaviest: group G1, layer 4 (index 3), 120 cells" in lines
+    assert "  pilot points: group G4, layer 1 (index 0), 30 points" in lines

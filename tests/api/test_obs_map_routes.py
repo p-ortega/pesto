@@ -507,7 +507,10 @@ def test_resid_mean_limits_are_symmetric_about_zero_over_every_row_of_both_itera
     lo, hi = np.percentile(rms, [2, 98])
     assert limits["rmse"] == [pytest.approx(lo, rel=1e-4), pytest.approx(hi, rel=1e-4)]
     assert set(limits) == {"resid_mean", "rmse", "std", "mean"}
-    assert _times(client, "g_two")["limits_rule"].startswith("2nd to 98th percentile over every time")
+    rule = _times(client, "g_two")["limits_rule"]
+    assert rule.startswith("2nd to 98th percentile over every time")
+    # Same words as the Colours card's "Centre on zero" control.
+    assert rule.endswith("the mean residual is centred on zero")
 
 
 def test_limits_do_not_change_with_the_time_asked_for(tmp_path, in_process):
