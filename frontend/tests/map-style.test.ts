@@ -277,8 +277,8 @@ describe('the Colour steps control on the map', () => {
     store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'test')
     await vi.waitFor(() => expect(lastStyle().classes).toBe(0))
 
-    const label = (root.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('label')
-    expect(label?.getAttribute('data-colour-source')).toBe('par')
+    const row = (root.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('.card-row')
+    expect(row?.getAttribute('data-colour-source')).toBe('par')
   })
 })
 

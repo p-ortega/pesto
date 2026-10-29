@@ -68,6 +68,7 @@ import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
 import { isShortMap, renderFold, type FoldHandle } from '../ui/fold'
+import { renderDataCard, type DataCardRows } from '../ui/data-card'
 import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
 import { renderReadout, type ReadoutPick, type SiteReadoutEntry } from '../ui/readout'
@@ -780,7 +781,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     // While an iteration's tables load, the held cells are the old iteration's.
     const loading = loadingIteration !== null
-    // Texture fill's lines would look like the hatch, so the toggles step aside while it is drawn (D-14).
+    // Patterns would look like the hatch, so the toggles step aside while they are drawn (D-14).
     const textured = !obsActive && drawnStyle.texture
     const from = loading
       ? 'loading'
@@ -1180,6 +1181,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let rafScheduled = false
   const limitsMemory = new LimitsMemory()
   let controlsHandle: SelectionControlsHandle | null = null
+  // The Data card's rows; plan 14-11 places the group picker, iteration toggle and observation controls into them.
+  let dataCardRows: DataCardRows | null = null
   let toggleHandle: IterationToggleHandle | null = null
   // The iteration whose tables, cell arrays and names the view holds now.
   let loadedIteration = 0
@@ -3807,7 +3810,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       addNotice(mapNotice, {
         title: 'Manual limits could not be restored',
         detail:
-          "This run was left with manual colour limits, but the saved state has no record of the numbers used -- showing the robust 2-98% range instead.",
+          "This run was left with manual colour limits, but the saved state has no record of the numbers used -- showing the robust 2–98% range instead.",
         tone: 'info',
       })
     }
@@ -3836,23 +3839,28 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     committed = { ...committed, layer: dotLayerFor(drawnGroup) ?? committed.layer }
     choicesSettled = true
 
-    // Placed before pickerEl, not appended at the end: the controls come
-    // first in the top-left cluster, both visually (flex column) and in
-    // tab order, with the group picker stacked under them.
-    // On a short map the controls would cover most of it, so they start folded unless the viewer chose.
-    const controlsFold = renderFold({ key: 'controls', name: 'Controls', startFolded: isShortMap(mapCanvasArea.clientHeight) })
-    topLeftEl.insertBefore(controlsFold.el, pickerEl)
-    const controlsEl = controlsFold.body
+    // Data (what is drawn) and Colours (how it is drawn) lead the top-left cluster, in that
+    // order, both visually and in tab order (LD-2).
+    // On a short map the two cards would cover most of it, so they start folded unless the viewer chose.
+    const startFolded = isShortMap(mapCanvasArea.clientHeight)
+    const dataFold = renderFold({ key: 'data', name: 'Data', startFolded })
+    const coloursFold = renderFold({ key: 'colours', name: 'Colours', startFolded })
+    topLeftEl.insertBefore(dataFold.el, topLeftEl.firstChild)
+    dataFold.el.after(coloursFold.el)
+    const rows = renderDataCard(dataFold.body)
+    dataCardRows = rows
     // WINDOWS.md #8: `committed` already carries the restored colormap,
     // reverse, scale and limits state (or the fresh-run defaults, when
     // there is none) -- passed straight through so the checkbox and
     // selects the user sees never disagree with what performFetch is
     // about to draw.
-    controlsHandle = renderSelectionControls(controlsEl, {
+    controlsHandle = renderSelectionControls(coloursFold.body, {
       nlay: mesh.nlay,
       iteration,
       realNames,
       partrans: drawnPartrans,
+      dataRows: { layer: rows.layer, statistic: rows.statistic, realization: rows.realization },
+      onColoursChange: (line) => coloursFold.setSummary(line),
       initial: {
         colormap: committed.colormap,
         reverseColormap: committed.reverseColormap,
@@ -3867,6 +3875,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       onSelectionChange: handleSelectionChange,
     })
     controlsHandle.setLayer(committed.layer)
+    coloursFold.setSummary(controlsHandle.coloursSummary())
 
     // D-01, D-02: one button per ingested iteration, right after the controls; absent below two.
     const iterations = iterationsFrom(opts.state)
@@ -3964,9 +3973,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       },
     )
 
-    // D-22: the overlay toggles lead the map controls; they ask nothing until the first field draws.
+    // D-22: the overlay toggles come right after the Colours card; they ask nothing until the first field draws.
     const overlayFold = renderFold({ key: 'overlays', name: 'Overlays' })
-    topLeftEl.insertBefore(overlayFold.el, topLeftEl.firstChild)
+    coloursFold.el.after(overlayFold.el)
     overlayControls = renderOverlayControls(overlayFold.body, {
       onToggle: () => {
         overlayBuiltFrom = null

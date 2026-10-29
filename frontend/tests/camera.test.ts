@@ -672,30 +672,41 @@ describe('the folding map cards', () => {
   const foldButton = (root: HTMLElement, key: string): HTMLButtonElement | null =>
     root.querySelector(`[data-fold="${key}"] > .fold-button`)
 
-  it('gives the controls, overlays and legend each a fold button that names the card', async () => {
+  it('gives the data, colours, overlays and legend cards each a fold button that names the card', async () => {
     const root = await mountReady()
-    expect(foldButton(root, 'controls')?.getAttribute('aria-label')).toBe('Controls')
+    expect(foldButton(root, 'data')?.getAttribute('aria-label')).toBe('Data')
+    expect(foldButton(root, 'colours')?.getAttribute('aria-label')).toBe('Colours')
+    expect(foldButton(root, 'controls')).toBeNull()
     expect(foldButton(root, 'overlays')?.getAttribute('aria-label')).toBe('Overlays')
     expect(foldButton(root, 'legend')?.getAttribute('aria-label')).toBe('Legend')
     expect(root.querySelector('.floating-bottom-left')?.getAttribute('data-fold')).toBe('legend')
   })
 
-  it('starts the controls folded on a short map, still naming them, and unfolds them on a click', async () => {
+  it('starts the data and colours cards folded on a short map, still naming them, and unfolds each on a click', async () => {
     stubMapHeight(536)
     const root = await mountReady()
-    const button = foldButton(root, 'controls') as HTMLButtonElement
-    expect(button.getAttribute('aria-expanded')).toBe('false')
-    expect(root.querySelector('[data-fold="controls"] > .fold-summary')?.textContent).toBe('Controls')
-    // Only the controls start folded; the smaller cards stay open.
+    const data = foldButton(root, 'data') as HTMLButtonElement
+    const colours = foldButton(root, 'colours') as HTMLButtonElement
+    expect(data.getAttribute('aria-expanded')).toBe('false')
+    expect(colours.getAttribute('aria-expanded')).toBe('false')
+    expect(root.querySelector('[data-fold="data"] > .fold-summary')?.textContent).toBe('Data')
+    expect(root.querySelector('[data-fold="colours"] > .fold-summary')?.textContent).toBe(
+      'Colours: viridis · linear · robust 2–98% · smooth',
+    )
+    // Only the two large cards start folded; the smaller cards stay open.
     expect(foldButton(root, 'overlays')?.getAttribute('aria-expanded')).toBe('true')
-    button.click()
-    expect(button.getAttribute('aria-expanded')).toBe('true')
+    data.click()
+    expect(data.getAttribute('aria-expanded')).toBe('true')
+    expect(colours.getAttribute('aria-expanded')).toBe('false')
+    colours.click()
+    expect(colours.getAttribute('aria-expanded')).toBe('true')
   })
 
-  it('starts the controls open on a tall map', async () => {
+  it('starts the data and colours cards open on a tall map', async () => {
     stubMapHeight(900)
     const root = await mountReady()
-    expect(foldButton(root, 'controls')?.getAttribute('aria-expanded')).toBe('true')
+    expect(foldButton(root, 'data')?.getAttribute('aria-expanded')).toBe('true')
+    expect(foldButton(root, 'colours')?.getAttribute('aria-expanded')).toBe('true')
   })
 })
 
