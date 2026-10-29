@@ -9,7 +9,7 @@ import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
 import { chipFactsFrom, type ConfigFact } from '../data/config'
 import { pickPoint, pickPointsWithin, pointsOnLayer, type DrawnPoints } from '../data/points'
 import type Flatbush from 'flatbush'
-import { buildDotIndex, dotsInPolygon } from '../data/lasso'
+import { buildDotIndex, dotWithin, dotsInPolygon } from '../data/lasso'
 import { fetchObsGroups, fetchObsSite, fetchObsSites, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { fetchPlacement } from '../data/par'
@@ -518,8 +518,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     worldToScreen,
     onRelease: lassoRelease,
     onTooSmall: () => lassoEmpty(),
-    // D-01: one armed tool at a time.
-    onArm: () => sectionTool.disarm(),
+    // D-01: one armed tool at a time. An armed tool takes the pointer moves, so the hand goes now.
+    onArm: () => {
+      sectionTool.disarm()
+      mapCanvasArea.classList.remove('dot-hover')
+    },
   })
   // The section (SECT-01, SECT-02): the line tool on the plan and the view that replaces the plan.
   // D-22: the line tool and the lasso draw on the plan, and the overlays hatch it.
@@ -603,7 +606,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     canvasPoint,
     screenToWorld: (x, y) => (camera ? camera.screenToWorld(x, y) : [x, y]),
     worldToScreen,
-    onArm: () => lasso.disarm(),
+    onArm: () => {
+      lasso.disarm()
+      mapCanvasArea.classList.remove('dot-hover')
+    },
     onLine: (a, b) => {
       const [ox, oy] = mesh?.origin ?? [0, 0]
       sectionView.setLine([a[0] + ox, a[1] + oy], [b[0] + ox, b[1] + oy])
@@ -624,6 +630,14 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   }
   syncSectionTool()
   let lassoIndex: { key: string; xy: Float32Array; tree: Flatbush | null } | null = null
+  // The drawn site dots' index, keyed as lassoRelease keys it, so the hover test and the lasso share one.
+  function siteDotIndex(dots: ObsDots): Flatbush | null {
+    const key = `${obsDotsKey}|${dots.rows.length}`
+    if (lassoIndex === null || lassoIndex.key !== key || lassoIndex.xy !== dots.xy) {
+      lassoIndex = { key, xy: dots.xy, tree: buildDotIndex(dots.xy) }
+    }
+    return lassoIndex.tree
+  }
   // What the lasso was last told, so an unchanged answer is not told again.
   let lassoTold = LASSO_NO_DOTS
   // The sites the lasso last wrote: a sites change to anything else takes its outline away.
@@ -1621,6 +1635,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       })
   }
 
+  // How far from a dot's centre a click or the hover still finds it, in world units at canvas pixel (x, y).
+  function dotReachWorld(cam: Camera, x: number, y: number, wx: number): number {
+    // Canvas pixels are device pixels, so 8 CSS px of reach is scaled by the device's ratio.
+    const reach = 8 * (window.devicePixelRatio || 1)
+    return cam.screenToWorld(x + reach, y)[0] - wx
+  }
+
   // camera.screenToWorld then pickAtWorld on a canvas click -- both are
   // null until loadAndDraw lands, so a click before then is a no-op.
   function handleCanvasClick(event: MouseEvent): void {
@@ -1642,9 +1663,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width
     const y = ((event.clientY - rect.top) / rect.height) * canvas.height
     const [wx, wy] = camera.screenToWorld(x, y)
-    // Dots are sized in device pixels, so the reach is 6 CSS pixels at the device's ratio.
-    const reach = 6 * (window.devicePixelRatio || 1)
-    const reachWorld = camera.screenToWorld(x + reach, y)[0] - wx
+    const reachWorld = dotReachWorld(camera, x, y, wx)
     const mode = modeOf(event)
     const obsHits =
       obsActive && obsDots !== null && obsData !== null
@@ -1919,7 +1938,61 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   const DRAG_CLICK_SLOP = 4
   let gestureWasDrag = false
 
+  // The hand shows while a click would pick a dot. One test per frame, and none while a drag,
+  // an armed tool or the section owns the pointer.
+  let hoverPoint: [number, number] | null = null
+  let hoverQueued = false
+
+  function hoverBlocked(): boolean {
+    return dragLast !== null || lasso.armed() || sectionTool.armed() || sectionView.shown()
+  }
+
+  function setDotHover(on: boolean): void {
+    mapCanvasArea.classList.toggle('dot-hover', on)
+  }
+
+  // The same dots a click tries, with the same reach.
+  function dotUnderPointer(cam: Camera, x: number, y: number): boolean {
+    const [wx, wy] = cam.screenToWorld(x, y)
+    const r = dotReachWorld(cam, x, y, wx)
+    if (obsActive) {
+      const drawn = drawnSiteDots()
+      return drawn !== null && dotWithin(siteDotIndex(drawn.dots), drawn.dots.xy, wx, wy, r)
+    }
+    if (siteRings !== null && dotWithin(null, siteRings.xy, wx, wy, r)) return true
+    return dotWithin(null, currentPoints.xy, wx, wy, r)
+  }
+
+  function testDotHover(): void {
+    hoverQueued = false
+    const point = hoverPoint
+    if (point === null || !camera || hoverBlocked()) {
+      setDotHover(false)
+      return
+    }
+    setDotHover(dotUnderPointer(camera, point[0], point[1]))
+  }
+
+  function queueDotHover(event: PointerEvent): void {
+    if (hoverBlocked()) {
+      hoverPoint = null
+      setDotHover(false)
+      return
+    }
+    hoverPoint = canvasPoint(event)
+    if (hoverQueued) return
+    hoverQueued = true
+    requestAnimationFrame(testDotHover)
+  }
+
+  canvas.addEventListener('pointerleave', () => {
+    hoverPoint = null
+    setDotHover(false)
+  })
+
   canvas.addEventListener('pointerdown', (event) => {
+    hoverPoint = null
+    setDotHover(false)
     // An armed lasso or section tool owns the press; the map must not pan under it.
     if (lasso.armed() || sectionTool.armed()) return
     if (!camera || event.button !== 0) return
@@ -1945,7 +2018,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   })
 
   canvas.addEventListener('pointermove', (event) => {
-    if (!camera || !dragLast || event.pointerId !== dragPointerId) return
+    if (dragLast === null) {
+      queueDotHover(event)
+      return
+    }
+    if (!camera || event.pointerId !== dragPointerId) return
     if (Math.hypot(event.clientX - dragStart[0], event.clientY - dragStart[1]) > DRAG_CLICK_SLOP) {
       gestureWasDrag = true
     }
