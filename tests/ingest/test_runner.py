@@ -1591,3 +1591,67 @@ def test_the_elev_worker_writes_its_four_files_under_the_cache_root_and_nothing_
         assert (cache_root / f.path).stat().st_size == f.bytes
     after = {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.iterdir()}
     assert after == before
+
+
+def _run_with_a_real_grid(tmp_path):
+    from model.fixtures import write_disv_grb
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    make_run(run_dir, iterations=(0, 1))
+    # make_run writes a placeholder; this run needs a grid the reader can parse.
+    write_disv_grb(run_dir / "coarse.disv.grb")
+    return run_dir
+
+
+def test_a_cache_with_grid_ok_and_no_elev_record_plans_only_elev_stale(tmp_path, monkeypatch):
+    from pesto.ingest.runner import is_planned_stale
+
+    monkeypatch.setattr(runner_module, "_run_isolated", _in_this_process)
+    run_dir = _run_with_a_real_grid(tmp_path)
+    cache_root = tmp_path / "cache"
+    first = ingest_run(run_dir, cache_root=cache_root)
+    assert first.artifacts["grid"].state == "ok", first.artifacts["grid"].reason
+    first.artifacts.pop("elev")
+    layout = CacheLayout(root=cache_root)
+    first.save(layout)
+
+    manifest = Manifest.load(layout)
+    planned = {pa.name: pa for pa in plan_artifacts(discover(run_dir), layout)}
+    assert is_planned_stale(manifest, layout, planned["elev"]) is True
+    assert is_planned_stale(manifest, layout, planned["grid"]) is False
+
+
+def _in_this_process(fn, *args):
+    try:
+        return True, fn(*args)
+    except Exception as exc:
+        return False, exc
+
+
+def test_an_old_cache_gains_elev_on_the_next_ingest_without_redoing_the_grid(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "_run_isolated", _in_this_process)
+    run_dir = _run_with_a_real_grid(tmp_path)
+    cache_root = tmp_path / "cache"
+    layout = CacheLayout(root=cache_root)
+
+    first = ingest_run(run_dir, cache_root=cache_root)
+    assert first.artifacts["grid"].state == "ok", first.artifacts["grid"].reason
+    assert first.artifacts["elev"].state == "ok", first.artifacts["elev"].reason
+
+    # Make the cache look as it did before the section view existed.
+    for f in first.artifacts["elev"].files:
+        (cache_root / f.path).unlink()
+    first.artifacts.pop("elev")
+    first.save(layout)
+    grid_files = {f.path: (cache_root / f.path).stat().st_mtime_ns for f in first.artifacts["grid"].files}
+
+    rows: list[Progress] = []
+    second = ingest_run(run_dir, cache_root=cache_root, on_progress=rows.append)
+
+    final = {r.artifact: r.state for r in rows if r.state in ("ok", "failed", "skipped")}
+    assert final["elev"] == "ok"
+    assert final["grid"] == "skipped"
+    assert second.artifacts["elev"].state == "ok"
+    assert {f.path: (cache_root / f.path).stat().st_mtime_ns for f in second.artifacts["grid"].files} == grid_files
+    assert all((cache_root / f.path).exists() for f in second.artifacts["elev"].files)
