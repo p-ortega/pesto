@@ -113,11 +113,16 @@ def test_mf6_has_no_branch_on_discretisation():
     branch choosing a different mesh path for structured versus vertex
     grids, would be the first crack in GRID-05. Only the code is checked
     here, not the module's prose -- the docstring names both
-    discretisations by design, to explain why one path serves both."""
+    discretisations by design, to explain why one path serves both.
+
+    flopy's grid type is passed through to ``Geometry.grid_type`` for the
+    section view to report, so the name may appear; comparing it may not."""
     source = Path("src/pesto/model/mf6.py").read_text()
     code = re.sub(r'""".*?"""', "", source, flags=re.DOTALL)
 
-    assert "grid_type" not in code
+    assert not re.search(r"grid_type\w*\s*(==|!=|\bin\b|\bis\b)", code)
+    assert not re.search(r"(==|!=|\bin\b)\s*_?grid_type", code)
+    assert '"structured"' not in code and '"vertex"' not in code
     assert "DISV" not in code
     assert "DIS " not in code
     assert not re.search(r"if\s+.*\bnrow\b", code)
