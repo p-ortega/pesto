@@ -503,6 +503,9 @@ export function createSectionView(opts: SectionViewOptions): SectionViewHandle {
 
   function click(x: number, y: number, mode: SelectMode): void {
     if (answer === null) return
+    // The frame paints over the left band and the axis strips, so a cell panned under them is not seen and not picked.
+    const inset = axesInset(window.devicePixelRatio || 1, fittedBand)
+    if (x < inset.left || y > opts.canvas.height - inset.bottom) return
     const [s, z] = camera.screenToWorld(x, y)
     const hit = pickSection(answer, s, z)
     // A shift or alt click on empty space changes nothing, the readout included (D-24).
