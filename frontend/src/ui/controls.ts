@@ -19,6 +19,8 @@ import {
   type FieldStyle,
   type StyleNotes,
 } from '../gl/field-style'
+import { layerCompact } from '../data/layer-words'
+import { cardRow, type CardRow } from './card-rows'
 import { paintNote } from './note-line'
 
 export const STATISTICS = ['value', 'mean', 'std', 'q05', 'q25', 'q50', 'q75', 'q95'] as const
@@ -50,6 +52,10 @@ const GO_TO_REFUSAL_ID = 'go-to-realization-refusal'
 const CLASSES_NOTE_ID = 'classes-note'
 const SYMMETRIC_REASON_ID = 'symmetric-reason'
 const TEXTURE_REASON_ID = 'texture-reason'
+const LAYER_REASON_ID = 'layer-reason'
+
+const LAYER_ONE_REASON = 'the grid has one layer'
+const OBS_LINE = 'Colormap, value scale, limits, colour steps, centring and patterns apply to parameter fields only.'
 
 const STEPS_TITLE =
   'Smooth shades every value. Steps split the range into equal bands, like a contour map, so layers can be compared by eye.'
@@ -102,7 +108,11 @@ export interface SelectionControlsOptions {
   }
   /** A turned-off line the view already decided on, such as a restored symmetric a log scale refused. */
   styleNote?: string | null
+  /** The Data card's rows for the layer, statistic and realization; absent, those rows go first in `el`. */
+  dataRows?: { layer: CardRow; statistic: CardRow; realization: CardRow }
   onSelectionChange: (selection: FieldChoice) => void
+  /** The Colours card's folded line, after every colour change and every sync. */
+  onColoursChange?: (summary: string) => void
 }
 
 export interface SelectionControlsHandle {
@@ -131,6 +141,8 @@ export interface SelectionControlsHandle {
   setRealizations(names: RealNamesResult, wanted: string | null): number | null
   /** Shows why a style setting is not drawn as asked, next to its control. Emits nothing. */
   showStyle(effective: EffectiveStyle, notes: StyleNotes): void
+  /** The colour settings in the controls' own words: `viridis · linear · robust 2–98% · smooth`. */
+  coloursSummary(): string
 }
 
 // The map hides these rows while it is coloured by observations (style.css, .colour-obs).
@@ -178,31 +190,22 @@ export function renderSelectionControls(
   opts: SelectionControlsOptions,
 ): SelectionControlsHandle {
   el.textContent = ''
-  el.classList.add('floating')
-  // WINDOWS.md #13's sweep: each label and the two
-  // manual-limit inputs are inline-level elements with no separation of
-  // their own -- a flex row that wraps, with a real gap on both axes,
-  // keeps the same shrink-to-fit packing (and roughly the same panel
-  // height) the browser's own default inline wrapping already gave this
-  // panel, but now with a real gap between every pair instead of nothing.
-  // A plain flex COLUMN was tried first and rejected: it puts one control
-  // per line unconditionally, which more than quadruples the panel's
-  // height and, on this app's fixed 800x480 canvas, covers cells that used
-  // to be visible underneath it.
-  el.style.display = 'flex'
-  el.style.flexWrap = 'wrap'
-  el.style.gap = 'var(--space-sm)'
-  // Uncapped, the panel wrapped into one band across the whole map (974 px at 1440x900) and hid the northern edge.
-  el.style.maxWidth = '32rem'
+  el.classList.add('floating', 'card-rows')
+  const ownRows = opts.dataRows === undefined
+  const dataRows = opts.dataRows ?? {
+    layer: cardRow(el, 'Layer'),
+    statistic: cardRow(el, 'Statistic'),
+    realization: cardRow(el, 'Realization'),
+  }
+  parameterOnly(dataRows.realization.row)
+  // The Data card's statistic row also holds the observation statistic, so only a row made here hides whole.
+  if (ownRows) parameterOnly(dataRows.statistic.row)
 
   const nlay = Math.max(opts.nlay, 1)
 
   // Layer: an always-present slider, disabled (not hidden) when the grid
   // has only one layer -- hiding it would make a one-layer run look like a
   // different application.
-  const layerLabel = document.createElement('label')
-  layerLabel.classList.add('label')
-  layerLabel.textContent = 'Layer'
   const layerInput = document.createElement('input')
   layerInput.type = 'range'
   layerInput.min = '0'
@@ -213,16 +216,28 @@ export function renderSelectionControls(
   layerInput.disabled = nlay <= 1
   const layerValue = document.createElement('span')
   layerValue.classList.add('tabular-nums')
-  layerValue.textContent = '0'
-  layerLabel.appendChild(layerInput)
-  layerLabel.appendChild(layerValue)
+  // Not parameter-only: the layer row stays while the map is coloured by observations.
+  const layerReason = document.createElement('div')
+  layerReason.classList.add('label', 'wrap-note')
+  layerReason.id = LAYER_REASON_ID
+  paintNote(layerReason, layerInput.disabled ? { kind: 'reason', text: LAYER_ONE_REASON } : null)
+  if (layerInput.disabled) layerInput.setAttribute('aria-describedby', LAYER_REASON_ID)
+  dataRows.layer.control.append(layerInput, layerValue, layerReason)
+
+  // The slider's value stays zero-based; only the words shown are one-based with the index alongside (LD-5).
+  function showLayer(): void {
+    const index = Number(layerInput.value)
+    const tip = `Layer ${index + 1}, index ${index}. Layers count from 1 at the top; the index counts from 0.`
+    layerValue.textContent = layerCompact(index)
+    layerValue.title = tip
+    layerInput.title = layerInput.disabled ? LAYER_ONE_REASON : tip
+    layerInput.setAttribute('aria-valuetext', `layer ${index + 1}, index ${index}`)
+  }
+  showLayer()
 
   // Statistic: exactly the eight servable statistics (enscache.STATS is the
   // authority this list mirrors), never a value this control invents.
-  const statLabel = parameterOnly(document.createElement('label'))
-  statLabel.classList.add('label')
-  statLabel.textContent = 'Statistic'
-  const statSelect = document.createElement('select')
+  const statSelect = parameterOnly(document.createElement('select'))
   statSelect.setAttribute('aria-label', 'Statistic')
   for (const stat of STATISTICS) {
     const option = document.createElement('option')
@@ -234,30 +249,26 @@ export function renderSelectionControls(
   // so a run with no recorded names defaults to an aggregate statistic
   // instead -- matching the initial fetch views/map.ts issues.
   statSelect.value = opts.initial?.stat ?? (opts.realNames.ok ? 'value' : 'mean')
-  statLabel.appendChild(statSelect)
+  dataRows.statistic.control.appendChild(statSelect)
 
   // Realization: positions are the names fetchRealNames returned, in the
   // order the route served them, never a row number standing in for a
   // missing name.
-  const realLabel = parameterOnly(document.createElement('label'))
-  realLabel.classList.add('label')
-  realLabel.textContent = 'Realization'
   const realInput = document.createElement('input')
   realInput.type = 'range'
   realInput.setAttribute('aria-label', 'Realization')
   const realValue = document.createElement('span')
   realValue.classList.add('tabular-nums')
-  realLabel.appendChild(realInput)
-  realLabel.appendChild(realValue)
 
   // Go to: type or pick a realization by name. The text is looked up as a
   // name, exactly as typed -- never read as a slider position.
   const goLabel = parameterOnly(document.createElement('label'))
-  goLabel.classList.add('label')
+  goLabel.classList.add('label', 'card-row-full')
   goLabel.textContent = 'Go to'
   const goInput = document.createElement('input')
   goInput.type = 'text'
   goInput.size = 8
+  goInput.placeholder = 'type a name'
   goInput.autocomplete = 'off'
   goInput.setAttribute('aria-label', 'Go to realization')
   goInput.setAttribute('list', REAL_NAMES_LIST_ID)
@@ -292,6 +303,11 @@ export function renderSelectionControls(
   function updateRealDisabled(): void {
     realInput.disabled = realNames.length <= 1 || statSelect.value !== 'value'
     goInput.disabled = realInput.disabled
+  }
+
+  // An aggregate statistic draws no one realization, so the row has nothing to say.
+  function showRealRow(): void {
+    dataRows.realization.row.hidden = statSelect.value !== 'value'
   }
 
   // The slider is disabled for this reason, so hovering it says so too.
@@ -339,9 +355,8 @@ export function renderSelectionControls(
 
   // Colormap: the nine names colormap.ts's STOPS declares. jet is offered,
   // not removed, but flagged -- the reason lives in its option title.
-  const colormapLabel = parameterOnly(document.createElement('label'))
-  colormapLabel.classList.add('label')
-  colormapLabel.textContent = 'Colormap'
+  const colormapRow = parameterOnly(cardRow(el, 'Colormap').row)
+  const colormapControl = colormapRow.lastElementChild as HTMLElement
   const colormapSelect = document.createElement('select')
   colormapSelect.setAttribute('aria-label', 'Colormap')
   for (const name of COLORMAP_NAMES) {
@@ -362,7 +377,7 @@ export function renderSelectionControls(
   // `opts.initial` names an already-committed colormap (a restored view
   // state), which wins over that fresh-run default.
   colormapSelect.value = opts.initial ? opts.initial.colormap : 'viridis'
-  colormapLabel.appendChild(colormapSelect)
+  colormapControl.appendChild(colormapSelect)
 
   // Reverse: applies to whichever ramp is chosen, a plain on/off switch
   // rather than a reversed duplicate of every ramp in the list.
@@ -372,16 +387,16 @@ export function renderSelectionControls(
   reverseInput.type = 'checkbox'
   reverseInput.setAttribute('aria-label', 'Reverse colormap')
   reverseInput.checked = opts.initial?.reverseColormap ?? false
-  reverseLabel.textContent = 'Reverse'
   reverseLabel.appendChild(reverseInput)
+  reverseLabel.appendChild(document.createTextNode('Reverse'))
+  colormapControl.appendChild(reverseLabel)
 
   // Scale: defaulted from the drawn group's own partrans, matched
   // case-insensitively after trimming; anything this code has never seen
   // is treated as linear by a named default, never a crash and never a
   // guess (D-03).
-  const scaleLabel = parameterOnly(document.createElement('label'))
-  scaleLabel.classList.add('label')
-  scaleLabel.textContent = 'Value scale'
+  const scaleRow = parameterOnly(cardRow(el, 'Value scale').row)
+  const scaleControl = scaleRow.lastElementChild as HTMLElement
   const scaleSelect = document.createElement('select')
   scaleSelect.setAttribute('aria-label', 'Value scale')
   const linearOption = document.createElement('option')
@@ -398,21 +413,20 @@ export function renderSelectionControls(
   // this control itself emits.
   let scaleTouchedByUser = opts.initial ? !opts.initial.scaleInferred : false
   scaleSelect.value = opts.initial ? opts.initial.scale : defaultScale(opts.partrans)
-  scaleLabel.appendChild(scaleSelect)
+  scaleControl.appendChild(scaleSelect)
 
   // The log10-unavailable line: hidden until setLogUsability reports a non-zero count.
   const logWarningLine = document.createElement('div')
   logWarningLine.classList.add('label', 'wrap-note')
   logWarningLine.id = LOG_WARNING_ID
   logWarningLine.style.display = 'none'
-  scaleLabel.appendChild(logWarningLine)
+  scaleControl.appendChild(logWarningLine)
 
   // Limits mode: robust 2–98% by default, with min–max and manual as the
   // two alternatives. The manual pair is two number inputs, revealed only
   // in manual mode.
-  const limitsLabel = parameterOnly(document.createElement('label'))
-  limitsLabel.classList.add('label')
-  limitsLabel.textContent = 'Limits'
+  const limitsRow = parameterOnly(cardRow(el, 'Limits').row)
+  const limitsControl = limitsRow.lastElementChild as HTMLElement
   const limitsSelect = document.createElement('select')
   limitsSelect.setAttribute('aria-label', 'Limits')
   const LIMITS_OPTIONS: Array<[LimitsMode, string]> = [
@@ -427,7 +441,7 @@ export function renderSelectionControls(
     limitsSelect.appendChild(option)
   }
   limitsSelect.value = opts.initial ? opts.initial.limitsMode : 'robust'
-  limitsLabel.appendChild(limitsSelect)
+  limitsControl.appendChild(limitsSelect)
 
   const manualLower = parameterOnly(document.createElement('input'))
   manualLower.type = 'number'
@@ -439,19 +453,24 @@ export function renderSelectionControls(
   manualUpper.setAttribute('aria-label', 'Upper limit')
   if (opts.initial?.manualLimits) manualUpper.value = String(opts.initial.manualLimits[1])
   manualUpper.style.display = 'none'
+  // The pair sits under the select, on its own line.
+  const manualPair = document.createElement('div')
+  manualPair.classList.add('card-row-full', 'manual-limits')
+  manualPair.append(manualLower, manualUpper)
+  limitsControl.appendChild(manualPair)
 
   function updateManualVisibility(): void {
     const isManual = limitsSelect.value === 'manual'
     manualLower.style.display = isManual ? '' : 'none'
     manualUpper.style.display = isManual ? '' : 'none'
+    manualPair.style.display = isManual ? '' : 'none'
   }
   updateManualVisibility()
 
   // Colour steps: smooth or 7, 9, 11 equal steps between the limits (D-04).
-  const classesLabel = parameterOnly(document.createElement('label'))
-  classesLabel.classList.add('label')
-  classesLabel.textContent = 'Colour steps'
-  classesLabel.title = STEPS_TITLE
+  const classesRow = cardRow(el, 'Colour steps')
+  parameterOnly(classesRow.row)
+  classesRow.label.title = STEPS_TITLE
   const classesSelect = document.createElement('select')
   classesSelect.setAttribute('aria-label', 'Colour steps')
   classesSelect.title = STEPS_TITLE
@@ -462,27 +481,26 @@ export function renderSelectionControls(
     classesSelect.appendChild(option)
   }
   classesSelect.value = String(opts.initial?.style?.classes ?? DEFAULT_STYLE.classes)
-  classesLabel.appendChild(classesSelect)
   const classesHint = hintLine('Bands values like a contour map.')
 
   const classesNote = noteLine(CLASSES_NOTE_ID)
   classesNote.style.display = 'none'
+  classesRow.control.append(classesSelect, classesHint, classesNote)
 
   // Centre on zero (D-08): disabled with its reason on log10 or manual limits (D-09, D-10).
-  const symmetricLabel = parameterOnly(document.createElement('label'))
-  symmetricLabel.classList.add('label')
-  symmetricLabel.textContent = 'Centre on zero'
-  symmetricLabel.title = CENTRE_TITLE
+  const symmetricRow = cardRow(el, 'Centre on zero')
+  parameterOnly(symmetricRow.row)
+  symmetricRow.label.title = CENTRE_TITLE
   const symmetricInput = document.createElement('input')
   symmetricInput.type = 'checkbox'
   symmetricInput.setAttribute('aria-label', 'Centre on zero')
   symmetricInput.title = CENTRE_TITLE
   symmetricInput.checked = opts.initial?.style?.symmetric ?? DEFAULT_STYLE.symmetric
-  symmetricLabel.appendChild(symmetricInput)
   const symmetricHint = hintLine('For changes and residuals.')
 
   const symmetricReason = noteLine(SYMMETRIC_REASON_ID)
   symmetricReason.setAttribute('role', 'status')
+  symmetricRow.control.append(symmetricInput, symmetricHint, symmetricReason)
 
   // A "was turned off" line outlives redraws, so a dropped request always leaves a trace; only a user move clears it.
   let turnedOffLine: string | null = opts.styleNote ?? null
@@ -504,9 +522,11 @@ export function renderSelectionControls(
   showSymmetricReason()
 
   // Patterns (D-12): need colour steps, so Smooth is off the list while they are on (D-13).
+  const textureRow = cardRow(el, 'Patterns')
+  parameterOnly(textureRow.row)
+  textureRow.label.title = PATTERNS_TITLE
   const textureLabel = parameterOnly(document.createElement('label'))
   textureLabel.classList.add('label')
-  textureLabel.textContent = 'Patterns instead of colours'
   textureLabel.title = PATTERNS_TITLE
   const textureInput = document.createElement('input')
   textureInput.type = 'checkbox'
@@ -514,11 +534,20 @@ export function renderSelectionControls(
   textureInput.title = PATTERNS_TITLE
   textureInput.checked = opts.initial?.style?.texture ?? DEFAULT_STYLE.texture
   textureLabel.appendChild(textureInput)
+  textureLabel.appendChild(document.createTextNode('Patterns instead of colours'))
   const textureHint = hintLine('For print, colour-blind readers, or a basemap underneath.')
 
   const textureReason = noteLine(TEXTURE_REASON_ID)
   textureReason.setAttribute('role', 'status')
   textureReason.style.display = 'none'
+  textureRow.control.append(textureLabel, textureHint, textureReason)
+
+  // Observation dots ignore every Colours row, so one line says so in their place.
+  const obsLine = document.createElement('div')
+  obsLine.classList.add('label', 'wrap-note', 'colours-obs-line')
+  obsLine.setAttribute('data-colour-source', 'obs')
+  obsLine.textContent = OBS_LINE
+  el.appendChild(obsLine)
 
   const continuousOption = classesSelect.querySelector('option[value="0"]') as HTMLOptionElement
   // The "7 steps are drawn" line outlives redraws (the request already says 7) until the user moves steps or patterns.
@@ -604,12 +633,13 @@ export function renderSelectionControls(
   }
 
   layerInput.addEventListener('input', () => {
-    layerValue.textContent = layerInput.value
+    showLayer()
     opts.onSelectionChange(currentSelection())
   })
 
   statSelect.addEventListener('change', () => {
     updateRealDisabled()
+    showRealRow()
     opts.onSelectionChange(currentSelection())
   })
 
@@ -661,73 +691,88 @@ export function renderSelectionControls(
 
   colormapSelect.addEventListener('change', () => {
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   reverseInput.addEventListener('change', () => {
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   scaleSelect.addEventListener('change', () => {
     scaleTouchedByUser = true
     followScaleAndLimits()
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   limitsSelect.addEventListener('change', () => {
     updateManualVisibility()
     followScaleAndLimits()
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   manualLower.addEventListener('input', () => {
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   manualUpper.addEventListener('input', () => {
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   classesSelect.addEventListener('change', () => {
     raisedNote = null
     showClassesNote()
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   textureInput.addEventListener('change', () => {
     followTexture()
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
   symmetricInput.addEventListener('change', () => {
     turnedOffLine = null
     showSymmetricReason()
     opts.onSelectionChange(currentSelection())
+    coloursChanged()
   })
 
-  el.appendChild(layerLabel)
-  el.appendChild(statLabel)
-  el.appendChild(realLabel)
-  el.appendChild(goLabel)
-  el.appendChild(namesList)
-  el.appendChild(refusalLine)
+  const realControl = dataRows.realization.control
+  realControl.append(realInput, realValue, goLabel, namesList, refusalLine)
   if (warningLine) {
-    el.appendChild(warningLine)
+    realControl.appendChild(warningLine)
   }
-  el.appendChild(colormapLabel)
-  el.appendChild(reverseLabel)
-  el.appendChild(scaleLabel)
-  el.appendChild(limitsLabel)
-  el.appendChild(manualLower)
-  el.appendChild(manualUpper)
-  el.appendChild(classesLabel)
-  el.appendChild(classesHint)
-  el.appendChild(classesNote)
-  el.appendChild(symmetricLabel)
-  el.appendChild(symmetricHint)
-  el.appendChild(symmetricReason)
-  el.appendChild(textureLabel)
-  el.appendChild(textureHint)
-  el.appendChild(textureReason)
+  showRealRow()
+
+  // The option texts, first letter lowered, so the folded line uses the words the controls show.
+  function shownText(select: HTMLSelectElement): string {
+    const text = select.options[select.selectedIndex]?.textContent ?? select.value
+    return text.charAt(0).toLowerCase() + text.slice(1)
+  }
+
+  function coloursSummary(): string {
+    // The colormap's value, not its text: jet's option carries a warning glyph.
+    const parts = [
+      colormapSelect.value + (reverseInput.checked ? ' reversed' : ''),
+      shownText(scaleSelect),
+      shownText(limitsSelect),
+      shownText(classesSelect),
+    ]
+    // A greyed box is not drawn, whatever its tick says.
+    if (symmetricInput.checked && !symmetricInput.disabled) parts.push('centred')
+    if (textureInput.checked && !textureInput.disabled) parts.push('patterns')
+    return parts.join(' · ')
+  }
+
+  function coloursChanged(): void {
+    opts.onColoursChange?.(coloursSummary())
+  }
 
   return {
     setLogUsability(count: number): void {
@@ -742,6 +787,7 @@ export function renderSelectionControls(
         paintNote(logWarningLine, null)
         scaleSelect.removeAttribute('aria-describedby')
       }
+      coloursChanged()
     },
     sync(selection, styleNote): void {
       colormapSelect.value = selection.colormap
@@ -768,10 +814,11 @@ export function renderSelectionControls(
         turnedOffLine = styleNote
         showSymmetricReason()
       }
+      coloursChanged()
     },
     setLayer(layer): void {
       layerInput.value = String(layer)
-      layerValue.textContent = layerInput.value
+      showLayer()
     },
     setIteration(next): void {
       iteration = next
@@ -831,6 +878,8 @@ export function renderSelectionControls(
       symmetricNote = notes.symmetric
       symmetricInput.disabled = notes.symmetric !== null
       showSymmetricReason()
+      coloursChanged()
     },
+    coloursSummary,
   }
 }
