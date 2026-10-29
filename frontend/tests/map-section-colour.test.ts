@@ -48,10 +48,14 @@ const CONFIG: RunConfig = {
   noise: { has_noise: null, decided_by: '', evidence: [], notes: [] },
 }
 
-function baseState(): IngestState {
+function parEns(k: number): IngestState['artifacts'][number] {
+  return { name: `par_ens/${k}`, kind: 'par_ens', state: 'ok', reason: null, stale: false, seconds: null, bytes: 0 }
+}
+
+function baseState(twoIterations = false): IngestState {
   return {
     fresh: true,
-    artifacts: [],
+    artifacts: twoIterations ? [parEns(0), parEns(3)] : [],
     capabilities: {
       map: { available: true, blockedBy: [] },
       stats: { available: true, blockedBy: [] },
@@ -94,9 +98,6 @@ const PAR_TABLE = tableToIPC(
   'stream',
 )
 const PARMAP = Int32Array.from(ROWS, (_, i) => i)
-const CELL_ARRAY = Int32Array.from(ROWS, (r) => r.cell)
-const LAYER_ARRAY = Int32Array.from(ROWS, (r) => r.layer)
-const POINT_XY = Float32Array.from(ROWS.flatMap((r) => [r.x, r.y]))
 const REALS_TABLE = tableToIPC(tableFromArrays({ realization: ['base'] }), 'stream')
 // The pilot-point field, one value per cell.
 const PP_FIELD = new Float32Array([7, 8, 9])
@@ -175,6 +176,8 @@ function timesBody(group: string): Record<string, unknown> {
 
 interface World {
   hasIdomain: boolean
+  // Adds iteration 3, which holds only the dot group D, so G1 has nothing to draw there.
+  twoIterations: boolean
   answer: Record<string, unknown>
   // When set, each section answer waits until the test releases it.
   holdSections: boolean
@@ -204,6 +207,9 @@ function stubEnvironment(world: World): Stub {
         }
       }
       const group = query.get('group') ?? ''
+      // Iteration 3 keeps only rows 5 and 6, the dot group D.
+      const onlyD = world.twoIterations && query.get('iteration') === '3'
+      const kept = onlyD ? ROWS.slice(5) : ROWS
       switch (path) {
         case '/api/run/grid/mesh':
           return respond({
@@ -230,19 +236,19 @@ function stubEnvironment(world: World): Stub {
         case '/api/run/grid/mesh/idomain':
           return respond({ status: 200, bytes: bytesOf(new Int32Array(6).fill(1)), headers: metaHeader('<i4') })
         case '/api/run/grid/parmap':
-          return respond({ status: 200, bytes: bytesOf(PARMAP) })
+          return respond({ status: 200, bytes: bytesOf(onlyD ? Int32Array.from([5, 6]) : PARMAP) })
         case '/api/run/meta':
           return respond({ status: 200, bytes: PAR_TABLE })
         case '/api/run/grid/cells/cell':
-          return respond({ status: 200, bytes: bytesOf(CELL_ARRAY) })
+          return respond({ status: 200, bytes: bytesOf(Int32Array.from(kept, (r) => r.cell)) })
         case '/api/run/grid/cells/layer':
-          return respond({ status: 200, bytes: bytesOf(LAYER_ARRAY) })
+          return respond({ status: 200, bytes: bytesOf(Int32Array.from(kept, (r) => r.layer)) })
         case '/api/run/grid/cells/xy':
-          return respond({ status: 200, bytes: bytesOf(POINT_XY) })
+          return respond({ status: 200, bytes: bytesOf(Float32Array.from(kept.flatMap((r) => [r.x, r.y]))) })
         case '/api/run/reals':
           return respond({ status: 200, bytes: REALS_TABLE })
         case '/api/run/grid/values':
-          return respond({ status: 200, bytes: bytesOf(Float32Array.from(ROWS, (r) => r.value)) })
+          return respond({ status: 200, bytes: bytesOf(Float32Array.from(kept, (r) => r.value)) })
         case '/api/run/grid/pp':
           return respond({
             status: 200,
@@ -344,7 +350,7 @@ async function mounted(extra: Partial<World> = {}): Promise<Mounted> {
       disconnect(): void {}
     },
   )
-  const world: World = { hasIdomain: true, answer: FIXTURE, holdSections: false, ...extra }
+  const world: World = { hasIdomain: true, twoIterations: false, answer: FIXTURE, holdSections: false, ...extra }
   const stub = stubEnvironment(world)
   vi.stubGlobal(
     'requestAnimationFrame',
@@ -357,7 +363,7 @@ async function mounted(extra: Partial<World> = {}): Promise<Mounted> {
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
-  mountMap(root, { config: CONFIG, state: baseState(), store })
+  mountMap(root, { config: CONFIG, state: baseState(world.twoIterations), store })
   await vi.waitFor(() => {
     expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull()
   })
@@ -460,6 +466,23 @@ describe('the section coloured with what the plan draws', () => {
     expect(Array.from(last(section.setInactive)[0] as Uint8Array)).toEqual([0, 0, 0, 1, 0, 0])
     // G1 sets every layer, so no layers line.
     expect(legendText(m.root)).not.toContain('other layers have no value')
+  })
+
+  it('takes the old colours and legend lines away when the plan stops drawing a field', async () => {
+    const m = await mounted({ twoIterations: true })
+    drawLine(m)
+    const section = await showSection(m)
+    expect(lastValues(section)).toEqual([10, 30, 20, null, null, 50])
+    expect(legendText(m.root)).toContain('inactive in idomain')
+
+    ;(m.root.querySelector('button[aria-label="Iteration 3"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(m.root.textContent).toContain('group G1 has nothing to draw in iteration 3'))
+    await settle()
+
+    expect(sectionToggle(m.root).getAttribute('aria-pressed')).toBe('true')
+    expect(lastValues(section).every((v) => v === null)).toBe(true)
+    expect(legendText(m.root)).not.toContain('inactive in idomain')
+    expect(m.stub.section).toHaveLength(1)
   })
 
   it('says how many section cells hold a value but are inactive in idomain', async () => {
