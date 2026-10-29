@@ -227,6 +227,30 @@ def _pdc_capability(manifest: Manifest, run, pdc_names: list[str]) -> dict[str, 
     return {"available": False, "blocked_by": [{"artifact": "pdc", "reason": reason}]}
 
 
+NO_GRID_FILE_REASON = "this run has no grid file"
+
+
+def _section_capability(manifest: Manifest, grid_names: list[str]) -> dict[str, Any]:
+    """Whether the section view can be drawn. The first thing missing is the
+    one reason: no grid file, the grid's own failure, a cache written before
+    elev existed, or elev's own recorded refusal."""
+    # Imported here so this module stays light at launch (see the module docstring).
+    from pesto.ingest.elev import ELEV_PREDATES
+
+    if not grid_names:
+        return {"available": False, "blocked_by": [{"artifact": "grid", "reason": NO_GRID_FILE_REASON}]}
+    for name in grid_names:
+        grid = manifest.artifacts.get(name)
+        if grid is None or grid.state != "ok":
+            return {"available": False, "blocked_by": [_artifact_fact(manifest, name)]}
+    elev = manifest.artifacts.get("elev")
+    if elev is None:
+        return {"available": False, "blocked_by": [{"artifact": "elev", "reason": ELEV_PREDATES}]}
+    if elev.state != "ok":
+        return {"available": False, "blocked_by": [_artifact_fact(manifest, "elev")]}
+    return {"available": True, "blocked_by": []}
+
+
 NO_PAR_ENS_REASON = "no parameter ensemble file was found for this run"
 
 
@@ -345,6 +369,7 @@ async def get_ingest_state(request: Request) -> JSONResponse:
             "noise": _noise_capability(manifest, noise_names),
             "pdc": _pdc_capability(manifest, run, pdc_names),
             "phi_check": _phi_check_capability(manifest, run, phi_names),
+            "section": _section_capability(manifest, grid_names),
         },
         "ingest_seconds": manifest.ingest_seconds,
         "cache_bytes": manifest.cache_bytes,
