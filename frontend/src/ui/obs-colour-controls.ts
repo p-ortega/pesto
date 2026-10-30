@@ -2,7 +2,17 @@
 // the observation legend. Controls write the shared selection and nothing else; the map view
 // draws. Every name and sentence reaches the DOM through textContent.
 
-import { OBS_STATS, OBS_STAT_LABEL, type ObsGroupsResult, type ObsStat } from '../data/obs'
+import {
+  OBS_STATS,
+  OBS_STAT_LABEL,
+  sameGroups,
+  targetLabel,
+  type ObsGroupRow,
+  type ObsGroupSet,
+  type ObsGroupSetsResult,
+  type ObsGroupsResult,
+  type ObsStat,
+} from '../data/obs'
 import { ramp } from '../gl/colormap'
 import { layerWords } from '../data/layer-words'
 import type { DataCardRows } from './data-card'
@@ -25,6 +35,8 @@ export function isObsStat(value: string): value is ObsStat {
 export interface ObsColourControlsOptions {
   store: SelectionStore
   loadGroups: () => Promise<ObsGroupsResult>
+  /** When given, the group list ends with one entry per group set, read after the groups. */
+  loadGroupSets?: () => Promise<ObsGroupSetsResult>
   /** Told when the all-layers box is ticked by the user; setAllLayers does not call it. */
   onAllLayersChange?: (on: boolean) => void
 }
@@ -132,9 +144,82 @@ export function renderObsColourControls(target: HTMLElement | ObsColourRows, opt
     else if (isObsStat(stat)) lastObsStat = stat
   }
 
+  // Each set entry is told from a group entry by this attribute and its index here, never by its text.
+  let setEntries: ObsGroupSet[] = []
+
   function paintGroups(): void {
-    const chosen = [...store.get().obsGroups][0] ?? ''
-    groupSelect.value = groupNames.includes(chosen) ? chosen : ''
+    const chosen = store.get().obsGroups
+    const options = [...groupSelect.options]
+    let pick: HTMLOptionElement | undefined
+    if (chosen.size === 1) {
+      const name = [...chosen][0]
+      pick = groupNames.includes(name) ? options.find((o) => o.hasAttribute('data-obs-group') && o.value === name) : undefined
+    } else if (chosen.size > 1) {
+      pick = options.find((o) => {
+        const at = o.getAttribute('data-obs-set')
+        return at !== null && sameGroups(setEntries[Number(at)]?.groups ?? [], chosen)
+      })
+    }
+    if (pick !== undefined) pick.selected = true
+    else groupSelect.value = ''
+  }
+
+  // `{by} = {value} · {N} groups · {P} placed`, or placement unknown when any member's is.
+  function setText(set: ObsGroupSet, rows: readonly ObsGroupRow[]): string {
+    const byName = new Map(rows.map((row) => [row.group, row]))
+    let placed: number | null = 0
+    for (const group of set.groups) {
+      const n = byName.get(group)?.nPlaced
+      if (n === null || n === undefined) {
+        placed = null
+        break
+      }
+      placed += n
+    }
+    const label = targetLabel({ kind: 'set', by: set.by, value: set.value, groups: set.groups })
+    return `${label} · ${placed === null ? 'placement unknown' : `${placed} placed`}`
+  }
+
+  function appendSets(rows: readonly ObsGroupRow[]): void {
+    const load = opts.loadGroupSets
+    if (load === undefined) return
+    const failed = (reason: string): void => {
+      const option = document.createElement('option')
+      option.setAttribute('value', '')
+      option.setAttribute('data-obs-sets-failed', '')
+      option.disabled = true
+      option.textContent = 'Group sets could not be read'
+      option.title = reason
+      groupSelect.appendChild(option)
+    }
+    void load().then(
+      (answer) => {
+        if (disposed) return
+        if (!answer.ok) {
+          failed(`${answer.artifact}: ${answer.reason}`)
+          return
+        }
+        setEntries = answer.sets
+        if (answer.sets.length === 0) return
+        const box = document.createElement('optgroup')
+        box.setAttribute('label', 'Group sets')
+        answer.sets.forEach((set, i) => {
+          const option = document.createElement('option')
+          option.setAttribute('value', '')
+          option.setAttribute('data-obs-set', String(i))
+          option.setAttribute('data-obs-set-by', set.by)
+          option.setAttribute('data-obs-set-value', set.value)
+          option.textContent = setText(set, rows)
+          option.title = `${set.by} = ${set.value}: ${set.groups.length} groups, ${set.nSites} sites`
+          box.appendChild(option)
+        })
+        groupSelect.appendChild(box)
+        paintGroups()
+      },
+      (error: unknown) => {
+        if (!disposed) failed(error instanceof Error ? error.message : String(error))
+      },
+    )
   }
 
   function paint(): void {
@@ -179,6 +264,7 @@ export function renderObsColourControls(target: HTMLElement | ObsColourRows, opt
         for (const row of answer.rows) {
           const option = document.createElement('option')
           option.setAttribute('value', row.group)
+          option.setAttribute('data-obs-group', '')
           option.textContent = `${row.group} · ${row.nPlaced === null ? 'placement unknown' : `${row.nPlaced} placed`}`
           option.title = row.group
           groupSelect.appendChild(option)
@@ -186,6 +272,7 @@ export function renderObsColourControls(target: HTMLElement | ObsColourRows, opt
         groupSelect.disabled = answer.rows.length === 0
         if (answer.rows.length === 0) warn('obs_index: this run has no observation groups')
         paintGroups()
+        if (answer.rows.length > 0) appendSets(answer.rows)
       },
       (error: unknown) => {
         if (disposed) return
@@ -207,8 +294,17 @@ export function renderObsColourControls(target: HTMLElement | ObsColourRows, opt
     paint()
   })
   groupSelect.addEventListener('change', () => {
-    if (groupSelect.value === '') return
-    store.set({ obsGroups: new Set([groupSelect.value]) }, 'map')
+    const option = groupSelect.selectedOptions[0]
+    if (option === undefined || option.disabled) return
+    const at = option.getAttribute('data-obs-set')
+    if (at !== null) {
+      const set = setEntries[Number(at)]
+      // The member names as the server listed them, never worked out from the entry's text.
+      if (set !== undefined) store.set({ obsGroups: new Set(set.groups) }, 'map')
+      return
+    }
+    if (!option.hasAttribute('data-obs-group')) return
+    store.set({ obsGroups: new Set([option.value]) }, 'map')
   })
   statSelect.addEventListener('change', () => {
     if (!isObsStat(statSelect.value)) return

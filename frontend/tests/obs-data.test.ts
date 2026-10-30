@@ -85,6 +85,8 @@ describe('fetchObsSites', () => {
     expect(result.rows[0]).toEqual({
       siteId: 0,
       site: 'well_a',
+      // An answer for one group without the column carries the group it was asked for.
+      group: 'heads',
       nObs: 3,
       x: 10.5,
       y: -20.25,
@@ -261,7 +263,7 @@ describe('fetchObsFrame', () => {
     if (!result.ok) return
     expect(result.values[0]).toBe(1.5)
     expect(Number.isNaN(result.values[1])).toBe(true)
-    expect(result.meta).toEqual({ group: 'heads', iteration: 1, time: 18262.5, stat: 'resid_mean', orderDigest: 'digest-a', nSites: 3, nAtTime: 2, nRowsHidden: 1, nFinite: 2 })
+    expect(result.meta).toEqual({ group: 'heads', set: null, iteration: 1, time: 18262.5, stat: 'resid_mean', orderDigest: 'digest-a', nSites: 3, nAtTime: 2, nRowsHidden: 1, nFinite: 2 })
     expect(result.meta.nSites).toBe(result.values.length)
   })
 

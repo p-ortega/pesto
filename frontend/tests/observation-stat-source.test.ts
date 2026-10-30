@@ -7,7 +7,10 @@ const mocks = vi.hoisted(() => ({
   fetchObsFrame: vi.fn(),
 }))
 
-vi.mock('../src/data/obs', () => mocks)
+vi.mock('../src/data/obs', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
+  ...mocks,
+}))
 
 import {
   FrameCache,
@@ -66,7 +69,7 @@ const SITES: ObsSiteRow[] = [
 
 function groupData(rows: ObsSiteRow[] = SITES): ObsGroupData {
   return {
-    group: 'g1',
+    target: { kind: 'group', group: 'g1' },
     orderDigest: DIGEST,
     rows,
     times: timesPayload(),
@@ -150,7 +153,7 @@ describe('loadGroup', () => {
     const source = createObservationStatSource({ runId: 'run' })
     const answer = await source.loadGroup('g1')
     if (answer.stale || 'failed' in answer) throw new Error('expected data')
-    expect(answer.data.group).toBe('g1')
+    expect(answer.data.target).toEqual({ kind: 'group', group: 'g1' })
     expect(answer.data.rows).toBe(SITES)
     expect(answer.data.times.times).toEqual([1, 2, 3])
     expect(Array.from(answer.data.layer)).toEqual([2, 2, 5, -1, -1])

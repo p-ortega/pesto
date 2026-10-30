@@ -76,6 +76,8 @@ export type XySource = 'own' | 'cell_centre' | 'none'
 export interface ObsSiteRow {
   siteId: number
   site: string
+  /** The site's own group, from the answer's group column; fetchObsSites always sets it. */
+  group?: string
   nObs: number
   x: number
   y: number
@@ -94,22 +96,101 @@ export type ObsSitesResult = { ok: true; rows: ObsSiteRow[]; orderDigest: string
 const SITE_COLUMNS = ['site_id', 'site', 'n_obs', 'x', 'y', 'xy_source', 'layer', 'cell', 'rule', 'note'] as const
 const XY_SOURCES: readonly string[] = ['own', 'cell_centre', 'none']
 
+// ---- what the map draws: one group, or a set of groups that share one value of a text column ----
+
+export type ObsTarget =
+  | { kind: 'group'; group: string }
+  | { kind: 'set'; by: string; value: string; groups: readonly string[] }
+
+export function groupTarget(group: string): ObsTarget {
+  return { kind: 'group', group }
+}
+
+function asTarget(target: string | ObsTarget): ObsTarget {
+  return typeof target === 'string' ? groupTarget(target) : target
+}
+
+/** One text per target; a group and a set never share one, whatever their names hold. */
+export function targetKey(target: string | ObsTarget): string {
+  const t = asTarget(target)
+  return t.kind === 'group' ? JSON.stringify(['group', t.group]) : JSON.stringify(['set', t.by, t.value])
+}
+
+/** The group's name, or `{by} = {value} · {N} groups` for a set. */
+export function targetLabel(target: string | ObsTarget): string {
+  const t = asTarget(target)
+  if (t.kind === 'group') return t.group
+  return `${t.by} = ${t.value} · ${t.groups.length === 1 ? '1 group' : `${t.groups.length} groups`}`
+}
+
+export function targetGroups(target: string | ObsTarget): readonly string[] {
+  const t = asTarget(target)
+  return t.kind === 'group' ? [t.group] : t.groups
+}
+
+// A set is asked for by its column and value only, never by a list of groups.
+function targetQuery(target: ObsTarget): Record<string, string> {
+  return target.kind === 'group' ? { group: target.group } : { by: target.by, value: target.value }
+}
+
+export interface ObsSetKey {
+  by: string
+  value: string
+}
+
+// An answer's `set` field: null for a group answer, { by, value } for a set; anything else is refused.
+function setOf(value: unknown, what: string): ObsSetKey | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const { by, value: text } = value as Record<string, unknown>
+    if (typeof by === 'string' && typeof text === 'string') return { by, value: text }
+  }
+  throw new Refusal(`the ${what} answer's set is not a column and a value`)
+}
+
+/** Why an answer's group and set do not name the target asked for; null when they do. */
+export function targetMismatch(target: ObsTarget, group: string | null | undefined, set: ObsSetKey | null): string | null {
+  if (target.kind === 'group') {
+    if (set !== null) return `asked for group ${target.group} but the answer was for the set ${set.by} = ${set.value}`
+    if (typeof group === 'string' && group !== target.group) return `asked for group ${target.group} but the answer was for group ${group}`
+    return null
+  }
+  if (set === null) {
+    return `asked for the set ${target.by} = ${target.value} but the answer was for ${typeof group === 'string' ? `group ${group}` : 'no set'}`
+  }
+  if (set.by !== target.by || set.value !== target.value) {
+    return `asked for the set ${target.by} = ${target.value} but the answer was for the set ${set.by} = ${set.value}`
+  }
+  return null
+}
+
 // A float32 column holds NaN for "no position"; a null means the same thing.
 function coordinate(value: unknown): number {
   return value === null || value === undefined ? Number.NaN : Number(value)
 }
 
-function readSiteRows(buffer: ArrayBuffer): ObsSiteRow[] {
+function readSiteRows(buffer: ArrayBuffer, target: ObsTarget): ObsSiteRow[] {
   const table = tableFromIPC(new Uint8Array(buffer))
   requireColumns(table, 'site', SITE_COLUMNS)
   const [id, site, nObs, x, y, source, layer, cell, rule, note] = SITE_COLUMNS.map((name) => columnOf(table, name))
+  // A set's rows must name their own group; only a one-group answer may go without the column.
+  const groupColumn = table.getChild('group')
+  if (groupColumn === null && target.kind === 'set') {
+    throw new Refusal(`the site table for the set ${target.by} = ${target.value} is missing group, so no site can be tied to its group`)
+  }
+  const members = new Set(targetGroups(target))
   const rows: ObsSiteRow[] = new Array(table.numRows)
   for (let i = 0; i < table.numRows; i++) {
     const xySource = requireText(source.get(i), 'xy_source', i)
     if (!XY_SOURCES.includes(xySource)) throw new Refusal(`xy_source '${xySource}' in row ${i + 1} is not own, cell_centre or none`)
+    const group = groupColumn === null ? targetGroups(target)[0] : requireText(groupColumn.get(i), 'group', i)
+    if (!members.has(group)) {
+      throw new Refusal(`row ${i + 1} of the site table belongs to group ${group}, which is not in ${targetLabel(target)}`)
+    }
     rows[i] = {
       siteId: count(id.get(i), 'site_id', i),
       site: requireText(site.get(i), 'site', i),
+      group,
       nObs: count(nObs.get(i), 'n_obs', i),
       x: coordinate(x.get(i)),
       y: coordinate(y.get(i)),
@@ -123,11 +204,16 @@ function readSiteRows(buffer: ArrayBuffer): ObsSiteRow[] {
   return rows
 }
 
-export async function fetchObsSites(group: string, opts?: FetchOptions): Promise<ObsSitesResult> {
+/** A group by name, or a target; a set is asked for by its column and value. */
+export async function fetchObsSites(target: string | ObsTarget, opts?: FetchOptions): Promise<ObsSitesResult> {
+  const t = asTarget(target)
   return guarded('obs_cell', async () => {
-    const { buffer, meta, notes } = await apiGetBytes(runUrl(activeRunId(), '/api/run/obs/sites', { group }), opts)
-    const orderDigest = metaText(requireMeta(meta), 'order_digest')
-    return { ok: true as const, rows: readSiteRows(buffer), orderDigest, notes: notes ?? [] }
+    const { buffer, meta, notes } = await apiGetBytes(runUrl(activeRunId(), '/api/run/obs/sites', targetQuery(t)), opts)
+    const checked = requireMeta(meta)
+    const orderDigest = metaText(checked, 'order_digest')
+    const mismatch = targetMismatch(t, textOrNull(checked.group), setOf(checked.set, 'site'))
+    if (mismatch !== null) throw new Refusal(mismatch)
+    return { ok: true as const, rows: readSiteRows(buffer, t), orderDigest, notes: notes ?? [] }
   })
 }
 
@@ -256,12 +342,89 @@ export async function fetchObsGroups(opts?: FetchOptions): Promise<ObsGroupsResu
   })
 }
 
+// ---- group sets ----
+
+/** Every group whose observations all hold `value` in column `by`, in obs_index group order. */
+export interface ObsGroupSet {
+  by: string
+  value: string
+  groups: string[]
+  nGroups: number
+  nSites: number
+}
+
+export type ObsGroupSetsResult = { ok: true; orderDigest: string; rule: string; sets: ObsGroupSet[]; notes: string[] } | Refused
+
+function readGroupSet(raw: unknown, i: number): ObsGroupSet {
+  const where = `set ${i + 1} of the group sets answer`
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Refusal(`${where} is not an object`)
+  const { by, value, groups, n_groups: nGroups, n_sites: nSites } = raw as Record<string, unknown>
+  if (typeof by !== 'string') throw new Refusal(`${where} is missing by`)
+  if (typeof value !== 'string') throw new Refusal(`${where} is missing value`)
+  if (!Array.isArray(groups) || !groups.every((g) => typeof g === 'string')) throw new Refusal(`${where} is missing groups as names`)
+  if (typeof nGroups !== 'number' || nGroups !== groups.length) {
+    throw new Refusal(`${where} lists ${groups.length} groups but says n_groups ${String(nGroups)}`)
+  }
+  if (typeof nSites !== 'number' || !Number.isFinite(nSites)) throw new Refusal(`${where} is missing n_sites`)
+  return { by, value, groups: groups as string[], nGroups, nSites }
+}
+
+export async function fetchObsGroupSets(opts?: FetchOptions): Promise<ObsGroupSetsResult> {
+  return guarded('obs_index', async () => {
+    const payload = requireKeys<Record<string, unknown>>(
+      await apiGet(runUrl(activeRunId(), '/api/run/obs/group_sets'), opts),
+      'group sets',
+      ['order_digest', 'rule', 'sets', 'notes'],
+    )
+    const { order_digest: orderDigest, rule, sets, notes } = payload
+    if (typeof orderDigest !== 'string') throw new Refusal('the group sets answer is missing order_digest')
+    if (typeof rule !== 'string') throw new Refusal('the group sets answer is missing rule')
+    if (!Array.isArray(sets)) throw new Refusal('the group sets answer is missing sets as a list')
+    if (!Array.isArray(notes) || !notes.every((n) => typeof n === 'string')) {
+      throw new Refusal('the group sets answer is missing notes as sentences')
+    }
+    return { ok: true as const, orderDigest, rule, sets: sets.map(readGroupSet), notes: notes as string[] }
+  })
+}
+
+export type ResolvedTarget =
+  | { kind: 'none' }
+  /** `note` names other sets with exactly the same groups; they draw the same dots. */
+  | { kind: 'target'; target: ObsTarget; note: string | null }
+  | { kind: 'refused'; reason: string }
+
+/**
+ * What a selection of observation groups draws: nothing, one group, or the set whose groups are
+ * exactly those names. Any other mix is refused; nothing is guessed.
+ */
+export function resolveObsTarget(obsGroups: ReadonlySet<string>, sets: readonly ObsGroupSet[] | null): ResolvedTarget {
+  if (obsGroups.size === 0) return { kind: 'none' }
+  if (obsGroups.size === 1) return { kind: 'target', target: groupTarget([...obsGroups][0]), note: null }
+  const refusal = `These ${obsGroups.size} observation groups are not one group set of the observation data; pesto draws one group or one set at a time`
+  if (sets === null) return { kind: 'refused', reason: refusal }
+  const matches = sets.filter((set) => sameGroups(set.groups, obsGroups))
+  if (matches.length === 0) return { kind: 'refused', reason: refusal }
+  const [first, ...same] = matches
+  const target: ObsTarget = { kind: 'set', by: first.by, value: first.value, groups: first.groups }
+  const note =
+    same.length === 0 ? null : `the same groups also make ${same.map((set) => `${set.by} = ${set.value}`).join(', ')}, which draw the same dots`
+  return { kind: 'target', target, note }
+}
+
+/** True when the list holds exactly the names in the set, each once. */
+export function sameGroups(groups: readonly string[], names: ReadonlySet<string>): boolean {
+  return groups.length === names.size && new Set(groups).size === groups.length && groups.every((g) => names.has(g))
+}
+
 // ---- times ----
 
 export type Limits = [number, number] | null
 
 export interface ObsTimesPayload {
-  group: string
+  /** null for a set. */
+  group: string | null
+  /** null for a group; an older answer may leave it out. */
+  set?: ObsSetKey | null
   /** The observation table these times were cut from. */
   order_digest: string
   time_kind: string
@@ -280,14 +443,31 @@ export interface ObsTimesPayload {
 }
 export type ObsTimesResult = ObsFetched<ObsTimesPayload>
 
-export async function fetchObsTimes(group: string, opts?: FetchOptions): Promise<ObsTimesResult> {
-  return fetchJson('obs_index', 'times', ['group', 'order_digest', 'times', 'n_at_time', 'iterations', 'limits', 'limits_refused', 'refused'], '/api/run/obs/times', { group }, opts)
+const TIMES_KEYS = ['group', 'order_digest', 'times', 'n_at_time', 'iterations', 'limits', 'limits_refused', 'refused']
+
+export async function fetchObsTimes(target: string | ObsTarget, opts?: FetchOptions): Promise<ObsTimesResult> {
+  const t = asTarget(target)
+  const keys = t.kind === 'set' ? [...TIMES_KEYS, 'set'] : TIMES_KEYS
+  const answer = await fetchJson<ObsTimesPayload>('obs_index', 'times', keys, '/api/run/obs/times', targetQuery(t), opts)
+  if (!answer.ok) return answer
+  let set: ObsSetKey | null
+  try {
+    set = setOf(answer.payload.set, 'times')
+  } catch (error) {
+    if (error instanceof Refusal) return { ok: false, artifact: 'obs_index', reason: error.message }
+    throw error
+  }
+  const mismatch = targetMismatch(t, answer.payload.group, set)
+  return mismatch === null ? answer : { ok: false, artifact: 'obs_index', reason: mismatch }
 }
 
 // ---- frame: one statistic of every site at one time ----
 
 export interface ObsFrameMeta {
-  group: string
+  /** null for a set. */
+  group: string | null
+  /** null for a group. */
+  set: ObsSetKey | null
   iteration: number
   time: number
   stat: ObsStat
@@ -331,14 +511,15 @@ function float32Of(buffer: ArrayBuffer, meta: Record<string, unknown>): Float32A
 }
 
 export async function fetchObsFrame(
-  group: string,
+  target: string | ObsTarget,
   iteration: number,
   time: number,
   stat: ObsStat,
   opts?: FetchOptions,
 ): Promise<ObsFrameResult> {
+  const t = asTarget(target)
   return guarded('obs_agg', async () => {
-    const answer = await apiGetBytes(runUrl(activeRunId(), '/api/run/obs/frame', { group, iteration, time, stat }), opts)
+    const answer = await apiGetBytes(runUrl(activeRunId(), '/api/run/obs/frame', { ...targetQuery(t), iteration, time, stat }), opts)
     const meta = requireMeta(answer.meta)
     const values = float32Of(answer.buffer, meta)
     const nSites = metaNumber(meta, 'n_sites')
@@ -347,7 +528,9 @@ export async function fetchObsFrame(
       ok: true as const,
       values,
       meta: {
-        group: metaText(meta, 'group'),
+        // A set's frame carries group null; a group's must name it.
+        group: meta.group === null ? null : metaText(meta, 'group'),
+        set: setOf(meta.set, 'frame'),
         iteration: metaNumber(meta, 'iteration'),
         time: metaNumber(meta, 'time'),
         stat: metaText(meta, 'stat') as ObsStat,

@@ -10,7 +10,22 @@ import { chipFactsFrom, type ConfigFact } from '../data/config'
 import { pickPoint, pickPointsWithin, pointsOnLayer, type DrawnPoints } from '../data/points'
 import type Flatbush from 'flatbush'
 import { buildDotIndex, dotWithin, dotsInPolygon } from '../data/lasso'
-import { fetchObsGroups, fetchObsSite, fetchObsSites, OBS_STAT_LABEL, shareRead, type ObsSitePayload, type ObsStat } from '../data/obs'
+import {
+  fetchObsGroupSets,
+  fetchObsGroups,
+  fetchObsSite,
+  fetchObsSites,
+  groupTarget,
+  OBS_STAT_LABEL,
+  resolveObsTarget,
+  sameGroups,
+  shareRead,
+  targetKey,
+  targetLabel,
+  type ObsSitePayload,
+  type ObsStat,
+  type ObsTarget,
+} from '../data/obs'
 import { inactiveLandingNotes, layerActiveMask } from '../data/domain'
 import { gridLayerCountWords, layerWords } from '../data/layer-words'
 import { fetchPlacement } from '../data/par'
@@ -113,6 +128,7 @@ import {
   countsAtTime,
   createObservationStatSource,
   dotsFor,
+  siteGroupOf,
   valuesForDots,
   type ObsDots,
   type ObsGroupData,
@@ -813,7 +829,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       cellArray,
       layerArray,
       pointRows,
-      obsGroup: obsActive ? obsGroupInUse : null,
+      obsGroup: obsActive ? obsGroupInUse() : null,
       dotSiteIds,
     }
   }
@@ -845,7 +861,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const textured = !obsActive && drawnStyle.texture
     const from = loading
       ? 'loading'
-      : `${overlayAnswers}|${asked}|${committed.layer}|${obsActive}|${obsAllLayers}|${obsGroupInUse}|${pointsSerial}|${textured}`
+      : `${overlayAnswers}|${asked}|${committed.layer}|${obsActive}|${obsAllLayers}|${obsTargetInUse === null ? "" : targetKey(obsTargetInUse)}|${pointsSerial}|${textured}`
     if (from === overlayBuiltFrom) return false
     overlayBuiltFrom = from
     let mask: Uint8Array | null = null
@@ -1112,7 +1128,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (!answer.ok) {
         lines.push(`Where the selected sites are could not be read: ${answer.artifact}: ${answer.reason}`)
       } else if (obsActive) {
-        lines.push(...whereLines(answer, { group: obsGroupInUse, layer: committed.layer, allLayers: obsAllLayers }))
+        lines.push(...whereLines(answer, { group: obsGroupInUse(), layer: committed.layer, allLayers: obsAllLayers }))
       } else if (siteRings !== null) {
         lines.push(...siteRings.lines)
       }
@@ -1329,6 +1345,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // Observation colouring (D-21 to D-26): one group's sites as dots, coloured from a frame.
   const obsSource = createObservationStatSource({ runId: opts.state.runId ?? null })
   const loadObsGroups = shareRead(() => fetchObsGroups())
+  // Read only to build the group list and to draw a selection of several groups.
+  const loadObsGroupSets = shareRead(() => fetchObsGroupSets())
   let obsControls: ObsColourControlsHandle | null = null
   let obsSlider: TimeSliderHandle | null = null
   // The slider may be stepped only once the group it shows has its times and dots.
@@ -1343,7 +1361,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // The iteration has no statistics: the parameter colouring is back and a notice says why.
   let obsParked = false
   let obsSerial = 0
-  let obsGroupInUse: string | null = null
+  // The group or set the dots are drawn for; null while nothing is.
+  let obsTargetInUse: ObsTarget | null = null
+  // The one group drawn, or null for a set or nothing; the parts that name one group read this.
+  const obsGroupInUse = (): string | null => (obsTargetInUse?.kind === 'group' ? obsTargetInUse.group : null)
   let obsData: ObsGroupData | null = null
   let obsDots: ObsDots | null = null
   let obsFrame: Float32Array | null = null
@@ -1441,7 +1462,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       dataFold.setSummary(
         dataSummary({
           source: 'obs',
-          group: obsGroupInUse,
+          group: obsGroupInUse(),
           statistic: OBS_STAT_LABEL[obsStat],
           layer: committed.layer,
           allLayers: obsAllLayers,
@@ -1581,7 +1602,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       markFrame({
         selection: selectionLabel(committed),
         layer: committed.layer,
-        group: obsActive ? obsGroupInUse : drawnGroup,
+        group: obsActive ? obsGroupInUse() : drawnGroup,
         colormap: committed.colormap,
         reverse: committed.reverseColormap,
         scale: committed.scale,
@@ -1670,7 +1691,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (obsPick !== null) {
-      renderReadout(readoutEl, { pick: obsPick, group: obsGroupInUse ?? '', joined, field: new Float32Array(0) })
+      renderReadout(readoutEl, { pick: obsPick, group: obsGroupInUse() ?? '', joined, field: new Float32Array(0) })
       return
     }
     if (!obsActive && ringPick !== null) {
@@ -3262,7 +3283,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsSerial += 1
     obsActive = false
     obsLookLayer = null
-    obsGroupInUse = null
+    obsTargetInUse = null
     obsDots = null
     obsFrame = null
     obsDotsKey = ''
@@ -3353,7 +3374,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       const seen = observedFor(site.siteId, time)
       return {
         name: site.site,
-        group: data.group,
+        group: siteGroupOf(data, row),
         x: data.xy[2 * row] + originX,
         y: data.xy[2 * row + 1] + originY,
         xySource: site.xySource === 'own' ? 'own' : 'cell_centre',
@@ -3462,10 +3483,35 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const stat = statText
     obsStat = stat
 
-    // Taken before an automatic pick sets obsGroupInUse, so that pick counts as a change too.
-    const previousGroup = obsGroupInUse
-    let group = [...selection.obsGroups][0] ?? null
-    if (group === null) {
+    // Taken before an automatic pick sets obsTargetInUse, so that pick counts as a change too.
+    const previousKey = obsTargetInUse === null ? null : targetKey(obsTargetInUse)
+    let target: ObsTarget | null = null
+    let targetNote: string | null = null
+    if (selection.obsGroups.size > 1) {
+      // The sets are read only for a selection of several groups, so one group never waits for them.
+      const sets = await loadObsGroupSets()
+      if (serial !== obsSerial) return
+      if (!sets.ok) {
+        obsTargetInUse = null
+        showObsNotice(`${selection.obsGroups.size} observation groups are chosen but the group sets could not be read`, `${sets.artifact}: ${sets.reason}`)
+        if (obsActive) clearObsDots()
+        return
+      }
+      const resolved = resolveObsTarget(selection.obsGroups, sets.sets)
+      if (resolved.kind !== 'target') {
+        obsTargetInUse = null
+        obsTimeReady = false
+        obsSlider?.hide()
+        showObsNotice(resolved.kind === 'refused' ? resolved.reason : 'No observation group is chosen', 'obs_index: no dot is drawn for this choice.')
+        if (obsActive) clearObsDots()
+        return
+      }
+      target = resolved.target
+      targetNote = resolved.note
+    } else if (selection.obsGroups.size === 1) {
+      target = groupTarget([...selection.obsGroups][0])
+    }
+    if (target === null) {
       const groups = await loadObsGroups()
       if (serial !== obsSerial) return
       if (!groups.ok) {
@@ -3480,12 +3526,13 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         if (obsActive) clearObsDots()
         return
       }
-      group = pick.group
-      obsGroupInUse = group
-      store.set({ obsGroups: new Set([group]) }, 'map')
+      target = groupTarget(pick.group)
+      obsTargetInUse = target
+      store.set({ obsGroups: new Set([pick.group]) }, 'map')
     }
-    const groupChanged = group !== previousGroup
-    obsGroupInUse = group
+    const groupChanged = targetKey(target) !== previousKey
+    obsTargetInUse = target
+    const group = targetLabel(target)
     if (groupChanged) {
       // The old group's times must not be steppable while the new group loads.
       obsTimeReady = false
@@ -3497,7 +3544,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     }
     obsNoticeEl.textContent = ''
 
-    const loaded = await obsSource.loadGroup(group)
+    const loaded = await obsSource.loadGroup(target)
     if (serial !== obsSerial || loaded.stale) return
     if ('failed' in loaded) {
       showObsNotice(`${loaded.failed.artifact} could not be read for ${group}`, loaded.failed.reason)
@@ -3554,10 +3601,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
 
     let frame: Float32Array
     if (index >= 0) {
-      if (obsSource.frames.get(obsSource.frames.key(group, iteration, times[index], stat, data.orderDigest)) === undefined) {
+      if (obsSource.frames.get(obsSource.frames.key(target, iteration, times[index], stat, data.orderDigest)) === undefined) {
         obsSlider?.setStatus('reading this time…')
       }
-      const answer = await obsSource.frames.want(group, data.orderDigest, iteration, times, index, stat)
+      const answer = await obsSource.frames.want(target, data.orderDigest, iteration, times, index, stat)
       if (serial !== obsSerial || answer.stale) return
       if ('failed' in answer) {
         showObsNotice(`${answer.failed.artifact} could not be read for ${group}`, answer.failed.reason)
@@ -3579,15 +3626,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       dots = dotsFor(data, committed.layer, obsAllLayers)
     }
 
-    const target = layer
-    if (target === null) return
+    const drawLayer = layer
+    if (drawLayer === null) return
     const values = valuesToDraw(data, frame, dots)
     const limits = data.times.limits[stat]
-    target.setColormap(OBS_RAMP[stat], false)
-    target.setLimits(limits ?? [0, 1])
-    const key = `${group}|${committed.layer}|${obsAllLayers}`
+    drawLayer.setColormap(OBS_RAMP[stat], false)
+    drawLayer.setLimits(limits ?? [0, 1])
+    const key = `${targetKey(target)}|${committed.layer}|${obsAllLayers}`
     if (key === obsDotsKey && obsDots !== null && obsDots.rows.length === dots.rows.length) {
-      target.setPointValues(values)
+      drawLayer.setPointValues(values)
     } else {
       putPoints(dots.xy, values, 'obs')
     }
@@ -3604,6 +3651,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (unknown > 0) notes.push(`${sitesText(unknown)} with an unknown layer drawn because all layers is on`)
     }
     for (const note of data.times.notes) notes.push(note)
+    if (targetNote !== null) notes.push(targetNote)
     obsStaticNotes = notes
     paintObsLegend(frame, index, timeNotes)
     refreshObsPick()
@@ -3622,7 +3670,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (data === null || dots === null) return
     const times = data.times.times
     showObsLegend({
-      group: data.group,
+      group: targetLabel(data.target),
       stat: obsStat,
       iteration: obsIteration,
       limits: data.times.limits[obsStat],
@@ -3663,15 +3711,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const iteration = obsIteration
     const stat = obsStat
     const frames = obsSource.frames
-    const held = frames.get(frames.key(data.group, iteration, times[index], stat, data.orderDigest))
+    const held = frames.get(frames.key(data.target, iteration, times[index], stat, data.orderDigest))
     const stillWanted = (): boolean => step === obsStepSerial && obsActive && obsData === data
     if (held !== undefined) {
       paintObsFrame(held, index)
-      void frames.want(data.group, data.orderDigest, iteration, times, index, stat).catch(() => undefined)
+      void frames.want(data.target, data.orderDigest, iteration, times, index, stat).catch(() => undefined)
       return
     }
     obsSlider?.setStatus('reading this time…')
-    frames.want(data.group, data.orderDigest, iteration, times, index, stat).then(
+    frames.want(data.target, data.orderDigest, iteration, times, index, stat).then(
       (answer) => {
         if (answer.stale || !stillWanted()) return
         if ('failed' in answer) {
@@ -3697,8 +3745,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // Draws from the store whatever view wrote it, but a group this view just chose is already drawing.
   function followObsGroup(next: SharedSelection): void {
     if (next.colour.source !== 'obs') return
-    const first = [...next.obsGroups][0]
-    if (first === undefined || first === obsGroupInUse) return
+    if (next.obsGroups.size === 0) return
+    const drawn = obsTargetInUse
+    // A set is the same one when its member names are exactly the chosen ones.
+    if (drawn !== null && (drawn.kind === 'set' ? sameGroups(drawn.groups, next.obsGroups) : next.obsGroups.size === 1 && next.obsGroups.has(drawn.group))) return
     void drawObservations()
   }
 
@@ -4038,6 +4088,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       obsControls = renderObsColourControls(rows, {
         store,
         loadGroups: loadObsGroups,
+        loadGroupSets: loadObsGroupSets,
         onAllLayersChange: (on) => {
           obsAllLayers = on
           if (store.get().colour.source === 'obs') void drawObservations()
