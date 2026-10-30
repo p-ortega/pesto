@@ -504,10 +504,11 @@ body {
   box-sizing: border-box;
 }
 
+/* Notices never shrink below their text (25% cap, then they scroll); squeezing them hid the panel's need to fold. */
 .obs-notices {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   gap: var(--space-xs);
   min-height: 0;
   max-height: 25%;
