@@ -43,6 +43,7 @@ LIMITS_RULE = (
     "2nd to 98th percentile over every time of this group and both iterations, so colours do "
     "not shift while the slider moves; the mean residual is centred on zero"
 )
+LIMITS_RULE_SET = LIMITS_RULE.replace("this group", "every group of this set")
 NO_LIMITS_REASON = "no iteration has observation statistics, so no colour limits can be made"
 POSITION_NOTE = "this group has no times, so the slider steps by position in site"
 MIXED_SITES_NOTE = (
@@ -572,16 +573,21 @@ async def get_obs_group_sets(request: Request, params: Annotated[RunQuery, Query
 
 
 def _limits(
-    state, cache_root, rows: GroupRows, group: str, ends: list[int]
+    state, cache_root, rows: GroupRows, target: Target | str, ends: list[int]
 ) -> tuple[dict, str | None, int]:
-    """Colour limits per statistic, pooled over every row of the group in both ends, the
-    reason they could not be made when they could not, and how many sentinel statistics
-    were left out of them (the most any one statistic had)."""
+    """Colour limits per statistic, pooled over every row of the group or set in both ends,
+    the reason they could not be made when they could not, and how many sentinel statistics
+    were left out of them (the most any one statistic had). A bare name is a group."""
+    if isinstance(target, str):
+        target = Target(group=target, set=None)
     unknown = {stat: None for stat in STATS}
     if not ends:
         return unknown, NO_LIMITS_REASON, 0
     first, last = ends[0], ends[-1]
-    names = tuple(dict.fromkeys(("obs_index", f"{AGG_PREFIX}{first}", f"{AGG_PREFIX}{last}")))
+    sources = ("obs_index", f"{AGG_PREFIX}{first}", f"{AGG_PREFIX}{last}")
+    if target.set is not None:
+        sources = (*sources, "control")
+    names = tuple(dict.fromkeys(sources))
 
     def build(_layout):
         aggs = [obscache.get_agg(state, cache_root, k) for k in dict.fromkeys((first, last))]
@@ -593,7 +599,7 @@ def _limits(
         for stat in STATS:
             pooled = np.concatenate(
                 [
-                    np.asarray(agg.values[agg.stats.index(stat), rows.start : rows.stop], dtype=np.float64)
+                    np.asarray(agg.values[agg.stats.index(stat), rows.rows], dtype=np.float64)
                     for agg in aggs
                 ]
             )
@@ -609,7 +615,7 @@ def _limits(
                 out[stat] = [float(lo), float(hi)]
         return out, n_sentinel
 
-    made = obscache.memoised(state, cache_root, ("limits", group, first, last), names, build)
+    made = obscache.memoised(state, cache_root, ("limits", *target.memo_tag, first, last), names, build)
     if isinstance(made, ReadFailure):
         return unknown, f"the colour limits could not be made: {_reason(made)}", 0
     limits, n_sentinel = made
@@ -618,17 +624,18 @@ def _limits(
 
 @router.get("/obs/times")
 async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Query()]) -> Response:
-    """The exact times a group has observations at, how many sites have one at each, and
-    the colour limits that stay fixed while the slider moves."""
+    """The exact times a group or set has observations at, how many sites have one at
+    each, and the colour limits that stay fixed while the slider moves."""
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
         return problem(409, "no run is open")
     state = request.app.state
 
-    context = _group_context(state, cache_root, params.group)
+    context = _context(state, cache_root, params)
     if isinstance(context, Response):
         return context
-    index, rows = context
+    index, rows, target = context
+    this = f"this {target.noun}"
     manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
     iterations = _iteration_status(state, cache_root, manifest)
     # The same ends every other observation route uses; an end without statistics is left out of the limits.
@@ -647,7 +654,8 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     steps_by = "time"
     if rows.time_kind.startswith("ordinal"):
         steps_by = "position"
-        notes.append(POSITION_NOTE if "no time found" in rows.time_kind else MIXED_SITES_NOTE)
+        note = POSITION_NOTE if "no time found" in rows.time_kind else MIXED_SITES_NOTE
+        notes.append(note.replace("this group", this))
     if rows.n_duplicate:
         notes.append(
             f"{rows.n_duplicate} observation(s) share a time with another observation of the same "
@@ -657,14 +665,15 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
     if rows.refused is not None:
         limits, limits_refused = {stat: None for stat in STATS}, None
     else:
-        limits, limits_refused, n_sentinel = _limits(state, cache_root, rows, params.group, ends)
+        limits, limits_refused, n_sentinel = _limits(state, cache_root, rows, target, ends)
         if n_sentinel:
             notes.append(
-                f"{n_sentinel} statistic value(s) of this group are a sentinel (a dry or no-flow "
+                f"{n_sentinel} statistic value(s) of {this} are a sentinel (a dry or no-flow "
                 "placeholder, not a number) and are left out of the colour limits"
             )
     body = {
-        "group": params.group,
+        "group": target.group,
+        "set": target.set_json,
         "order_digest": index.order_digest,
         "time_kind": rows.time_kind,
         "steps_by": steps_by,
@@ -673,7 +682,7 @@ async def get_obs_times(request: Request, params: Annotated[ObsMapGroupQuery, Qu
         "n_sites": rows.n_sites,
         "iterations": iterations,
         "limits": limits,
-        "limits_rule": LIMITS_RULE,
+        "limits_rule": LIMITS_RULE if target.set is None else LIMITS_RULE_SET,
         "limits_refused": limits_refused,
         "refused": rows.refused,
         "notes": notes,
@@ -709,19 +718,19 @@ def build_frame(
 
 @router.get("/obs/frame")
 async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query()]) -> Response:
-    """One float32 per site of the group, in ``/obs/sites`` row order, for one iteration,
-    one statistic and one exact time."""
+    """One float32 per site of the group or set, in ``/obs/sites`` row order, for one
+    iteration, one statistic and one exact time."""
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
         return problem(409, "no run is open")
     state = request.app.state
 
-    context = _group_context(state, cache_root, params.group)
+    context = _context(state, cache_root, params)
     if isinstance(context, Response):
         return context
-    index, rows = context
+    index, rows, target = context
     if rows.refused is not None:
-        return problem(409, "the group has no time axis", artifact="obs_index", detail=rows.refused)
+        return problem(409, f"the {target.noun} has no time axis", artifact="obs_index", detail=rows.refused)
 
     name = f"{AGG_PREFIX}{params.iteration}"
     manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
@@ -747,7 +756,8 @@ async def get_obs_frame(request: Request, params: Annotated[ObsFrameQuery, Query
         return problem(404, "no observation at that time", artifact="obs_index", detail=NO_NEAREST_TEXT)
     values, n_at_time, n_rows_hidden, n_sentinel = built
     meta = {
-        "group": params.group,
+        "group": target.group,
+        "set": target.set_json,
         "iteration": int(params.iteration),
         "order_digest": index.order_digest,
         "time": float(params.time),
