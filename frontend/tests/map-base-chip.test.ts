@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// Select base in the Obs tab heading row (LD-6) and the word base in the map's labels: one click
-// selects the shown iteration's base, an iteration with none says why and keeps the selection, and
+// Select base on the Obs tab's Site plots title line (LD-6, G-14-5) and the word base in the
+// map's labels: one click selects the shown iteration's base, an iteration with none says why and keeps the selection, and
 // the legend names the drawn realization base when it is. The real map screen against a stubbed
 // fetch, with the GL context and the shared MeshLayer double mocked.
 
@@ -158,7 +158,7 @@ async function settle(): Promise<void> {
 }
 
 const chipOf = (root: HTMLElement): HTMLButtonElement =>
-  root.querySelector('#panel-obs .obs-heading-row button.base-chip') as HTMLButtonElement
+  root.querySelector('#panel-obs .obs-spaghetti .fold-actions button.base-chip') as HTMLButtonElement
 const reasonOf = (root: HTMLElement): string => root.querySelector('#base-chip-reason')?.textContent ?? ''
 const legendText = (root: HTMLElement): string => root.querySelector('.floating-bottom-left')?.textContent ?? ''
 const selectedNotice = (root: HTMLElement): string =>
@@ -178,7 +178,7 @@ async function drawRealization(root: HTMLElement, store: SelectionStore, index: 
   await settle()
 }
 
-describe('Select base in the Obs heading row', () => {
+describe('Select base on the Site plots title line', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
   })
@@ -188,14 +188,16 @@ describe('Select base in the Obs heading row', () => {
     vi.clearAllMocks()
   })
 
-  it('sits at the right of the Obs heading, not in the header, and asks for the shown iteration\'s base once', async () => {
+  it('sits on the Site plots line before any site is picked, not in the Obs heading or the header, and asks for the shown iteration\'s base once', async () => {
     const store = manualStore()
     const { root, stub } = await mounted(store)
     await chipReady(root)
 
     const chip = chipOf(root)
     expect(chip.textContent).toBe('Select base')
-    expect(chip.closest('.obs-heading-actions')).not.toBeNull()
+    expect(store.get().sites.size).toBe(0)
+    expect(chip.closest('.obs-spaghetti')).not.toBeNull()
+    expect(root.querySelector('#panel-obs .obs-heading-row button.base-chip')).toBeNull()
     expect(root.querySelector('#panel-obs .obs-heading-row .heading')?.textContent).toBe('Obs')
     expect(root.querySelector('.header button.base-chip')).toBeNull()
     // The header keeps its plain fact chip.

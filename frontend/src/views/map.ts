@@ -208,6 +208,6 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
       })
     },
     onViewStateChange: scheduleViewWrite,
-    baseChipHost: obsHandle.headingActions,
+    baseChipHost: obsHandle.plotActions,
   })
 }

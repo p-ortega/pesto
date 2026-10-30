@@ -215,7 +215,7 @@ export interface MapViewOptions {
   viewState: Promise<ViewState | null>
   onPanelFacts(facts: PanelFacts): void
   onViewStateChange(): void
-  /** Where Select base goes: the Obs tab's heading row (LD-6). A detached element when absent. */
+  /** Where Select base goes: the Obs tab's Site plots title line (G-14-5). A detached element when absent. */
   baseChipHost?: HTMLElement
 }
 
@@ -2405,7 +2405,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     })
   }
 
-  // Built once, in the Obs heading row where its effect is drawn; the header keeps only facts.
+  // Built once, on the Site plots title line where its effect is drawn; the header keeps only facts.
   const baseChip = renderBaseChip(opts.baseChipHost ?? document.createElement('div'), {
     store,
     loadBase,
