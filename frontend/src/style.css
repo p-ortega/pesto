@@ -530,17 +530,22 @@ body {
   max-height: 40%;
 }
 
-/* A floor so the plots below never squeeze the site list out of sight on a laptop-height panel. */
+/* The site list's prompt is one line; the floor below applies once it lists sites. */
 .obs-sites {
   flex: 0 1 auto;
-  min-height: 7.5rem;
   max-height: 40%;
   overflow: hidden;
 }
 
-.obs-sites-title {
-  flex: 0 0 auto;
-  margin-bottom: var(--space-xs);
+/* A floor so the plots never squeeze the site list out of sight: its title line, the one-line hint,
+   the header and four 24px rows. The floors are what make a too-tall tab fold its sections. */
+.obs-sites[data-folded='false']:has(.obs-grid) {
+  min-height: calc(24px + var(--space-xs) + 17px + 26px + 4 * 24px);
+}
+
+/* The server's notes add up to two lines under the rows. */
+.obs-sites[data-folded='false']:has(.obs-site-notes) {
+  min-height: calc(24px + var(--space-xs) + 17px + 26px + 4 * 24px + var(--space-xs) + 34px);
 }
 
 /* The grid scrolls sideways as one piece, so the header stays over its columns
@@ -554,8 +559,9 @@ body {
   scrollbar-color: var(--axis) var(--gridline);
 }
 
+/* The header and four rows. */
 .obs-sites .obs-grid {
-  min-height: 6rem;
+  min-height: calc(26px + 4 * 24px);
 }
 
 .obs-grid-header,
@@ -635,11 +641,11 @@ body {
   flex-basis: 8em;
 }
 
-/* Notes the server sent with the site list: a few lines, then they scroll. */
+/* Notes the server sent with the site list sit under the rows: two lines, then they scroll. */
 .obs-site-notes {
   flex: 0 0 auto;
-  max-height: 4.5rem;
-  margin-bottom: var(--space-xs);
+  max-height: 34px;
+  margin-top: var(--space-xs);
 }
 
 .obs-col-figure[data-column^='rmse'] {
@@ -652,15 +658,23 @@ body {
   text-align: right;
 }
 
-/* The plot hosts are empty until the plot plans mount into them, and take no
-   room until then. Once filled they shrink and scroll inside themselves, so
-   the page never scrolls. */
+/* The plot sections shrink and their bodies scroll inside themselves, under a title line that
+   stays put, so the page never scrolls. */
 .obs-fit,
 .obs-spaghetti {
   flex: 0 1 auto;
   width: 100%;
   margin-top: var(--space-sm);
+}
+
+.obs-fit > .fold-body,
+.obs-spaghetti > .fold-body {
   overflow-y: auto;
+}
+
+/* The section's title line names the group, so the fit's own title would say it twice. */
+.obs-fit .obs-fit-title {
+  display: none;
 }
 
 .obs-fit {
@@ -668,8 +682,8 @@ body {
   max-height: 45%;
 }
 
-.obs-fit:empty,
-.obs-spaghetti:empty {
+/* The fit takes no room until a group is chosen and the fit mounts into it. */
+.obs-fit:has(> .fold-body:empty) {
   display: none;
 }
 
@@ -679,10 +693,16 @@ body {
   width: 100%;
 }
 
-/* A floor so the chosen site's spaghetti is never squeezed to a sliver. */
+/* With no site chosen the section is its one-line prompt. */
 .obs-spaghetti {
-  min-height: 8rem;
   max-height: 50%;
+}
+
+/* G-14-2: holding a plot, the section is never below one whole site panel: its title line, the
+   panel's title, the 200px plot and two 17px legend lines. More panels and lines scroll inside. */
+.obs-spaghetti[data-folded='false']:has(.obs-spaghetti-plot) {
+  min-height: calc(24px + var(--space-xs) + 21px + 200px + 2 * 17px);
+  max-height: none;
 }
 
 .obs-spaghetti canvas {
@@ -1047,6 +1067,25 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A long name cut at its start: the head gives way with an ellipsis, the tail keeps its width. */
+.name-cut {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.name-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.name-tail {
+  flex: 0 0 auto;
 }
 
 .wrap-note {
@@ -1539,6 +1578,41 @@ body {
   font-weight: 600;
   line-height: 1.2;
   color: var(--ink-primary);
+}
+
+/* A side panel's section folds the same way but has no frame of its own: the title, its controls
+   and the button on one line, and a body that shrinks to the room the panel gives it. */
+.fold-card.fold-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  row-gap: var(--space-xs);
+  min-height: 0;
+}
+
+.fold-section > .fold-actions {
+  grid-area: 1 / 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.fold-section > .fold-button {
+  grid-area: 1 / 3;
+}
+
+.fold-section > .fold-body {
+  grid-area: 2 / 1 / 3 / 4;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* A folded section is its title line alone, whatever floor or share the open one has. */
+.fold-card.fold-section[data-folded='true'] {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 /* The left band has one width: an open card is 256px, a folded one as wide as its line up to that. */

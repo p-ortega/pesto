@@ -113,3 +113,65 @@ describe('controls in the floating cards', () => {
     expect(rule('.floating .fold-button')).toMatch(/min-height:\s*24px/)
   })
 })
+
+const SPACE: Record<string, number> = { '--space-xs': 4, '--space-sm': 8, '--space-md': 16, '--space-lg': 24 }
+
+// A length in px from a plain px value or a calc() of sums of px, spacing steps and products.
+function px(value: string): number {
+  const inner = value.trim().replace(/^calc\((.*)\)$/, '$1')
+  return inner.split('+').reduce((sum, term) => {
+    const product = term.split('*').reduce((acc, factor) => {
+      const f = factor.trim()
+      const space = /^var\((--space-[a-z]+)\)$/.exec(f)
+      if (space) return acc * SPACE[space[1]]
+      const n = /^(\d+(?:\.\d+)?)(px)?$/.exec(f)
+      if (!n) throw new Error(`cannot read ${f} as a length`)
+      return acc * Number(n[1])
+    }, 1)
+    return sum + product
+  }, 0)
+}
+
+function declared(selector: string, property: string): number {
+  const found = new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+);`).exec(rule(selector))
+  if (!found) throw new Error(`${selector} has no ${property}`)
+  return px(found[1])
+}
+
+// The type steps in px: a 24px fold button line, a 14px body line at 1.5, a 12px label line at 1.4.
+const TITLE_LINE = 24
+const BODY_LINE = 14 * 1.5
+const LABEL_LINE = 12 * 1.4
+const ROW = 24
+
+describe('the Obs tab floors', () => {
+  it('never squeezes a site plot below one whole panel: its title line, the panel title, the 200px plot and two legend lines', () => {
+    const floor = declared(".obs-spaghetti[data-folded='false']:has(.obs-spaghetti-plot)", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + BODY_LINE + 200 + 2 * LABEL_LINE)
+    // The old 8rem floor was 128px, well short of the 200px plot.
+    expect(floor).toBeGreaterThan(8 * 16)
+  })
+
+  it('keeps the empty plot prompt to its line, with no floor of its own', () => {
+    expect(rule('.obs-spaghetti')).not.toMatch(/min-height/)
+  })
+
+  it("holds the site list's title, hint, header and four rows once it lists sites", () => {
+    const floor = declared(".obs-sites[data-folded='false']:has(.obs-grid)", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + LABEL_LINE + 25 + 4 * ROW)
+    expect(declared('.obs-sites .obs-grid', 'min-height')).toBeGreaterThanOrEqual(25 + 4 * ROW)
+    expect(rule('.obs-sites')).not.toMatch(/min-height/)
+  })
+
+  it('caps the site list notes at two lines', () => {
+    expect(declared('.obs-site-notes', 'max-height')).toBeLessThanOrEqual(Math.ceil(2 * LABEL_LINE))
+    expect(declared(".obs-sites[data-folded='false']:has(.obs-site-notes)", 'min-height')).toBeGreaterThan(
+      declared(".obs-sites[data-folded='false']:has(.obs-grid)", 'min-height'),
+    )
+  })
+
+  it('lets a folded section drop every floor', () => {
+    expect(rule(".fold-card.fold-section[data-folded='true']")).toMatch(/min-height:\s*0/)
+    expect(rule(".fold-card.fold-section[data-folded='true']")).toMatch(/flex:\s*0 0 auto/)
+  })
+})

@@ -427,6 +427,39 @@ describe('the section in general', () => {
     expect(cell(rows(host)[0], 'group').title).toBe(name)
   })
 
+  it('keeps the end of a long site and group name in view, with the whole name as text and title', async () => {
+    const name = 'oname:coarse.hds_otype:lst_usecol:sim_head_masl_obs_id:bore-21b'
+    const store = makeStore({ sites: new Set([1]) })
+    const loadWhere = vi.fn(async () => whereAnswer([where(1, { site: name, group: name })]))
+    const { host, handle } = mount({ store, loadWhere })
+
+    handle.refresh()
+    await vi.waitFor(() => expect(rows(host).length).toBe(1))
+
+    for (const column of ['site', 'group']) {
+      const c = cell(rows(host)[0], column)
+      expect(c.textContent, column).toBe(name)
+      expect(c.title, column).toBe(name)
+      expect(c.classList.contains('name-cut'), column).toBe(true)
+      expect(c.querySelector('.name-tail')?.textContent, column).toBe('bore-21b')
+    }
+    for (const column of ['layer', 'where']) {
+      expect(cell(rows(host)[0], column).querySelector('.name-head'), column).toBeNull()
+    }
+  })
+
+  it('still says why a site has no group, as the group cell title', async () => {
+    const store = makeStore({ sites: new Set([1]) })
+    const loadWhere = vi.fn(async () => whereAnswer([where(1, { group: '' })]))
+    const { host, handle } = mount({ store, loadWhere })
+
+    handle.refresh()
+    await vi.waitFor(() => expect(rows(host).length).toBe(1))
+
+    expect(cell(rows(host)[0], 'group').textContent).toBe('—')
+    expect(cell(rows(host)[0], 'group').title).toBe('no group was recorded for this site')
+  })
+
   it('builds its rows with role row, so the 10em name column rule applies', () => {
     linkApi.recentCellLink.mockReturnValue(cellAnswer())
     const store = makeStore({ cells: new Set([1234]), sites: new Set([10, 11]) })

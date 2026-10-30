@@ -9,6 +9,7 @@ import { layerCompact, layerWords } from '../data/layer-words'
 import { sameSet } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
+import { paintCutName } from './name-cut'
 import { paintNote } from './note-line'
 
 export interface SelectedSitesOptions {
@@ -52,14 +53,17 @@ interface SectionColumn {
   text(row: SectionRow): string
   title(row: SectionRow): string
   headingTitle?: string
+  /** A long name keeps its end in view, cut at its start. */
+  cut?: boolean
 }
 
 const COLUMNS: SectionColumn[] = [
-  { key: 'site', label: 'Site', kind: 'name', text: (r) => r.site, title: (r) => r.site },
+  { key: 'site', label: 'Site', kind: 'name', text: (r) => r.site, title: (r) => r.site, cut: true },
   {
     key: 'group',
     label: 'Group',
     kind: 'text',
+    cut: true,
     text: (r) => r.group ?? NO_GROUP,
     title: (r) => r.group ?? 'no group was recorded for this site',
   },
@@ -240,9 +244,12 @@ export function renderSelectedSites(host: HTMLElement, opts: SelectedSitesOption
       if (column.kind === 'name' || column.kind === 'text') cell.classList.add('truncate')
       if (column.kind === 'name') cell.classList.add('body')
       else if (column.kind === 'figure') cell.classList.add('tabular-nums')
-      cell.textContent = column.text(row)
       const title = column.title(row)
-      if (title !== '') cell.title = title
+      if (column.cut === true) paintCutName(cell, column.text(row), title)
+      else {
+        cell.textContent = column.text(row)
+        if (title !== '') cell.title = title
+      }
       rowEl.appendChild(cell)
     }
     rowEl.addEventListener('click', (event) => opts.onPick(row.siteId, event))

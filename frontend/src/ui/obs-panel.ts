@@ -24,9 +24,11 @@ import { modeOf, removeKeyName } from '../state/modifiers'
 import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
+import { foldOthersToFit, renderFold, settleGrowth, type PanelFoldHandle } from './fold'
 import { renderGroupFit } from './obs-fit'
 import { LAYER_HEADING_TITLE, renderSelectedSites } from './obs-selected'
 import { renderSpaghetti } from './obs-spaghetti'
+import { paintCutName } from './name-cut'
 import { paintNote } from './note-line'
 
 export interface ObsPanelOptions {
@@ -41,6 +43,8 @@ export interface ObsPanelOptions {
 export interface ObsPanelHandle {
   /** The right end of the heading row, for controls that act on the Obs plots, such as Select base. */
   headingActions: HTMLElement
+  /** The right end of the Site plots title line, for controls that act on the site plots. */
+  plotActions: HTMLElement
   /** Fetches the group summary the first time and redraws the windowed lists at their real height. */
   onShow(): void
   /** Remembers the scroll positions and stops scroll-driven redraws. */
@@ -71,6 +75,8 @@ interface GridColumn<T> {
   headingTitle?(): string
   /** Adds marks to a drawn cell after its text is set. */
   decorate?(cell: HTMLElement, row: T): void
+  /** A long name keeps its end in view, cut at its start. */
+  cut?: boolean
 }
 
 type SortDirection = 'ascending' | 'descending'
@@ -118,9 +124,12 @@ function appendCell<T>(rowEl: HTMLElement, column: GridColumn<T>, row: T): void 
   else if (column.kind === 'figure') cell.classList.add('tabular-nums')
   // A wrapped text cell ran over the rows below it; the full text stays in the title.
   else cell.classList.add('truncate')
-  cell.textContent = column.text(row)
   const title = column.title ? column.title(row) : column.kind === 'figure' ? '' : column.text(row)
-  if (title !== '') cell.title = title
+  if (column.cut === true) paintCutName(cell, column.text(row), title)
+  else {
+    cell.textContent = column.text(row)
+    if (title !== '') cell.title = title
+  }
   column.decorate?.(cell, row)
   rowEl.appendChild(cell)
 }
@@ -412,7 +421,8 @@ function appendNote(host: HTMLElement, note: string): void {
  * Fills `host` with the Obs panel. The panel's sections, top to bottom, are
  * `.obs-heading-row`, `.obs-notices`, `.obs-selected`, `.obs-groups`, `.obs-sites`,
  * `.obs-spaghetti` and `.obs-fit`, so a picked site's plot sits right under the list
- * it was picked from. The fit host stays empty until a group is chosen.
+ * it was picked from. The last four fold to their title line. The fit stays empty until a
+ * group is chosen.
  */
 export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPanelHandle {
   host.textContent = ''
@@ -442,12 +452,50 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     host.appendChild(el)
     return el
   }
+  // A hidden tab has no height, so it never counts as too tall.
+  const overflows = (): boolean => !hidden && host.clientHeight > 0 && host.scrollHeight > host.clientHeight
+  // The section the viewer opened last on this page; a growth leaves it open.
+  let lastOpened: PanelFoldHandle | null = null
+  // LD-3: opening a section that does not fit folds the others, each stored as the viewer's choice.
+  function onSectionToggle(fold: PanelFoldHandle, folded: boolean): void {
+    if (folded) {
+      if (lastOpened === fold) lastOpened = null
+      return
+    }
+    lastOpened = fold
+    foldOthersToFit(fold, stack(), overflows)
+  }
+  // G-14-2: a section the viewer is not using folds to its title line, as the map's cards do.
+  function foldSection(name: string, key: string, title: string): PanelFoldHandle {
+    const fold: PanelFoldHandle = renderFold({ key, name: title, surface: 'panel', onUserToggle: (folded) => onSectionToggle(fold, folded) })
+    // The section's own class comes first, so it still names the section.
+    fold.el.className = `${name} ${fold.el.className}`
+    host.appendChild(fold.el)
+    return fold
+  }
   const noticesHost = section('obs-notices')
   const selectedHost = section('obs-selected')
-  const groupsHost = section('obs-groups')
-  const sitesHost = section('obs-sites')
-  const spaghettiHost = section('obs-spaghetti')
-  const fitHost = section('obs-fit')
+  const groupsFold = foldSection('obs-groups', 'obs-groups', 'Groups')
+  const sitesFold = foldSection('obs-sites', 'obs-sites', 'Site list')
+  const plotsFold = foldSection('obs-spaghetti', 'obs-plots', 'Site plots')
+  const fitFold = foldSection('obs-fit', 'obs-fit', 'Group fit')
+  const groupsHost = groupsFold.body
+  const sitesHost = sitesFold.body
+  const spaghettiHost = plotsFold.body
+  const fitHost = fitFold.body
+  sitesFold.setSummary('Sites')
+
+  // The order a growth folds in, from the end: Group fit, then Groups, then Site list. The plots
+  // come first, so they never fold that way. A fit with no group yet takes no room and is left out.
+  function stack(): PanelFoldHandle[] {
+    return [plotsFold, sitesFold, groupsFold, fitFold].filter((fold) => fold !== fitFold || fitFold.body.childElementCount > 0)
+  }
+  // G-14-2, G-14-1: when the tab no longer fits it folds quietly, stores nothing and never folds `keep`.
+  function settle(keep: PanelFoldHandle | null = null): void {
+    settleGrowth(stack(), overflows, { keep: keep ?? (lastOpened !== null && !lastOpened.folded() ? lastOpened : null) })
+  }
+  const sectionObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => settle())
+  for (const el of [selectedHost, groupsFold.el, sitesFold.el, plotsFold.el, fitFold.el]) sectionObserver?.observe(el)
 
   renderCapabilityNotices(noticesHost, opts.capabilities)
   const selected = renderSelectedSites(selectedHost, {
@@ -471,12 +519,15 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
   function renderSitePrompt(): void {
     sitesGrid = null
     showSelectedButton = null
+    sitesFold.actions.textContent = ''
+    sitesFold.setSummary('Sites')
     renderNotice(sitesHost, { title: 'Click a group above to list its sites.', tone: 'info' })
   }
 
   function renderSitesFailure(artifact: string, reason: string): void {
     sitesGrid = null
     showSelectedButton = null
+    sitesFold.actions.textContent = ''
     sitesFor = null
     renderNotice(sitesHost, { title: 'The site list could not be read', detail: `${artifact}: ${reason}`, tone: 'serious' })
   }
@@ -499,6 +550,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       label: 'Site',
       kind: 'name',
       text: (r) => r.site,
+      cut: true,
       decorate: (cell, row) => {
         const n = conflicted.get(row.siteId)
         if (n === undefined || pdc?.kind !== 'answer') return
@@ -576,36 +628,19 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
 
   function renderSites(group: string, rows: readonly ObsSiteRow[], notes: readonly string[]): void {
     sitesHost.textContent = ''
-    // The count and the button share one line; the count gives way first.
-    const heading = document.createElement('div')
-    heading.classList.add('obs-sites-title')
-    heading.style.display = 'flex'
-    heading.style.alignItems = 'baseline'
-    heading.style.gap = 'var(--space-sm)'
-    const count = document.createElement('span')
-    count.classList.add('body', 'obs-sites-count', 'truncate')
-    count.style.fontWeight = '600'
-    count.style.flex = '1 1 auto'
-    count.style.minWidth = '0'
-    count.appendChild(document.createTextNode(`Sites in ${group} · `))
-    const figure = document.createElement('span')
-    figure.classList.add('tabular-nums')
-    figure.textContent = String(rows.length)
-    count.appendChild(figure)
-    count.title = count.textContent ?? ''
-    heading.appendChild(count)
+    // The count and the button share the section's title line; the count gives way first.
+    sitesFold.setSummary(`Sites in ${group} · ${rows.length}`)
     const show = document.createElement('button')
     show.type = 'button'
     show.classList.add('label')
-    show.style.flex = 'none'
     show.textContent = 'Show selected'
     show.addEventListener('click', () => {
       const index = sitesGrid?.firstSelected() ?? -1
       if (index >= 0) sitesGrid?.scrollToIndex(index)
     })
-    heading.appendChild(show)
+    sitesFold.actions.textContent = ''
+    sitesFold.actions.appendChild(show)
     showSelectedButton = show
-    sitesHost.appendChild(heading)
     // Users could not tell the list picks; the hint also says where the plot goes, since a pick never scrolls.
     const hint = document.createElement('div')
     hint.classList.add('label', 'wrap-note', 'obs-sites-hint')
@@ -614,13 +649,6 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       text: `Click a site to select it and draw its plot below. Shift-click adds, ${removeKeyName()}-click removes.`,
     })
     sitesHost.appendChild(hint)
-    if (notes.length > 0) {
-      const noteBox = document.createElement('div')
-      noteBox.classList.add('obs-site-notes', 'scroll-pane')
-      makeFocusable(noteBox, 'Site list notes')
-      for (const note of notes) appendNote(noteBox, note)
-      sitesHost.appendChild(noteBox)
-    }
     const grid = createGrid<ObsSiteRow>({
       ariaLabel: `Sites of ${group}`,
       dataKey: 'siteId',
@@ -633,8 +661,17 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     })
     sitesGrid = grid
     sitesHost.appendChild(grid.el)
+    // The rows come before the server's notes, which sit under them and scroll inside.
+    if (notes.length > 0) {
+      const noteBox = document.createElement('div')
+      noteBox.classList.add('obs-site-notes', 'scroll-pane')
+      makeFocusable(noteBox, 'Site list notes')
+      for (const note of notes) appendNote(noteBox, note)
+      sitesHost.appendChild(noteBox)
+    }
     grid.setRows(rows)
     markSites()
+    settle(sitesFold)
   }
 
   // One group at a time: each fetch goes through the same slot, so an older answer is never drawn.
@@ -642,6 +679,8 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     sitesFor = group
     sitesGrid = null
     showSelectedButton = null
+    sitesFold.actions.textContent = ''
+    sitesFold.setSummary(`Sites in ${group}`)
     sitesHost.textContent = ''
     const loading = document.createElement('div')
     loading.classList.add('label')
@@ -668,7 +707,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     if (wanted === undefined || !groupNames.has(wanted)) return
     chosenGroup = wanted
     groupsGrid?.markRows()
-    fit.setGroup(wanted)
+    setFitGroup(wanted)
     if (hidden) {
       sitesPending = true
       return
@@ -677,10 +716,15 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     if (wanted !== sitesFor) loadSites(wanted)
   }
 
+  function setFitGroup(group: string): void {
+    fit.setGroup(group)
+    fitFold.setSummary(`Group fit: ${group}`)
+  }
+
   function pickGroup(group: string): void {
     chosenGroup = group
     groupsGrid?.markRows()
-    fit.setGroup(group)
+    setFitGroup(group)
     opts.store.set({ obsGroups: new Set([group]) }, 'obs')
     if (group !== sitesFor) loadSites(group)
   }
@@ -717,7 +761,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       headingTitle: () => pdcHeadingTitle(pdc),
     })
     return [
-      { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group, sortValue: (r) => r.group },
+      { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group, sortValue: (r) => r.group, cut: true },
       { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs), sortValue: (r) => r.nObs },
       { key: 'n_sites', label: 'Sites', kind: 'figure', text: (r) => String(r.nSites), sortValue: (r) => r.nSites },
       {
@@ -778,6 +822,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
 
   function renderGroups(rows: readonly ObsGroupRow[]): void {
     groupsHost.textContent = ''
+    groupsFold.setSummary(`Groups · ${rows.length}`)
     const grid = createGrid<ObsGroupRow>({
       ariaLabel: 'Observation groups',
       dataKey: 'group',
@@ -845,6 +890,19 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     () => selected.refresh(),
   )
   selected.refresh()
+  function paintPlotsTitle(): void {
+    const n = opts.store.get().sites.size
+    plotsFold.setSummary(n === 0 ? null : `Site plots · ${n}`)
+  }
+  paintPlotsTitle()
+  // After a site pick the plot needs its room, so the other sections give way.
+  const unsubscribePlots = opts.store.subscribe(
+    (selection) => selection.sites,
+    (next) => {
+      paintPlotsTitle()
+      if (next.sites.size > 0) settle(plotsFold)
+    },
+  )
   const unsubscribeIteration = opts.store.subscribe(
     (selection) => selection.iteration,
     () => requestPdc(),
@@ -852,6 +910,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
 
   return {
     headingActions,
+    plotActions: plotsFold.actions,
     onShow() {
       hidden = false
       spaghetti.onShow()
@@ -864,6 +923,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       sitesGrid?.redraw()
       selected.onShow()
       if (sitesPending) followSelection()
+      settle()
     },
     onHide() {
       hidden = true
@@ -877,6 +937,8 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       unsubscribeSites()
       unsubscribeSelected()
       unsubscribeIteration()
+      unsubscribePlots()
+      sectionObserver?.disconnect()
       pdcSlot.cancel()
       selected.dispose()
       sitesSlot.cancel()
