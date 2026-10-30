@@ -176,10 +176,10 @@ describe('renderSelectionControls', () => {
         'Layer',
         'Statistic',
         'Realization',
+        'Colour steps',
         'Colormap',
         'Value scale',
         'Limits',
-        'Colour steps',
         'Centre on zero',
         'Patterns',
       ])
@@ -215,7 +215,7 @@ describe('renderSelectionControls', () => {
       for (const row of rows.slice(2)) expect(row.getAttribute('data-colour-source')).toBe('par')
       expect((el.querySelector('select[aria-label="Statistic"]') as HTMLElement).getAttribute('data-colour-source')).toBe('par')
       const line = el.querySelector('.colours-obs-line') as HTMLElement
-      expect(line.textContent).toBe('Colormap, value scale, limits, colour steps, centring and patterns apply to parameter fields only.')
+      expect(line.textContent).toBe('Colour steps, colormap, value scale, limits, centring and patterns apply to parameter fields only.')
       expect(line.getAttribute('data-colour-source')).toBe('obs')
     })
 
@@ -239,7 +239,7 @@ describe('renderSelectionControls', () => {
       expect(data.realization.control.querySelector('input[aria-label="Go to realization"]')).not.toBeNull()
       // The Data card's statistic row will also hold the observation statistic, so only the select is tagged.
       expect(data.statistic.row.hasAttribute('data-colour-source')).toBe(false)
-      expect(rowLabels(el)).toEqual(['Colormap', 'Value scale', 'Limits', 'Colour steps', 'Centre on zero', 'Patterns'])
+      expect(rowLabels(el)).toEqual(['Colour steps', 'Colormap', 'Value scale', 'Limits', 'Centre on zero', 'Patterns'])
       expect(el.querySelector('input[aria-label="Layer"]')).toBeNull()
       expect(el.lastElementChild?.classList.contains('colours-obs-line')).toBe(true)
 
@@ -280,7 +280,7 @@ describe('renderSelectionControls', () => {
   describe('the Colours folded line', () => {
     it('reads the defaults in the controls own words', () => {
       const { handle } = mount(THREE_NAMES)
-      expect(handle.coloursSummary()).toBe('viridis · linear · robust 2–98% · smooth')
+      expect(handle.coloursSummary()).toBe('smooth, no steps · viridis · linear · robust 2–98%')
     })
 
     it('names a reversed ramp, log scale, min–max limits, steps, centring and patterns', () => {
@@ -294,7 +294,7 @@ describe('renderSelectionControls', () => {
         manualLimits: null,
         style: { classes: 9, symmetric: true, texture: true },
       })
-      expect(handle.coloursSummary()).toBe('magma reversed · log₁₀ · min–max · 9 steps · centred · patterns')
+      expect(handle.coloursSummary()).toBe('9 steps · magma reversed · log₁₀ · min–max · centred · patterns')
     })
 
     it('names manual limits and jet without its warning glyph, and leaves out greyed centring and patterns boxes', () => {
@@ -312,7 +312,7 @@ describe('renderSelectionControls', () => {
         { classes: 7, symmetric: false, texture: false },
         { classes: null, symmetric: 'centring needs robust or min–max limits', texture: 'patterns apply to cell fields' },
       )
-      expect(handle.coloursSummary()).toBe('jet · linear · manual · 7 steps')
+      expect(handle.coloursSummary()).toBe('7 steps · jet · linear · manual')
     })
 
     it('sends the new line after a colour change and after a sync, and not after a layer move', () => {
@@ -332,25 +332,25 @@ describe('renderSelectionControls', () => {
         select.dispatchEvent(new Event('change'))
       }
       pick('Colormap', 'cividis')
-      expect(onColoursChange).toHaveBeenLastCalledWith('cividis · linear · robust 2–98% · smooth')
+      expect(onColoursChange).toHaveBeenLastCalledWith('smooth, no steps · cividis · linear · robust 2–98%')
       const reverse = el.querySelector('input[aria-label="Reverse colormap"]') as HTMLInputElement
       reverse.checked = true
       reverse.dispatchEvent(new Event('change'))
-      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · linear · robust 2–98% · smooth')
+      expect(onColoursChange).toHaveBeenLastCalledWith('smooth, no steps · cividis reversed · linear · robust 2–98%')
       pick('Value scale', 'log10')
-      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · robust 2–98% · smooth')
+      expect(onColoursChange).toHaveBeenLastCalledWith('smooth, no steps · cividis reversed · log₁₀ · robust 2–98%')
       pick('Limits', 'minmax')
-      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · min–max · smooth')
+      expect(onColoursChange).toHaveBeenLastCalledWith('smooth, no steps · cividis reversed · log₁₀ · min–max')
       pick('Colour steps', '11')
-      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · min–max · 11 steps')
+      expect(onColoursChange).toHaveBeenLastCalledWith('11 steps · cividis reversed · log₁₀ · min–max')
       const patterns = el.querySelector('input[aria-label="Patterns instead of colours"]') as HTMLInputElement
       patterns.checked = true
       patterns.dispatchEvent(new Event('change'))
-      expect(onColoursChange).toHaveBeenLastCalledWith('cividis reversed · log₁₀ · min–max · 11 steps · patterns')
+      expect(onColoursChange).toHaveBeenLastCalledWith('11 steps · cividis reversed · log₁₀ · min–max · patterns')
 
       onColoursChange.mockClear()
       handle.sync({ colormap: 'viridis', reverseColormap: false, scale: 'linear', scaleInferred: true, limitsMode: 'robust', manualLimits: null })
-      expect(onColoursChange).toHaveBeenLastCalledWith('viridis · linear · robust 2–98% · 11 steps · patterns')
+      expect(onColoursChange).toHaveBeenLastCalledWith('11 steps · viridis · linear · robust 2–98% · patterns')
 
       onColoursChange.mockClear()
       const layer = el.querySelector('input[aria-label="Layer"]') as HTMLInputElement
@@ -370,9 +370,9 @@ describe('renderSelectionControls', () => {
         onSelectionChange: () => undefined,
         onColoursChange,
       })
-      expect(handle.coloursSummary()).toBe('viridis · log₁₀ · robust 2–98% · smooth')
+      expect(handle.coloursSummary()).toBe('smooth, no steps · viridis · log₁₀ · robust 2–98%')
       handle.setLogUsability(4)
-      expect(onColoursChange).toHaveBeenLastCalledWith('viridis · linear · robust 2–98% · smooth')
+      expect(onColoursChange).toHaveBeenLastCalledWith('smooth, no steps · viridis · linear · robust 2–98%')
     })
   })
 
@@ -714,7 +714,7 @@ describe('renderSelectionControls', () => {
       expect(hint.textContent).toBe('For changes and residuals.')
     })
 
-    it('is a parameter-only checkbox after the Colour steps select, with its reason line hidden', () => {
+    it('is a parameter-only checkbox after the Limits row, with its reason line hidden', () => {
       const { el } = mount(THREE_NAMES)
       const input = box(el)
       expect(input.type).toBe('checkbox')
@@ -722,8 +722,8 @@ describe('renderSelectionControls', () => {
       const label = input.closest('.card-row') as HTMLElement
       expect(label.textContent).toContain('Centre on zero')
       expect(label.getAttribute('data-colour-source')).toBe('par')
-      const classesLabel = (el.querySelector('select[aria-label="Colour steps"]') as HTMLElement).closest('.card-row') as HTMLElement
-      expect(classesLabel.nextElementSibling).toBe(label)
+      const limitsRow = (el.querySelector('select[aria-label="Limits"]') as HTMLElement).closest('.card-row') as HTMLElement
+      expect(limitsRow.nextElementSibling).toBe(label)
       expect(reason(el).style.display).toBe('none')
     })
 

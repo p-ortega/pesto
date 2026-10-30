@@ -28,16 +28,16 @@ vi.mock('../src/gl/mesh-layer', async (importOriginal) =>
   (await import('./support/mesh-layer-mock')).meshLayerMockModule(await importOriginal()),
 )
 
-// The real settleStack, with a hook so a test can change the layout the moment the stack settles.
+// The real settleGrowth, with a hook so a test can change the layout the moment the stack settles.
 const settleHooks: { before: (() => void) | null; calls: number } = { before: null, calls: 0 }
 vi.mock('../src/ui/fold', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/ui/fold')>()
   return {
     ...actual,
-    settleStack: vi.fn((...args: Parameters<typeof actual.settleStack>) => {
+    settleGrowth: vi.fn((...args: Parameters<typeof actual.settleGrowth>) => {
       settleHooks.calls += 1
       settleHooks.before?.()
-      return actual.settleStack(...args)
+      return actual.settleGrowth(...args)
     }),
   }
 })
