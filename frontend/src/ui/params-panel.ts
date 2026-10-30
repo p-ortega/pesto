@@ -29,7 +29,7 @@ import { modeOf } from '../state/modifiers'
 import { selectPars } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
-import { renderFold, type PanelFoldHandle } from './fold'
+import { foldOthersToFit, renderFold, settleGrowth, type PanelFoldHandle, type StackCard } from './fold'
 import type { UnmappedGroup } from './group-picker'
 import {
   formatChange,
@@ -216,6 +216,7 @@ const NO_SELECTED_HERE = 'no selected parameter is in this group'
 
 function renderTable(
   host: HTMLElement,
+  actions: HTMLElement,
   rows: ParamRow[],
   isHidden: () => boolean,
   changeFor: (parnme: string) => ChangeRowState,
@@ -224,15 +225,15 @@ function renderTable(
 ): () => void {
   host.textContent = ''
 
-  // Selected rows stay where the sort put them (D-03), so this is the way to reach one.
+  // Selected rows stay where the sort put them (D-03), so this is the way to reach one. It sits on
+  // the section's title line, so it costs the list no row.
   const showSelected = document.createElement('button')
   showSelected.type = 'button'
   showSelected.classList.add('label', 'show-selected')
   showSelected.textContent = 'Show selected'
   showSelected.style.flex = 'none'
-  showSelected.style.alignSelf = 'flex-start'
-  showSelected.style.marginBottom = 'var(--space-xs)'
-  host.appendChild(showSelected)
+  actions.textContent = ''
+  actions.appendChild(showSelected)
 
   // One header row above the windowed table, with the same column rule as
   // every data row (style.css `.param-header`), so the labels line up.
@@ -680,23 +681,66 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   selectedHost.classList.add('params-selected')
   el.appendChild(selectedHost)
 
-  const groupsHost = document.createElement('div')
-  groupsHost.classList.add('params-groups')
-  el.appendChild(groupsHost)
+  // A hidden tab has no height, so it never counts as too tall.
+  const overflows = (): boolean => !hidden && el.clientHeight > 0 && el.scrollHeight > el.clientHeight
+  // The detail a pick just filled, or the section the viewer opened last: a growth leaves it open.
+  let growthKeep: PanelFoldHandle | null = null
+  // The sections the tab folded on its own; a pick that fills one opens it again.
+  const quietlyFolded = new Set<StackCard>()
+  // LD-3: opening a section that does not fit folds the others, each stored as the viewer's choice.
+  function onSectionToggle(fold: PanelFoldHandle, folded: boolean): void {
+    quietlyFolded.delete(fold)
+    if (folded) {
+      if (growthKeep === fold) growthKeep = null
+      return
+    }
+    growthKeep = fold
+    // The list drew its window while it had no height.
+    if (fold === tableFold && !hidden) redrawTable?.()
+    foldOthersToFit(fold, stack(), overflows)
+  }
+  // G-14-6: each section folds to its title line, as the map's cards do. Its own classes come first.
+  function foldSection(classes: string, key: string, title: string): PanelFoldHandle {
+    const fold: PanelFoldHandle = renderFold({ key, name: title, surface: 'panel', onUserToggle: (folded) => onSectionToggle(fold, folded) })
+    fold.el.className = `${classes} ${fold.el.className}`
+    el.appendChild(fold.el)
+    return fold
+  }
 
-  const detailHost = document.createElement('div')
-  detailHost.classList.add('params-detail-host')
+  const groupsFold = foldSection('params-groups', 'params-groups', 'Groups')
+  const detailFold = foldSection('params-group-detail params-detail-host', 'params-group-detail', 'Group detail')
+  const tableFold = foldSection('params-table', 'params-table', 'Parameters')
+  const parameterFold = foldSection('params-parameter-detail params-detail-host', 'params-detail', 'Parameter detail')
+  const notesFold = renderNotesFold(el, opts.unmapped, opts.artifactNotes, onSectionToggle)
+  const groupsHost = groupsFold.body
+  const detailHost = detailFold.body
   makeFocusable(detailHost, 'Group detail')
-  el.appendChild(detailHost)
-
-  const tableHost = document.createElement('div')
-  tableHost.classList.add('params-table')
-  el.appendChild(tableHost)
-
-  const parameterHost = document.createElement('div')
-  parameterHost.classList.add('params-detail-host')
+  const tableHost = tableFold.body
+  const parameterHost = parameterFold.body
   makeFocusable(parameterHost, 'Parameter detail')
-  el.appendChild(parameterHost)
+
+  // The order a growth folds in, from the end: Notes, the parameter detail, the group detail, then
+  // the Groups table. The Parameters list comes first, so it never folds that way. An empty detail
+  // takes no room and is left out.
+  function stack(): PanelFoldHandle[] {
+    return [tableFold, groupsFold, detailFold, parameterFold, notesFold].filter(
+      (fold): fold is PanelFoldHandle => fold !== null && fold.body.childElementCount > 0,
+    )
+  }
+  // G-14-1: when the tab no longer fits it folds quietly, stores nothing and never folds `growthKeep`.
+  function settle(): void {
+    const keep = growthKeep !== null && !growthKeep.folded() ? growthKeep : null
+    for (const fold of settleGrowth(stack(), overflows, { keep })) quietlyFolded.add(fold)
+  }
+  // A pick just filled `fold`: open it again if the tab folded it on its own, then make room for it.
+  function settleAfterFill(fold: PanelFoldHandle): void {
+    growthKeep = fold
+    if (quietlyFolded.delete(fold)) fold.setFolded(false, { remember: false })
+    settle()
+  }
+  const sectionObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => settle())
+  for (const fold of [groupsFold, detailFold, tableFold, parameterFold, notesFold]) if (fold !== null) sectionObserver?.observe(fold.el)
+  sectionObserver?.observe(selectedHost)
 
   let groups: ParGroupsPayload | null = null
   let groupsRequested = false
@@ -827,6 +871,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     grid.appendChild(pane)
     groupsPane = pane
     groupsHost.appendChild(grid)
+    groupsFold.setSummary(`Groups · ${groups?.groups.length ?? 0}`)
     markAtBoundsHeading()
     fillRows()
   }
@@ -868,6 +913,8 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   function renderDetail(): void {
     redrawTable = null
     tableHost.textContent = ''
+    tableFold.actions.textContent = ''
+    tableFold.setSummary(null)
     if (tableFailure !== null) {
       renderFailure(tableHost, tableFailure.artifact, tableFailure.reason)
       return
@@ -899,7 +946,8 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       return
     }
     const shown = rows.filter((row) => chosen.has(row.pargp))
-    redrawTable = renderTable(tableHost, shown, () => hidden, changeFor, () => opts.store.get().pars, pickParameter)
+    tableFold.setSummary(`Parameters · ${shown.length}`)
+    redrawTable = renderTable(tableHost, tableFold.actions, shown, () => hidden, changeFor, () => opts.store.get().pars, pickParameter)
   }
 
   function changeFor(parnme: string): ChangeRowState {
@@ -923,6 +971,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     parameterHandle?.destroy()
     parameterHandle = null
     parameterHost.textContent = ''
+    parameterFold.setSummary(null)
     selectedParameter = null
   }
 
@@ -944,6 +993,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   function drawGroup(base: GroupDetailBase, hist: ParHistResult): void {
     detailHandle?.destroy()
     detailHandle = renderGroupDetail(detailHost, { ...base, hist })
+    settle()
   }
 
   // One group at a time: a hidden panel only notes the choice, and each fetch
@@ -954,6 +1004,8 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       return
     }
     detailPending = false
+    const single = chosenGroups().size === 1 ? [...chosenGroups()][0] : null
+    detailFold.setSummary(blocked === null && single !== null ? `Group detail: ${single}` : null)
     if (blocked !== null) {
       const why = blocked.blockedBy.map((entry) => `${entry.artifact}: ${entry.reason}`).join(' ')
       dropDetail()
@@ -1021,6 +1073,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
   function drawParameter(parameter: string, values: ParValuesResult): void {
     parameterHandle?.destroy()
     parameterHandle = renderParameterDetail(parameterHost, { parameter, values, isHidden: () => hidden })
+    settle()
   }
 
   // The parameter the detail should follow after a click, given the pars it leaves.
@@ -1054,11 +1107,13 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     parameterHandle?.destroy()
     parameterHandle = null
     parameterHost.textContent = ''
+    parameterFold.setSummary(`Parameter detail: ${parameter}`)
     const loading = document.createElement('div')
     loading.classList.add('label')
     loading.style.color = 'var(--ink-muted)'
     loading.textContent = 'Loading distribution…'
     parameterHost.appendChild(loading)
+    settleAfterFill(parameterFold)
     void valuesSlot.run(parameter, (signal) => fetchParValues(parameter, { signal })).then(
       (result) => {
         if (!result.stale) drawParameter(parameter, result.value)
@@ -1114,6 +1169,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       selectionChanged()
       renderDetail()
       refreshGroupDetail()
+      settleAfterFill(detailFold)
     },
   )
 
@@ -1140,7 +1196,6 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
   )
 
-  renderNotesFold(el, opts.unmapped, opts.artifactNotes)
 
   if (!hidden) {
     requestGroups()
@@ -1167,11 +1222,13 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
       if (detailPending) refreshGroupDetail()
       else detailHandle?.onShow()
       parameterHandle?.onShow()
+      settle()
     },
     dispose() {
       unsubscribe()
       unsubscribePars()
       unsubscribeIteration()
+      sectionObserver?.disconnect()
       selectedSection.dispose()
       atBoundsSlot.cancel()
       histSlot.cancel()

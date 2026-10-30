@@ -180,3 +180,37 @@ describe('the Obs tab floors', () => {
     expect(rule(".fold-card.fold-section[data-folded='true']")).toMatch(/flex:\s*0 0 auto/)
   })
 })
+
+// A group row is its 21px body line, 4px padding above and below and a 1px rule; its header wraps to two label lines.
+const GROUP_ROW = BODY_LINE + 2 * 4 + 1
+const GROUP_HEADER = 2 * LABEL_LINE + 2 * 4 + 1
+
+describe('the Params tab floors', () => {
+  it('never shrinks the Groups table below its title line, header and three rows', () => {
+    const floor = declared(".params-groups[data-folded='false']:has([role='grid'])", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + Math.floor(GROUP_HEADER) + 3 * GROUP_ROW)
+  })
+
+  it('never shrinks the Parameters list below its title line, header and three rows', () => {
+    const floor = declared(".params-table[data-folded='false']:has(.param-header)", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + 25 + 3 * ROW)
+  })
+
+  it('never squeezes a detail holding a chart below its title line, the whole 200px chart and two text lines', () => {
+    const floor = declared(".params-detail-host[data-folded='false']:has(.params-chart)", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + 200 + 2 * LABEL_LINE)
+    // The old 8rem floor was 128px, well short of the chart.
+    expect(floor).toBeGreaterThan(8 * 16)
+  })
+
+  it('keeps the floors off a folded section and off a section with nothing to list', () => {
+    for (const selector of ['.params-groups', '.params-table', '.params-detail-host']) {
+      expect(rule(selector), selector).not.toMatch(/min-height:\s*(calc|[1-9])/)
+    }
+  })
+
+  it('lets the detail and the list scroll inside their sections, under a title line that stays put', () => {
+    expect(rule('.params-detail-host > .fold-body')).toMatch(/overflow-y:\s*auto/)
+    expect(rule('.params-table > .fold-body')).toMatch(/overflow-x:\s*auto/)
+  })
+})
