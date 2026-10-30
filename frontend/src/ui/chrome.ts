@@ -116,7 +116,7 @@ function appendFactChip(
   el: HTMLElement,
   parts: (string | null)[],
   marked: string[],
-  opts: { numeric?: boolean; warn?: boolean } = {},
+  opts: { numeric?: boolean; warn?: boolean; title?: string } = {},
 ): void {
   const text = parts.filter((p): p is string => p !== null)
   if (marked.length === 0) {
@@ -124,6 +124,7 @@ function appendFactChip(
     appendChip(el, opts.warn ? `${TONE_STYLE.warning.icon} ${plain}` : plain, {
       numeric: opts.numeric,
       colorVar: opts.warn ? TONE_STYLE.warning.colorVar : undefined,
+      title: opts.title,
     })
     return
   }
@@ -168,7 +169,11 @@ export function renderChips(el: HTMLElement, opts: ChipsInput): void {
 
   const realMarked = disagreeing(disagree, ['ensemble_size', 'base'])
   if (config.n_real !== null && (baseWord !== null || realMarked.length > 0)) {
-    appendFactChip(el, [`${config.n_real} reals`, baseWord], realMarked, { numeric: true })
+    // G-14-5: the header names base but holds no button, so it says where the button is.
+    appendFactChip(el, [`${config.n_real} reals`, baseWord], realMarked, {
+      numeric: true,
+      title: 'Select base is on the Site plots line of the Obs tab.',
+    })
   }
 
   if (config.n_iterations !== null) {

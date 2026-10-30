@@ -267,6 +267,40 @@ describe('the base chip follows the base fact (D-16, D-17)', () => {
   })
 })
 
+describe('the realization chip says where Select base is (G-14-5)', () => {
+  const WHERE = 'Select base is on the Site plots line of the Obs tab.'
+  const chipWith = (el: HTMLElement, words: string): HTMLElement =>
+    (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes(words))!
+
+  it('names the Site plots line on a chip with base present', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, n_real: 494, base: { state: 'present' } }, failure: null })
+    expect(chipWith(el, '494 reals').textContent).toBe('494 reals · base alive')
+    expect(chipWith(el, '494 reals').title).toBe(WHERE)
+  })
+
+  it('names the Site plots line on a chip that says no base', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, n_real: 494, base: { state: 'not_included' } }, failure: null })
+    expect(chipWith(el, '494 reals').title).toBe(WHERE)
+  })
+
+  it('keeps the disagreement title on a realization chip whose readings disagree', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'] }, failure: null })
+    expect(chipWith(el, 'reals').title).not.toBe(WHERE)
+    expect(chipWith(el, 'reals').title).toContain('ensemble size')
+  })
+
+  it('gives no other chip a title', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, has_noise: false, n_iterations: 2 }, failure: null })
+    const others = (Array.from(el.children) as HTMLElement[]).filter((c) => !c.textContent?.includes('reals'))
+    expect(others.length).toBeGreaterThan(0)
+    for (const chip of others) expect(chip.title).toBe('')
+  })
+})
+
 function reading(source: string, value: ConfigReading['value'], shown: string, extra: ConfigReading['extra'] = null): ConfigReading {
   return { source, value, shown, evidence: '', extra }
 }
