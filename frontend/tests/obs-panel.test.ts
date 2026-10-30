@@ -295,7 +295,8 @@ describe('the group summary', () => {
   it('reads top to bottom: heading, notices, selected sites, groups, site list, site plots, then the group fit', () => {
     const { host } = mount({ startHidden: true })
 
-    const classes = [...host.children].map((el) => el.className).filter((c) => c.startsWith('obs-'))
+    // A folding section's own class comes first, before the fold's.
+    const classes = [...host.children].map((el) => el.classList[0]).filter((c) => c.startsWith('obs-'))
     expect(classes).toEqual(['obs-heading-row', 'obs-notices', 'obs-selected', 'obs-groups', 'obs-sites', 'obs-spaghetti', 'obs-fit'])
   })
 
@@ -554,7 +555,8 @@ describe('the narrow-panel layout', () => {
   it('lets the plot hosts shrink and scroll inside themselves so the page does not scroll', () => {
     for (const host of ['.obs-fit', '.obs-spaghetti']) {
       expect(rule(host), host).toMatch(/flex:\s*0 1 auto/)
-      expect(rule(host), host).toMatch(/overflow-y:\s*auto/)
+      // The body scrolls, so the section's title line stays in view.
+      expect(rule(`${host} > .fold-body`), host).toMatch(/overflow-y:\s*auto/)
       expect(rule(host), host).toMatch(/max-height:\s*\d+%/)
     }
   })
@@ -623,7 +625,7 @@ describe('the site list', () => {
     expect(cell(b, 'layer').textContent).toBe('unknown')
     expect(cell(b, 'placement').textContent).toBe('not placed')
     expect(cell(b, 'placement').title).toBe('no x or y in the file')
-    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('Sites in gw_head · 2')
+    expect(host.querySelector('.obs-sites > .fold-summary')?.textContent).toBe('Sites in gw_head · 2')
     const heading = host.querySelector<HTMLElement>('.obs-sites [role="columnheader"][data-column="layer"]')!
     expect(heading.title).toBe('Layer counted from 1; the index from 0 is in brackets.')
   })
@@ -646,11 +648,11 @@ describe('the site list', () => {
       groupRows(host)[0].click()
       await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
 
-      const title = host.querySelector<HTMLElement>('.obs-sites-title')!
-      expect(title.querySelector('.obs-sites-count')).not.toBeNull()
-      expect(title.querySelector('button')?.textContent).toBe('Show selected')
+      const section = host.querySelector<HTMLElement>('.obs-sites')!
+      expect(section.querySelector(':scope > .fold-summary')?.textContent).toBe('Sites in gw_head · 2')
+      expect(section.querySelector(':scope > .fold-actions button')?.textContent).toBe('Show selected')
       const hint = host.querySelector<HTMLElement>('.obs-sites-hint')!
-      expect(title.nextElementSibling).toBe(hint)
+      expect(section.querySelector(':scope > .fold-body')?.firstElementChild).toBe(hint)
       expect(hint.textContent).toBe('ℹ Click a site to select it and draw its plot below. Shift-click adds, Option-click removes.')
     } finally {
       vi.unstubAllGlobals()
@@ -787,7 +789,7 @@ describe('the site list', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     expect(siteRows(host).map((r) => cell(r, 'site').textContent)).toEqual(['date_a'])
-    expect(host.querySelector('.obs-sites-count')?.textContent).toBe('Sites in gw_date · 1')
+    expect(host.querySelector('.obs-sites > .fold-summary')?.textContent).toBe('Sites in gw_date · 1')
   })
 
   it('shows the reason in place of the list when the sites are refused', async () => {
@@ -964,7 +966,7 @@ describe('picking sites with modifiers', () => {
 
 describe("the site list's 'Show selected' button", () => {
   function showButton(host: HTMLElement): HTMLButtonElement {
-    return host.querySelector<HTMLButtonElement>('.obs-sites-title button')!
+    return host.querySelector<HTMLButtonElement>('.obs-sites > .fold-actions button')!
   }
 
   it('scrolls to the first chosen site in list order', async () => {
@@ -1292,7 +1294,7 @@ describe('the group fit mounted in the panel', () => {
     const { host } = mount()
     await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
 
-    expect(host.querySelector('.obs-fit')!.children.length).toBe(0)
+    expect(host.querySelector('.obs-fit > .fold-body')!.children.length).toBe(0)
     expect(obsApi.fetchObs1to1).not.toHaveBeenCalled()
   })
 
@@ -1328,5 +1330,94 @@ describe('the group fit mounted in the panel', () => {
 
     handle.onShow()
     await vi.waitFor(() => expect(obsApi.fetchObs1to1).toHaveBeenCalledTimes(1))
+  })
+})
+
+// Node's own experimental localStorage shadows jsdom's and is undefined here, so each test brings one.
+function memoryStorage(): Pick<Storage, 'getItem' | 'setItem'> & { keys(): string[] } {
+  const values = new Map<string, string>()
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => void values.set(key, value),
+    keys: () => [...values.keys()],
+  }
+}
+
+const SECTIONS = [
+  { cls: 'obs-groups', key: 'obs-groups', name: 'Groups' },
+  { cls: 'obs-sites', key: 'obs-sites', name: 'Site list' },
+  { cls: 'obs-spaghetti', key: 'obs-plots', name: 'Site plots' },
+  { cls: 'obs-fit', key: 'obs-fit', name: 'Group fit' },
+]
+
+function sectionOf(host: HTMLElement, cls: string): HTMLElement {
+  return host.querySelector<HTMLElement>(`.${cls}`)!
+}
+
+function titleOf(host: HTMLElement, cls: string): string {
+  return sectionOf(host, cls).querySelector(':scope > .fold-summary')!.textContent!
+}
+
+function foldButtonOf(host: HTMLElement, cls: string): HTMLButtonElement {
+  return sectionOf(host, cls).querySelector<HTMLButtonElement>(':scope > .fold-button')!
+}
+
+describe('the folding sections', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, 'well_a'), site(41, 'well_b')]))
+  })
+
+  it('gives Groups, Site list, Site plots and Group fit a fold button that names the section and stores the choice', () => {
+    const { host } = mount({ startHidden: true })
+    for (const { cls, key, name } of SECTIONS) {
+      const button = foldButtonOf(host, cls)
+      expect(button.getAttribute('aria-label'), cls).toBe(name)
+      expect(button.getAttribute('aria-expanded'), cls).toBe('true')
+      button.click()
+      expect(sectionOf(host, cls).getAttribute('data-folded'), cls).toBe('true')
+      expect(button.getAttribute('aria-expanded'), cls).toBe('false')
+      expect(localStorage.getItem(`pesto.fold.${key}`), cls).toBe('folded')
+    }
+  })
+
+  it('keeps Selected sites always shown, with no fold of its own', () => {
+    const { host } = mount({ startHidden: true })
+    expect(sectionOf(host, 'obs-selected').querySelector('.fold-button')).toBeNull()
+    expect(sectionOf(host, 'obs-selected').classList.contains('fold-card')).toBe(false)
+  })
+
+  it('titles each section on one line: the group count, the site list, the plots and the fit', async () => {
+    const { host, store } = await openWithGroups()
+    expect(titleOf(host, 'obs-groups')).toBe('Groups · 2')
+    expect(titleOf(host, 'obs-sites')).toBe('Sites')
+    expect(sectionOf(host, 'obs-sites').textContent).toContain('Click a group above to list its sites.')
+    expect(titleOf(host, 'obs-spaghetti')).toBe('Site plots')
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(2))
+    expect(titleOf(host, 'obs-sites')).toBe('Sites in gw_head · 2')
+    expect(sectionOf(host, 'obs-sites').querySelector(':scope > .fold-actions')?.textContent).toBe('Show selected')
+    expect(titleOf(host, 'obs-fit')).toBe('Group fit: gw_head')
+
+    store.set({ sites: new Set([40, 41]) }, 'map')
+    store.flush()
+    expect(titleOf(host, 'obs-spaghetti')).toBe('Site plots · 2')
+    store.set({ sites: new Set() }, 'map')
+    store.flush()
+    expect(titleOf(host, 'obs-spaghetti')).toBe('Site plots')
+  })
+
+  it('hands out the Site plots title slot as plotActions, empty at mount', () => {
+    const { host, handle } = mount({ startHidden: true })
+    expect(handle.plotActions).toBe(sectionOf(host, 'obs-spaghetti').querySelector(':scope > .fold-actions'))
+    expect(handle.plotActions.childElementCount).toBe(0)
+  })
+
+  it('starts a section folded when the viewer folded it before', () => {
+    localStorage.setItem('pesto.fold.obs-groups', 'folded')
+    const { host } = mount({ startHidden: true })
+    expect(sectionOf(host, 'obs-groups').getAttribute('data-folded')).toBe('true')
+    expect(sectionOf(host, 'obs-sites').getAttribute('data-folded')).toBe('false')
   })
 })

@@ -1,8 +1,12 @@
-// A fold button for a floating card over the map. Folded, a card shrinks to one line that still
-// names it; the legend instead keeps its ramp and hides its text lines. The folded state is a
-// per-viewer convenience kept in localStorage, and everything renders the same without it.
+// A fold button for a floating card over the map, or for a section of a side panel. Folded, a card
+// shrinks to one line that still names it; the legend instead keeps its ramp and hides its text
+// lines. The folded state is a per-viewer convenience kept in localStorage, and everything renders
+// the same without it.
 
 export type FoldMode = 'card' | 'lines'
+
+/** 'card' floats over the map; 'panel' is a section of a side panel, with a slot for controls on its title line. */
+export type FoldSurface = 'card' | 'panel'
 
 export interface FoldOptions {
   /** One per card; the storage key is `pesto.fold.<key>`. */
@@ -15,6 +19,8 @@ export interface FoldOptions {
   mode?: FoldMode
   /** Told after the viewer clicks the fold button, with the new state; setFolded does not call it. */
   onUserToggle?: (folded: boolean) => void
+  /** Defaults to 'card'. */
+  surface?: FoldSurface
 }
 
 export interface SetFoldedOptions {
@@ -34,6 +40,12 @@ export interface FoldHandle {
   chosen(): boolean
   /** The part of the folded line after the name, such as the basemap's image; null for the name alone. */
   setSummary(detail: string | null): void
+}
+
+/** A panel section's fold: setSummary sets the whole title line, open or folded. */
+export interface PanelFoldHandle extends FoldHandle {
+  /** The title line's slot for controls, before the fold button. */
+  actions: HTMLElement
 }
 
 const STORAGE_PREFIX = 'pesto.fold.'
@@ -63,10 +75,13 @@ function writeStored(key: string, folded: boolean): void {
   }
 }
 
-export function renderFold(opts: FoldOptions): FoldHandle {
+export function renderFold(opts: FoldOptions & { surface: 'panel' }): PanelFoldHandle
+export function renderFold(opts: FoldOptions): FoldHandle
+export function renderFold(opts: FoldOptions): FoldHandle | PanelFoldHandle {
   const mode = opts.mode ?? 'card'
+  const panel = opts.surface === 'panel'
   const el = document.createElement('div')
-  el.classList.add('fold-card', 'floating')
+  el.classList.add('fold-card', panel ? 'fold-section' : 'floating')
   el.setAttribute('data-fold', opts.key)
   el.setAttribute('data-fold-mode', mode)
 
@@ -83,7 +98,13 @@ export function renderFold(opts: FoldOptions): FoldHandle {
   body.id = `fold-body-${opts.key}`
   button.setAttribute('aria-controls', body.id)
 
-  el.append(summary, button, body)
+  const actions = panel ? document.createElement('div') : null
+  if (actions !== null) {
+    actions.classList.add('fold-actions')
+    el.append(summary, actions, button, body)
+  } else {
+    el.append(summary, button, body)
+  }
 
   const stored = readStored(opts.key)
   let folded = stored ?? opts.startFolded === true
@@ -91,9 +112,10 @@ export function renderFold(opts: FoldOptions): FoldHandle {
   let detail: string | null = null
 
   // Open, the line is the card's title; folded, it also says what the card holds. The legend's
-  // own lines name what it draws, so it never takes a detail.
+  // own lines name what it draws, so it never takes a detail. A panel section's line is its live title.
   function paintSummary(): void {
-    const text = !folded || mode === 'lines' || detail === null || detail === '' ? opts.name : `${opts.name}: ${detail}`
+    const shown = detail === '' ? null : detail
+    const text = panel ? (shown ?? opts.name) : !folded || mode === 'lines' || shown === null ? opts.name : `${opts.name}: ${shown}`
     summary.textContent = text
     summary.title = text
   }
@@ -127,7 +149,8 @@ export function renderFold(opts: FoldOptions): FoldHandle {
 
   paint()
 
-  return { el, body, folded: () => folded, setFolded, chosen: () => chosen, setSummary }
+  const handle: FoldHandle = { el, body, folded: () => folded, setFolded, chosen: () => chosen, setSummary }
+  return actions === null ? handle : { ...handle, actions }
 }
 
 /** One card of a stack the overflow rules may fold. */

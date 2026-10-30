@@ -237,6 +237,61 @@ describe('a foldable card', () => {
   })
 })
 
+describe('a panel section', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.stubGlobal('localStorage', memoryStorage())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('is a section, not a floating card, with a slot for controls on its title line before the button', () => {
+    const fold = renderFold({ key: 'k', name: 'Site plots', surface: 'panel' })
+    expect(fold.el.classList.contains('fold-card')).toBe(true)
+    expect(fold.el.classList.contains('fold-section')).toBe(true)
+    expect(fold.el.classList.contains('floating')).toBe(false)
+    expect([...fold.el.children].map((c) => c.className)).toEqual(['fold-summary label truncate', 'fold-actions', 'fold-button', 'fold-body'])
+    expect(fold.actions.childElementCount).toBe(0)
+  })
+
+  it('shows its live title open and folded alike, and its name when there is none', () => {
+    const fold = renderFold({ key: 'k', name: 'Site plots', surface: 'panel' })
+    document.body.appendChild(fold.el)
+    expect(summary(fold.el).textContent).toBe('Site plots')
+    fold.setSummary('Site plots · 2')
+    expect(summary(fold.el).textContent).toBe('Site plots · 2')
+    expect(summary(fold.el).title).toBe('Site plots · 2')
+    button(fold.el).click()
+    expect(summary(fold.el).textContent).toBe('Site plots · 2')
+    expect(button(fold.el).getAttribute('aria-label')).toBe('Site plots')
+    fold.setSummary(null)
+    expect(summary(fold.el).textContent).toBe('Site plots')
+  })
+
+  it('puts the controls and the button on the title row and the body under them, with the title in card-title type only while open', () => {
+    loadRealStylesheet()
+    const fold = renderFold({ key: 'k', name: 'Groups', surface: 'panel' })
+    document.body.appendChild(fold.el)
+    expect(getComputedStyle(fold.actions).gridArea.startsWith('1')).toBe(true)
+    expect(getComputedStyle(button(fold.el)).gridArea.startsWith('1')).toBe(true)
+    expect(getComputedStyle(fold.body).gridArea.startsWith('2')).toBe(true)
+    expect(getComputedStyle(summary(fold.el)).fontWeight).toBe('600')
+    button(fold.el).click()
+    expect(getComputedStyle(fold.body).display).toBe('none')
+    expect(getComputedStyle(summary(fold.el)).fontWeight).not.toBe('600')
+  })
+
+  it('leaves a card without a surface as it was: floating, no slot', () => {
+    const fold = renderFold({ key: 'k', name: 'Data' })
+    expect(fold.el.classList.contains('floating')).toBe(true)
+    expect(fold.el.classList.contains('fold-section')).toBe(false)
+    expect(fold.el.querySelector('.fold-actions')).toBeNull()
+    expect('actions' in fold).toBe(false)
+  })
+})
+
 describe('the legend card', () => {
   it('lets a long section line wrap inside a capped card instead of running past its edge', () => {
     loadRealStylesheet()
