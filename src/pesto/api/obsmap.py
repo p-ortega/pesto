@@ -18,10 +18,10 @@ from typing import Annotated, Literal
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Query, Request
-from pydantic import Field
+from pydantic import Field, model_validator
 from starlette.responses import JSONResponse, Response
 
-from pesto.api import obscache
+from pesto.api import obscache, obssets
 from pesto.api.blob import blob_response
 from pesto.api.problem import problem, problem_from_failure, redact_paths
 from pesto.api.query import RunQuery
@@ -49,12 +49,31 @@ MIXED_SITES_NOTE = (
     "the sites of this group mix kinds of time, so the slider steps by position in site"
 )
 NO_PLACEMENT_REASON = "no observation placement was ingested for this run"
+MAX_SET_GROUP_NOTES = 20
 
 
-class ObsMapGroupQuery(RunQuery):
-    """``group`` is the one accepted field; ``RunQuery`` turns any other into a 422."""
+class _GroupOrSetQuery(RunQuery):
+    """Either one ``group``, or a set named by ``by`` (a column) and ``value``; never both,
+    never half a set. ``RunQuery`` turns any other field into a 422."""
 
-    group: str
+    group: str | None = None
+    by: str | None = None
+    value: str | None = None
+
+    @model_validator(mode="after")
+    def _one_form(self):
+        names_set = self.by is not None or self.value is not None
+        if self.group is not None and names_set:
+            raise ValueError("name a group or a set, not both")
+        if names_set and (self.by is None or self.value is None):
+            raise ValueError("a set needs both by and value")
+        if self.group is None and not names_set:
+            raise ValueError("name a group, or a set with by and value")
+        return self
+
+
+class ObsMapGroupQuery(_GroupOrSetQuery):
+    """One group or one set."""
 
 
 class ObsPdcQuery(RunQuery):
@@ -63,10 +82,9 @@ class ObsPdcQuery(RunQuery):
     iteration: int
 
 
-class ObsFrameQuery(RunQuery):
-    """A frame is one statistic of every site of ``group`` at one exact ``time``."""
+class ObsFrameQuery(_GroupOrSetQuery):
+    """A frame is one statistic of every site of a group or set at one exact ``time``."""
 
-    group: str
     iteration: int
     time: float = Field(allow_inf_nan=False)
     stat: Literal["resid_mean", "rmse", "std", "mean"]
@@ -74,15 +92,18 @@ class ObsFrameQuery(RunQuery):
 
 @dataclass(frozen=True, eq=False)
 class GroupRows:
-    """What a frame needs about one group, built once per ``obs_index`` write.
+    """What a frame needs about one group or set, built once per ``obs_index`` write.
 
-    ``order`` lists the group's rows with a finite time, sorted by time (ties keep
-    index order); the rows of ``times[k]`` are ``order[bounds[k]:bounds[k + 1]]``.
-    ``site_of_order`` gives the site position inside the group of each of those rows.
+    ``rows`` lists every obs_index row of its sites, in obs_index order. ``order`` lists
+    those with a finite time, sorted by time (ties keep index order); the rows of
+    ``times[k]`` are ``order[bounds[k]:bounds[k + 1]]``. ``site_of_order`` gives the site
+    position inside the group or set of each of those rows. ``start`` and ``stop`` bound a
+    group's one block of rows; a set has no single block, so both are -1.
     """
 
     sites_pos: np.ndarray
     n_sites: int
+    rows: np.ndarray
     start: int
     stop: int
     time_kind: str
@@ -125,7 +146,6 @@ def _build_rows(index, group: str) -> GroupRows | ReadFailure:
             reason=f"the sites of group {group!r} are not one unbroken block of rows in obs_index",
         )
     stop = start + int(counts.sum())
-    n_sites = int(member.size)
 
     kinds = sorted({str(k) for k in sites["time_kind"].to_numpy()[member]})
     group_row = index.groups.loc[index.groups["group"] == group, "time_kind"]
@@ -136,10 +156,36 @@ def _build_rows(index, group: str) -> GroupRows | ReadFailure:
             f"this group mixes time kinds ({' and '.join(kinds)}), so one time axis would mean two "
             "things; pesto shows no time slider for it"
         )
+    rows = np.arange(start, stop, dtype=np.int64)
+    return _time_axis(index, member, counts, rows, start, stop, time_kind, refused)
 
+
+def _build_set_rows(index, members: tuple[str, ...]) -> GroupRows:
+    """The rows of every site of the member groups, in obs_index order."""
+    sites = index.sites
+    member = np.flatnonzero(sites["group"].isin(members).to_numpy())
+    starts = sites["start"].to_numpy(dtype=np.int64)[member]
+    counts = sites["count"].to_numpy(dtype=np.int64)[member]
+    total = int(counts.sum())
+    offsets = np.repeat(starts - (np.cumsum(counts) - counts), counts)
+    rows = offsets + np.arange(total, dtype=np.int64)
+
+    kinds = sorted({str(k) for k in sites["time_kind"].to_numpy()[member]})
+    time_kind = kinds[0] if len(kinds) == 1 else "mixed"
+    refused = None
+    if time_kind == "mixed":
+        refused = (
+            f"the groups of this set mix time kinds ({' and '.join(kinds)}), so one time axis would "
+            "mean two things; pesto shows no time slider for it"
+        )
+    return _time_axis(index, member, counts, rows, -1, -1, time_kind, refused)
+
+
+def _time_axis(index, member, counts, rows, start, stop, time_kind, refused) -> GroupRows:
+    n_sites = int(member.size)
     row_site = np.repeat(np.arange(n_sites, dtype=np.int64), counts)
     if refused is None:
-        window = index.time[start:stop]
+        window = index.time[rows]
         finite = np.flatnonzero(np.isfinite(window))
         order = finite[np.argsort(window[finite], kind="stable")]
         times, first = np.unique(window[order], return_index=True)
@@ -149,7 +195,7 @@ def _build_rows(index, group: str) -> GroupRows | ReadFailure:
         pairs = np.unique(rank * n_sites + site_of_order)
         n_at_time = np.bincount(pairs // n_sites, minlength=times.size).astype(np.int64)
         n_duplicate = int(order.size - pairs.size)
-        order = order + start
+        order = rows[order]
     else:
         times = np.zeros(0, dtype=np.float64)
         order = np.zeros(0, dtype=np.int64)
@@ -161,6 +207,7 @@ def _build_rows(index, group: str) -> GroupRows | ReadFailure:
     return GroupRows(
         sites_pos=member,
         n_sites=n_sites,
+        rows=rows,
         start=start,
         stop=stop,
         time_kind=time_kind,
@@ -207,6 +254,83 @@ def _group_context(state, cache_root, group: str):
     if isinstance(rows, ReadFailure):
         return problem_from_failure(404, rows)
     return index, rows
+
+
+@dataclass(frozen=True)
+class Target:
+    """What a map request names: one group, or one set of groups."""
+
+    group: str | None
+    set: obssets.GroupSet | None
+
+    @property
+    def noun(self) -> str:
+        return "group" if self.set is None else "set"
+
+    @property
+    def members(self) -> tuple[str, ...]:
+        return (self.group,) if self.set is None else self.set.groups
+
+    @property
+    def set_json(self) -> dict | None:
+        return None if self.set is None else {"by": self.set.by, "value": self.set.value}
+
+    @property
+    def memo_tag(self) -> tuple:
+        return (self.group,) if self.set is None else ("set", self.set.by, self.set.value)
+
+
+def _set_context(state, cache_root, by: str, value: str):
+    """``(index, rows, set)`` for the set ``by`` = ``value``, or the error response."""
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return problem_from_failure(404, index)
+    sets = obssets.group_sets(state, cache_root)
+    if isinstance(sets, ReadFailure):
+        return problem_from_failure(404, sets)
+    found = sets.find(by, value)
+    if found is None:
+        return problem(
+            404,
+            "no group set has that column and value",
+            artifact="control",
+            detail=f"no set of observation groups holds {value!r} in column {by!r}",
+        )
+    if found.n_sites > MAX_SITES_PER_GROUP:
+        return problem(
+            409,
+            "the set has too many sites for the map",
+            artifact="obs_index",
+            detail=(
+                f"the set of groups holding {found.value!r} in column {found.by!r} has "
+                f"{found.n_sites} sites in obs_index, more than the {MAX_SITES_PER_GROUP} the map "
+                "serves in one request"
+            ),
+        )
+    rows = obscache.memoised(
+        state,
+        cache_root,
+        ("frame_rows_set", found.by, found.value),
+        ("obs_index", "control"),
+        lambda _layout: _build_set_rows(index, found.groups),
+    )
+    if isinstance(rows, ReadFailure):
+        return problem_from_failure(404, rows)
+    return index, rows, found
+
+
+def _context(state, cache_root, params: _GroupOrSetQuery):
+    """``(index, rows, target)`` for a group or a set, or the error response to send back."""
+    if params.group is not None:
+        context = _group_context(state, cache_root, params.group)
+        if isinstance(context, Response):
+            return context
+        return (*context, Target(group=params.group, set=None))
+    context = _set_context(state, cache_root, params.by, params.value)
+    if isinstance(context, Response):
+        return context
+    index, rows, found = context
+    return index, rows, Target(group=None, set=found)
 
 
 def _recorded_reason(manifest: Manifest, name: str, fallback: str) -> str | None:
@@ -273,11 +397,30 @@ def _join(*parts: str | None) -> str | None:
     return text or None
 
 
-def _site_table(state, cache_root, manifest: Manifest, index, rows: GroupRows, group: str):
+def _member_notes(table_notes, target: Target) -> list[str]:
+    """The placement notes that belong in this answer: every note not about one group, and
+    the member groups' own. A set keeps at most ``MAX_SET_GROUP_NOTES`` of its groups' own."""
+    # A note that opens with another group's name is that group's own; its /obs/sites carries it.
+    prefixes = tuple(f"group '{g}'" for g in target.members)
+    if target.set is None:
+        return [t for t in table_notes if not t.startswith("group '") or t.startswith(prefixes)]
+    kept = [t for t in table_notes if not t.startswith("group '")]
+    own = [t for t in table_notes if t.startswith("group '") and t.startswith(prefixes)]
+    shown = own[:MAX_SET_GROUP_NOTES]
+    if len(own) > len(shown):
+        shown.append(
+            f"{len(own) - len(shown)} more placement note(s) of the groups of this set are left "
+            "out; choosing one group shows them"
+        )
+    return kept + shown
+
+
+def _site_table(state, cache_root, manifest: Manifest, index, rows: GroupRows, target: Target):
     """The arrays of ``/obs/sites`` and the notes that go with them."""
     pos = rows.sites_pos
     site_id = index.sites["site_id"].to_numpy(dtype=np.int64)[pos]
     names = [str(v) for v in index.sites["site"].to_numpy()[pos]]
+    groups = [str(v) for v in index.sites["group"].to_numpy()[pos]]
     n_obs = index.sites["count"].to_numpy(dtype=np.int32)[pos]
     n = pos.size
 
@@ -298,10 +441,10 @@ def _site_table(state, cache_root, manifest: Manifest, index, rows: GroupRows, g
             reason = _reason(table)
             table = None
     if table is None:
-        notes.append(f"obs_cell: {reason}, so no site of this group is placed on the map")
+        notes.append(f"obs_cell: {reason}, so no site of this {target.noun} is placed on the map")
         rule[:] = "unavailable"
         note = [reason] * n
-        return site_id, names, n_obs, x, y, source, layer, cell, rule, note, notes
+        return site_id, names, groups, n_obs, x, y, source, layer, cell, rule, note, notes
 
     found = pd.Index(table.site_id).get_indexer(site_id)
     here = found >= 0
@@ -354,34 +497,35 @@ def _site_table(state, cache_root, manifest: Manifest, index, rows: GroupRows, g
         f"their cell's vertices, {counts['none']} not placed"
     )
     notes.append(CENTRE_TEXT)
+    members = set(target.members)
+    by_rule: dict[str, list[int]] = {}
     for entry in table.groups:
-        if entry["group"] == group:
-            notes.append(
-                f"placement rule {entry['rule']}: {entry['mapped']} of {entry['total']} sites placed"
-            )
-    # A note that opens with another group's name is that group's own; its /obs/sites carries it.
-    notes.extend(
-        t for t in table.notes if not t.startswith("group '") or t.startswith(f"group '{group}'")
-    )
-    return site_id, names, n_obs, x, y, source, layer, cell, rule, note, notes
+        if entry["group"] in members:
+            summed = by_rule.setdefault(str(entry["rule"]), [0, 0])
+            summed[0] += int(entry["mapped"])
+            summed[1] += int(entry["total"])
+    for name, (mapped, total) in by_rule.items():
+        notes.append(f"placement rule {name}: {mapped} of {total} sites placed")
+    notes.extend(_member_notes(table.notes, target))
+    return site_id, names, groups, n_obs, x, y, source, layer, cell, rule, note, notes
 
 
 @router.get("/obs/sites")
 async def get_obs_sites(request: Request, params: Annotated[ObsMapGroupQuery, Query()]) -> Response:
-    """One row per site of the group, in ``obs_index`` order, with where its dot sits and
-    how that was decided."""
+    """One row per site of the group or set, in ``obs_index`` order, with its own group,
+    where its dot sits and how that was decided."""
     cache_root = getattr(request.app.state, "cache_root", None)
     if cache_root is None:
         return problem(409, "no run is open")
     state = request.app.state
 
-    context = _group_context(state, cache_root, params.group)
+    context = _context(state, cache_root, params)
     if isinstance(context, Response):
         return context
-    index, rows = context
+    index, rows, target = context
     manifest = Manifest.load(CacheLayout(root=Path(cache_root)))
-    columns = _site_table(state, cache_root, manifest, index, rows, params.group)
-    site_id, names, n_obs, x, y, source, layer, cell, rule, note, notes = columns
+    columns = _site_table(state, cache_root, manifest, index, rows, target)
+    site_id, names, groups, n_obs, x, y, source, layer, cell, rule, note, notes = columns
 
     import pyarrow as pa
 
@@ -389,6 +533,7 @@ async def get_obs_sites(request: Request, params: Annotated[ObsMapGroupQuery, Qu
         {
             "site_id": pa.array(site_id, type=pa.int64()),
             "site": pa.array(names, type=pa.string()),
+            "group": pa.array(groups, type=pa.string()),
             "n_obs": pa.array(n_obs, type=pa.int32()),
             "x": pa.array(x, type=pa.float32()),
             "y": pa.array(y, type=pa.float32()),
@@ -399,7 +544,31 @@ async def get_obs_sites(request: Request, params: Annotated[ObsMapGroupQuery, Qu
             "note": pa.array(note, type=pa.string()),
         }
     )
-    return arrow_response(table, notes=tuple(notes), meta={"order_digest": index.order_digest})
+    meta = {"order_digest": index.order_digest, "group": target.group, "set": target.set_json}
+    return arrow_response(table, notes=tuple(notes), meta=meta)
+
+
+@router.get("/obs/group_sets")
+async def get_obs_group_sets(request: Request, params: Annotated[RunQuery, Query()]) -> Response:
+    """Every set of groups the run's own text columns make, worked out from the cache."""
+    cache_root = getattr(request.app.state, "cache_root", None)
+    if cache_root is None:
+        return problem(409, "no run is open")
+    state = request.app.state
+
+    index = obscache.get_index(state, cache_root)
+    if isinstance(index, ReadFailure):
+        return problem_from_failure(404, index)
+    sets = obssets.group_sets(state, cache_root)
+    if isinstance(sets, ReadFailure):
+        return problem_from_failure(404, sets)
+    body = {
+        "order_digest": index.order_digest,
+        "rule": sets.rule,
+        "sets": [item.to_json() for item in sets.sets],
+        "notes": [redact_paths(t) for t in sets.notes],
+    }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 def _limits(
