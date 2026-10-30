@@ -6,7 +6,7 @@
 
 import { ApiError, type IngestState, type MeshInfo, type ViewState } from '../data/client'
 import { gridIdomain, gridMesh, gridMeshBuffer } from '../data/client'
-import { chipFactsFrom, type ConfigFact } from '../data/config'
+import { chipFactsFrom, noiseFile, type ConfigFact } from '../data/config'
 import { pickPoint, pickPointsWithin, pointsOnLayer, type DrawnPoints } from '../data/points'
 import type Flatbush from 'flatbush'
 import { buildDotIndex, dotWithin, dotsInPolygon } from '../data/lasso'
@@ -215,7 +215,7 @@ export interface MapViewOptions {
   viewState: Promise<ViewState | null>
   onPanelFacts(facts: PanelFacts): void
   onViewStateChange(): void
-  /** Where Select base goes: the Obs tab's heading row (LD-6). A detached element when absent. */
+  /** Where Select base goes: the Obs tab's Site plots title line (G-14-5). A detached element when absent. */
   baseChipHost?: HTMLElement
 }
 
@@ -2377,7 +2377,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return blocked ? { config: null, failure: { artifact: blocked.artifact, reason: blocked.reason } } : null
     }
     if (!opts.config) return null
-    const { disagree, base } = chipFactsFrom(opts.config.facts)
+    const { disagree, mismatch, noiseAgainst, base } = chipFactsFrom(opts.config.facts, opts.config.noise.has_noise)
     return {
       failure: null,
       config: {
@@ -2389,6 +2389,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
         projection: opts.config.projection,
         has_noise: opts.config.noise.has_noise,
         disagree,
+        mismatch,
+        noise_from: noiseFile(opts.config.noise.decided_by),
+        noise_against: noiseAgainst,
         base,
       },
     }
@@ -2405,7 +2408,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     })
   }
 
-  // Built once, in the Obs heading row where its effect is drawn; the header keeps only facts.
+  // Built once, on the Site plots title line where its effect is drawn; the header keeps only facts.
   const baseChip = renderBaseChip(opts.baseChipHost ?? document.createElement('div'), {
     store,
     loadBase,

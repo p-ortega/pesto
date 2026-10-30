@@ -666,7 +666,7 @@ describe('the header chips read the config facts (D-17)', () => {
 
     const chips = Array.from(root.querySelectorAll('.chip')).map((c) => c.textContent ?? '')
     const reals = chips.find((c) => c.includes('reals'))!
-    expect(reals).toContain('sources disagree')
+    expect(reals).toContain('.pst and pesto cache do not match')
     expect(reals).toContain('base missing at iteration 3')
   })
 })

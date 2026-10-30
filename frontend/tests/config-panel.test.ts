@@ -118,18 +118,18 @@ afterEach(() => {
 })
 
 describe('the Config tab in the map shell', () => {
-  it('shows each fact as a row with its label, its value and the source it came from', async () => {
+  it('shows each fact as a row with its label, its value and the PEST++ file it came from', async () => {
     const root = await openShell(runConfig())
     const panel = root.querySelector<HTMLElement>('#panel-config')!
 
     const version = rowFor(panel, 'pestpp_version')
     expect(version.textContent).toContain('pestpp version')
     expect(version.querySelector('.config-value')?.textContent).toBe('5.2.23')
-    expect(version.querySelector('.config-source')?.textContent).toBe('run record')
+    expect(version.querySelector('.config-source')?.textContent).toBe('.rec')
 
     const regularization = rowFor(panel, 'regularization')
     expect(regularization.querySelector('.config-value')?.textContent).toBe('off (reg_factor 0)')
-    expect(regularization.querySelector('.config-source')?.textContent).toBe('run record, control file')
+    expect(regularization.querySelector('.config-source')?.textContent).toBe('.rec, .pst')
   })
 
   it('keeps the rows in the order the server sent them', async () => {
@@ -174,7 +174,7 @@ function texts(row: HTMLElement, selector: string): string[] {
   return Array.from(row.querySelectorAll(selector)).map((el) => el.textContent ?? '')
 }
 
-describe('a fact whose sources disagree (D-14, CONF-04)', () => {
+describe('a fact whose files disagree (D-14, CONF-04)', () => {
   const noise = fact(
     'noise',
     'Measurement noise',
@@ -185,17 +185,18 @@ describe('a fact whose sources disagree (D-14, CONF-04)', () => {
     { agree: false },
   )
 
-  it('shows the run record first, then the control file as "control file says X", under a warning', () => {
+  it('shows the .rec first, then the .pst as ".pst says X", under a warning naming both', () => {
     const row = rowFor(panelWith(noise), 'noise')
 
     expect(row.querySelector('.config-main .config-value')?.textContent).toBe('no noise: pestpp reset ies_no_noise')
-    expect(row.querySelector('.config-main .config-source')?.textContent).toBe('run record')
-    expect(texts(row, '.config-line .config-value')).toEqual(['control file says noise on: a supplied observation ensemble'])
+    expect(row.querySelector('.config-main .config-source')?.textContent).toBe('.rec')
+    expect(texts(row, '.config-line .config-value')).toEqual(['.pst says noise on: a supplied observation ensemble'])
 
     const notice = row.querySelector('.notice-parts') as HTMLElement
     expect(notice.textContent).toContain('⚠')
     expect(notice.textContent).toContain('Warning')
-    expect(notice.textContent).toContain('Sources disagree')
+    expect(notice.textContent).toContain('The .rec and the .pst do not match')
+    expect(row.textContent).not.toMatch(/source|chip/i)
   })
 
   it('shows every reading of another fact too, in the order the server sent them', () => {
@@ -208,7 +209,8 @@ describe('a fact whose sources disagree (D-14, CONF-04)', () => {
     const row = rowFor(panelWith(size), 'ensemble_size')
 
     expect(row.querySelector('.config-main .config-value')?.textContent).toBe('200')
-    expect(texts(row, '.config-line .config-value')).toEqual(['control file says 100', 'cache says 50'])
+    expect(texts(row, '.config-line .config-value')).toEqual(['.pst says 100', 'pesto cache says 50'])
+    expect(row.querySelector('.notice-parts')?.textContent).toContain('The .rec, the .pst and the pesto cache do not match')
   })
 
   it('shows no warning when the sources agree', () => {
@@ -332,7 +334,8 @@ describe('the base row (D-16, CONF-03)', () => {
     const row = rowFor(panelWith(base), 'base')
 
     expect(row.querySelector('.notice-parts')).not.toBeNull()
-    expect(row.textContent).toContain('control file says ies_include_base is true')
+    expect(row.textContent).toContain('.pst says ies_include_base is true')
+    expect(row.querySelector('.notice-parts')?.textContent).toContain('The .pst and the pesto cache do not match')
   })
 
   it('shows "base was not included in this run" as sent and never builds the word lost', () => {
@@ -390,8 +393,8 @@ describe('facts with nothing to compare', () => {
     ])
     const row = rowFor(panelWith(both), 'noise')
 
-    expect(row.title).toContain('run record: case.rec line 12')
-    expect(row.title).toContain('control file: case.pst line 40')
+    expect(row.title).toContain('.rec: case.rec line 12')
+    expect(row.title).toContain('.pst: case.pst line 40')
   })
 })
 

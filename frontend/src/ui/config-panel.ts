@@ -1,7 +1,15 @@
-// The Config tab: one row per setup fact (D-15) with its value and source, and every
-// reading under a warning when sources disagree (D-14). Nothing is fetched here.
+// The Config tab: one row per setup fact (D-15) with its value and the file it came from, and
+// every reading under a warning when the files disagree (D-14). Nothing is fetched here.
 
-import { factDisagrees, type ConfigFact, type ConfigReading, type ConfigPayload } from '../data/config'
+import {
+  comparedFiles,
+  factDisagrees,
+  fileWord,
+  mismatchWords,
+  type ConfigFact,
+  type ConfigReading,
+  type ConfigPayload,
+} from '../data/config'
 import { makeFocusable, renderNotice } from './chrome'
 import { formatBytes } from './progress'
 
@@ -22,7 +30,7 @@ interface Line {
   muted: boolean
 }
 
-function line(r: ConfigReading, text: string, muted: boolean, source: string | null = r.source): Line {
+function line(r: ConfigReading, text: string, muted: boolean, source: string | null = fileWord(r.source)): Line {
   return { text, source, title: r.evidence, muted }
 }
 
@@ -64,7 +72,7 @@ function baseParts(fact: ConfigFact, disagree: boolean): RowParts {
   const others = fact.readings.filter((r) => r.source !== 'cache')
   const lines = cache.map((r) => line(r, r.shown, false))
   for (const r of others) {
-    lines.push(disagree && r.value !== null ? line(r, `${r.source} says ${r.shown}`, false, null) : line(r, r.shown, true))
+    lines.push(disagree && r.value !== null ? line(r, `${fileWord(r.source)} says ${r.shown}`, false, null) : line(r, r.shown, true))
   }
   return { headline: lines.shift() ?? null, lines }
 }
@@ -76,11 +84,11 @@ function generalParts(fact: ConfigFact, disagree: boolean): RowParts {
   let headline: Line
   if (valued.length > 0) {
     const first = valued[0]
-    const sources = disagree ? [first.source] : unique(valued.map((r) => r.source))
+    const sources = disagree ? [fileWord(first.source)] : unique(valued.map((r) => fileWord(r.source)))
     const text = fact.key === 'localization' ? onOff(first) : first.shown
     headline = { text, source: sources.join(', '), title: first.evidence, muted: false }
     if (disagree) {
-      for (const r of valued.slice(1)) lines.push(line(r, `${r.source} says ${r.shown}`, false, null))
+      for (const r of valued.slice(1)) lines.push(line(r, `${fileWord(r.source)} says ${r.shown}`, false, null))
     }
     // The headline for localization is on or off, so the readings behind it stay listed.
     if (fact.key === 'localization') {
@@ -134,7 +142,7 @@ function renderFactRow(list: HTMLElement, fact: ConfigFact): void {
   const row = document.createElement('div')
   row.classList.add('config-row')
   row.dataset.fact = fact.key
-  const evidence = fact.readings.filter((r) => r.evidence !== '').map((r) => `${r.source}: ${r.evidence}`)
+  const evidence = fact.readings.filter((r) => r.evidence !== '').map((r) => `${fileWord(r.source)}: ${r.evidence}`)
   if (evidence.length > 0) row.title = evidence.join('\n')
 
   const disagree = factDisagrees(fact)
@@ -156,7 +164,7 @@ function renderFactRow(list: HTMLElement, fact: ConfigFact): void {
 
   if (disagree) {
     const warning = document.createElement('div')
-    renderNotice(warning, { title: 'Sources disagree', tone: 'warning' })
+    renderNotice(warning, { title: mismatchWords(comparedFiles(fact)), tone: 'warning' })
     row.appendChild(warning)
   }
   for (const entry of parts.lines) appendLine(row, entry)

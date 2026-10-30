@@ -35,7 +35,7 @@ describe('renderChips', () => {
     expect(text).toContain('200 reals · base alive')
     expect(text).toContain('3 iter')
     expect(text).toContain('crs')
-    expect(text).not.toContain('no measurement noise')
+    expect(text).not.toContain('noise: off')
     expect(el.children.length).toBe(4)
   })
 
@@ -172,58 +172,46 @@ function chipTexts(el: HTMLElement): string[] {
   return Array.from(el.children).map((c) => c.textContent ?? '')
 }
 
-describe('chips whose sources disagree (D-17)', () => {
-  it('marks the realization chip with the warning icon and the words, in the warning colour', () => {
+describe('chips whose readings disagree name the PEST++ files (D-17)', () => {
+  const files = ['.rec', '.pst']
+
+  it('marks the realization chip with the warning icon and the files, in the warning colour', () => {
     const el = mount()
-    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'] }, failure: null })
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'], mismatch: { ensemble_size: files } }, failure: null })
 
     const chip = (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes('reals'))!
     expect(chip.textContent?.startsWith('⚠')).toBe(true)
-    expect(chip.textContent).toContain('200 reals')
-    expect(chip.textContent).toContain('sources disagree')
+    expect(chip.textContent).toBe('⚠ 200 reals · base alive · .rec and .pst do not match')
     expect(chip.style.color).toBe('var(--status-warning)')
   })
 
   it('marks the realization chip when the base fact disagrees', () => {
     const el = mount()
-    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['base'] }, failure: null })
-    expect(chipTexts(el).filter((t) => t.includes('sources disagree')).length).toBe(1)
-    expect(chipTexts(el).find((t) => t.includes('reals'))).toContain('sources disagree')
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['base'], mismatch: { base: ['.pst', 'pesto cache'] } }, failure: null })
+    expect(chipTexts(el).filter((t) => t.includes('do not match')).length).toBe(1)
+    expect(chipTexts(el).find((t) => t.includes('reals'))).toContain('.pst and pesto cache do not match')
   })
 
   it('marks the iteration chip when noptmax disagrees and leaves the others alone', () => {
     const el = mount()
-    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['noptmax'] }, failure: null })
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['noptmax'], mismatch: { noptmax: files } }, failure: null })
 
-    const marked = chipTexts(el).filter((t) => t.includes('sources disagree'))
+    const marked = chipTexts(el).filter((t) => t.includes('do not match'))
     expect(marked.length).toBe(1)
     expect(marked[0]).toContain('3 iter')
   })
 
-  it('marks the noise chip when noise disagrees and there is no noise', () => {
+  it('says files do not match when it was not told which', () => {
     const el = mount()
-    renderChips(el, { config: { ...FULL_CONFIG, has_noise: false, disagree: ['noise'] }, failure: null })
-
-    const noise = chipTexts(el).find((t) => t.includes('no measurement noise'))!
-    expect(noise.startsWith('⚠')).toBe(true)
-    expect(noise).toContain('sources disagree')
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['noptmax'] }, failure: null })
+    expect(chipTexts(el).find((t) => t.includes('iter'))).toBe('⚠ 3 iter · files do not match')
   })
 
-  it('shows a noise chip for a noise disagreement even when the answer is noise on', () => {
+  it('names the files and the facts in the chip title', () => {
     const el = mount()
-    renderChips(el, { config: { ...FULL_CONFIG, has_noise: true, disagree: ['noise'] }, failure: null })
-
-    const noise = chipTexts(el).find((t) => t.includes('measurement noise'))!
-    expect(noise.startsWith('⚠')).toBe(true)
-    expect(noise).toContain('sources disagree')
-    expect(noise).not.toContain('no measurement noise')
-  })
-
-  it('names the facts that disagree in the chip title', () => {
-    const el = mount()
-    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'] }, failure: null })
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'], mismatch: { ensemble_size: files } }, failure: null })
     const chip = (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes('reals'))!
-    expect(chip.title).toContain('ensemble size')
+    expect(chip.title).toBe('The .rec and the .pst do not match on ensemble size. The Config tab lists what each one says.')
   })
 
   it('gives the same chips as before for a config with no facts', () => {
@@ -232,7 +220,71 @@ describe('chips whose sources disagree (D-17)', () => {
     const empty = mount()
     renderChips(empty, { config: { ...FULL_CONFIG, disagree: [], base: null }, failure: null })
     expect(chipTexts(empty)).toEqual(chipTexts(plain))
-    expect(chipTexts(plain).join('|')).not.toContain('sources disagree')
+    expect(chipTexts(plain).join('|')).not.toContain('do not match')
+  })
+})
+
+describe('the noise chip in PEST++ words', () => {
+  const noiseChip = (el: HTMLElement): HTMLElement =>
+    (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes('noise'))!
+
+  it('says noise is off and which file says so', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, has_noise: false, noise_from: '.rec' }, failure: null })
+    expect(noiseChip(el).textContent).toBe('⚠ noise: off (from .rec)')
+    expect(noiseChip(el).style.color).toBe('var(--status-warning)')
+  })
+
+  it('says what the .pst says when it does not match the .rec', () => {
+    const el = mount()
+    renderChips(el, {
+      config: {
+        ...FULL_CONFIG,
+        has_noise: false,
+        noise_from: '.rec',
+        noise_against: ['.pst'],
+        disagree: ['noise'],
+        mismatch: { noise: ['.rec', '.pst'] },
+      },
+      failure: null,
+    })
+    expect(noiseChip(el).textContent).toBe('⚠ noise: off (from .rec) · .pst says on')
+    expect(noiseChip(el).title).toBe('The .rec and the .pst do not match on noise. The Config tab lists what each one says.')
+  })
+
+  it('shows a noise chip for a mismatch even when noise is on', () => {
+    const el = mount()
+    renderChips(el, {
+      config: { ...FULL_CONFIG, has_noise: true, noise_from: '.rec', noise_against: ['.pst'], disagree: ['noise'], mismatch: { noise: ['.rec', '.pst'] } },
+      failure: null,
+    })
+    expect(noiseChip(el).textContent).toBe('⚠ noise: on (from .rec) · .pst says off')
+  })
+
+  it('says also when two lines of the deciding file do not match', () => {
+    const el = mount()
+    renderChips(el, {
+      config: { ...FULL_CONFIG, has_noise: false, noise_from: '.pst', noise_against: ['.pst'], disagree: ['noise'], mismatch: { noise: ['.pst'] } },
+      failure: null,
+    })
+    expect(noiseChip(el).textContent).toBe('⚠ noise: off (from .pst) · .pst also says on')
+  })
+
+  it('says not known when nothing decided it', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, has_noise: null, disagree: ['noise'], mismatch: { noise: ['.rec'] } }, failure: null })
+    expect(noiseChip(el).textContent).toBe('⚠ noise: not known · lines in the .rec do not match')
+  })
+
+  it('never uses the words source or chip', () => {
+    const el = mount()
+    renderChips(el, {
+      config: { ...FULL_CONFIG, has_noise: false, noise_from: '.rec', noise_against: ['.pst'], disagree: ['noise', 'noptmax'], mismatch: { noise: ['.rec', '.pst'], noptmax: ['.rec', '.pst'] } },
+      failure: null,
+    })
+    for (const chip of Array.from(el.children) as HTMLElement[]) {
+      expect(`${chip.textContent} ${chip.title}`).not.toMatch(/source|chip/i)
+    }
   })
 })
 
@@ -267,6 +319,40 @@ describe('the base chip follows the base fact (D-16, D-17)', () => {
   })
 })
 
+describe('the realization chip says where Select base is (G-14-5)', () => {
+  const WHERE = 'Select base is on the Site plots line of the Obs tab.'
+  const chipWith = (el: HTMLElement, words: string): HTMLElement =>
+    (Array.from(el.children) as HTMLElement[]).find((c) => c.textContent?.includes(words))!
+
+  it('names the Site plots line on a chip with base present', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, n_real: 494, base: { state: 'present' } }, failure: null })
+    expect(chipWith(el, '494 reals').textContent).toBe('494 reals · base alive')
+    expect(chipWith(el, '494 reals').title).toBe(WHERE)
+  })
+
+  it('names the Site plots line on a chip that says no base', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, n_real: 494, base: { state: 'not_included' } }, failure: null })
+    expect(chipWith(el, '494 reals').title).toBe(WHERE)
+  })
+
+  it('keeps the disagreement title on a realization chip whose readings disagree', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, disagree: ['ensemble_size'] }, failure: null })
+    expect(chipWith(el, 'reals').title).not.toBe(WHERE)
+    expect(chipWith(el, 'reals').title).toContain('ensemble size')
+  })
+
+  it('gives no other chip a title', () => {
+    const el = mount()
+    renderChips(el, { config: { ...FULL_CONFIG, has_noise: false, n_iterations: 2 }, failure: null })
+    const others = (Array.from(el.children) as HTMLElement[]).filter((c) => !c.textContent?.includes('reals'))
+    expect(others.length).toBeGreaterThan(0)
+    for (const chip of others) expect(chip.title).toBe('')
+  })
+})
+
 function reading(source: string, value: ConfigReading['value'], shown: string, extra: ConfigReading['extra'] = null): ConfigReading {
   return { source, value, shown, evidence: '', extra }
 }
@@ -279,7 +365,7 @@ describe('chipFactsFrom', () => {
   const cache = (iteration: number, value: boolean | null) =>
     reading('cache', value, `iteration ${iteration}`, { iteration })
 
-  it('lists the facts whose sources disagree', () => {
+  it('lists the facts whose readings disagree', () => {
     const facts = [
       fact('noptmax', [reading('control file', 5, '5'), reading('run record', 4, '4')], false),
       fact('noise', [reading('run record', false, 'no noise')], null),
@@ -306,7 +392,24 @@ describe('chipFactsFrom', () => {
   })
 
   it('has nothing to say without facts', () => {
-    expect(chipFactsFrom(undefined)).toEqual({ disagree: [], base: null })
-    expect(chipFactsFrom([])).toEqual({ disagree: [], base: null })
+    const nothing = { disagree: [], mismatch: {}, noiseAgainst: [], base: null }
+    expect(chipFactsFrom(undefined)).toEqual(nothing)
+    expect(chipFactsFrom([])).toEqual(nothing)
+  })
+
+  it('names the files whose readings do not match, as .rec and .pst', () => {
+    const facts = [fact('noptmax', [reading('run record', 4, '4'), reading('control file', 5, '5')], false)]
+    expect(chipFactsFrom(facts).mismatch).toEqual({ noptmax: ['.rec', '.pst'] })
+  })
+
+  it('lists the files whose noise reading says the opposite of the answer', () => {
+    const noise = fact(
+      'noise',
+      [reading('run record', false, 'noise off'), reading('run record', null, 'options dump'), reading('control file', true, 'noise on')],
+      false,
+    )
+    expect(chipFactsFrom([noise], false).noiseAgainst).toEqual(['.pst'])
+    expect(chipFactsFrom([noise], true).noiseAgainst).toEqual(['.rec'])
+    expect(chipFactsFrom([noise], null).noiseAgainst).toEqual([])
   })
 })
