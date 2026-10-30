@@ -691,7 +691,7 @@ describe('the folding map cards', () => {
     expect(colours.getAttribute('aria-expanded')).toBe('false')
     expect(root.querySelector('[data-fold="data"] > .fold-summary')?.textContent).toBe('Data: G1 · layer 1 (0) · base')
     expect(root.querySelector('[data-fold="colours"] > .fold-summary')?.textContent).toBe(
-      'Colours: viridis · linear · robust 2–98% · smooth',
+      'Colours: smooth, no steps · viridis · linear · robust 2–98%',
     )
     // Only the two large cards start folded; the smaller cards stay open.
     expect(foldButton(root, 'overlays')?.getAttribute('aria-expanded')).toBe('true')

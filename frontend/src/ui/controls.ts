@@ -55,7 +55,7 @@ const TEXTURE_REASON_ID = 'texture-reason'
 const LAYER_REASON_ID = 'layer-reason'
 
 const LAYER_ONE_REASON = 'the grid has one layer'
-const OBS_LINE = 'Colormap, value scale, limits, colour steps, centring and patterns apply to parameter fields only.'
+const OBS_LINE = 'Colour steps, colormap, value scale, limits, centring and patterns apply to parameter fields only.'
 /** The folded Colours line while dots are drawn, since none of its settings colour them. */
 export const COLOURS_OBS_SUMMARY = 'not used for observation dots'
 
@@ -143,7 +143,7 @@ export interface SelectionControlsHandle {
   setRealizations(names: RealNamesResult, wanted: string | null): number | null
   /** Shows why a style setting is not drawn as asked, next to its control. Emits nothing. */
   showStyle(effective: EffectiveStyle, notes: StyleNotes): void
-  /** The colour settings in the controls' own words: `viridis · linear · robust 2–98% · smooth`. */
+  /** The colour settings in the controls' own words: `smooth, no steps · viridis · linear · robust 2–98%`. */
   coloursSummary(): string
 }
 
@@ -370,6 +370,26 @@ export function renderSelectionControls(
     showNotRecorded(warningLine, notRecordedText(opts.realNames.iteration))
   }
 
+  // Colour steps: smooth or 7, 9, 11 equal steps between the limits (D-04).
+  const classesRow = cardRow(el, 'Colour steps')
+  parameterOnly(classesRow.row)
+  classesRow.label.title = STEPS_TITLE
+  const classesSelect = document.createElement('select')
+  classesSelect.setAttribute('aria-label', 'Colour steps')
+  classesSelect.title = STEPS_TITLE
+  for (const n of CLASS_CHOICES) {
+    const option = document.createElement('option')
+    option.setAttribute('value', String(n))
+    option.textContent = n === 0 ? 'Smooth' : `${n} steps`
+    classesSelect.appendChild(option)
+  }
+  classesSelect.value = String(opts.initial?.style?.classes ?? DEFAULT_STYLE.classes)
+  const classesHint = hintLine('Bands values like a contour map.')
+
+  const classesNote = noteLine(CLASSES_NOTE_ID)
+  classesNote.style.display = 'none'
+  classesRow.control.append(classesSelect, classesHint, classesNote)
+
   // Colormap: the nine names colormap.ts's STOPS declares. jet is offered,
   // not removed, but flagged -- the reason lives in its option title.
   const colormapRow = parameterOnly(cardRow(el, 'Colormap').row)
@@ -483,26 +503,6 @@ export function renderSelectionControls(
     manualPair.style.display = isManual ? '' : 'none'
   }
   updateManualVisibility()
-
-  // Colour steps: smooth or 7, 9, 11 equal steps between the limits (D-04).
-  const classesRow = cardRow(el, 'Colour steps')
-  parameterOnly(classesRow.row)
-  classesRow.label.title = STEPS_TITLE
-  const classesSelect = document.createElement('select')
-  classesSelect.setAttribute('aria-label', 'Colour steps')
-  classesSelect.title = STEPS_TITLE
-  for (const n of CLASS_CHOICES) {
-    const option = document.createElement('option')
-    option.setAttribute('value', String(n))
-    option.textContent = n === 0 ? 'Smooth' : `${n} steps`
-    classesSelect.appendChild(option)
-  }
-  classesSelect.value = String(opts.initial?.style?.classes ?? DEFAULT_STYLE.classes)
-  const classesHint = hintLine('Bands values like a contour map.')
-
-  const classesNote = noteLine(CLASSES_NOTE_ID)
-  classesNote.style.display = 'none'
-  classesRow.control.append(classesSelect, classesHint, classesNote)
 
   // Centre on zero (D-08): disabled with its reason on log10 or manual limits (D-09, D-10).
   const symmetricRow = cardRow(el, 'Centre on zero')
@@ -776,11 +776,12 @@ export function renderSelectionControls(
 
   function coloursSummary(): string {
     // The colormap's value, not its text: jet's option carries a warning glyph.
+    // Steps lead, so the setting users missed survives the folded line's ellipsis.
     const parts = [
+      classesSelect.value === '0' ? 'smooth, no steps' : shownText(classesSelect),
       colormapSelect.value + (reverseInput.checked ? ' reversed' : ''),
       shownText(scaleSelect),
       shownText(limitsSelect),
-      shownText(classesSelect),
     ]
     // A greyed box is not drawn, whatever its tick says.
     if (symmetricInput.checked && !symmetricInput.disabled) parts.push('centred')

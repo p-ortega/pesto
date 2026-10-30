@@ -233,7 +233,7 @@ describe('the Data and Colours cards', () => {
     expect(data.querySelector('input[aria-label="Layer"]')?.closest('.card-row')?.textContent).toContain('1 (0)')
     expect(data.querySelector('select[aria-label="Statistic"]')).not.toBeNull()
     expect(data.querySelector('input[aria-label="Realization"]')).not.toBeNull()
-    expect(rowLabels(colours)).toEqual(['Colormap', 'Value scale', 'Limits', 'Colour steps', 'Centre on zero', 'Patterns'])
+    expect(rowLabels(colours)).toEqual(['Colour steps', 'Colormap', 'Value scale', 'Limits', 'Centre on zero', 'Patterns'])
     expect(colours.querySelector('input[aria-label="Layer"]')).toBeNull()
     expect(colours.querySelector('.colours-obs-line')).not.toBeNull()
   })
@@ -245,7 +245,7 @@ describe('the Data and Colours cards', () => {
     expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
     expect(localStorage.getItem('pesto.fold.colours')).toBe('folded')
     expect(localStorage.getItem('pesto.fold.data')).toBeNull()
-    expect(summary(root, 'colours')).toBe('Colours: viridis · linear · robust 2–98% · smooth')
+    expect(summary(root, 'colours')).toBe('Colours: smooth, no steps · viridis · linear · robust 2–98%')
   })
 
   it('names the drawn group, layer and realization on the folded Data line, and follows the layer slider', async () => {
@@ -275,7 +275,7 @@ describe('the Data and Colours cards', () => {
     // Open, the line is the title alone; folding shows the settings it kept up with meanwhile.
     expect(summary(root, 'colours')).toBe('Colours')
     foldButton(root, 'colours').click()
-    expect(summary(root, 'colours')).toBe('Colours: magma · linear · robust 2–98% · smooth')
+    expect(summary(root, 'colours')).toBe('Colours: smooth, no steps · magma · linear · robust 2–98%')
   })
 
   it('starts both cards folded on a short map when the viewer never chose', async () => {
