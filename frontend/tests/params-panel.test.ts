@@ -293,8 +293,9 @@ describe('renderParamsPanel', () => {
       }),
     )
 
+    // The unmapped groups and the notes scroll together inside the one Notes section.
     await vi.waitFor(() => {
-      expect(el.querySelectorAll('.scroll-pane').length).toBe(4)
+      expect(el.querySelectorAll('.scroll-pane').length).toBe(3)
     })
     const panes = [...el.querySelectorAll<HTMLElement>('.scroll-pane')]
     for (const pane of panes) expect(pane.tabIndex).toBe(0)
@@ -302,8 +303,86 @@ describe('renderParamsPanel', () => {
       'Notes',
       'Parameter groups',
       'Parameter table',
-      'Unmapped groups',
     ])
+    expect(el.querySelector('.params-notes .scroll-pane')!.textContent).toContain('G9')
+    expect(el.querySelector('.params-notes .scroll-pane')!.textContent).toContain('one realization dropped')
+  })
+})
+
+// Node's own experimental localStorage shadows jsdom's and is undefined here, so each test brings one.
+function memoryStorage(): Pick<Storage, 'getItem' | 'setItem'> & { keys(): string[] } {
+  const values = new Map<string, string>()
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => void values.set(key, value),
+    keys: () => [...values.keys()],
+  }
+}
+
+const storedFolds = () => (localStorage as unknown as { keys(): string[] }).keys().filter((k) => k.startsWith('pesto.fold.'))
+
+describe('the Notes section at the bottom of the tab', () => {
+  beforeEach(() => vi.stubGlobal('localStorage', memoryStorage()))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const unmappedOf = (n: number) => Array.from({ length: n }, (_, i) => ({ group: `g${i}`, note: `g${i} has no placement rule` }))
+  const notesOf = (n: number) => Array.from({ length: n }, (_, i) => ({ artifact: 'pp_factors', reason: `line ${i} interpolates to 240 points` }))
+  const notesSection = (el: HTMLElement) => el.querySelector<HTMLElement>('.params-notes')
+  const notesLine = (el: HTMLElement) => notesSection(el)?.querySelector('.fold-summary')?.textContent
+
+  it('puts the unmapped groups and the notes in one section, folded to a line that counts them', () => {
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: unmappedOf(7), artifactNotes: notesOf(31) }))
+
+    expect(el.querySelectorAll('.params-notes').length).toBe(1)
+    expect(el.lastElementChild).toBe(notesSection(el))
+    expect(notesSection(el)!.dataset.folded).toBe('true')
+    expect(notesLine(el)).toBe('Notes · 7 groups unmapped · 31 notes')
+    expect(notesSection(el)!.querySelector('.fold-button')!.getAttribute('aria-label')).toBe('Notes')
+    expect(storedFolds()).toEqual([])
+  })
+
+  it('says one group and one note in the singular and leaves out a part with nothing in it', () => {
+    const a = mount()
+    renderParamsPanel(a, panelOptions({ unmapped: unmappedOf(1) }))
+    expect(notesLine(a)).toBe('Notes · 1 group unmapped')
+
+    const b = mount()
+    renderParamsPanel(b, panelOptions({ artifactNotes: notesOf(1) }))
+    expect(notesLine(b)).toBe('Notes · 1 note')
+
+    const c = mount()
+    renderParamsPanel(c, panelOptions())
+    expect(notesSection(c)).toBeNull()
+  })
+
+  it('opens on a click, stores the choice, and starts open on the next mount', () => {
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: unmappedOf(2), artifactNotes: notesOf(3) }))
+    notesSection(el)!.querySelector<HTMLButtonElement>('.fold-button')!.click()
+
+    expect(notesSection(el)!.dataset.folded).toBe('false')
+    expect(localStorage.getItem('pesto.fold.params-notes')).toBe('open')
+
+    const again = mount()
+    renderParamsPanel(again, panelOptions({ unmapped: unmappedOf(2), artifactNotes: notesOf(3) }))
+    expect(notesSection(again)!.dataset.folded).toBe('false')
+  })
+
+  it('lists every unmapped group and then every note inside the section, none dropped', () => {
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: unmappedOf(7), artifactNotes: notesOf(31) }))
+    const body = notesSection(el)!.querySelector<HTMLElement>('.fold-body')!
+
+    const unmapped = body.querySelector<HTMLElement>('.params-unmapped')!
+    expect(unmapped.firstElementChild!.textContent).toBe('7 groups unmapped')
+    for (let i = 0; i < 7; i++) expect(unmapped.textContent).toContain(`g${i} has no placement rule`)
+    const lines = [...body.querySelectorAll<HTMLElement>('.params-note-line')].map((line) => line.textContent)
+    expect(lines.length).toBe(31)
+    expect(lines[0]).toBe('pp_factors: line 0 interpolates to 240 points')
+    expect(lines[30]).toBe('pp_factors: line 30 interpolates to 240 points')
+    const order = [...body.children]
+    expect(order.indexOf(unmapped)).toBeLessThan(order.indexOf(body.querySelector('.params-note-line')!))
   })
 })
 

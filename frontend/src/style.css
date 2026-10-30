@@ -462,25 +462,26 @@ body {
   min-height: 160px;
 }
 
+/* G-14-6: the unmapped groups and the artifact notes share one section, folded to its counted line
+   until the viewer opens it. Open, it takes at most 40% of the tab and scrolls inside. */
+.params-notes {
+  flex: 0 1 auto;
+  max-height: 40%;
+  margin-top: var(--space-sm);
+}
+
+.params-notes[data-folded='false'] {
+  min-height: 5rem;
+}
+
+.params-notes > .fold-body {
+  overflow-y: auto;
+}
+
 .params-unmapped {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 4rem;
-  max-height: 30%;
-  margin-top: var(--space-sm);
-}
-
-.params-unmapped > .scroll-pane {
-  flex: 1 1 auto;
-}
-
-/* The artifact notes get the same treatment: a run can carry dozens. */
-.params-notes {
-  flex: 0 1 auto;
-  min-height: 4rem;
-  max-height: 30%;
-  margin-top: var(--space-sm);
+  margin-bottom: var(--space-xs);
 }
 
 /* The placement note under an unmapped group's name stays one line in the row. */

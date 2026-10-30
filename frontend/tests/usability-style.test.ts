@@ -72,11 +72,16 @@ describe('pickable rows', () => {
 })
 
 describe('the selected sections', () => {
-  it('take at most 40% of their tab, while the unmapped list and notes keep 30%', () => {
+  it('take at most 40% of their tab', () => {
     expect(rule('.params-selected')).toMatch(/max-height:\s*40%/)
     expect(rule('.obs-selected')).toMatch(/max-height:\s*40%/)
-    expect(rule('.params-unmapped')).toMatch(/max-height:\s*30%/)
-    expect(rule('.params-notes')).toMatch(/max-height:\s*30%/)
+  })
+
+  it('give the Params Notes section at most 40% of the tab, scrolling inside under its title line', () => {
+    expect(rule('.params-notes')).toMatch(/max-height:\s*40%/)
+    expect(rule('.params-notes > .fold-body')).toMatch(/overflow-y:\s*auto/)
+    // The unmapped list no longer has a cap of its own: it scrolls with the notes.
+    expect(rule('.params-unmapped')).not.toMatch(/max-height/)
   })
 })
 

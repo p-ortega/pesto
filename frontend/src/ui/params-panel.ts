@@ -29,6 +29,7 @@ import { modeOf } from '../state/modifiers'
 import { selectPars } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
+import { renderFold, type PanelFoldHandle } from './fold'
 import type { UnmappedGroup } from './group-picker'
 import {
   formatChange,
@@ -318,43 +319,64 @@ function renderTable(
   return renderVisible
 }
 
-function renderUnmappedSection(el: HTMLElement, unmapped: UnmappedGroup[]): void {
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? `1 ${one}` : `${n} ${many}`
+}
+
+function renderUnmappedList(parent: HTMLElement, unmapped: UnmappedGroup[]): void {
   if (unmapped.length === 0) return
   const section = document.createElement('div')
   section.classList.add('params-unmapped')
   const heading = document.createElement('div')
   heading.classList.add('label')
-  heading.textContent = unmapped.length === 1 ? '1 group unmapped' : `${unmapped.length} groups unmapped`
+  heading.textContent = plural(unmapped.length, 'group unmapped', 'groups unmapped')
   section.appendChild(heading)
-  // The rows scroll inside their own pane: a real run can have a hundred
-  // unmapped groups, and they must not push the table off the panel.
-  const list = document.createElement('div')
-  list.classList.add('scroll-pane')
-  makeFocusable(list, 'Unmapped groups')
   for (const entry of unmapped) {
     const row = document.createElement('div')
     row.classList.add('label', 'truncate')
     const text = entry.note ?? `${entry.group} — no placement rule matched`
     row.textContent = text
     row.title = entry.note ?? entry.group
-    list.appendChild(row)
-  }
-  section.appendChild(list)
-  el.appendChild(section)
-}
-
-function renderNotesSection(el: HTMLElement, notes: { artifact: string; reason: string }[]): void {
-  if (notes.length === 0) return
-  const section = document.createElement('div')
-  section.classList.add('params-notes', 'scroll-pane')
-  makeFocusable(section, 'Notes')
-  for (const note of notes) {
-    const row = document.createElement('div')
-    row.classList.add('label', 'wrap-note')
-    row.textContent = `${note.artifact}: ${note.reason}`
     section.appendChild(row)
   }
-  el.appendChild(section)
+  parent.appendChild(section)
+}
+
+/**
+ * G-14-6: the unmapped groups and the artifact notes in one section at the bottom of the tab, folded
+ * to a line that counts them until the viewer opens it. Null when there is neither.
+ */
+function renderNotesFold(
+  el: HTMLElement,
+  unmapped: UnmappedGroup[],
+  notes: { artifact: string; reason: string }[],
+  onUserToggle?: (fold: PanelFoldHandle, folded: boolean) => void,
+): PanelFoldHandle | null {
+  if (unmapped.length === 0 && notes.length === 0) return null
+  const fold: PanelFoldHandle = renderFold({
+    key: 'params-notes',
+    name: 'Notes',
+    startFolded: true,
+    surface: 'panel',
+    onUserToggle: (folded) => onUserToggle?.(fold, folded),
+  })
+  fold.el.className = `params-notes ${fold.el.className}`
+  const parts = ['Notes']
+  if (unmapped.length > 0) parts.push(plural(unmapped.length, 'group unmapped', 'groups unmapped'))
+  if (notes.length > 0) parts.push(plural(notes.length, 'note', 'notes'))
+  fold.setSummary(parts.join(' · '))
+  // One pane for both lists: a real run can carry a hundred of each, and they scroll inside the section.
+  fold.body.classList.add('scroll-pane')
+  makeFocusable(fold.body, 'Notes')
+  renderUnmappedList(fold.body, unmapped)
+  for (const note of notes) {
+    const row = document.createElement('div')
+    row.classList.add('label', 'wrap-note', 'params-note-line')
+    row.textContent = `${note.artifact}: ${note.reason}`
+    fold.body.appendChild(row)
+  }
+  el.appendChild(fold.el)
+  return fold
 }
 
 const NOT_STATED = 'not stated'
@@ -1118,8 +1140,7 @@ export function renderParamsPanel(el: HTMLElement, opts: ParamsPanelOptions): Pa
     },
   )
 
-  renderUnmappedSection(el, opts.unmapped)
-  renderNotesSection(el, opts.artifactNotes)
+  renderNotesFold(el, opts.unmapped, opts.artifactNotes)
 
   if (!hidden) {
     requestGroups()
