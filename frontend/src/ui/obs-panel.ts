@@ -514,7 +514,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     onPick: (siteId, event) => pickSiteId(siteId, event),
   })
   const fit = renderGroupFit(fitHost, { store: opts.store, startHidden: hidden })
-  const spaghetti = renderSpaghetti(spaghettiHost, { store: opts.store, startHidden: hidden })
+  const spaghetti = renderSpaghetti(spaghettiHost, { store: opts.store, startHidden: hidden, loadGroupSets })
 
   let chosenGroup: string | null = null
   let groupsRequested = false

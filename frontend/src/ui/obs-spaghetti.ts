@@ -7,12 +7,19 @@
 
 import { LatestWins } from '../data/latest-wins'
 import {
+  fetchObsGroupSets,
   fetchObsReals,
   fetchObsSeries,
   fetchObsSite,
   fetchObsTimes,
+  resolveObsTarget,
   shareRead,
+  targetGroups,
+  targetKey,
+  type ObsGroupSet,
+  type ObsGroupSetsResult,
   type ObsRealsResult,
+  type ObsTarget,
   type ObsSeriesResult,
   type ObsSitePayload,
   type ObsTimesResult,
@@ -33,6 +40,8 @@ export interface SpaghettiOptions {
   store: SelectionStore
   /** True when the tab is not the open one: nothing is fetched or drawn until onShow. */
   startHidden?: boolean
+  /** Reads the group sets, shared with the panel. Without one the plot keeps its own shared read. */
+  loadGroupSets?: () => Promise<ObsGroupSetsResult>
   /** Only for tests: the graphics context to draw lines with. */
   createGl?: (canvas: HTMLCanvasElement) => WebGL2RenderingContext | null
   /** Only for tests: the 2D context of the layer behind or in front of the lines. */
@@ -117,11 +126,6 @@ interface Geometry {
 
 function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`
-}
-
-function firstOf(set: ReadonlySet<string>): string | null {
-  const first = set.values().next()
-  return first.done ? null : first.value
 }
 
 /** True when the observation has a measured value that can be drawn as a marker. */
@@ -785,36 +789,75 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
 
   // ---- the cursor at the map's time ----
 
+  // Keyed by targetKey, so a group and a set never share times.
   const timesReads = new Map<string, () => Promise<ObsTimesResult>>()
   const timesOf = new Map<string, number[]>()
   let cursorProblem: string | null = null
+  const loadGroupSets = opts.loadGroupSets ?? shareRead(() => fetchObsGroupSets())
+  // null until read; read only once the map draws more than one group.
+  let groupSets: readonly ObsGroupSet[] | null = null
+  let setsAsked = false
 
-  function cursorGroup(): string | null {
+  // T-14-29: a set's time is taken only when obsGroups is exactly that set's groups.
+  function cursorTarget(): ObsTarget | null {
     const s = store.get()
-    return s.colour.source === 'obs' ? firstOf(s.obsGroups) : null
+    if (s.colour.source !== 'obs') return null
+    const resolved = resolveObsTarget(s.obsGroups, groupSets)
+    return resolved.kind === 'target' ? resolved.target : null
   }
 
   function cursorTime(group: string): number | null {
-    if (cursorGroup() !== group) return null
-    const times = timesOf.get(group)
+    const target = cursorTarget()
+    if (target === null || !targetGroups(target).includes(group)) return null
+    const times = timesOf.get(targetKey(target))
     if (!times) return null
     const t = times[store.get().timeIdx]
     return t !== undefined && Number.isFinite(t) ? t : null
   }
 
+  function ensureSets(): void {
+    if (setsAsked) return
+    setsAsked = true
+    const failed = (why: string): void => {
+      // A refused read is asked again on the next change of the map's groups.
+      setsAsked = false
+      cursorProblem = `The map-time cursor is not drawn: ${why}`
+      renderNote()
+    }
+    loadGroupSets().then(
+      (answer) => {
+        if (!answer.ok) return failed(`${answer.artifact}: ${answer.reason}`)
+        groupSets = answer.sets
+        ensureTimes()
+        if (!hidden) front?.redraw()
+      },
+      (error: unknown) => failed(describeError(error)),
+    )
+  }
+
   function ensureTimes(): void {
-    const group = cursorGroup()
-    if (hidden || group === null || timesOf.has(group)) return
-    if (!views.some((v) => v.entry?.ok === true && v.entry.prepared.site.group === group)) return
-    let read = timesReads.get(group)
+    if (hidden || store.get().colour.source !== 'obs') return
+    if (store.get().obsGroups.size > 1 && groupSets === null) {
+      ensureSets()
+      return
+    }
+    const target = cursorTarget()
+    if (target === null) return
+    const key = targetKey(target)
+    if (timesOf.has(key)) return
+    const members = new Set(targetGroups(target))
+    if (!views.some((v) => v.entry?.ok === true && members.has(v.entry.prepared.site.group))) return
+    let read = timesReads.get(key)
     if (!read) {
-      read = shareRead(() => fetchObsTimes(group))
-      timesReads.set(group, read)
+      // One group is asked for by its name, as before; a set by its column and value.
+      const asked = target.kind === 'group' ? target.group : target
+      read = shareRead(() => fetchObsTimes(asked))
+      timesReads.set(key, read)
     }
     read().then(
       (result) => {
         if (result.ok) {
-          timesOf.set(group, result.payload.times)
+          timesOf.set(key, result.payload.times)
           cursorProblem = null
         } else {
           cursorProblem = `The map-time cursor is not drawn: ${result.artifact}: ${result.reason}`
@@ -946,6 +989,8 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
         loaded.clear()
         timesOf.clear()
         timesReads.clear()
+        groupSets = null
+        setsAsked = false
         realsOf.clear()
         realsReads.clear()
         picks.clear()
@@ -971,7 +1016,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     },
   )
   const unsubscribeCursor = store.subscribe(
-    (s) => ({ source: s.colour.source, group: firstOf(s.obsGroups), timeIdx: s.timeIdx }),
+    (s) => ({ source: s.colour.source, groups: s.obsGroups, timeIdx: s.timeIdx }),
     () => {
       if (hidden) return
       ensureTimes()
