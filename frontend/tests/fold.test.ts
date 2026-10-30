@@ -4,7 +4,7 @@
 // keeps the viewer's choice in localStorage when it can, and works the same when storage throws.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SHORT_MAP_HEIGHT, foldOthersToFit, isShortMap, renderFold, settleStack, type FoldHandle } from '../src/ui/fold'
+import { SHORT_MAP_HEIGHT, foldOthersToFit, isShortMap, renderFold, settleGrowth, type FoldHandle } from '../src/ui/fold'
 import { basemapSummary } from '../src/ui/basemap-controls'
 import { renderOverlayControls } from '../src/ui/overlay-controls'
 import { loadRealStylesheet } from './support/run-together'
@@ -337,20 +337,77 @@ describe('keeping the stack in sight', () => {
     expect(foldOthersToFit(cards[0], cards, () => true)).toEqual([])
   })
 
-  it('at first look folds the lowest unchosen cards quietly, never the first, and stops when it fits', () => {
+  it('folds the lowest unchosen cards quietly, never the first, and stops when it fits', () => {
     const cards = stack()
-    const folded = settleStack(cards, openMoreThan(cards, 2))
+    const folded = settleGrowth(cards, openMoreThan(cards, 2))
     expect(folded).toEqual([cards[3], cards[2]])
     expect(cards.map((c) => c.folded())).toEqual([false, false, true, true])
     for (const key of ['data', 'colours', 'overlays', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
   })
 
-  it('at first look leaves a card the viewer chose, and the first card, open even when nothing fits', () => {
+  it('folds the cards the viewer never chose first, then the chosen ones, never the first, and stores nothing', () => {
     localStorage.setItem('pesto.fold.overlays', 'open')
     const cards = stack()
-    const folded = settleStack(cards, () => true)
+    const [data, colours, overlays, basemap] = cards
+    const setItem = vi.spyOn(localStorage, 'setItem')
+    const folded = settleGrowth(cards, () => true)
+    expect(folded).toEqual([basemap, colours, overlays])
+    expect(data.folded()).toBe(false)
+    expect(setItem).not.toHaveBeenCalled()
+    expect(localStorage.getItem('pesto.fold.overlays')).toBe('open')
+    expect(colours.chosen()).toBe(false)
+  })
+
+  it('never folds the card it is told to keep', () => {
+    localStorage.setItem('pesto.fold.overlays', 'open')
+    const cards = stack()
+    const folded = settleGrowth(cards, () => true, { keep: cards[2] })
     expect(folded).toEqual([cards[3], cards[1]])
-    expect(cards.map((c) => c.folded())).toEqual([false, true, false, true])
-    expect(cards[1].chosen()).toBe(false)
+    expect(cards[2].folded()).toBe(false)
+  })
+
+  it('calls between once, after the unchosen cards and before the chosen ones', () => {
+    localStorage.setItem('pesto.fold.overlays', 'open')
+    const cards = stack()
+    const order: string[] = []
+    const between = vi.fn(() => {
+      order.push(`between with ${cards.filter((c) => c.folded()).length} folded`)
+    })
+    settleGrowth(cards, () => true, { between })
+    expect(between).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['between with 2 folded'])
+    expect(cards[2].folded()).toBe(true)
+  })
+
+  it('folds one card and skips between when the stack fits after the first fold', () => {
+    const cards = stack()
+    let tall = true
+    const between = vi.fn()
+    const folded = settleGrowth(
+      cards.map((card) => ({
+        folded: card.folded,
+        chosen: card.chosen,
+        setFolded: (next: boolean, options?: { remember?: boolean }) => {
+          card.setFolded(next, options)
+          tall = false
+        },
+      })),
+      () => tall,
+      { between },
+    )
+    expect(folded).toHaveLength(1)
+    expect(cards.map((c) => c.folded())).toEqual([false, false, false, true])
+    expect(between).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the stack fits, and never opens a folded card', () => {
+    const cards = stack()
+    cards[1].setFolded(true, { remember: false })
+    const between = vi.fn()
+    expect(settleGrowth(cards, () => false, { between })).toEqual([])
+    expect(cards.map((c) => c.folded())).toEqual([false, true, false, false])
+    expect(between).not.toHaveBeenCalled()
+    settleGrowth(cards, () => true)
+    expect(cards.map((c) => c.folded())).toEqual([false, true, true, true])
   })
 })

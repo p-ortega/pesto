@@ -68,7 +68,7 @@ import { iterationsFrom, renderIterationToggle, type IterationToggleHandle } fro
 import { fetchBase, type BaseResult, type RealNamesResult } from '../data/reals'
 import { renderBaseChip } from '../ui/base-chip'
 import { BASE_STYLE } from '../ui/charts/base-style'
-import { foldOthersToFit, isShortMap, renderFold, settleStack, type FoldHandle, type FoldOptions } from '../ui/fold'
+import { foldOthersToFit, isShortMap, renderFold, settleGrowth, type FoldHandle, type FoldOptions } from '../ui/fold'
 import { dataSummary, renderDataCard } from '../ui/data-card'
 import { renderOverlayControls, type OverlayControlsHandle, type OverlayKind, type OverlayStatus } from '../ui/overlay-controls'
 import { renderGroupPicker, type GroupPickerState } from '../ui/group-picker'
@@ -401,6 +401,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // The stack's cards, top to bottom, for the rules that keep every card in sight (LD-3).
   const stackCards: FoldHandle[] = []
   const stackOverflows = (): boolean => topLeftEl.scrollHeight > topLeftEl.clientHeight
+  // The card the viewer opened last on this page; the growth pass leaves it open.
+  let lastOpened: FoldHandle | null = null
+  // A card that grows on its own, such as Data gaining the observation rows, folds what no longer fits.
+  const stackObserver =
+    typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settleGrowth(stackCards, stackOverflows, growthOptions())) : null
   // Scrolls the stack alone, as scrollIntoView with block 'nearest' would, but never an ancestor of it.
   function scrollIntoStack(el: HTMLElement): void {
     const top = el.offsetTop
@@ -413,13 +418,33 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const fold = renderFold({
       ...options,
       onUserToggle: (folded) => {
-        if (folded) return
+        if (folded) {
+          if (lastOpened === fold) lastOpened = null
+          return
+        }
+        lastOpened = fold
         foldOthersToFit(fold, stackCards, stackOverflows)
+        // Still too tall with the others folded: the legend keeps only its ramp and group, stored the same way (LD-3).
+        if (stackOverflows() && !legendFold.folded()) {
+          legendFold.setFolded(true)
+          syncLegendHeight()
+        }
         scrollIntoStack(fold.el)
       },
     })
     stackCards.push(fold)
+    stackObserver?.observe(fold.el)
     return fold
+  }
+  // G-14-1: when the stack grows on its own it folds quietly what does not fit, never the card just opened.
+  function growthOptions(): { keep: FoldHandle | null; between: () => void } {
+    return { keep: lastOpened !== null && !lastOpened.folded() ? lastOpened : null, between: foldLegendQuietly }
+  }
+  // Between the two passes: the legend gives up its lines, unless the viewer chose how it looks.
+  function foldLegendQuietly(): void {
+    if (legendFold.folded() || legendFold.chosen()) return
+    legendFold.setFolded(true, { remember: false })
+    syncLegendHeight()
   }
   // The legend folds to its ramp and drawn group; its lines are redrawn into the body on every draw.
   const legendFold: FoldHandle = renderFold({
@@ -1984,8 +2009,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // The top-left stack stops above the legend, so an open legend never covers its last cards.
     new ResizeObserver(() => {
       syncLegendHeight()
-      // A legend that grew on its own folds the cards the viewer never chose, quietly; folding only, so no loop.
-      settleStack(stackCards, stackOverflows)
+      settleGrowth(stackCards, stackOverflows, growthOptions())
     }).observe(legendFold.el)
   }
 
@@ -3214,6 +3238,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     selectedPointRow = null
     if (fresh) showObsLegend(null)
     sectionView.refresh()
+    // The Data card has just gained its observation rows.
+    settleGrowth(stackCards, stackOverflows, growthOptions())
   }
 
   // Nothing is drawn as a dot: a failure or an empty group says so, and no stale dot stays.
@@ -3268,6 +3294,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsParked = false
     obsNoticeEl.textContent = ''
     restoreParameterLook()
+    settleGrowth(stackCards, stackOverflows, growthOptions())
   }
 
   // The chosen iteration has no observation statistics: never another iteration's, the parameter colouring instead.
@@ -4113,15 +4140,10 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     pending = committed
     await performFetch(committed)
     mountBasemap()
-    // First look: what would not fit starts folded, unless the viewer chose; nothing is stored.
+    // First look: what would not fit starts folded, a stored open card too, but nothing is stored.
     // The legend's observer runs after this frame; measure it now so the stack's room is already right.
     syncLegendHeight()
-    settleStack(stackCards, stackOverflows)
-    // Still too tall: the legend folds to its ramp and group too, quietly, unless the viewer chose.
-    if (stackOverflows() && !legendFold.folded() && !legendFold.chosen()) {
-      legendFold.setFolded(true, { remember: false })
-      syncLegendHeight()
-    }
+    settleGrowth(stackCards, stackOverflows, growthOptions())
     // Still the first draw: the Basemap card and the folds above can move the band, so fit once more if they did.
     if (!userMovedPlan && camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
       camera.fit(mesh.bounds, 0.04, planInset())

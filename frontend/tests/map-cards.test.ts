@@ -6,6 +6,8 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IngestState } from '../src/data/client'
+import { emptySelection } from '../src/state/rules'
+import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import type { RunConfig } from '../src/views/map'
 import { loadRealStylesheet } from './support/run-together'
 
@@ -145,12 +147,12 @@ function stubStackOverflow(): void {
   })
 }
 
-async function mountReady(overrides: Record<string, Reply> = {}): Promise<HTMLElement> {
+async function mountReady(overrides: Record<string, Reply> = {}, store?: SelectionStore): Promise<HTMLElement> {
   stubEnvironment(overrides)
   const { mountMap } = await import('../src/views/map')
   const root = document.createElement('div')
   document.body.appendChild(root)
-  mountMap(root, { config: CONFIG, state: baseState() })
+  mountMap(root, { config: CONFIG, state: baseState(), store })
   await vi.waitFor(() => expect(root.querySelector('canvas[data-drawn="true"]')).not.toBeNull())
   return root
 }
@@ -305,6 +307,9 @@ describe('the Data and Colours cards', () => {
     expect(card(root, 'data').getAttribute('data-folded')).toBe('true')
     expect(localStorage.getItem('pesto.fold.data')).toBe('folded')
     expect(localStorage.getItem('pesto.fold.colours')).toBe('open')
+    // Still too tall with every other card folded, so the legend keeps only its ramp, stored the same way.
+    expect(card(root, 'legend').getAttribute('data-folded')).toBe('true')
+    expect(localStorage.getItem('pesto.fold.legend')).toBe('folded')
     // Folding a card never makes room for anything, so it folds nothing else.
     foldButton(root, 'colours').click()
     expect(card(root, 'data').getAttribute('data-folded')).toBe('true')
@@ -323,13 +328,66 @@ describe('the Data and Colours cards', () => {
     for (const key of ['data', 'colours', 'overlays', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
   })
 
-  it('at first look leaves a card the viewer chose open', async () => {
+  it('at first look folds a card the viewer chose open too, last, and keeps the stored choice', async () => {
     localStorage.setItem('pesto.fold.overlays', 'open')
     stubStackOverflow()
     const root = await mountReady()
     await vi.waitFor(() => expect(card(root, 'basemap')?.getAttribute('data-folded')).toBe('true'))
-    expect(card(root, 'overlays').getAttribute('data-folded')).toBe('false')
+    expect(card(root, 'overlays').getAttribute('data-folded')).toBe('true')
     expect(card(root, 'colours').getAttribute('data-folded')).toBe('true')
+    expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
+    expect(card(root, 'legend').getAttribute('data-folded')).toBe('true')
+    expect(localStorage.getItem('pesto.fold.overlays')).toBe('open')
+    expect(localStorage.getItem('pesto.fold.legend')).toBeNull()
+  })
+
+  it('folds the cards quietly when the switch to Observations makes the stack too tall, and keeps Data open', async () => {
+    const store = createSelectionStore({ initial: emptySelection('test_run', 0), schedule: (run) => queueMicrotask(run) })
+    const root = await mountReady({}, store)
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    expect(['data', 'colours', 'overlays', 'basemap', 'legend'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+    ])
+    stubStackOverflow()
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'map')
+    await vi.waitFor(() => expect(card(root, 'legend').getAttribute('data-folded')).toBe('true'))
+    expect(['data', 'colours', 'overlays', 'basemap'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
+      'false',
+      'true',
+      'true',
+      'true',
+    ])
+    for (const key of ['data', 'colours', 'overlays', 'basemap', 'legend']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+  })
+
+  it('folds a card the viewer chose open when the switch to Observations needs the room, without changing the stored choice', async () => {
+    localStorage.setItem('pesto.fold.overlays', 'open')
+    const store = createSelectionStore({ initial: emptySelection('test_run', 0), schedule: (run) => queueMicrotask(run) })
+    const root = await mountReady({}, store)
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    expect(card(root, 'overlays').getAttribute('data-folded')).toBe('false')
+    stubStackOverflow()
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'map')
+    await vi.waitFor(() => expect(card(root, 'overlays').getAttribute('data-folded')).toBe('true'))
+    expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
+    expect(localStorage.getItem('pesto.fold.overlays')).toBe('open')
+  })
+
+  it('leaves open the card the viewer opened last when the stack grows on its own', async () => {
+    const store = createSelectionStore({ initial: emptySelection('test_run', 0), schedule: (run) => queueMicrotask(run) })
+    const root = await mountReady({}, store)
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    foldButton(root, 'overlays').click()
+    foldButton(root, 'overlays').click()
+    stubStackOverflow()
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'map')
+    await vi.waitFor(() => expect(card(root, 'colours').getAttribute('data-folded')).toBe('true'))
+    expect(card(root, 'overlays').getAttribute('data-folded')).toBe('false')
+    expect(card(root, 'basemap').getAttribute('data-folded')).toBe('true')
     expect(card(root, 'data').getAttribute('data-folded')).toBe('false')
   })
 
@@ -346,7 +404,7 @@ describe('the Data and Colours cards', () => {
     }
   })
 
-  it('folds the lowest cards the viewer never chose, quietly, when the legend grows on its own', async () => {
+  it('folds the cards quietly, the ones the viewer never chose first, when the legend grows on its own', async () => {
     const observed: Array<{ callback: ResizeObserverCallback; targets: Element[] }> = []
     vi.stubGlobal(
       'ResizeObserver',
@@ -377,13 +435,16 @@ describe('the Data and Colours cards', () => {
     for (const entry of observed) {
       if (entry.targets.includes(legend)) entry.callback([], {} as ResizeObserver)
     }
-    expect(['data', 'colours', 'overlays', 'basemap'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
+    // The cards the viewer never chose go first, then the legend's lines, then the chosen card; none is stored.
+    expect(['data', 'colours', 'overlays', 'basemap', 'legend'].map((key) => card(root, key).getAttribute('data-folded'))).toEqual([
       'false',
       'true',
-      'false',
+      'true',
+      'true',
       'true',
     ])
-    for (const key of ['data', 'colours', 'basemap']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+    for (const key of ['data', 'colours', 'basemap', 'legend']) expect(localStorage.getItem(`pesto.fold.${key}`)).toBeNull()
+    expect(localStorage.getItem('pesto.fold.overlays')).toBe('open')
   })
 
   it('at first look folds the legend quietly but keeps its no-value count readable', async () => {

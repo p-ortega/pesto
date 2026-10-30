@@ -148,17 +148,34 @@ export function foldOthersToFit(opened: StackCard, cards: readonly StackCard[], 
   return folded
 }
 
+export interface SettleGrowthOptions {
+  /** A card this pass must not fold, such as the one the viewer opened last. */
+  keep?: StackCard | null
+  /** Called once between the two passes, and only while the stack still does not fit. */
+  between?: () => void
+}
+
 /**
- * First look: while the stack is too tall, fold quietly the lowest open card the viewer never
- * chose for, but never the first. Nothing is stored, so the next visit starts the same way.
+ * The stack grew on its own, or this is the first look: while it is too tall, fold quietly from
+ * the bottom the open cards the viewer never chose, then call `between`, then the chosen ones.
+ * Never the first card or `keep`. Nothing is stored and nothing opens, so it cannot loop.
  */
-export function settleStack(cards: readonly StackCard[], overflows: () => boolean): StackCard[] {
+export function settleGrowth(
+  cards: readonly StackCard[],
+  overflows: () => boolean,
+  options: SettleGrowthOptions = {},
+): StackCard[] {
   const folded: StackCard[] = []
-  for (let i = cards.length - 1; i >= 1 && overflows(); i--) {
-    const card = cards[i]
-    if (card.folded() || card.chosen()) continue
-    card.setFolded(true, { remember: false })
-    folded.push(card)
+  const pass = (chosenToo: boolean): void => {
+    for (let i = cards.length - 1; i >= 1 && overflows(); i--) {
+      const card = cards[i]
+      if (card === options.keep || card.folded() || (!chosenToo && card.chosen())) continue
+      card.setFolded(true, { remember: false })
+      folded.push(card)
+    }
   }
+  pass(false)
+  if (overflows()) options.between?.()
+  pass(true)
   return folded
 }
