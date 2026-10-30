@@ -533,6 +533,11 @@ body {
   max-height: 40%;
 }
 
+/* The fold section's own min-height: 0 outranks the rule above; an open table keeps its title, header and three rows. */
+.obs-groups[data-folded='false']:has(.obs-grid) {
+  min-height: calc(24px + var(--space-xs) + 26px + 3 * 24px);
+}
+
 /* The site list's prompt is one line; the floor below applies once it lists sites. */
 .obs-sites {
   flex: 0 1 auto;
