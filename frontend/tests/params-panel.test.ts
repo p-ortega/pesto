@@ -235,20 +235,42 @@ describe('renderParamsPanel', () => {
     expect(reversedText).toEqual(forwardText)
   })
 
-  it('truncates a long parameter or group name and carries the full string in a title', async () => {
+  it('cuts a long parameter or group name at its start, keeping its end, and carries the full string in text and title', async () => {
     const el = mount()
     const longName = 'p'.repeat(200)
+    const longGroup = 'pp_hk_layer12_zone_north'
     const parTable = Promise.resolve(
-      parTableBuffer({ parnme: [longName], pargp: ['G1'], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
+      parTableBuffer({ parnme: [longName], pargp: [longGroup], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
     )
-    renderParamsPanel(el, panelOptions({ parTable, store: makeStore(['G1']) }))
+    renderParamsPanel(el, panelOptions({ parTable, store: makeStore([longGroup]) }))
 
     await vi.waitFor(() => {
       expect(el.querySelectorAll('.param-row').length).toBe(1)
     })
-    const nameEl = el.querySelector('.param-row .truncate') as HTMLElement
-    expect(nameEl.classList.contains('truncate')).toBe(true)
+    const [nameEl, groupEl] = [...el.querySelector('.param-row')!.children] as HTMLElement[]
+    expect(nameEl.classList.contains('name-cut')).toBe(true)
+    expect(nameEl.textContent).toBe(longName)
     expect(nameEl.title).toBe(longName)
+    expect(nameEl.querySelector('.name-tail')!.textContent).toBe('p'.repeat(16))
+    expect(groupEl.classList.contains('name-cut')).toBe(true)
+    expect(groupEl.textContent).toBe(longGroup)
+    expect(groupEl.title).toBe(longGroup)
+    expect(groupEl.querySelector('.name-tail')!.textContent).toBe('north')
+  })
+
+  it('shows a short parameter and group name whole', async () => {
+    const el = mount()
+    const parTable = Promise.resolve(
+      parTableBuffer({ parnme: ['drnset.cond'], pargp: ['drnset'], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
+    )
+    renderParamsPanel(el, panelOptions({ parTable, store: makeStore(['drnset']) }))
+
+    await vi.waitFor(() => expect(el.querySelectorAll('.param-row').length).toBe(1))
+    const [nameEl, groupEl] = [...el.querySelector('.param-row')!.children] as HTMLElement[]
+    expect(nameEl.classList.contains('name-cut')).toBe(false)
+    expect(nameEl.textContent).toBe('drnset.cond')
+    expect(nameEl.title).toBe('drnset.cond')
+    expect(groupEl.textContent).toBe('drnset')
   })
 
   it('lists the unmapped groups and the per-artifact notes passed through, never rebuilt independently', () => {
@@ -790,6 +812,56 @@ describe('the drill-down list and the groups that are not on the map', () => {
 
     await vi.waitFor(() => expect(groupRows(el).length).toBe(1))
     expect(groupRows(el)[0].textContent).toContain('not on the map')
+  })
+})
+
+describe('the group names in the Groups table', () => {
+  const LONG = 'pp_hk_layer12_zone_north'
+
+  it('keeps the end of a long group name whole, with the whole name as text and title', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow(LONG), groupRow('drnset.cond')]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
+
+    const long = cell(groupRows(el)[0], 'group')
+    expect(long.classList.contains('name-cut')).toBe(true)
+    expect(long.querySelector('.name-head')!.textContent).toBe('pp_hk_layer12_zone_')
+    expect(long.querySelector('.name-tail')!.textContent).toBe('north')
+    expect(long.textContent).toBe(LONG)
+    expect(long.title).toBe(LONG)
+
+    const short = cell(groupRows(el)[1], 'group')
+    expect(short.classList.contains('name-cut')).toBe(false)
+    expect(short.textContent).toBe('drnset.cond')
+  })
+
+  it('still sorts the Group column on the whole name', async () => {
+    // Sorted on the kept ends alone, 'east' would come before 'north' and 'west'.
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([groupRow('zz_layer1_zone_east'), groupRow('aa_layer1_zone_west'), groupRow('mm_layer1_zone_north')]),
+    )
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(3))
+
+    headingButton(el, 'group').click()
+    expect(shownOrder(el)).toEqual(['aa_layer1_zone_west', 'mm_layer1_zone_north', 'zz_layer1_zone_east'])
+  })
+
+  it('cuts the name of a group that is not on the map the same way, keeping its marker and note under it', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow(LONG)]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: [{ group: LONG, note: 'no placement rule matched' }] }))
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(1))
+
+    const groupEl = cell(groupRows(el)[0], 'group')
+    const name = groupEl.firstElementChild as HTMLElement
+    expect(name.querySelector('.name-tail')!.textContent).toBe('north')
+    expect(name.textContent).toBe(LONG)
+    expect(name.title).toBe(LONG)
+    expect(groupEl.textContent).toContain('not on the map')
+    expect(groupEl.textContent).toContain('no placement rule matched')
   })
 })
 

@@ -329,7 +329,7 @@ body {
 
 .params-groups .group-header,
 .params-groups .scroll-pane {
-  min-width: 53em;
+  min-width: 57em;
 }
 
 .params-groups .scroll-pane {
@@ -398,11 +398,12 @@ body {
   background: var(--gridline);
 }
 
-/* The group summary's columns: group and type share the stretch, the rest keep a width. */
+/* The group summary's columns: group and type share the stretch, the rest keep a width. G-14-6:
+   the Group column never goes below 12em, and the grid's width grows to make room for it. */
 .group-row > :nth-child(1),
 .group-header > :nth-child(1) {
   flex: 3 1 0;
-  min-width: 8em;
+  min-width: 12em;
   overflow-wrap: anywhere;
 }
 

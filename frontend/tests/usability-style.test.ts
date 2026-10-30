@@ -209,6 +209,13 @@ describe('the Params tab floors', () => {
     }
   })
 
+  it('gives the Group column a 12em floor and widens the grid to hold it', () => {
+    expect(rule('.group-row > :nth-child(1)')).toMatch(/min-width:\s*12em/)
+    expect(rule('.group-header > :nth-child(1)')).toMatch(/min-width:\s*12em/)
+    const grid = /min-width:\s*(\d+(?:\.\d+)?)em/.exec(rule('.params-groups .group-header'))
+    expect(Number(grid![1])).toBeGreaterThanOrEqual(57)
+  })
+
   it('lets the detail and the list scroll inside their sections, under a title line that stays put', () => {
     expect(rule('.params-detail-host > .fold-body')).toMatch(/overflow-y:\s*auto/)
     expect(rule('.params-table > .fold-body')).toMatch(/overflow-x:\s*auto/)

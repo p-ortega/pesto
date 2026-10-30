@@ -30,6 +30,7 @@ import { selectPars } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { makeFocusable, renderNotice } from './chrome'
 import { foldOthersToFit, renderFold, settleGrowth, type PanelFoldHandle, type StackCard } from './fold'
+import { paintCutName } from './name-cut'
 import type { UnmappedGroup } from './group-picker'
 import {
   formatChange,
@@ -174,16 +175,15 @@ function appendFigure(rowEl: HTMLElement, column: string, cell: FigureCell): voi
 }
 
 function appendRowCells(rowEl: HTMLElement, row: ParamRow, change: ChangeCells): void {
+  // A long name keeps its end in view, where names that share a long start differ.
   const nameEl = document.createElement('span')
   nameEl.classList.add('body', 'truncate')
-  nameEl.textContent = row.parnme
-  nameEl.title = row.parnme
+  paintCutName(nameEl, row.parnme)
   rowEl.appendChild(nameEl)
 
   const groupEl = document.createElement('span')
   groupEl.classList.add('body', 'truncate')
-  groupEl.textContent = row.pargp
-  groupEl.title = row.pargp
+  paintCutName(groupEl, row.pargp)
   rowEl.appendChild(groupEl)
 
   const lbndEl = document.createElement('span')
@@ -582,14 +582,16 @@ function renderGroupRow(
   rowEl.tabIndex = 0
   rowEl.dataset.group = row.group
   const groupEl = groupCell('group', row.group, row.group, ['truncate'])
+  // A long name keeps its end in view; sorting still reads the whole name.
+  paintCutName(groupEl, row.group)
   if (offMap !== null) {
     // The name keeps its own span so the second line sits under it.
     groupEl.textContent = ''
-    groupEl.classList.remove('truncate')
+    groupEl.classList.remove('truncate', 'name-cut')
     groupEl.classList.add('group-name-cell')
     const name = document.createElement('span')
     name.classList.add('truncate')
-    name.textContent = row.group
+    paintCutName(name, row.group)
     groupEl.appendChild(name)
     const marker = document.createElement('span')
     marker.classList.add('label')
