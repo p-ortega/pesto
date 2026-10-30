@@ -20,6 +20,7 @@ import {
   resolveObsTarget,
   sameGroups,
   shareRead,
+  targetGroups,
   targetKey,
   targetLabel,
   type ObsSitePayload,
@@ -829,7 +830,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       cellArray,
       layerArray,
       pointRows,
-      obsGroup: obsActive ? obsOneGroupInUse() : null,
+      obsGroups: obsActive ? obsGroupsInUse() : null,
+      obsLabel: obsActive ? obsLabelInUse() : null,
       dotSiteIds,
     }
   }
@@ -1128,7 +1130,15 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (!answer.ok) {
         lines.push(`Where the selected sites are could not be read: ${answer.artifact}: ${answer.reason}`)
       } else if (obsActive) {
-        lines.push(...whereLines(answer, { group: obsOneGroupInUse(), layer: committed.layer, allLayers: obsAllLayers }))
+        const groups = obsGroupsInUse()
+        lines.push(
+          ...whereLines(answer, {
+            groups: groups === null ? null : new Set(groups),
+            label: obsLabelInUse(),
+            layer: committed.layer,
+            allLayers: obsAllLayers,
+          }),
+        )
       } else if (siteRings !== null) {
         lines.push(...siteRings.lines)
       }
@@ -1365,7 +1375,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let obsTargetInUse: ObsTarget | null = null
   // What the map names as drawn: the group, or `{by} = {value} · {N} groups` for a set.
   const obsLabelInUse = (): string | null => (obsTargetInUse === null ? null : targetLabel(obsTargetInUse))
-  const obsOneGroupInUse = (): string | null => (obsTargetInUse?.kind === 'group' ? obsTargetInUse.group : null)
+  // Every group whose sites are drawn: one for a group, all members for a set.
+  const obsGroupsInUse = (): readonly string[] | null => (obsTargetInUse === null ? null : targetGroups(obsTargetInUse))
   let obsData: ObsGroupData | null = null
   let obsDots: ObsDots | null = null
   let obsFrame: Float32Array | null = null

@@ -6,7 +6,7 @@ import type { FetchOptions } from '../data/client'
 import { buildHatchMask, parameterCells, siteCells } from '../data/hatch-mask'
 import { LatestWins, isAbortError } from '../data/latest-wins'
 import type { Refused } from '../data/obs'
-import { fetchAtBounds, fetchPdcSites, type AtBoundsResult, type PdcSitesResult } from '../data/overlays'
+import { fetchAtBounds, fetchPdcSites, type AtBoundsResult, type PdcSiteColumns, type PdcSitesResult } from '../data/overlays'
 import type { ParIdentity } from '../data/parmap'
 import { fetchKey } from '../data/run'
 import type { OverlayStatus } from '../ui/overlay-controls'
@@ -31,8 +31,10 @@ export interface OverlayInputs {
   layerArray: Int32Array
   /** Block row of each drawn pilot-point dot; null when the dots are not pilot points. */
   pointRows: Int32Array | null
-  /** The coloured observation group; null for every group. */
-  obsGroup: string | null
+  /** The drawn observation group, or every group of a drawn set; null for every group. */
+  obsGroups: readonly string[] | null
+  /** The group's name or the set's label, for the overlay's title. */
+  obsLabel: string | null
   /** Site id of each drawn observation dot; null when the dots are not observation sites. */
   dotSiteIds: Int32Array | null
 }
@@ -153,6 +155,14 @@ function noConflictReason(iteration: number, reason: string | null): string {
 
 const SOURCE_WORD = { computed: 'computed', file: 'from file' } as const
 
+// The conflict sites whose group index is one of `members`, in the answer's order.
+function membersOnly(sites: PdcSiteColumns, members: ReadonlySet<number>): PdcSiteColumns {
+  const keep: number[] = []
+  for (let i = 0; i < sites.id.length; i++) if (members.has(sites.groupIndex[i])) keep.push(i)
+  const pick = (column: Int32Array): Int32Array => Int32Array.from(keep, (i) => column[i])
+  return { id: pick(sites.id), cell: pick(sites.cell), layer: pick(sites.layer), groupIndex: pick(sites.groupIndex), nObs: pick(sites.nObs) }
+}
+
 function conflictPart(held: Held, inputs: OverlayInputs): Part {
   const result = held.pdc
   if (!result.ok) return off(`${result.artifact}: ${result.reason}`)
@@ -160,21 +170,31 @@ function conflictPart(held: Held, inputs: OverlayInputs): Part {
   if (answer.iteration !== held.iteration) return off(wrongIteration(held.iteration, answer.iteration))
   if (!answer.available) return off(noConflictReason(held.iteration, answer.reason))
 
-  const oneGroup = inputs.colourSource === 'obs' && inputs.obsGroup !== null ? inputs.obsGroup : null
+  const drawnGroups = inputs.colourSource === 'obs' && inputs.obsGroups !== null ? new Set(inputs.obsGroups) : null
   let nObs: number
   let nSites: number
-  let groupIndex: number | null = null
-  if (oneGroup !== null) {
-    // A group absent from the answer has no conflicted site; -1 then leaves every site out by group.
-    groupIndex = answer.groups.indexOf(oneGroup)
-    const row = answer.byGroup.find((g) => g.group === oneGroup)
-    nObs = row?.nObs ?? 0
-    nSites = row?.nSites ?? 0
+  let found: ReturnType<typeof siteCells>
+  if (drawnGroups !== null) {
+    // A drawn group absent from the answer has no conflicted site, so it adds nothing.
+    nObs = 0
+    nSites = 0
+    for (const row of answer.byGroup) {
+      if (!drawnGroups.has(row.group)) continue
+      nObs += row.nObs
+      nSites += row.nSites
+    }
+    const members = new Set<number>()
+    answer.groups.forEach((group, i) => {
+      if (drawnGroups.has(group)) members.add(i)
+    })
+    const kept = membersOnly(answer.sites, members)
+    found = siteCells(kept, { layer: inputs.layer, allLayers: inputs.allLayers, groupIndex: null })
+    found.leftOut.otherGroup = answer.sites.id.length - kept.id.length
   } else {
     nObs = answer.nObs ?? answer.byGroup.reduce((sum, g) => sum + g.nObs, 0)
     nSites = answer.nSites ?? answer.byGroup.reduce((sum, g) => sum + g.nSites, 0)
+    found = siteCells(answer.sites, { layer: inputs.layer, allLayers: inputs.allLayers, groupIndex: null })
   }
-  const found = siteCells(answer.sites, { layer: inputs.layer, allLayers: inputs.allLayers, groupIndex })
   const placed = inGrid(found.cells, inputs.nCells)
   const ids = new Set(found.siteIds)
   const dots = new Set<number>()
@@ -187,7 +207,8 @@ function conflictPart(held: Held, inputs: OverlayInputs): Part {
   if (answer.rule !== null) lines.push(answer.rule)
   lines.push(answer.sourceFile !== null ? `source: ${source}, ${answer.sourceFile}` : `source: ${source}`)
   if (answer.weightsSource !== null) lines.push(`weights: ${answer.weightsSource}`)
-  lines.push(oneGroup !== null ? `group ${oneGroup}` : 'every observation group')
+  if (drawnGroups === null) lines.push('every observation group')
+  else lines.push(drawnGroups.size === 1 ? `group ${inputs.obsGroups![0]}` : `the set ${inputs.obsLabel ?? `of ${drawnGroups.size} groups`}`)
   const leftOut = leftOutLine([
     [found.leftOut.otherLayer, 'site on another layer', 'sites on other layers'],
     [found.leftOut.unknownLayer, 'site with an unknown layer, shown only under all layers', 'sites with an unknown layer, shown only under all layers'],

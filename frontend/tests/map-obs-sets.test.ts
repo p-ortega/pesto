@@ -602,6 +602,14 @@ describe('a set reads as a set wherever the map names what it draws', () => {
     expect(lastPointCount(layer)).toBe(0)
   })
 
+  it("counts a selected site of any member group as drawn and names the set for another group's", async () => {
+    const { root, store } = await withSet()
+    store.set({ sites: new Set([22, 33]) }, 'obs')
+    const whereLinesOf = (): string[] =>
+      [...root.querySelectorAll('[data-testid="selection-where"] .link-reach')].map((el) => el.textContent ?? '')
+    await vi.waitFor(() => expect(whereLinesOf()).toEqual(['1 selected site is in another group (shown: oname = hds · 2 groups)']))
+  })
+
   it('refuses groups that are not one set and draws no dot for them', async () => {
     const { root, store, layer } = await withSet()
     store.set({ obsGroups: new Set(['g1', 'g3']) }, 'other')

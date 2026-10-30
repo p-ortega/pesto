@@ -129,8 +129,10 @@ export function parameterLines(rings: ParameterRings): string[] {
 }
 
 export interface DrawnSites {
-  /** The coloured observation group; null while none is known, so no site counts as another group's. */
-  group: string | null
+  /** The drawn group's name, or every group of a drawn set; null while none is known, so no site counts as another group's. */
+  groups: ReadonlySet<string> | null
+  /** What the map says it shows: the group, or `{by} = {value} · {N} groups`. */
+  label: string | null
   layer: number
   allLayers: boolean
 }
@@ -156,7 +158,7 @@ export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[
   let notPlaced = 0
   // The same order of checks the dots are drawn by: group, then place, then layer.
   for (const site of answer.sites) {
-    if (drawn.group !== null && site.group !== drawn.group) otherGroup += 1
+    if (drawn.groups !== null && !drawn.groups.has(site.group)) otherGroup += 1
     else if (!site.placed) notPlaced += 1
     else if (drawn.allLayers) continue
     else if (site.layer < 0) unknownLayer += 1
@@ -164,7 +166,7 @@ export function whereLines(answer: SitesWhereAnswer, drawn: DrawnSites): string[
   }
   const lines: string[] = []
   for (const { layer, count } of countedLayers(otherLayer)) lines.push(`${selected(count, 'site', 'is')} on ${layerWords(layer)}`)
-  if (otherGroup > 0) lines.push(`${selected(otherGroup, 'site', 'is')} in another group (shown: ${drawn.group})`)
+  if (otherGroup > 0) lines.push(`${selected(otherGroup, 'site', 'is')} in another group (shown: ${drawn.label})`)
   if (unknownLayer > 0) {
     lines.push(`${selected(unknownLayer, 'site', 'has')} an unknown layer; turn on all layers to see ${unknownLayer === 1 ? 'it' : 'them'}`)
   }
