@@ -1554,3 +1554,35 @@ describe('the room a site plot gets', () => {
     expect(grid.nextElementSibling).toBe(notes)
   })
 })
+
+describe('long names in the panel tables', () => {
+  const LONG = 'oname:coarse.hds_otype:lst_usecol:sim_head_masl_obs_id:bore-21b'
+
+  it("keeps the end of a long name in the groups table's Group column and the site list's Site column", async () => {
+    obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group(LONG)]))
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, LONG)]))
+    const { host } = mount()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(1))
+    const groupCell = cell(groupRows(host)[0], 'group')
+    expect(groupCell.textContent).toBe(LONG)
+    expect(groupCell.title).toBe(LONG)
+    expect(groupCell.querySelector('.name-tail')?.textContent).toBe('bore-21b')
+
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    const siteCell = cell(siteRows(host)[0], 'site')
+    expect(siteCell.textContent).toBe(LONG)
+    expect(siteCell.title).toBe(LONG)
+    expect(siteCell.querySelector('.name-tail')?.textContent).toBe('bore-21b')
+    // The other columns are drawn as before.
+    expect(cell(siteRows(host)[0], 'placement').querySelector('.name-head')).toBeNull()
+  })
+
+  it('still sorts the Group column on the whole name', async () => {
+    obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('zz_group:bore-21b'), group('aa_group:zzzz-99z')]))
+    const { host } = mount()
+    await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
+    sortButton(host, 'Group').click()
+    expect(names(host)).toEqual(['aa_group:zzzz-99z', 'zz_group:bore-21b'])
+  })
+})

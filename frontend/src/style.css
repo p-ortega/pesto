@@ -1069,6 +1069,25 @@ body {
   white-space: nowrap;
 }
 
+/* A long name cut at its start: the head gives way with an ellipsis, the tail keeps its width. */
+.name-cut {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.name-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.name-tail {
+  flex: 0 0 auto;
+}
+
 .wrap-note {
   white-space: normal;
   overflow-wrap: anywhere;

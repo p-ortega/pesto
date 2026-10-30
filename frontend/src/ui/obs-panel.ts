@@ -28,6 +28,7 @@ import { foldOthersToFit, renderFold, settleGrowth, type PanelFoldHandle } from 
 import { renderGroupFit } from './obs-fit'
 import { LAYER_HEADING_TITLE, renderSelectedSites } from './obs-selected'
 import { renderSpaghetti } from './obs-spaghetti'
+import { paintCutName } from './name-cut'
 import { paintNote } from './note-line'
 
 export interface ObsPanelOptions {
@@ -74,6 +75,8 @@ interface GridColumn<T> {
   headingTitle?(): string
   /** Adds marks to a drawn cell after its text is set. */
   decorate?(cell: HTMLElement, row: T): void
+  /** A long name keeps its end in view, cut at its start. */
+  cut?: boolean
 }
 
 type SortDirection = 'ascending' | 'descending'
@@ -121,9 +124,12 @@ function appendCell<T>(rowEl: HTMLElement, column: GridColumn<T>, row: T): void 
   else if (column.kind === 'figure') cell.classList.add('tabular-nums')
   // A wrapped text cell ran over the rows below it; the full text stays in the title.
   else cell.classList.add('truncate')
-  cell.textContent = column.text(row)
   const title = column.title ? column.title(row) : column.kind === 'figure' ? '' : column.text(row)
-  if (title !== '') cell.title = title
+  if (column.cut === true) paintCutName(cell, column.text(row), title)
+  else {
+    cell.textContent = column.text(row)
+    if (title !== '') cell.title = title
+  }
   column.decorate?.(cell, row)
   rowEl.appendChild(cell)
 }
@@ -544,6 +550,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       label: 'Site',
       kind: 'name',
       text: (r) => r.site,
+      cut: true,
       decorate: (cell, row) => {
         const n = conflicted.get(row.siteId)
         if (n === undefined || pdc?.kind !== 'answer') return
@@ -754,7 +761,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       headingTitle: () => pdcHeadingTitle(pdc),
     })
     return [
-      { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group, sortValue: (r) => r.group },
+      { key: 'group', label: 'Group', kind: 'name', text: (r) => r.group, sortValue: (r) => r.group, cut: true },
       { key: 'n_obs', label: 'Observations', kind: 'figure', text: (r) => String(r.nObs), sortValue: (r) => r.nObs },
       { key: 'n_sites', label: 'Sites', kind: 'figure', text: (r) => String(r.nSites), sortValue: (r) => r.nSites },
       {
