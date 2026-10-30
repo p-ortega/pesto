@@ -513,4 +513,104 @@ describe('drawing a set of observation groups on the map', () => {
     expect(stub.calls.some((c) => c.startsWith('/api/run/obs/sites?group=g1'))).toBe(true)
     expect(Array.from(lastPoints(layer)![0])).toEqual(f32(0.25, 0.5))
   })
+
+  it('ends the list with a disabled entry carrying the reason when the sets cannot be read, and draws a group as before', async () => {
+    const { root, store, stub, layer } = await mounted()
+    stub.groupSets = 'fail'
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+    await vi.waitFor(() => expect(lastPointCount(layer)).toBe(1))
+    await vi.waitFor(() => expect(groupSelect(root).querySelector('option[data-obs-sets-failed]')).not.toBeNull())
+    const failed = [...groupSelect(root).options].at(-1)!
+    expect(failed.textContent).toBe('Group sets could not be read')
+    expect(failed.disabled).toBe(true)
+    expect(failed.title).toBe('control: control/obs.parquet is not in the cache')
+    chooseGroup(root, 'g2')
+    await vi.waitFor(() => expect(Array.from(lastPoints(layer)![0])).toEqual(f32(1.5, 0.5)))
+  })
+})
+
+describe('a set reads as a set wherever the map names what it draws', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    recording.calls.length = 0
+    stubOutlineContext()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  async function withSet(): Promise<{ root: HTMLElement; store: SelectionStore; stub: Stub; layer: LayerDouble }> {
+    const env = await mounted()
+    await enterObservations(env.store, env.layer, env.root)
+    chooseSet(env.root)
+    await vi.waitFor(() => expect(lastPointCount(env.layer)).toBe(2))
+    await settle()
+    return env
+  }
+
+  it("names the set in the legend's group line and on the Data card's folded line", async () => {
+    const { root } = await withSet()
+    const name = root.querySelector('.floating-bottom-left .legend-name.truncate')
+    expect(name?.textContent).toBe('oname = hds · 2 groups')
+    const fold = root.querySelector('[data-fold="data"] > .fold-button') as HTMLButtonElement
+    if (fold.getAttribute('aria-expanded') === 'true') fold.click()
+    expect(dataSummary(root)).toMatch(/^Data: oname = hds · 2 groups · /)
+  })
+
+  it("names a picked dot's own group in the readout, not the set", async () => {
+    const { root } = await withSet()
+    clickAtWorld(root.querySelector('canvas') as HTMLCanvasElement, 1.5, 0.5)
+    await vi.waitFor(() => expect(readoutText(root)).toContain('s22 (g2)'))
+    expect(readoutText(root)).not.toContain('(oname = hds')
+  })
+
+  it('names the set in a has-no-time-axis notice', async () => {
+    const { root, store, stub, layer } = await mounted()
+    await enterObservations(store, layer, root)
+    stub.setTimesRefused = 'the groups of this set mix time kinds (datetime and numeric)'
+    chooseSet(root)
+    await vi.waitFor(() => expect(noticeText(root)).toContain('oname = hds · 2 groups has no time axis'))
+    expect(noticeText(root)).toContain('mix time kinds')
+  })
+
+  it('colours nothing and says why when the frame is for another set', async () => {
+    const { root, store, stub, layer } = await mounted()
+    await enterObservations(store, layer, root)
+    stub.setFrame = 'other-set'
+    chooseSet(root)
+    await vi.waitFor(() => expect(noticeText(root)).toContain('asked for the set oname = hds but the answer was for the set oname = sfr'))
+    expect(lastPointCount(layer)).toBe(0)
+  })
+
+  it('colours nothing when the frame was cut from another observation table', async () => {
+    const { root, store, stub, layer } = await mounted()
+    await enterObservations(store, layer, root)
+    stub.setFrame = 'other-digest'
+    chooseSet(root)
+    await vi.waitFor(() => expect(noticeText(root)).toContain('different observation table'))
+    expect(lastPointCount(layer)).toBe(0)
+  })
+
+  it("refuses a set's sites that do not say each site's group", async () => {
+    const { root, store, stub, layer } = await mounted()
+    await enterObservations(store, layer, root)
+    stub.setSites = 'no-group-column'
+    chooseSet(root)
+    await vi.waitFor(() => expect(noticeText(root)).toContain('is missing group'))
+    expect(lastPointCount(layer)).toBe(0)
+  })
+
+  it('refuses groups that are not one set and draws no dot for them', async () => {
+    const { root, store, layer } = await withSet()
+    store.set({ obsGroups: new Set(['g1', 'g3']) }, 'other')
+    await vi.waitFor(() =>
+      expect(noticeText(root)).toContain(
+        'These 2 observation groups are not one group set of the observation data; pesto draws one group or one set at a time',
+      ),
+    )
+    expect(lastPointCount(layer)).toBe(0)
+    expect(groupSelect(root).value).toBe('')
+  })
 })

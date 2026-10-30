@@ -829,7 +829,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       cellArray,
       layerArray,
       pointRows,
-      obsGroup: obsActive ? obsGroupInUse() : null,
+      obsGroup: obsActive ? obsOneGroupInUse() : null,
       dotSiteIds,
     }
   }
@@ -1128,7 +1128,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (!answer.ok) {
         lines.push(`Where the selected sites are could not be read: ${answer.artifact}: ${answer.reason}`)
       } else if (obsActive) {
-        lines.push(...whereLines(answer, { group: obsGroupInUse(), layer: committed.layer, allLayers: obsAllLayers }))
+        lines.push(...whereLines(answer, { group: obsOneGroupInUse(), layer: committed.layer, allLayers: obsAllLayers }))
       } else if (siteRings !== null) {
         lines.push(...siteRings.lines)
       }
@@ -1363,8 +1363,9 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let obsSerial = 0
   // The group or set the dots are drawn for; null while nothing is.
   let obsTargetInUse: ObsTarget | null = null
-  // The one group drawn, or null for a set or nothing; the parts that name one group read this.
-  const obsGroupInUse = (): string | null => (obsTargetInUse?.kind === 'group' ? obsTargetInUse.group : null)
+  // What the map names as drawn: the group, or `{by} = {value} · {N} groups` for a set.
+  const obsLabelInUse = (): string | null => (obsTargetInUse === null ? null : targetLabel(obsTargetInUse))
+  const obsOneGroupInUse = (): string | null => (obsTargetInUse?.kind === 'group' ? obsTargetInUse.group : null)
   let obsData: ObsGroupData | null = null
   let obsDots: ObsDots | null = null
   let obsFrame: Float32Array | null = null
@@ -1462,7 +1463,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       dataFold.setSummary(
         dataSummary({
           source: 'obs',
-          group: obsGroupInUse(),
+          group: obsLabelInUse(),
           statistic: OBS_STAT_LABEL[obsStat],
           layer: committed.layer,
           allLayers: obsAllLayers,
@@ -1602,7 +1603,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       markFrame({
         selection: selectionLabel(committed),
         layer: committed.layer,
-        group: obsActive ? obsGroupInUse() : drawnGroup,
+        group: obsActive ? obsLabelInUse() : drawnGroup,
         colormap: committed.colormap,
         reverse: committed.reverseColormap,
         scale: committed.scale,
@@ -1691,7 +1692,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       return
     }
     if (obsPick !== null) {
-      renderReadout(readoutEl, { pick: obsPick, group: obsGroupInUse() ?? '', joined, field: new Float32Array(0) })
+      renderReadout(readoutEl, { pick: obsPick, group: obsLabelInUse() ?? '', joined, field: new Float32Array(0) })
       return
     }
     if (!obsActive && ringPick !== null) {

@@ -7,6 +7,7 @@ import {
   fetchObs1to1,
   fetchObsBrush,
   fetchObsFrame,
+  fetchObsGroupSets,
   fetchObsGroups,
   fetchObsPoints,
   fetchObsReals,
@@ -17,8 +18,11 @@ import {
   fetchObsTimes,
   OBS_STATS,
   OBS_STAT_LABEL,
+  resolveObsTarget,
   shareRead,
   TABLE_RMSE_LABEL,
+  targetKey,
+  targetLabel,
 } from '../src/data/obs'
 
 interface Stub {
@@ -303,6 +307,136 @@ describe('fetchObsFrame', () => {
     stubFetch(problem(404, { artifact: 'obs_agg', detail: 'no statistics for iteration 7' }))
 
     expect(await fetchObsFrame('heads', 7, 1, 'std')).toEqual({ ok: false, artifact: 'obs_agg', reason: 'no statistics for iteration 7' })
+  })
+})
+
+describe('a set of groups', () => {
+  const SET = { kind: 'set' as const, by: 'oname', value: 'a b&c', groups: ['g1', 'g2'] }
+  const SET_META = { order_digest: 'digest-a', group: null, set: { by: 'oname', value: 'a b&c' } }
+
+  it("asks for a set's sites by column and value and reads each row's own group", async () => {
+    const fetchMock = stubFetch({ bytes: ipc({ ...siteColumns(), group: ['g2', 'g1'] }), headers: { 'X-Pesto-Meta': JSON.stringify(SET_META) } })
+    const result = await fetchObsSites(SET)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/run/obs/sites?by=oname&value=a%20b%26c')
+    if (!result.ok) throw new Error(result.reason)
+    expect(result.rows.map((r) => r.group)).toEqual(['g2', 'g1'])
+  })
+
+  it("refuses a set's sites with no group column, naming the column", async () => {
+    stubFetch({ bytes: ipc(siteColumns()), headers: { 'X-Pesto-Meta': JSON.stringify(SET_META) } })
+    expect(await fetchObsSites(SET)).toEqual({
+      ok: false,
+      artifact: 'obs_cell',
+      reason: 'the site table for the set oname = a b&c is missing group, so no site can be tied to its group',
+    })
+  })
+
+  it('refuses a site row whose group is not in the set', async () => {
+    stubFetch({ bytes: ipc({ ...siteColumns(), group: ['g1', 'g9'] }), headers: { 'X-Pesto-Meta': JSON.stringify(SET_META) } })
+    const result = await fetchObsSites(SET)
+    expect(result.ok === false && result.reason).toBe('row 2 of the site table belongs to group g9, which is not in oname = a b&c · 2 groups')
+  })
+
+  it('refuses sites cut for another set or for one group', async () => {
+    stubFetch({ bytes: ipc({ ...siteColumns(), group: ['g1', 'g2'] }), headers: { 'X-Pesto-Meta': JSON.stringify({ ...SET_META, set: { by: 'oname', value: 'x' } }) } })
+    expect((await fetchObsSites(SET)).ok).toBe(false)
+    stubFetch({ bytes: ipc(siteColumns()), headers: { 'X-Pesto-Meta': JSON.stringify({ order_digest: 'digest-a', group: 'heads', set: null }) } })
+    const result = await fetchObsSites(SET)
+    expect(result.ok === false && result.reason).toBe('asked for the set oname = a b&c but the answer was for group heads')
+  })
+
+  it("asks for a set's times and frame by column and value, and refuses answers for another set", async () => {
+    const times = { group: null, set: { by: 'oname', value: 'a b&c' }, order_digest: 'd', times: [1], n_at_time: [2], iterations: [], limits: {}, limits_refused: null, refused: null }
+    const fetchMock = stubFetch({ json: times })
+    expect((await fetchObsTimes(SET)).ok).toBe(true)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/run/obs/times?by=oname&value=a%20b%26c')
+    stubFetch({ json: { ...times, set: { by: 'otype', value: 'a b&c' } } })
+    const other = await fetchObsTimes(SET)
+    expect(other.ok === false && other.reason).toBe('asked for the set oname = a b&c but the answer was for the set otype = a b&c')
+    const { set: _dropped, ...noSet } = times
+    stubFetch({ json: noSet })
+    const missing = await fetchObsTimes(SET)
+    expect(missing.ok === false && missing.reason).toBe('the times answer is missing set')
+
+    const meta = { group: null, set: { by: 'oname', value: 'a b&c' }, iteration: 1, time: 5, stat: 'rmse', order_digest: 'd', n_sites: 2, n_at_time: 2, n_rows_hidden: 0, n_finite: 2, dtype: '<f4' }
+    const frameMock = stubFetch({ bytes: blobOf([1, 2]), headers: { 'X-Pesto-Meta': JSON.stringify(meta) } })
+    const frame = await fetchObsFrame(SET, 1, 5, 'rmse')
+    expect(frameMock.mock.calls[0][0]).toBe('/api/run/obs/frame?by=oname&value=a%20b%26c&iteration=1&time=5&stat=rmse')
+    expect(frame.ok && frame.meta.set).toEqual({ by: 'oname', value: 'a b&c' })
+    expect(frame.ok && frame.meta.group).toBeNull()
+  })
+})
+
+describe('fetchObsGroupSets', () => {
+  const body = {
+    order_digest: 'digest-a',
+    rule: 'a set is every group that holds one value',
+    sets: [{ by: 'oname', value: 'hds', groups: ['g1', 'g2'], n_groups: 2, n_sites: 2 }],
+    notes: ["text column 'usecol' makes no set"],
+  }
+
+  it('reads the sets with their groups in the order sent', async () => {
+    const fetchMock = stubFetch({ json: body })
+    const result = await fetchObsGroupSets()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/run/obs/group_sets')
+    expect(result).toEqual({
+      ok: true,
+      orderDigest: 'digest-a',
+      rule: body.rule,
+      sets: [{ by: 'oname', value: 'hds', groups: ['g1', 'g2'], nGroups: 2, nSites: 2 }],
+      notes: body.notes,
+    })
+  })
+
+  it('refuses a set whose count disagrees with its list, and a missing field', async () => {
+    stubFetch({ json: { ...body, sets: [{ ...body.sets[0], n_groups: 3 }] } })
+    const wrong = await fetchObsGroupSets()
+    expect(wrong.ok === false && wrong.reason).toBe('set 1 of the group sets answer lists 2 groups but says n_groups 3')
+    const { notes: _dropped, ...noNotes } = body
+    stubFetch({ json: noNotes })
+    const missing = await fetchObsGroupSets()
+    expect(missing.ok === false && missing.reason).toBe('the group sets answer is missing notes')
+  })
+
+  it('turns a missing artifact into a refusal with its reason', async () => {
+    stubFetch(problem(404, { artifact: 'control', detail: 'control/obs.parquet is not in the cache' }))
+    expect(await fetchObsGroupSets()).toEqual({ ok: false, artifact: 'control', reason: 'control/obs.parquet is not in the cache' })
+  })
+})
+
+describe('resolveObsTarget', () => {
+  const sets = [
+    { by: 'oname', value: 'hds', groups: ['g1', 'g2'], nGroups: 2, nSites: 2 },
+    { by: 'otype', value: 'lst', groups: ['g1', 'g2', 'g3'], nGroups: 3, nSites: 3 },
+  ]
+
+  it('draws nothing for no group and the group itself for one', () => {
+    expect(resolveObsTarget(new Set(), sets)).toEqual({ kind: 'none' })
+    expect(resolveObsTarget(new Set(['g3']), null)).toEqual({ kind: 'target', target: { kind: 'group', group: 'g3' }, note: null })
+  })
+
+  it('draws the set whose groups are exactly the chosen ones, in any order', () => {
+    const resolved = resolveObsTarget(new Set(['g2', 'g1']), sets)
+    expect(resolved).toEqual({ kind: 'target', target: { kind: 'set', by: 'oname', value: 'hds', groups: ['g1', 'g2'] }, note: null })
+  })
+
+  it('refuses groups that are no set, saying how many there are', () => {
+    expect(resolveObsTarget(new Set(['g1', 'g3']), sets)).toEqual({
+      kind: 'refused',
+      reason: 'These 2 observation groups are not one group set of the observation data; pesto draws one group or one set at a time',
+    })
+  })
+
+  it('names the other sets that hold exactly the same groups', () => {
+    const twin = [...sets, { by: 'ofile', value: 'a.hds', groups: ['g2', 'g1'], nGroups: 2, nSites: 2 }]
+    const resolved = resolveObsTarget(new Set(['g1', 'g2']), twin)
+    expect(resolved.kind === 'target' && resolved.note).toBe('the same groups also make ofile = a.hds, which draw the same dots')
+  })
+
+  it('labels a set by its column, value and count, and keys a group apart from a set', () => {
+    expect(targetLabel({ kind: 'set', by: 'oname', value: 'hds', groups: ['g1', 'g2'] })).toBe('oname = hds · 2 groups')
+    expect(targetLabel('g1')).toBe('g1')
+    expect(targetKey('["set","oname","hds"]')).not.toBe(targetKey({ kind: 'set', by: 'oname', value: 'hds', groups: [] }))
   })
 })
 
