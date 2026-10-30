@@ -19,6 +19,7 @@ const obsApi = vi.hoisted(() => ({
   fetchObsSeries: vi.fn(),
   fetchObsTimes: vi.fn(),
   fetchObsReals: vi.fn(),
+  fetchObsGroupSets: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -168,6 +169,8 @@ beforeEach(() => {
   obsApi.fetchObsSeries.mockReset()
   obsApi.fetchObsTimes.mockReset()
   obsApi.fetchObsReals.mockReset()
+  obsApi.fetchObsGroupSets.mockReset()
+  obsApi.fetchObsGroupSets.mockResolvedValue({ ok: true, orderDigest: 'd', rule: 'one value per group', sets: [], notes: [] })
   answerSite(sitePayload())
 })
 
@@ -644,6 +647,95 @@ describe('the cursor at the map time', () => {
     await vi.waitFor(() => expect(m.host.textContent).toContain('The map-time cursor is not drawn: obs_index: no times'))
 
     expect(cursors(m.front)).toHaveLength(0)
+  })
+})
+
+describe('the cursor at the time of a set drawn on the map', () => {
+  const SET = { by: 'oname', value: 'hds', groups: ['g1', 'g2'], nGroups: 2, nSites: 2 }
+  const OBS = { colour: { source: 'obs' as const, stat: 'rmse' as const }, timeIdx: 1 }
+
+  function cursors(calls: Call2d[]): Call2d[] {
+    return calls.filter((c) => c.method === 'stroke' && c.state.strokeStyle === ACCENT)
+  }
+
+  function cursorX(calls: Call2d[]): number[] {
+    const out: number[] = []
+    calls.forEach((c, i) => {
+      if (c.method === 'stroke' && c.state.strokeStyle === ACCENT) out.push(calls[i - 2].args[0] as number)
+    })
+    return out
+  }
+
+  beforeEach(() => {
+    obsApi.fetchObsGroupSets.mockResolvedValue({ ok: true, orderDigest: 'd', rule: 'one value per group', sets: [SET], notes: [] })
+    obsApi.fetchObsTimes.mockImplementation(async (target: unknown) =>
+      typeof target === 'object'
+        ? { ok: true, payload: { group: null, set: { by: 'oname', value: 'hds' }, times: [19000, 19030], refused: null, notes: [] } }
+        : { ok: true, payload: { group: target, times: [19000, 19010], refused: null, notes: [] } },
+    )
+    const groups: Record<number, string> = { 7: 'g1', 8: 'g2', 9: 'g3' }
+    obsApi.fetchObsSite.mockImplementation(async (id: number) => ({ ok: true, payload: sitePayload({ site_id: id, group: groups[id] }) }))
+  })
+
+  it("draws the cursor for a site of a member group at the set's time", async () => {
+    const m = mount()
+    select(m.store, [8], { ...OBS, obsGroups: new Set(['g1', 'g2']) })
+    await vi.waitFor(() => expect(cursors(m.front)).toHaveLength(1))
+
+    expect(obsApi.fetchObsTimes).toHaveBeenCalledTimes(1)
+    expect(obsApi.fetchObsTimes.mock.calls[0][0]).toMatchObject({ kind: 'set', by: 'oname', value: 'hds' })
+    // The set's times[1] is the last time of the site, so the cursor sits at the right edge of the plot.
+    const one = mount()
+    obsApi.fetchObsTimes.mockClear()
+    select(one.store, [8], { ...OBS, obsGroups: new Set(['g2']) })
+    await vi.waitFor(() => expect(cursors(one.front)).toHaveLength(1))
+    expect(cursorX(m.front)[0]).toBeGreaterThan(cursorX(one.front)[0])
+  })
+
+  it('draws no cursor for a site of a group outside the set', async () => {
+    const m = mount()
+    select(m.store, [7, 9], { ...OBS, obsGroups: new Set(['g1', 'g2']) })
+    await vi.waitFor(() => expect(cursors(m.front)).toHaveLength(1))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // One redraw of both panels draws one cursor: the g1 site's, never the g3 site's.
+    const from = m.front.length
+    m.store.set({ timeIdx: 0 }, 'test')
+    m.store.flush()
+    expect(cursors(m.front.slice(from))).toHaveLength(1)
+  })
+
+  it('takes no time from a set when the selection is not exactly its groups', async () => {
+    const m = mount()
+    select(m.store, [7, 8], { ...OBS, obsGroups: new Set(['g1', 'g3']) })
+    await vi.waitFor(() => expect(count(m.gl, 'drawElements')).toBe(4))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(obsApi.fetchObsTimes).not.toHaveBeenCalled()
+    expect(cursors(m.front)).toHaveLength(0)
+  })
+
+  it("says why when the set's times cannot be read and draws no cursor", async () => {
+    obsApi.fetchObsTimes.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'the set has no time axis' })
+    const m = mount()
+    select(m.store, [8], { ...OBS, obsGroups: new Set(['g1', 'g2']) })
+    await vi.waitFor(() => expect(m.host.textContent).toContain('The map-time cursor is not drawn: obs_index: the set has no time axis'))
+
+    expect(cursors(m.front)).toHaveLength(0)
+  })
+
+  it('reads the sets through the read it is given, and only for more than one group', async () => {
+    const loadGroupSets = vi.fn(async () => ({ ok: true as const, orderDigest: 'd', rule: 'r', sets: [SET], notes: [] }))
+    const m = mount({ loadGroupSets })
+    select(m.store, [7], { ...OBS, obsGroups: new Set(['g1']) })
+    await vi.waitFor(() => expect(cursors(m.front)).toHaveLength(1))
+    expect(loadGroupSets).not.toHaveBeenCalled()
+
+    m.store.set({ obsGroups: new Set(['g1', 'g2']) }, 'test')
+    m.store.flush()
+    await vi.waitFor(() => expect(obsApi.fetchObsTimes).toHaveBeenCalledTimes(2))
+    expect(loadGroupSets).toHaveBeenCalledTimes(1)
+    expect(obsApi.fetchObsGroupSets).not.toHaveBeenCalled()
   })
 })
 

@@ -8,11 +8,17 @@ import { ApiError } from '../data/client'
 import { LatestWins } from '../data/latest-wins'
 import {
   fetchObsGroups,
+  fetchObsGroupSets,
   fetchObsSites,
+  resolveObsTarget,
   shareRead,
   TABLE_RMSE_LABEL,
+  targetLabel,
   type ObsGroupRow,
+  type ObsGroupSet,
+  type ObsGroupSetsResult,
   type ObsGroupsResult,
+  type ObsTarget,
   type ObsSiteRow,
   type ObsSitesResult,
 } from '../data/obs'
@@ -38,6 +44,8 @@ export interface ObsPanelOptions {
   startHidden?: boolean
   /** Reads the group summary. Without one the panel keeps its own shared read. */
   loadGroups?: () => Promise<ObsGroupsResult>
+  /** Reads the group sets. Without one the panel keeps its own shared read. */
+  loadGroupSets?: () => Promise<ObsGroupSetsResult>
 }
 
 export interface ObsPanelHandle {
@@ -60,6 +68,7 @@ const OVERSCAN = 20
 const VIEWPORT_HEIGHT = 240
 
 const NO_FIGURE = '—'
+const SITE_PROMPT = 'Click a group above to list its sites.'
 const NO_RESIDUAL = 'no observation in this group has a residual at this iteration'
 
 interface GridColumn<T> {
@@ -430,6 +439,7 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
 
   let hidden = opts.startHidden === true
   const loadGroups = opts.loadGroups ?? shareRead(() => fetchObsGroups())
+  const loadGroupSets = opts.loadGroupSets ?? shareRead(() => fetchObsGroupSets())
   const blocked = opts.capabilities.obs !== undefined && !opts.capabilities.obs.available
   const statsOff = opts.capabilities.obsStats !== undefined && !opts.capabilities.obsStats.available ? opts.capabilities.obsStats : null
   // A browser drops the scroll offset of a box that is not displayed, so the offsets are kept here while hidden.
@@ -504,24 +514,27 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     onPick: (siteId, event) => pickSiteId(siteId, event),
   })
   const fit = renderGroupFit(fitHost, { store: opts.store, startHidden: hidden })
-  const spaghetti = renderSpaghetti(spaghettiHost, { store: opts.store, startHidden: hidden })
+  const spaghetti = renderSpaghetti(spaghettiHost, { store: opts.store, startHidden: hidden, loadGroupSets })
 
   let chosenGroup: string | null = null
   let groupsRequested = false
   let groupsGrid: Grid<ObsGroupRow> | null = null
   let groupNames: ReadonlySet<string> | null = null
+  // The sets the map can draw; null until read, and for good when the read fails.
+  let groupSets: readonly ObsGroupSet[] | null = null
+  let setsRead: Promise<readonly string[]> | null = null
   let sitesGrid: Grid<ObsSiteRow> | null = null
   // The group whose sites were asked for, and whether a choice made while hidden is still to be followed.
   let sitesFor: string | null = null
   let sitesPending = false
   const sitesSlot = new LatestWins<ObsSitesResult>()
 
-  function renderSitePrompt(): void {
+  function renderSitePrompt(title = SITE_PROMPT): void {
     sitesGrid = null
     showSelectedButton = null
     sitesFold.actions.textContent = ''
     sitesFold.setSummary('Sites')
-    renderNotice(sitesHost, { title: 'Click a group above to list its sites.', tone: 'info' })
+    renderNotice(sitesHost, { title, tone: 'info' })
   }
 
   function renderSitesFailure(artifact: string, reason: string): void {
@@ -700,11 +713,36 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     )
   }
 
-  // The first group of the shared selection that the table holds; any other choice is not this panel's to show.
+  // G-14-3: the tables and the fit show one group at a time, so a set or a mix marks no group and says so.
+  function showNoGroup(target: ObsTarget | null): void {
+    const title = target === null ? SITE_PROMPT : `The map draws ${targetLabel(target)}. ${SITE_PROMPT}`
+    chosenGroup = null
+    groupsGrid?.markRows()
+    sitesSlot.cancel()
+    sitesFor = null
+    sitesPending = false
+    renderSitePrompt(title)
+    fit.setGroup(null)
+    fitFold.setSummary('Group fit')
+    if (target === null) fitHost.textContent = ''
+    else renderNotice(fitHost, { title, tone: 'info' })
+  }
+
+  // The drawn group when the table holds it, or the set it belongs to; a group the table does not hold is not this panel's to show.
   function followSelection(): void {
     if (groupNames === null) return
-    const wanted = [...opts.store.get().obsGroups][0]
-    if (wanted === undefined || !groupNames.has(wanted)) return
+    const resolved = resolveObsTarget(opts.store.get().obsGroups, groupSets)
+    if (resolved.kind !== 'target') {
+      showNoGroup(null)
+      return
+    }
+    const target = resolved.target
+    if (target.kind === 'set') {
+      showNoGroup(target)
+      return
+    }
+    const wanted = target.group
+    if (!groupNames.has(wanted)) return
     chosenGroup = wanted
     groupsGrid?.markRows()
     setFitGroup(wanted)
@@ -837,10 +875,28 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
     grid.setRows(rows)
   }
 
+  // Read once. A failure is one notice line and leaves every set unnamed, so a set shows as the prompt.
+  function requestGroupSets(): Promise<readonly string[]> {
+    const failed = (artifact: string, reason: string): string[] => [`The group sets could not be read: ${artifact}: ${reason}`]
+    setsRead ??= loadGroupSets().then(
+      (answer) => {
+        if (!answer.ok) return failed(answer.artifact, answer.reason)
+        groupSets = answer.sets
+        return answer.notes
+      },
+      (error: unknown) => {
+        const { artifact, reason } = describeFailure(error, 'obs_index')
+        return failed(artifact, reason)
+      },
+    )
+    return setsRead
+  }
+
   // The first show asks once; a hidden panel draws and fetches nothing.
   function requestGroups(): void {
     if (groupsRequested || blocked) return
     groupsRequested = true
+    const sets = requestGroupSets()
     const loading = document.createElement('div')
     loading.classList.add('label')
     loading.style.color = 'var(--ink-muted)'
@@ -854,6 +910,11 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
           for (const note of answer.notes) appendNote(noticesHost, note)
           renderGroups(answer.rows)
           followSelection()
+          // The groups succeed once, so the sets' notes are shown once, after the groups' own.
+          void sets.then((notes) => {
+            for (const note of notes) appendNote(noticesHost, note)
+            followSelection()
+          })
         } else {
           groupsRequested = false
           renderGroupsFailure(answer.artifact, answer.reason)
