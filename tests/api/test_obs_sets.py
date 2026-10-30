@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -241,3 +242,168 @@ def test_a_set_over_the_site_limit_is_a_409_naming_both_counts(tmp_path, in_proc
         assert "2 sites" in body["detail"] and "1 the map serves" in body["detail"]
         assert "'oname'" in body["detail"] and "'hds'" in body["detail"]
     assert _frame(client, 0, 1.0, "mean", **HDS).status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# refusals and notes: nothing is left out of a set without a trace
+# ---------------------------------------------------------------------------
+
+
+def _spec(group: str, site: str, **extras) -> SiteSpec:
+    return SiteSpec(group, site, (1.0,), "time-token", extras=extras)
+
+
+NOTE_SITES = (
+    _spec("g1", "n-1", oname="hds", usecol="u1"),
+    _spec("g2", "n-2", oname="hds", usecol="u2"),
+    # Two sites of one group holding two values.
+    _spec("g4", "n-4a", oname="hds", usecol="u4"),
+    _spec("g4", "n-4b", oname="sfr", usecol="u4"),
+    # A value on one site and a blank on the other.
+    _spec("g5", "n-5a", oname="hds", usecol="u5"),
+    _spec("g5", "n-5b", oname=None, usecol="u5"),
+    # No value at all.
+    _spec("g6", "n-6", oname=None, usecol="u6"),
+    # A leading space is part of the value.
+    _spec("g7", "n-7", oname=" hds", usecol="u7"),
+    _spec("g8", "n-8", oname=" hds", usecol="u8"),
+)
+NOTE_RUN = {"sites": NOTE_SITES, "iterations": (0,), "n_real": 4}
+
+
+def test_a_group_holding_two_values_is_in_no_set_and_a_note_names_it(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **NOTE_RUN)
+
+    body = _group_sets(client)
+
+    hds = next(s for s in body["sets"] if s["by"] == "oname" and s["value"] == "hds")
+    assert hds["groups"] == ["g1", "g2"]
+    assert (
+        "column 'oname': 1 group holds more than one value, so it is in no oname set; "
+        "first: 'g4' ('hds', 'sfr')"
+    ) in body["notes"]
+
+
+def test_a_group_with_a_value_on_some_rows_and_a_blank_on_others_is_in_no_set(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **NOTE_RUN)
+
+    notes = _group_sets(client)["notes"]
+
+    assert (
+        "column 'oname': 1 group has a value on some rows and a blank on others, so it is in "
+        "no oname set; first: 'g5' ('hds' and a blank)"
+    ) in notes
+
+
+def test_a_group_with_no_value_in_a_column_that_makes_sets_is_counted(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **NOTE_RUN)
+
+    notes = _group_sets(client)["notes"]
+
+    assert "column 'oname': 1 group has no oname value, so it is in no oname set; 'g6'" in notes
+
+
+def test_one_note_names_the_text_columns_that_make_no_set(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **NOTE_RUN)
+
+    body = _group_sets(client)
+
+    assert not any(s["by"] == "usecol" for s in body["sets"])
+    made_none = [t for t in body["notes"] if "no set" in t and t.startswith("text column")]
+    assert made_none == [
+        "text column 'usecol' makes no set, since no value in it is held by every row of more "
+        "than one group"
+    ]
+    assert "obsnme, obgnme, the time columns (datetime, time)" in body["rule"]
+    assert "(id, x, y, z, icpl, layer, k, i, j)" in body["rule"]
+    assert not any("obsnme" in t or "'datetime'" in t for t in body["notes"])
+
+
+def test_a_value_with_a_leading_space_is_its_own_set(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **NOTE_RUN)
+
+    sets = {(s["by"], s["value"]): s["groups"] for s in _group_sets(client)["sets"]}
+
+    assert sets[("oname", " hds")] == ["g7", "g8"]
+    assert sets[("oname", "hds")] == ["g1", "g2"]
+    assert len(_sites(client, by="oname", value=" hds")[0]) == 2
+
+
+def test_naming_a_group_and_a_set_or_half_a_set_is_a_422(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **SET_RUN)
+
+    for route in ("sites", "times"):
+        for params in ({"group": "g1", **HDS}, {"by": "oname"}, {"value": "hds"}, {}):
+            response = client.get(f"/api/run/obs/{route}", params=params)
+            assert response.status_code == 422, (route, params)
+    both = _frame(client, 0, 1.0, "mean", group="g1", **HDS)
+    assert both.status_code == 422
+    assert _frame(client, 0, 1.0, "mean", by="oname").status_code == 422
+
+
+def test_a_pair_the_run_has_no_set_for_is_a_404_naming_the_column_and_value(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **SET_RUN)
+
+    for route in ("sites", "times"):
+        response = client.get(f"/api/run/obs/{route}", params={"by": "oname", "value": "nope"})
+        assert response.status_code == 404
+        detail = response.json()["detail"]
+        assert "'oname'" in detail and "'nope'" in detail
+    # One group's value makes no set, so it is not found either.
+    assert client.get("/api/run/obs/sites", params={"by": "oname", "value": "sfr"}).status_code == 404
+    assert _frame(client, 0, 1.0, "mean", by="oname", value="nope").status_code == 404
+
+
+def test_a_sets_placement_notes_are_summed_per_rule_over_its_groups(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **SET_RUN)
+    _one, single, _r = _sites(client, group="g1")
+
+    _frame_rows, notes, _response = _sites(client, **HDS)
+
+    rule_lines = [t for t in notes if t.startswith("placement rule")]
+    rule = next(t for t in single if t.startswith("placement rule")).split(":")[0]
+    assert rule_lines == [f"{rule}: 2 of 2 sites placed"]
+
+
+def test_a_set_keeps_its_groups_own_placement_notes_up_to_twenty_and_counts_the_rest():
+    from pesto.api import obsmap, obssets
+
+    members = tuple(f"m{i}" for i in range(25))
+    table_notes = ["about the whole run", "group 'other': not a member"] + [
+        f"group '{g}': its own note" for g in members
+    ]
+    target = obsmap.Target(group=None, set=obssets.GroupSet("oname", "hds", members, 25))
+
+    notes = obsmap._member_notes(table_notes, target)
+
+    assert notes[0] == "about the whole run"
+    assert "group 'other': not a member" not in notes
+    assert notes[1:21] == [f"group 'm{i}': its own note" for i in range(20)]
+    assert notes[21] == (
+        "5 more placement note(s) of the groups of this set are left out; choosing one group "
+        "shows them"
+    )
+    assert len(notes) == 22
+
+
+def test_with_no_run_open_every_set_form_is_a_409(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **SET_RUN)
+    client.pesto_app.state.cache_root = None
+
+    assert client.get("/api/run/obs/group_sets").status_code == 409
+    for route in ("sites", "times"):
+        assert client.get(f"/api/run/obs/{route}", params=HDS).status_code == 409
+    assert _frame(client, 0, 1.0, "mean", **HDS).status_code == 409
+
+
+def test_an_unreadable_observation_table_is_a_404_naming_control(tmp_path, in_process):
+    client, _run = open_obs_run(tmp_path, **SET_RUN)
+    layout_root = client.pesto_app.state.cache_root
+    (Path(layout_root) / "control" / "obs.parquet").write_bytes(b"not parquet")
+
+    response = client.get("/api/run/obs/group_sets")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["artifact"] == "control"
+    assert layout_root not in body["detail"]

@@ -208,10 +208,10 @@ def build_group_sets(obs_table, index) -> GroupSets | ReadFailure:
             )
     if no_set_columns:
         listed = ", ".join(repr(c) for c in no_set_columns)
-        word = "column" if len(no_set_columns) == 1 else "columns"
+        one = len(no_set_columns) == 1
         notes.append(
-            f"text {word} {listed} make no set, since no value in them is held by every row of "
-            "more than one group"
+            f"text {'column' if one else 'columns'} {listed} {'makes' if one else 'make'} no set, "
+            f"since no value in {'it' if one else 'them'} is held by every row of more than one group"
         )
     return GroupSets(sets=tuple(sets), rule=RULE, notes=tuple(notes))
 
