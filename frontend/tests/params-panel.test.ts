@@ -677,7 +677,7 @@ describe('the drill-down list and the groups that are not on the map', () => {
   })
 
   it('shows the stored reason and no list for a group the drill-down is not offered for', async () => {
-    const reason = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    const reason = 'This group has 12,000 parameters, too many to list one by one; pesto lists the parameters of groups of up to 10,000.'
     parApi.fetchParGroups.mockResolvedValue(
       groupsAnswer([groupRow('hk', { drill_down: { offered: false, reason } }), groupRow('rch')]),
     )
@@ -1227,7 +1227,7 @@ describe('the change columns and the one-parameter drill-down', () => {
   })
 
   it('shows the problem\'s detail as a notice when the group is over the drill-down limit', async () => {
-    const detail = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    const detail = 'This group has 12,000 parameters, too many to list one by one; pesto lists the parameters of groups of up to 10,000.'
     parApi.fetchParValues.mockRejectedValue(
       new ApiError({ type: 'about:blank', title: 'drill-down is not offered', status: 409, artifact: 'par_groups', detail }),
     )

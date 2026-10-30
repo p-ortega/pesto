@@ -242,7 +242,7 @@ def test_a_group_at_the_limit_is_offered_drill_down_and_one_over_is_refused_with
     assert at_limit["hk_pp"]["drill_down"] == {"offered": True, "reason": None}
     assert over["hk_pp"]["drill_down"] == {
         "offered": False,
-        "reason": "This group has 4 parameters. Drill-down is offered up to 3.",
+        "reason": "This group has 4 parameters, too many to list one by one; pesto lists the parameters of groups of up to 3.",
     }
     assert over["mix"]["drill_down"]["offered"] is True
 
@@ -250,7 +250,7 @@ def test_a_group_at_the_limit_is_offered_drill_down_and_one_over_is_refused_with
 def test_the_refusal_writes_the_numbers_with_thousands_separators():
     assert drill_down_offer(10_001, 10_000) == {
         "offered": False,
-        "reason": "This group has 10,001 parameters. Drill-down is offered up to 10,000.",
+        "reason": "This group has 10,001 parameters, too many to list one by one; pesto lists the parameters of groups of up to 10,000.",
     }
     assert drill_down_offer(10_000, 10_000) == {"offered": True, "reason": None}
 

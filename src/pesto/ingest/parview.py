@@ -1147,7 +1147,7 @@ def drill_down_offer(n_par: int, limit: int) -> dict:
         return {"offered": True, "reason": None}
     return {
         "offered": False,
-        "reason": f"This group has {n_par:,} parameters. Drill-down is offered up to {limit:,}.",
+        "reason": f"This group has {n_par:,} parameters, too many to list one by one; pesto lists the parameters of groups of up to {limit:,}.",
     }
 
 

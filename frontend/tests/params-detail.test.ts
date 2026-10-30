@@ -488,7 +488,7 @@ describe('the parameter detail', () => {
   })
 
   it('shows the problem\'s detail for a group over the drill-down limit', () => {
-    const reason = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    const reason = 'This group has 12,000 parameters, too many to list one by one; pesto lists the parameters of groups of up to 10,000.'
     const { host, calls } = mountParameter({ ok: false, artifact: 'par_groups', reason })
 
     expect(host.textContent).toContain(reason)

@@ -307,7 +307,7 @@ def test_a_group_over_the_drill_down_limit_is_refused_on_both_routes_and_the_lim
         body = response.json()
         assert body["title"] == "drill-down is not offered for this group"
         assert body["artifact"] == "par_groups"
-        assert body["detail"] == "This group has 4 parameters. Drill-down is offered up to 3."
+        assert body["detail"] == "This group has 4 parameters, too many to list one by one; pesto lists the parameters of groups of up to 3."
 
     at_limit = run.groups["rch_gr"]
     assert len(at_limit) == 3

@@ -113,7 +113,7 @@ describe('fetchParValues', () => {
   })
 
   it('turns the drill-down limit 409 into a result carrying the stored reason', async () => {
-    const detail = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    const detail = 'This group has 12,000 parameters, too many to list one by one; pesto lists the parameters of groups of up to 10,000.'
     stubFetch(409, { type: 'about:blank', title: 'drill-down is not offered for this group', status: 409, artifact: 'par_groups', detail })
 
     expect(await fetchParValues('hk_0001')).toEqual({ ok: false, artifact: 'par_groups', reason: detail })
@@ -182,7 +182,7 @@ describe('fetchParChange', () => {
   })
 
   it('turns the drill-down limit 409 into a result carrying the stored reason', async () => {
-    const detail = 'This group has 12,000 parameters. Drill-down is offered up to 10,000.'
+    const detail = 'This group has 12,000 parameters, too many to list one by one; pesto lists the parameters of groups of up to 10,000.'
     stubArrowFetch(409, { type: 'about:blank', title: 'drill-down is not offered for this group', status: 409, artifact: 'par_groups', detail })
 
     expect(await fetchParChange('hk')).toEqual({ ok: false, artifact: 'par_groups', reason: detail })
