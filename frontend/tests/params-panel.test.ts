@@ -235,20 +235,42 @@ describe('renderParamsPanel', () => {
     expect(reversedText).toEqual(forwardText)
   })
 
-  it('truncates a long parameter or group name and carries the full string in a title', async () => {
+  it('cuts a long parameter or group name at its start, keeping its end, and carries the full string in text and title', async () => {
     const el = mount()
     const longName = 'p'.repeat(200)
+    const longGroup = 'pp_hk_layer12_zone_north'
     const parTable = Promise.resolve(
-      parTableBuffer({ parnme: [longName], pargp: ['G1'], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
+      parTableBuffer({ parnme: [longName], pargp: [longGroup], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
     )
-    renderParamsPanel(el, panelOptions({ parTable, store: makeStore(['G1']) }))
+    renderParamsPanel(el, panelOptions({ parTable, store: makeStore([longGroup]) }))
 
     await vi.waitFor(() => {
       expect(el.querySelectorAll('.param-row').length).toBe(1)
     })
-    const nameEl = el.querySelector('.param-row .truncate') as HTMLElement
-    expect(nameEl.classList.contains('truncate')).toBe(true)
+    const [nameEl, groupEl] = [...el.querySelector('.param-row')!.children] as HTMLElement[]
+    expect(nameEl.classList.contains('name-cut')).toBe(true)
+    expect(nameEl.textContent).toBe(longName)
     expect(nameEl.title).toBe(longName)
+    expect(nameEl.querySelector('.name-tail')!.textContent).toBe('p'.repeat(16))
+    expect(groupEl.classList.contains('name-cut')).toBe(true)
+    expect(groupEl.textContent).toBe(longGroup)
+    expect(groupEl.title).toBe(longGroup)
+    expect(groupEl.querySelector('.name-tail')!.textContent).toBe('north')
+  })
+
+  it('shows a short parameter and group name whole', async () => {
+    const el = mount()
+    const parTable = Promise.resolve(
+      parTableBuffer({ parnme: ['drnset.cond'], pargp: ['drnset'], parlbnd: [0], parubnd: [1], partrans: ['none'] }),
+    )
+    renderParamsPanel(el, panelOptions({ parTable, store: makeStore(['drnset']) }))
+
+    await vi.waitFor(() => expect(el.querySelectorAll('.param-row').length).toBe(1))
+    const [nameEl, groupEl] = [...el.querySelector('.param-row')!.children] as HTMLElement[]
+    expect(nameEl.classList.contains('name-cut')).toBe(false)
+    expect(nameEl.textContent).toBe('drnset.cond')
+    expect(nameEl.title).toBe('drnset.cond')
+    expect(groupEl.textContent).toBe('drnset')
   })
 
   it('lists the unmapped groups and the per-artifact notes passed through, never rebuilt independently', () => {
@@ -293,8 +315,9 @@ describe('renderParamsPanel', () => {
       }),
     )
 
+    // The unmapped groups and the notes scroll together inside the one Notes section.
     await vi.waitFor(() => {
-      expect(el.querySelectorAll('.scroll-pane').length).toBe(4)
+      expect(el.querySelectorAll('.scroll-pane').length).toBe(3)
     })
     const panes = [...el.querySelectorAll<HTMLElement>('.scroll-pane')]
     for (const pane of panes) expect(pane.tabIndex).toBe(0)
@@ -302,8 +325,86 @@ describe('renderParamsPanel', () => {
       'Notes',
       'Parameter groups',
       'Parameter table',
-      'Unmapped groups',
     ])
+    expect(el.querySelector('.params-notes .scroll-pane')!.textContent).toContain('G9')
+    expect(el.querySelector('.params-notes .scroll-pane')!.textContent).toContain('one realization dropped')
+  })
+})
+
+// Node's own experimental localStorage shadows jsdom's and is undefined here, so each test brings one.
+function memoryStorage(): Pick<Storage, 'getItem' | 'setItem'> & { keys(): string[] } {
+  const values = new Map<string, string>()
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => void values.set(key, value),
+    keys: () => [...values.keys()],
+  }
+}
+
+const storedFolds = () => (localStorage as unknown as { keys(): string[] }).keys().filter((k) => k.startsWith('pesto.fold.'))
+
+describe('the Notes section at the bottom of the tab', () => {
+  beforeEach(() => vi.stubGlobal('localStorage', memoryStorage()))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const unmappedOf = (n: number) => Array.from({ length: n }, (_, i) => ({ group: `g${i}`, note: `g${i} has no placement rule` }))
+  const notesOf = (n: number) => Array.from({ length: n }, (_, i) => ({ artifact: 'pp_factors', reason: `line ${i} interpolates to 240 points` }))
+  const notesSection = (el: HTMLElement) => el.querySelector<HTMLElement>('.params-notes')
+  const notesLine = (el: HTMLElement) => notesSection(el)?.querySelector('.fold-summary')?.textContent
+
+  it('puts the unmapped groups and the notes in one section, folded to a line that counts them', () => {
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: unmappedOf(7), artifactNotes: notesOf(31) }))
+
+    expect(el.querySelectorAll('.params-notes').length).toBe(1)
+    expect(el.lastElementChild).toBe(notesSection(el))
+    expect(notesSection(el)!.dataset.folded).toBe('true')
+    expect(notesLine(el)).toBe('Notes · 7 groups unmapped · 31 notes')
+    expect(notesSection(el)!.querySelector('.fold-button')!.getAttribute('aria-label')).toBe('Notes')
+    expect(storedFolds()).toEqual([])
+  })
+
+  it('says one group and one note in the singular and leaves out a part with nothing in it', () => {
+    const a = mount()
+    renderParamsPanel(a, panelOptions({ unmapped: unmappedOf(1) }))
+    expect(notesLine(a)).toBe('Notes · 1 group unmapped')
+
+    const b = mount()
+    renderParamsPanel(b, panelOptions({ artifactNotes: notesOf(1) }))
+    expect(notesLine(b)).toBe('Notes · 1 note')
+
+    const c = mount()
+    renderParamsPanel(c, panelOptions())
+    expect(notesSection(c)).toBeNull()
+  })
+
+  it('opens on a click, stores the choice, and starts open on the next mount', () => {
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: unmappedOf(2), artifactNotes: notesOf(3) }))
+    notesSection(el)!.querySelector<HTMLButtonElement>('.fold-button')!.click()
+
+    expect(notesSection(el)!.dataset.folded).toBe('false')
+    expect(localStorage.getItem('pesto.fold.params-notes')).toBe('open')
+
+    const again = mount()
+    renderParamsPanel(again, panelOptions({ unmapped: unmappedOf(2), artifactNotes: notesOf(3) }))
+    expect(notesSection(again)!.dataset.folded).toBe('false')
+  })
+
+  it('lists every unmapped group and then every note inside the section, none dropped', () => {
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: unmappedOf(7), artifactNotes: notesOf(31) }))
+    const body = notesSection(el)!.querySelector<HTMLElement>('.fold-body')!
+
+    const unmapped = body.querySelector<HTMLElement>('.params-unmapped')!
+    expect(unmapped.firstElementChild!.textContent).toBe('7 groups unmapped')
+    for (let i = 0; i < 7; i++) expect(unmapped.textContent).toContain(`g${i} has no placement rule`)
+    const lines = [...body.querySelectorAll<HTMLElement>('.params-note-line')].map((line) => line.textContent)
+    expect(lines.length).toBe(31)
+    expect(lines[0]).toBe('pp_factors: line 0 interpolates to 240 points')
+    expect(lines[30]).toBe('pp_factors: line 30 interpolates to 240 points')
+    const order = [...body.children]
+    expect(order.indexOf(unmapped)).toBeLessThan(order.indexOf(body.querySelector('.params-note-line')!))
   })
 })
 
@@ -711,6 +812,56 @@ describe('the drill-down list and the groups that are not on the map', () => {
 
     await vi.waitFor(() => expect(groupRows(el).length).toBe(1))
     expect(groupRows(el)[0].textContent).toContain('not on the map')
+  })
+})
+
+describe('the group names in the Groups table', () => {
+  const LONG = 'pp_hk_layer12_zone_north'
+
+  it('keeps the end of a long group name whole, with the whole name as text and title', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow(LONG), groupRow('drnset.cond')]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
+
+    const long = cell(groupRows(el)[0], 'group')
+    expect(long.classList.contains('name-cut')).toBe(true)
+    expect(long.querySelector('.name-head')!.textContent).toBe('pp_hk_layer12_zone_')
+    expect(long.querySelector('.name-tail')!.textContent).toBe('north')
+    expect(long.textContent).toBe(LONG)
+    expect(long.title).toBe(LONG)
+
+    const short = cell(groupRows(el)[1], 'group')
+    expect(short.classList.contains('name-cut')).toBe(false)
+    expect(short.textContent).toBe('drnset.cond')
+  })
+
+  it('still sorts the Group column on the whole name', async () => {
+    // Sorted on the kept ends alone, 'east' would come before 'north' and 'west'.
+    parApi.fetchParGroups.mockResolvedValue(
+      groupsAnswer([groupRow('zz_layer1_zone_east'), groupRow('aa_layer1_zone_west'), groupRow('mm_layer1_zone_north')]),
+    )
+    const el = mount()
+    renderParamsPanel(el, panelOptions())
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(3))
+
+    headingButton(el, 'group').click()
+    expect(shownOrder(el)).toEqual(['aa_layer1_zone_west', 'mm_layer1_zone_north', 'zz_layer1_zone_east'])
+  })
+
+  it('cuts the name of a group that is not on the map the same way, keeping its marker and note under it', async () => {
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow(LONG)]))
+    const el = mount()
+    renderParamsPanel(el, panelOptions({ unmapped: [{ group: LONG, note: 'no placement rule matched' }] }))
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(1))
+
+    const groupEl = cell(groupRows(el)[0], 'group')
+    const name = groupEl.firstElementChild as HTMLElement
+    expect(name.querySelector('.name-tail')!.textContent).toBe('north')
+    expect(name.textContent).toBe(LONG)
+    expect(name.title).toBe(LONG)
+    expect(groupEl.textContent).toContain('not on the map')
+    expect(groupEl.textContent).toContain('no placement rule matched')
   })
 })
 
@@ -1733,5 +1884,240 @@ describe('the at-bounds column in the group table', () => {
     fresh.resolve(atBoundsAnswer(3, [{ group: 'hk', n: 2 }]))
     await vi.waitFor(() => expect(cell(groupRows(el)[0], 'at_bounds').textContent).toBe('2'))
     expect(heading(el).textContent).toContain('iteration 3')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// G-14-6, G-14-1, LD-3: the Params sections fold like the map's cards, and the
+// tab makes room for the detail a click just filled.
+// ---------------------------------------------------------------------------
+
+const PARAM_SECTIONS = [
+  { cls: 'params-groups', key: 'params-groups', name: 'Groups' },
+  { cls: 'params-group-detail', key: 'params-group-detail', name: 'Group detail' },
+  { cls: 'params-table', key: 'params-table', name: 'Parameters' },
+  { cls: 'params-parameter-detail', key: 'params-detail', name: 'Parameter detail' },
+]
+
+function paramSection(el: HTMLElement, cls: string): HTMLElement {
+  return el.querySelector<HTMLElement>(`:scope > .${cls}`)!
+}
+
+function paramTitle(el: HTMLElement, cls: string): string {
+  return paramSection(el, cls).querySelector(':scope > .fold-summary')!.textContent!
+}
+
+function paramFoldButton(el: HTMLElement, cls: string): HTMLButtonElement {
+  return paramSection(el, cls).querySelector<HTMLButtonElement>(':scope > .fold-button')!
+}
+
+function paramFolded(el: HTMLElement): Record<string, boolean> {
+  return Object.fromEntries(PARAM_SECTIONS.map(({ cls }) => [cls, paramSection(el, cls).dataset.folded === 'true']))
+}
+
+// The tab is too tall while more than `room` sections that hold something are open; null is never room enough.
+function stubParamsOverflow(room: number | null): void {
+  vi.restoreAllMocks()
+  const recording = createRecording2d()
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+  const isPanel = (el: HTMLElement) => el.classList.contains('params-panel')
+  const open = (el: HTMLElement) =>
+    [...el.querySelectorAll<HTMLElement>(':scope > .fold-section')].filter(
+      (section) => section.dataset.folded === 'false' && section.querySelector(':scope > .fold-body')!.childElementCount > 0,
+    ).length
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return isPanel(this) ? 400 : 0
+  })
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    if (!isPanel(this)) return 0
+    return room === null || open(this) > room ? 1000 : 400
+  })
+}
+
+describe('the folding Params sections', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
+    const recording = createRecording2d()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(recording.ctx as never)
+    parApi.fetchParGroups.mockResolvedValue(groupsAnswer([groupRow('hk'), groupRow('rch')]))
+    parApi.fetchParHist.mockImplementation(async (group: string) => histAnswer(group))
+    parApi.fetchParValues.mockImplementation(async (name: string) => ({ ok: false, artifact: 'par_values', reason: `no values for ${name}` }))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  async function openPanel(over: Partial<ParamsPanelOptions> = {}) {
+    const store = makeStore()
+    const el = mount()
+    const handle = renderParamsPanel(el, panelOptions({ store, parTable: Promise.resolve(parTableBuffer(LIST_COLUMNS)), ...over }))
+    await vi.waitFor(() => expect(groupRows(el).length).toBe(2))
+    return { el, store, handle }
+  }
+
+  async function pickGroup(view: { el: HTMLElement; store: SelectionStore }, index: number): Promise<void> {
+    groupRows(view.el)[index].click()
+    view.store.flush()
+    await vi.waitFor(() => expect(view.el.querySelectorAll('.params-table .param-row').length).toBeGreaterThan(0))
+  }
+
+  function pickParameter(view: { el: HTMLElement; store: SelectionStore }, name: string): void {
+    view.el.querySelector<HTMLElement>(`.params-table .param-row[data-parameter="${name}"]`)!.click()
+    view.store.flush()
+  }
+
+  it('gives each section a fold button that names it, and a click folds it and stores its key', async () => {
+    const view = await openPanel()
+    await pickGroup(view, 0)
+    pickParameter(view, 'hk1')
+    for (const { cls, key, name } of PARAM_SECTIONS) {
+      const button = paramFoldButton(view.el, cls)
+      expect(button.getAttribute('aria-label'), cls).toBe(name)
+      expect(button.getAttribute('aria-expanded'), cls).toBe('true')
+      button.click()
+      expect(paramSection(view.el, cls).dataset.folded, cls).toBe('true')
+      expect(button.getAttribute('aria-expanded'), cls).toBe('false')
+      expect(localStorage.getItem(`pesto.fold.${key}`), cls).toBe('folded')
+    }
+  })
+
+  it('leaves Selected parameters as it is, with no fold of its own', async () => {
+    const view = await openPanel()
+    const selected = paramSection(view.el, 'params-selected')
+    expect(selected.classList.contains('fold-section')).toBe(false)
+    expect(selected.querySelector(':scope > .fold-button')).toBeNull()
+  })
+
+  it('titles each section with what it holds', async () => {
+    const view = await openPanel()
+    expect(paramTitle(view.el, 'params-groups')).toBe('Groups · 2')
+    expect(paramTitle(view.el, 'params-group-detail')).toBe('Group detail')
+    expect(paramTitle(view.el, 'params-table')).toBe('Parameters')
+    expect(paramTitle(view.el, 'params-parameter-detail')).toBe('Parameter detail')
+
+    await pickGroup(view, 0)
+    expect(paramTitle(view.el, 'params-group-detail')).toBe('Group detail: hk')
+    expect(paramTitle(view.el, 'params-table')).toBe('Parameters · 3')
+    pickParameter(view, 'hk2')
+    expect(paramTitle(view.el, 'params-parameter-detail')).toBe('Parameter detail: hk2')
+  })
+
+  it('folds the Groups table quietly after a group click, keeping Group detail and Parameters open', async () => {
+    for (const { room, folded } of [
+      { room: 3, folded: [] as string[] },
+      { room: 2, folded: ['params-groups'] },
+      { room: null, folded: ['params-groups'] },
+    ]) {
+      vi.restoreAllMocks()
+      const view = await openPanel()
+      stubParamsOverflow(room)
+      groupRows(view.el)[0].click()
+      view.store.flush()
+      const state = paramFolded(view.el)
+      expect(PARAM_SECTIONS.map(({ cls }) => cls).filter((cls) => state[cls]), `room ${room}`).toEqual(folded)
+      expect(state['params-group-detail']).toBe(false)
+      expect(state['params-table']).toBe(false)
+      expect(storedFolds()).toEqual([])
+      view.handle.dispose()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('folds the group detail before the Groups table after a parameter pick, keeping Parameter detail and Parameters open', async () => {
+    for (const { room, folded } of [
+      { room: 4, folded: [] as string[] },
+      { room: 3, folded: ['params-group-detail'] },
+      { room: null, folded: ['params-groups', 'params-group-detail'] },
+    ]) {
+      vi.restoreAllMocks()
+      const view = await openPanel()
+      await pickGroup(view, 0)
+      stubParamsOverflow(room)
+      pickParameter(view, 'hk1')
+      const state = paramFolded(view.el)
+      expect(PARAM_SECTIONS.map(({ cls }) => cls).filter((cls) => state[cls]), `room ${room}`).toEqual(folded)
+      expect(state['params-parameter-detail']).toBe(false)
+      expect(state['params-table']).toBe(false)
+      expect(storedFolds()).toEqual([])
+      view.handle.dispose()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('folds a Notes section the viewer chose open only after the sections never chosen, and keeps the choice', async () => {
+    for (const { room, notesFolded } of [
+      { room: 3, notesFolded: false },
+      { room: null, notesFolded: true },
+    ]) {
+      vi.stubGlobal('localStorage', memoryStorage())
+      localStorage.setItem('pesto.fold.params-notes', 'open')
+      const view = await openPanel({ artifactNotes: [{ artifact: 'pp_factors', reason: 'interpolates to 240 points' }] })
+      await pickGroup(view, 0)
+      stubParamsOverflow(room)
+      pickParameter(view, 'hk1')
+      const state = paramFolded(view.el)
+      expect(state['params-group-detail'], `room ${room}`).toBe(true)
+      expect(state['params-groups'], `room ${room}`).toBe(true)
+      expect(view.el.querySelector<HTMLElement>('.params-notes')!.dataset.folded, `room ${room}`).toBe(String(notesFolded))
+      expect(localStorage.getItem('pesto.fold.params-notes')).toBe('open')
+      view.handle.dispose()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('opens again a group detail the tab folded quietly, when the viewer clicks another group', async () => {
+    const view = await openPanel()
+    await pickGroup(view, 0)
+    stubParamsOverflow(3)
+    pickParameter(view, 'hk1')
+    expect(paramFolded(view.el)['params-group-detail']).toBe(true)
+
+    stubParamsOverflow(10)
+    groupRows(view.el)[1].click()
+    view.store.flush()
+    expect(paramFolded(view.el)['params-group-detail']).toBe(false)
+    expect(paramTitle(view.el, 'params-group-detail')).toBe('Group detail: rch')
+  })
+
+  it('leaves folded a group detail the viewer folded, when they click a group', async () => {
+    localStorage.setItem('pesto.fold.params-group-detail', 'folded')
+    const view = await openPanel()
+    await pickGroup(view, 0)
+    expect(paramFolded(view.el)['params-group-detail']).toBe(true)
+  })
+
+  it('folds nothing while the tab fits, or while it is hidden', async () => {
+    const view = await openPanel()
+    stubParamsOverflow(10)
+    await pickGroup(view, 0)
+    pickParameter(view, 'hk1')
+    expect(Object.values(paramFolded(view.el)).some(Boolean)).toBe(false)
+
+    view.handle.onHide()
+    stubParamsOverflow(null)
+    view.store.set({ parGroups: new Set(['rch']) }, 'map')
+    view.store.flush()
+    expect(Object.values(paramFolded(view.el)).some(Boolean)).toBe(false)
+  })
+
+  it('folds the other open sections from the bottom, each stored, when the viewer opens the Groups table and it does not fit', async () => {
+    const view = await openPanel()
+    await pickGroup(view, 0)
+    pickParameter(view, 'hk1')
+    paramFoldButton(view.el, 'params-groups').click()
+    stubParamsOverflow(2)
+    paramFoldButton(view.el, 'params-groups').click()
+
+    const state = paramFolded(view.el)
+    expect(state['params-groups']).toBe(false)
+    expect(state['params-parameter-detail']).toBe(true)
+    expect(state['params-group-detail']).toBe(true)
+    expect(state['params-table']).toBe(false)
+    expect(localStorage.getItem('pesto.fold.params-groups')).toBe('open')
+    expect(localStorage.getItem('pesto.fold.params-detail')).toBe('folded')
+    expect(localStorage.getItem('pesto.fold.params-group-detail')).toBe('folded')
   })
 })

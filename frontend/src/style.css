@@ -304,19 +304,21 @@ body {
 /* The group summary: one row per group, scrolling inside its own pane so a
    run with hundreds of groups leaves room for the parameter list below. */
 .params-groups {
-  display: flex;
-  flex-direction: column;
-  /* A zero basis with a floor: hundreds of rows must not win the shrink
-     and crush the table to its header. */
+  /* A zero basis: hundreds of rows must not win the shrink against the sections below. */
   flex: 1 1 0;
-  min-height: 10rem;
   max-height: 45%;
   margin-bottom: var(--space-sm);
 }
 
+/* G-14-6: its title line, the two-line header and three 30px rows. The floors are what make a
+   too-tall tab fold its sections. */
+.params-groups[data-folded='false']:has([role='grid']) {
+  min-height: calc(24px + var(--space-xs) + 43px + 3 * 30px);
+}
+
 /* The grid scrolls sideways as one piece, so the header stays over its
    columns when the panel is narrower than the table. */
-.params-groups > [role='grid'] {
+.params-groups > .fold-body > [role='grid'] {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -327,7 +329,7 @@ body {
 
 .params-groups .group-header,
 .params-groups .scroll-pane {
-  min-width: 53em;
+  min-width: 57em;
 }
 
 .params-groups .scroll-pane {
@@ -396,11 +398,12 @@ body {
   background: var(--gridline);
 }
 
-/* The group summary's columns: group and type share the stretch, the rest keep a width. */
+/* The group summary's columns: group and type share the stretch, the rest keep a width. G-14-6:
+   the Group column never goes below 12em, and the grid's width grows to make room for it. */
 .group-row > :nth-child(1),
 .group-header > :nth-child(1) {
   flex: 3 1 0;
-  min-width: 8em;
+  min-width: 12em;
   overflow-wrap: anywhere;
 }
 
@@ -434,53 +437,53 @@ body {
 }
 
 .params-table {
-  display: flex;
-  flex-direction: column;
   /* A zero basis: the table's spacer is rows x 24px tall and would
      otherwise win every shrink against the lists below it. */
   flex: 1 1 0;
   min-height: 0;
-  /* Scrolls sideways as one piece, like the group grid, so a narrow panel
-     never squeezes the name columns to nothing or widens the page. */
+}
+
+/* Scrolls sideways as one piece, like the group grid, so a narrow panel
+   never squeezes the name columns to nothing or widens the page. */
+.params-table > .fold-body {
   overflow-x: auto;
   scrollbar-color: var(--axis) var(--gridline);
 }
 
-.params-table > .param-header,
-.params-table > .scroll-pane {
+.params-table > .fold-body > .param-header,
+.params-table > .fold-body > .scroll-pane {
   min-width: 46em;
 }
 
-.params-table > .scroll-pane {
+.params-table > .fold-body > .scroll-pane {
   flex: 1 1 auto;
 }
 
-/* The unmapped-group list under the table takes at most a share of the
-   panel and scrolls inside it, so a run with a hundred unmapped groups
-   never pushes the table out of the frame. The table keeps a floor. */
-.params-table {
-  min-height: 160px;
+/* G-14-6: its title line, the header and three 24px rows. */
+.params-table[data-folded='false']:has(.param-header) {
+  min-height: calc(24px + var(--space-xs) + 26px + 3 * 24px);
+}
+
+/* G-14-6: the unmapped groups and the artifact notes share one section, folded to its counted line
+   until the viewer opens it. Open, it takes at most 40% of the tab and scrolls inside. */
+.params-notes {
+  flex: 0 1 auto;
+  max-height: 40%;
+  margin-top: var(--space-sm);
+}
+
+.params-notes[data-folded='false'] {
+  min-height: 5rem;
+}
+
+.params-notes > .fold-body {
+  overflow-y: auto;
 }
 
 .params-unmapped {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 4rem;
-  max-height: 30%;
-  margin-top: var(--space-sm);
-}
-
-.params-unmapped > .scroll-pane {
-  flex: 1 1 auto;
-}
-
-/* The artifact notes get the same treatment: a run can carry dozens. */
-.params-notes {
-  flex: 0 1 auto;
-  min-height: 4rem;
-  max-height: 30%;
-  margin-top: var(--space-sm);
+  margin-bottom: var(--space-xs);
 }
 
 /* The placement note under an unmapped group's name stays one line in the row. */
@@ -981,20 +984,29 @@ body {
 
 /* The detail under the group table and under the parameter list: text and one chart. */
 .params-detail-host {
-  /* Gives way before the tables do, and scrolls inside itself. */
+  /* Gives way before the tables do, and scrolls inside itself under its title line. */
   flex: 0 1 auto;
   max-height: 40%;
   margin-bottom: var(--space-sm);
+}
+
+.params-detail-host > .fold-body {
   overflow-y: auto;
-  min-height: 8rem;
   scrollbar-color: var(--axis) var(--gridline);
 }
 
-.params-detail-host:focus-visible {
+.params-detail-host > .fold-body:focus-visible {
   outline-offset: -2px;
 }
 
-.params-detail-host:empty {
+/* G-14-6: holding a chart, never below its title line, the whole 200px chart and the two lines
+   under it (sigma ratio and mean change); a floor above 40% wins over the cap. */
+.params-detail-host[data-folded='false']:has(.params-chart) {
+  min-height: calc(24px + var(--space-xs) + 200px + 2 * 17px + 2 * var(--space-xs));
+}
+
+/* The section's title line names the group or parameter, so the detail's own title would say it twice. */
+.params-detail-host .params-detail-title {
   display: none;
 }
 

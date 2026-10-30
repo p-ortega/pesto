@@ -72,11 +72,16 @@ describe('pickable rows', () => {
 })
 
 describe('the selected sections', () => {
-  it('take at most 40% of their tab, while the unmapped list and notes keep 30%', () => {
+  it('take at most 40% of their tab', () => {
     expect(rule('.params-selected')).toMatch(/max-height:\s*40%/)
     expect(rule('.obs-selected')).toMatch(/max-height:\s*40%/)
-    expect(rule('.params-unmapped')).toMatch(/max-height:\s*30%/)
-    expect(rule('.params-notes')).toMatch(/max-height:\s*30%/)
+  })
+
+  it('give the Params Notes section at most 40% of the tab, scrolling inside under its title line', () => {
+    expect(rule('.params-notes')).toMatch(/max-height:\s*40%/)
+    expect(rule('.params-notes > .fold-body')).toMatch(/overflow-y:\s*auto/)
+    // The unmapped list no longer has a cap of its own: it scrolls with the notes.
+    expect(rule('.params-unmapped')).not.toMatch(/max-height/)
   })
 })
 
@@ -173,5 +178,46 @@ describe('the Obs tab floors', () => {
   it('lets a folded section drop every floor', () => {
     expect(rule(".fold-card.fold-section[data-folded='true']")).toMatch(/min-height:\s*0/)
     expect(rule(".fold-card.fold-section[data-folded='true']")).toMatch(/flex:\s*0 0 auto/)
+  })
+})
+
+// A group row is its 21px body line, 4px padding above and below and a 1px rule; its header wraps to two label lines.
+const GROUP_ROW = BODY_LINE + 2 * 4 + 1
+const GROUP_HEADER = 2 * LABEL_LINE + 2 * 4 + 1
+
+describe('the Params tab floors', () => {
+  it('never shrinks the Groups table below its title line, header and three rows', () => {
+    const floor = declared(".params-groups[data-folded='false']:has([role='grid'])", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + Math.floor(GROUP_HEADER) + 3 * GROUP_ROW)
+  })
+
+  it('never shrinks the Parameters list below its title line, header and three rows', () => {
+    const floor = declared(".params-table[data-folded='false']:has(.param-header)", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + 25 + 3 * ROW)
+  })
+
+  it('never squeezes a detail holding a chart below its title line, the whole 200px chart and two text lines', () => {
+    const floor = declared(".params-detail-host[data-folded='false']:has(.params-chart)", 'min-height')
+    expect(floor).toBeGreaterThanOrEqual(TITLE_LINE + 200 + 2 * LABEL_LINE)
+    // The old 8rem floor was 128px, well short of the chart.
+    expect(floor).toBeGreaterThan(8 * 16)
+  })
+
+  it('keeps the floors off a folded section and off a section with nothing to list', () => {
+    for (const selector of ['.params-groups', '.params-table', '.params-detail-host']) {
+      expect(rule(selector), selector).not.toMatch(/min-height:\s*(calc|[1-9])/)
+    }
+  })
+
+  it('gives the Group column a 12em floor and widens the grid to hold it', () => {
+    expect(rule('.group-row > :nth-child(1)')).toMatch(/min-width:\s*12em/)
+    expect(rule('.group-header > :nth-child(1)')).toMatch(/min-width:\s*12em/)
+    const grid = /min-width:\s*(\d+(?:\.\d+)?)em/.exec(rule('.params-groups .group-header'))
+    expect(Number(grid![1])).toBeGreaterThanOrEqual(57)
+  })
+
+  it('lets the detail and the list scroll inside their sections, under a title line that stays put', () => {
+    expect(rule('.params-detail-host > .fold-body')).toMatch(/overflow-y:\s*auto/)
+    expect(rule('.params-table > .fold-body')).toMatch(/overflow-x:\s*auto/)
   })
 })
