@@ -248,20 +248,22 @@ class NoiseFact:
     notes: tuple[str, ...]
 
 
+# How the screen names each reading's origin: by the PEST++ file, not by an internal label.
+_SOURCE_FILE = {"run record": ".rec", "control file": ".pst"}
 _NOISE_KINDS = frozenset({"drawn_noise", "loaded_obs_ensemble", "standard_deviation_column"})
 _NOISE_SHOWN = {
-    "reset_to_no_noise": "no noise: pestpp reset ies_no_noise to true",
-    "no_noise_ensemble": "no noise: pestpp built a no-noise observation ensemble",
-    "drawn_noise": "noise: pestpp drew the observation noise",
-    "loaded_obs_ensemble": "noise: pestpp loaded an observation ensemble",
-    "standard_deviation_column": "noise: pestpp used the standard_deviation column",
+    "reset_to_no_noise": "noise off: pestpp reset ies_no_noise to true",
+    "no_noise_ensemble": "noise off: pestpp built a no-noise observation ensemble",
+    "drawn_noise": "noise on: pestpp drew the observation noise",
+    "loaded_obs_ensemble": "noise on: pestpp loaded an observation ensemble",
+    "standard_deviation_column": "noise on: pestpp used the standard_deviation column",
 }
 _NOISE_DECIDED_TEXT = {
-    "run_record": "decided by the run record's own lines",
-    "ies_no_noise": "decided by ies_no_noise in the control file",
-    "observation_ensemble_option": "decided by the observation ensemble the control file names",
-    "standard_deviation_column": "decided by the standard_deviation column",
-    "undetermined": "could not be decided",
+    "run_record": "pesto uses the .rec, where pestpp says what it did",
+    "ies_no_noise": "pesto uses ies_no_noise in the .pst",
+    "observation_ensemble_option": "pesto uses the observation ensemble the .pst names",
+    "standard_deviation_column": "pesto uses the standard_deviation column in the .pst",
+    "undetermined": "pesto could not tell whether pestpp added noise",
 }
 
 
@@ -288,7 +290,7 @@ def _noise_decision(
         for line in rec.noise:
             shown = _NOISE_SHOWN[line.kind]
             if line.kind == "loaded_obs_ensemble":
-                shown = f"noise: pestpp loaded the observation ensemble {line.value}"
+                shown = f"noise on: pestpp loaded the observation ensemble {line.value}"
             record_readings.append(
                 Reading("run record", line.kind in _NOISE_KINDS, shown, f"{rec.name} line {line.line}: {line.text}")
             )
@@ -325,7 +327,7 @@ def _noise_decision(
                 "control file",
                 None if flag is None else not flag,
                 f"ies_no_noise {no_noise.value}"
-                + ("" if flag is None else (": no noise" if flag else ": noise")),
+                + ("" if flag is None else (": noise off" if flag else ": noise on")),
                 _control_where(options, no_noise),
             )
         )
@@ -389,8 +391,8 @@ def _noise_decision(
         for reading in readings:
             if reading.value is not None and reading.value != has_noise:
                 notes.append(
-                    f"{reading.source} says otherwise ({reading.evidence}); "
-                    f"the setup facts keep both readings"
+                    f"the {_SOURCE_FILE.get(reading.source, reading.source)} says otherwise "
+                    f"({reading.evidence}); the Config tab lists both"
                 )
     return NoiseFact(has_noise, decided_by, evidence, tuple(notes)), readings
 

@@ -4,7 +4,7 @@
 // `var(--...)` reference into the tokens `index.html` defines -- nothing
 // in this module picks a colour of its own.
 
-import type { BaseFactState } from '../data/config'
+import { listWords, mismatchWords, type BaseFactState } from '../data/config'
 import type { ThemeChoice } from './theme'
 
 const THEME_CHOICES: readonly ThemeChoice[] = ['dark', 'light', 'system']
@@ -58,8 +58,14 @@ export interface ChipRunConfig {
   noptmax: number | null
   projection: string | null
   has_noise: boolean | null
-  /** Keys of the facts whose sources disagree (D-17); absent for a config with no facts. */
+  /** Keys of the facts whose readings disagree (D-17); absent for a config with no facts. */
   disagree?: string[]
+  /** For each key in `disagree`, the files whose readings do not match, such as `.rec` and `.pst`. */
+  mismatch?: Record<string, string[]>
+  /** The file pesto takes noise from, `.rec` or `.pst`; null when nothing decided it. */
+  noise_from?: string | null
+  /** The files with a noise reading that says the opposite of `has_noise`. */
+  noise_against?: string[]
   /** What the base fact says about the last ingested iteration; null when it says nothing. */
   base?: BaseFactState | null
 }
@@ -94,7 +100,7 @@ const FACT_WORDS: Record<string, string> = {
   ensemble_size: 'ensemble size',
   base: 'base',
   noptmax: 'iterations (noptmax)',
-  noise: 'measurement noise',
+  noise: 'noise',
 }
 
 function disagreeing(disagree: string[], keys: string[]): string[] {
@@ -111,12 +117,23 @@ function baseChipWord(config: ChipRunConfig): string | null {
   return config.base_realization ? 'base alive' : 'base lost'
 }
 
-// A chip whose sources disagree carries the warning icon and the words, never colour alone (D-17).
+function mismatchedFiles(config: ChipRunConfig, marked: string[]): string[] {
+  return Array.from(new Set(marked.flatMap((key) => config.mismatch?.[key] ?? [])))
+}
+
+function mismatchSuffix(files: string[]): string {
+  if (files.length === 0) return 'files do not match'
+  if (files.length === 1) return `lines in the ${files[0]} do not match`
+  return `${listWords(files)} do not match`
+}
+
+// A chip whose readings disagree carries the warning icon and the words, never colour alone (D-17).
 function appendFactChip(
   el: HTMLElement,
+  config: ChipRunConfig,
   parts: (string | null)[],
   marked: string[],
-  opts: { numeric?: boolean; warn?: boolean; title?: string } = {},
+  opts: { numeric?: boolean; warn?: boolean; title?: string; says?: string | null } = {},
 ): void {
   const text = parts.filter((p): p is string => p !== null)
   if (marked.length === 0) {
@@ -129,18 +146,32 @@ function appendFactChip(
     return
   }
   const names = marked.map((key) => FACT_WORDS[key] ?? key).join(', ')
-  appendChip(el, `${TONE_STYLE.warning.icon} ${[...text, 'sources disagree'].join(' · ')}`, {
+  const files = mismatchedFiles(config, marked)
+  appendChip(el, `${TONE_STYLE.warning.icon} ${[...text, opts.says ?? mismatchSuffix(files)].join(' · ')}`, {
     numeric: opts.numeric,
     colorVar: TONE_STYLE.warning.colorVar,
-    title: `The sources disagree about: ${names}. The Config tab shows each reading.`,
+    title: `${mismatchWords(files)} on ${names}. The Config tab lists what each one says.`,
   })
+}
+
+function noiseText(config: ChipRunConfig): string {
+  const state = config.has_noise === true ? 'on' : config.has_noise === false ? 'off' : 'not known'
+  return config.noise_from ? `noise: ${state} (from ${config.noise_from})` : `noise: ${state}`
+}
+
+// ".pst says on": what the other file says, in the same on and off words as the chip.
+function noiseAgainstText(config: ChipRunConfig): string | null {
+  const against = config.noise_against ?? []
+  if (config.has_noise === null || against.length === 0) return null
+  const also = config.noise_from && against.includes(config.noise_from) ? ' also' : ''
+  return `${listWords(against)}${also} ${against.length > 1 ? 'say' : 'says'} ${config.has_noise ? 'off' : 'on'}`
 }
 
 /**
  * MAP-10's five header chips, or the single D-12 failure chip. Follows
  * `renderStatusBar`'s one-span-per-fact, `tabular-nums`-on-the-number shape.
  * The realization chip is shown only once both the count and whether base
- * survived are known, or its sources disagree -- a count with no verdict on
+ * survived are known, or its readings disagree -- a count with no verdict on
  * base and no disagreement stays silent rather than guessing.
  */
 export function renderChips(el: HTMLElement, opts: ChipsInput): void {
@@ -170,7 +201,7 @@ export function renderChips(el: HTMLElement, opts: ChipsInput): void {
   const realMarked = disagreeing(disagree, ['ensemble_size', 'base'])
   if (config.n_real !== null && (baseWord !== null || realMarked.length > 0)) {
     // G-14-5: the header names base but holds no button, so it says where the button is.
-    appendFactChip(el, [`${config.n_real} reals`, baseWord], realMarked, {
+    appendFactChip(el, config, [`${config.n_real} reals`, baseWord], realMarked, {
       numeric: true,
       title: 'Select base is on the Site plots line of the Obs tab.',
     })
@@ -183,14 +214,15 @@ export function renderChips(el: HTMLElement, opts: ChipsInput): void {
       config.noptmax !== null && config.n_iterations < config.noptmax
         ? `${config.n_iterations} of ${config.noptmax} iter`
         : `${config.n_iterations} iter`
-    appendFactChip(el, [text], disagreeing(disagree, ['noptmax']), { numeric: true })
+    appendFactChip(el, config, [text], disagreeing(disagree, ['noptmax']), { numeric: true })
   }
 
   const noiseMarked = disagreeing(disagree, ['noise'])
-  if (config.has_noise === false) {
-    appendFactChip(el, ['no measurement noise'], noiseMarked, { warn: true })
-  } else if (noiseMarked.length > 0) {
-    appendFactChip(el, ['measurement noise'], noiseMarked)
+  if (config.has_noise === false || noiseMarked.length > 0) {
+    appendFactChip(el, config, [noiseText(config)], noiseMarked, {
+      warn: config.has_noise === false,
+      says: noiseAgainstText(config),
+    })
   }
 
   appendChip(el, config.projection ? 'crs' : 'no crs', { colorVar: 'var(--ink-muted)' })

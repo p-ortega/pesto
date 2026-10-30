@@ -525,6 +525,24 @@ def test_the_forecast_shape_is_no_noise_from_the_record_and_the_dump_and_file_on
     assert any(r.value is False and r.source == "run record" for r in fact.readings)
 
 
+def test_the_noise_row_says_which_pestpp_file_pesto_uses_and_what_the_pst_says(tmp_path):
+    run, tables, rec, options = _noise_run(
+        tmp_path,
+        rec_kwargs={"noise": "reset_to_no_noise"},
+        options=("ies_no_noise false",),
+    )
+
+    config, fact = _noise_fact(run, tables, rec, options)
+
+    assert fact.note == "pesto uses the .rec, where pestpp says what it did"
+    shown = [r.shown for r in fact.readings if r.value is not None]
+    assert shown == ["noise off: pestpp reset ies_no_noise to true", "ies_no_noise false: noise on"]
+    assert config.noise.notes[0].startswith("the .pst says otherwise")
+    assert config.noise.notes[0].endswith("the Config tab lists both")
+    for text in (fact.note, *shown, *config.noise.notes):
+        assert "source" not in text and "chip" not in text
+
+
 def test_the_same_run_without_a_record_is_undetermined_and_a_noise_file_never_makes_it_noisy(tmp_path):
     run, tables, rec, options = _noise_run(tmp_path, noise_file=True)
 
