@@ -137,7 +137,7 @@ function sitesAnswer(sites: SiteWhere[], extra: Partial<SitesWhereAnswer> = {}):
   return { ok: true, iteration: 2, sites, unknown: [], valueRule: 'a measured value', valueReason: null, notAsked: 0, reason: null, notes: [], ...extra }
 }
 
-const OBS = { group: 'heads', layer: 0, allLayers: false }
+const OBS = { groups: new Set(['heads']), label: 'heads', layer: 0, allLayers: false }
 
 describe('the reason and notes the server gives for a site lookup', () => {
   it('says why no id could be looked up instead of calling them missing from the index', () => {
@@ -181,6 +181,18 @@ describe('whereLines', () => {
       '1 selected site has an unknown layer; turn on all layers to see it',
     ])
     expect(whereLines(answer, { ...OBS, allLayers: true })).toEqual([])
+  })
+
+  it('counts a site of any group of a drawn set as drawn, and names the set for one of another group', () => {
+    const drawn = { groups: new Set(['g1', 'g2']), label: 'oname = hds · 2 groups', layer: 0, allLayers: false }
+    const answer = sitesAnswer([site({ siteId: 1, group: 'g1' }), site({ siteId: 2, group: 'g2' }), site({ siteId: 3, group: 'g3' })])
+    expect(whereLines(answer, drawn)).toEqual(['1 selected site is in another group (shown: oname = hds · 2 groups)'])
+    expect(whereLines(sitesAnswer([site({ siteId: 2, group: 'g2', layer: 3 })]), drawn)).toEqual(['1 selected site is on layer 4 (index 3)'])
+  })
+
+  it('counts no site as in another group while no group is known', () => {
+    const answer = sitesAnswer([site({ siteId: 1, group: 'conc' })])
+    expect(whereLines(answer, { groups: null, label: null, layer: 0, allLayers: false })).toEqual([])
   })
 
   it('counts sites on each other layer separately, plural spelled out', () => {

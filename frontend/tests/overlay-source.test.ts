@@ -80,7 +80,8 @@ function inputs(extra: Partial<OverlayInputs> = {}): OverlayInputs {
     cellArray: CELLS,
     layerArray: LAYERS,
     pointRows: null,
-    obsGroup: null,
+    obsGroups: null,
+    obsLabel: null,
     dotSiteIds: null,
     ...extra,
   }
@@ -213,7 +214,7 @@ describe('the at-bounds overlay', () => {
 
   it('is off with the reason when the map is coloured by observations', async () => {
     const source = await loaded()
-    const built = source.build(inputs({ colourSource: 'obs', obsGroup: 'heads' }), BOTH)
+    const built = source.build(inputs({ colourSource: 'obs', obsGroups: ['heads'], obsLabel: 'heads' }), BOTH)
     expect(built.atBounds).toEqual({ kind: 'off', reason: 'at-bounds hatching follows the parameter group the map is coloured by' })
     expect(built.atBoundsDots.size).toBe(0)
     const mask = built.mask as Uint8Array
@@ -252,7 +253,7 @@ describe('the conflict overlay', () => {
   it('counts the coloured group only and flags the drawn dots of its conflicted sites', async () => {
     const source = await loaded()
     const built = source.build(
-      inputs({ colourSource: 'obs', obsGroup: 'heads', dotSiteIds: Int32Array.from([11, 13, 10, 12]) }),
+      inputs({ colourSource: 'obs', obsGroups: ['heads'], obsLabel: 'heads', dotSiteIds: Int32Array.from([11, 13, 10, 12]) }),
       BOTH,
     )
     expect(label(built.conflict)).toBe('Prior-data conflict: 6 observations at 3 sites · computed')
@@ -265,6 +266,47 @@ describe('the conflict overlay', () => {
     expect(t).toContain('2 sites in other groups')
     expect(t).toContain('2 pdc rows match no observation')
     expect(t).toContain('1 conflicted observation left out')
+  })
+
+  it("counts and hatches every member group's conflicted sites of a drawn set, and leaves another group's out", async () => {
+    const three = pdc(3, {
+      nObs: 10,
+      nSites: 6,
+      byGroup: [
+        { group: 'heads', nObs: 6, nSites: 3 },
+        { group: 'conc', nObs: 3, nSites: 2 },
+        { group: 'flow', nObs: 1, nSites: 1 },
+      ],
+      // Site 15 is flow, on layer 0 in cell 4.
+      sites: {
+        id: Int32Array.from([10, 11, 12, 13, 14, 15]),
+        cell: Int32Array.from([0, 2, 5, 1, 3, 4]),
+        layer: Int32Array.from([0, 0, 1, 0, -1, 0]),
+        groupIndex: Int32Array.from([0, 0, 0, 1, 1, 2]),
+        nObs: Int32Array.from([2, 2, 2, 2, 1, 1]),
+      },
+      groups: ['heads', 'conc', 'flow'],
+    })
+    const source = await loaded(atBounds(3), three)
+    const built = source.build(
+      inputs({ colourSource: 'obs', obsGroups: ['heads', 'conc'], obsLabel: 'oname = hds · 2 groups', dotSiteIds: Int32Array.from([11, 13, 15]) }),
+      BOTH,
+    )
+    expect(label(built.conflict)).toBe('Prior-data conflict: 9 observations at 5 sites · computed')
+    expect([...(built.mask as Uint8Array)].map((v) => v & HATCH_CONFLICT)).toEqual([2, 2, 2, 0, 0, 0])
+    expect([...built.conflictDots].sort()).toEqual([0, 1])
+    const t = title(built.conflict)
+    expect(t).toContain('the set oname = hds · 2 groups')
+    expect(t).toContain('1 site in another group')
+    expect(t).toContain('1 site on another layer')
+    expect(t).toContain('1 site with an unknown layer, shown only under all layers')
+  })
+
+  it('counts nothing for a drawn group the conflict table does not name', async () => {
+    const source = await loaded()
+    const built = source.build(inputs({ colourSource: 'obs', obsGroups: ['flow'], obsLabel: 'flow' }), BOTH)
+    expect(label(built.conflict)).toBe('Prior-data conflict: 0 observations at 0 sites · computed')
+    expect(title(built.conflict)).toContain('5 sites in other groups')
   })
 
   it('takes every group on the drawn layer when no observation group is coloured', async () => {

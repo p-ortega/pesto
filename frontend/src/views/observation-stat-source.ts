@@ -6,8 +6,13 @@ import {
   fetchObsFrame,
   fetchObsSites,
   fetchObsTimes,
+  groupTarget,
+  targetKey,
+  targetLabel,
+  targetMismatch,
   type ObsSiteRow,
   type ObsStat,
+  type ObsTarget,
   type ObsTimesPayload,
 } from '../data/obs'
 import { LatestWins, isAbortError } from '../data/latest-wins'
@@ -19,7 +24,8 @@ export interface ObsFailure {
 }
 
 export interface ObsGroupData {
-  group: string
+  /** The group or set these sites were read for. */
+  target: ObsTarget
   /** The observation table the sites and times were cut from; every frame must carry it too. */
   orderDigest: string
   rows: ObsSiteRow[]
@@ -55,7 +61,8 @@ export interface ObsDots {
 export type FrameAnswer = { stale: true } | { stale: false; values: Float32Array } | { stale: false; failed: ObsFailure }
 
 export interface ObservationStatSource {
-  loadGroup(group: string): Promise<GroupAnswer>
+  /** A group by name, or a target; a set is read the same way a group is. */
+  loadGroup(target: string | ObsTarget): Promise<GroupAnswer>
   frames: FrameCache
 }
 
@@ -64,7 +71,7 @@ const WINDOW_RADIUS = 2
 const MAX_FRAMES = 12
 
 interface FrameSpec {
-  group: string
+  target: ObsTarget
   orderDigest: string
   iteration: number
   time: number
@@ -94,16 +101,16 @@ export class FrameCache {
   private readonly held = new Map<string, Held>()
   private readonly inFlight = new Map<string, InFlight>()
   private wantedKey: string | null = null
-  private current: { group: string; orderDigest: string; iteration: number; stat: ObsStat; times: readonly number[]; index: number } | null = null
+  private current: { target: string; orderDigest: string; iteration: number; stat: ObsStat; times: readonly number[]; index: number } | null = null
   private generation = 0
   // Keyed by the array itself so a held frame and its hidden-row count cannot come apart.
   private readonly hidden = new WeakMap<Float32Array, number>()
 
   constructor(private readonly runId: string | null) {}
 
-  key(group: string, iteration: number, time: number, stat: string, orderDigest: string): string {
+  key(target: string | ObsTarget, iteration: number, time: number, stat: string, orderDigest: string): string {
     // A group name may hold the separator, so it travels encoded.
-    return fetchKey(this.runId, encodeURIComponent(group), orderDigest, iteration, time, stat)
+    return fetchKey(this.runId, encodeURIComponent(targetKey(target)), orderDigest, iteration, time, stat)
   }
 
   get(key: string): Float32Array | undefined {
@@ -129,30 +136,31 @@ export class FrameCache {
    * when a newer frame was wanted meanwhile; the landed frame stays held either way.
    */
   async want(
-    group: string,
+    asked: string | ObsTarget,
     orderDigest: string,
     iteration: number,
     times: readonly number[],
     index: number,
     stat: ObsStat,
   ): Promise<FrameAnswer> {
+    const target = typeof asked === 'string' ? groupTarget(asked) : asked
     if (!Number.isInteger(index) || index < 0 || index >= times.length) {
       return { stale: false, failed: { artifact: 'obs_agg', reason: `this group has no time at position ${index} of ${times.length}` } }
     }
-    const wantedKey = this.key(group, iteration, times[index], stat, orderDigest)
+    const wantedKey = this.key(target, iteration, times[index], stat, orderDigest)
     this.wantedKey = wantedKey
-    this.current = { group, orderDigest, iteration, stat, times, index }
+    this.current = { target: targetKey(target), orderDigest, iteration, stat, times, index }
 
     const order = [index, index - 2, index - 1, index + 1, index + 2].filter((i) => i >= 0 && i < times.length)
-    const inWindow = new Set(order.map((i) => this.key(group, iteration, times[i], stat, orderDigest)))
+    const inWindow = new Set(order.map((i) => this.key(target, iteration, times[i], stat, orderDigest)))
     for (const [key, entry] of this.inFlight) {
       if (inWindow.has(key)) continue
       entry.controller.abort()
       this.inFlight.delete(key)
     }
     for (const i of order) {
-      const key = this.key(group, iteration, times[i], stat, orderDigest)
-      if (!this.held.has(key) && !this.inFlight.has(key)) this.launch(key, { group, orderDigest, iteration, time: times[i], stat })
+      const key = this.key(target, iteration, times[i], stat, orderDigest)
+      if (!this.held.has(key) && !this.inFlight.has(key)) this.launch(key, { target, orderDigest, iteration, time: times[i], stat })
     }
     this.evict()
 
@@ -172,7 +180,7 @@ export class FrameCache {
     this.inFlight.set(key, entry)
     entry.promise = (async (): Promise<Outcome> => {
       try {
-        const result = await fetchObsFrame(spec.group, spec.iteration, spec.time, spec.stat, { signal: controller.signal })
+        const result = await fetchObsFrame(spec.target, spec.iteration, spec.time, spec.stat, { signal: controller.signal })
         if (!result.ok) return { kind: 'failed', failed: { artifact: result.artifact, reason: result.reason } }
         const meta = result.meta
         if (meta.orderDigest !== spec.orderDigest) {
@@ -184,7 +192,11 @@ export class FrameCache {
             },
           }
         }
-        if (meta.group !== spec.group || meta.iteration !== spec.iteration || meta.time !== spec.time || meta.stat !== spec.stat) {
+        const mismatch = targetMismatch(spec.target, meta.group, meta.set ?? null)
+        if (mismatch !== null) {
+          return { kind: 'failed', failed: { artifact: 'obs_agg', reason: `${mismatch}, so it colours nothing` } }
+        }
+        if (meta.iteration !== spec.iteration || meta.time !== spec.time || meta.stat !== spec.stat) {
           return {
             kind: 'failed',
             failed: {
@@ -211,7 +223,7 @@ export class FrameCache {
   // Distance in slider steps from the wanted time; a frame of another group, iteration or statistic is farthest.
   private distance(frame: Held): number {
     const now = this.current
-    if (now === null || frame.group !== now.group || frame.orderDigest !== now.orderDigest || frame.iteration !== now.iteration || frame.stat !== now.stat) return Infinity
+    if (now === null || targetKey(frame.target) !== now.target || frame.orderDigest !== now.orderDigest || frame.iteration !== now.iteration || frame.stat !== now.stat) return Infinity
     const position = now.times.indexOf(frame.time)
     return position < 0 ? Infinity : Math.abs(position - now.index)
   }
@@ -352,7 +364,7 @@ export function carryTime(
 
 type Loaded ={ ok: true; data: ObsGroupData } | { ok: false; failed: ObsFailure }
 
-function dataOf(group: string, orderDigest: string, rows: ObsSiteRow[], times: ObsTimesPayload): ObsGroupData {
+function dataOf(target: ObsTarget, orderDigest: string, rows: ObsSiteRow[], times: ObsTimesPayload): ObsGroupData {
   const xy = new Float32Array(2 * rows.length)
   const layer = new Int32Array(rows.length)
   rows.forEach((site, i) => {
@@ -361,24 +373,25 @@ function dataOf(group: string, orderDigest: string, rows: ObsSiteRow[], times: O
     xy[2 * i + 1] = placed ? site.y : Number.NaN
     layer[i] = site.layer
   })
-  return { group, orderDigest, rows, times, xy, layer }
+  return { target, orderDigest, rows, times, xy, layer }
 }
 
 export function createObservationStatSource(opts: { runId: string | null }): ObservationStatSource {
   const slot = new LatestWins<Loaded>()
   let loaded: { key: string; data: ObsGroupData } | null = null
 
-  async function loadGroup(group: string): Promise<GroupAnswer> {
-    const key = fetchKey(opts.runId, 'obs-group', group)
+  async function loadGroup(asked: string | ObsTarget): Promise<GroupAnswer> {
+    const target = typeof asked === 'string' ? groupTarget(asked) : asked
+    const key = fetchKey(opts.runId, 'obs-group', targetKey(target))
     if (loaded !== null && loaded.key === key) {
       // The same choice again is no new request; it also makes any group still loading stale.
       slot.cancel()
       return { stale: false, data: loaded.data }
     }
     const answer = await slot.run(key, async (signal): Promise<Loaded> => {
-      const sites = await fetchObsSites(group, { signal })
+      const sites = await fetchObsSites(target, { signal })
       if (!sites.ok) return { ok: false, failed: { artifact: sites.artifact, reason: sites.reason } }
-      const times = await fetchObsTimes(group, { signal })
+      const times = await fetchObsTimes(target, { signal })
       if (!times.ok) return { ok: false, failed: { artifact: times.artifact, reason: times.reason } }
       const payload = times.payload
       // Frame entry i belongs to sites row i, so another table or a different count would colour the wrong dots.
@@ -387,7 +400,7 @@ export function createObservationStatSource(opts: { runId: string | null }): Obs
           ok: false,
           failed: {
             artifact: 'obs_index',
-            reason: 'the sites and the times were cut from different observation tables; choose the group again or reload the page',
+            reason: `the sites and the times of ${targetLabel(target)} were cut from different observation tables; choose it again or reload the page`,
           },
         }
       }
@@ -400,7 +413,7 @@ export function createObservationStatSource(opts: { runId: string | null }): Obs
           },
         }
       }
-      return { ok: true, data: dataOf(group, sites.orderDigest, sites.rows, payload) }
+      return { ok: true, data: dataOf(target, sites.orderDigest, sites.rows, payload) }
     })
     if (answer.stale) return { stale: true }
     if (!answer.value.ok) return { stale: false, failed: answer.value.failed }
@@ -409,4 +422,12 @@ export function createObservationStatSource(opts: { runId: string | null }): Obs
   }
 
   return { loadGroup, frames: new FrameCache(opts.runId) }
+}
+
+/** The group a site row belongs to, as the sites answer named it. */
+export function siteGroupOf(data: ObsGroupData, row: number): string {
+  const site = data.rows[row]
+  if (site.group !== undefined) return site.group
+  // Only a one-group answer may leave the column out; a set's sites are refused without it.
+  return data.target.kind === 'group' ? data.target.group : targetLabel(data.target)
 }

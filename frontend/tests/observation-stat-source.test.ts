@@ -7,7 +7,10 @@ const mocks = vi.hoisted(() => ({
   fetchObsFrame: vi.fn(),
 }))
 
-vi.mock('../src/data/obs', () => mocks)
+vi.mock('../src/data/obs', async () => ({
+  ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
+  ...mocks,
+}))
 
 import {
   FrameCache,
@@ -15,6 +18,7 @@ import {
   countsAtTime,
   createObservationStatSource,
   dotsFor,
+  siteGroupOf,
   valuesForDots,
   type ObsGroupData,
 } from '../src/views/observation-stat-source'
@@ -66,7 +70,7 @@ const SITES: ObsSiteRow[] = [
 
 function groupData(rows: ObsSiteRow[] = SITES): ObsGroupData {
   return {
-    group: 'g1',
+    target: { kind: 'group', group: 'g1' },
     orderDigest: DIGEST,
     rows,
     times: timesPayload(),
@@ -150,7 +154,7 @@ describe('loadGroup', () => {
     const source = createObservationStatSource({ runId: 'run' })
     const answer = await source.loadGroup('g1')
     if (answer.stale || 'failed' in answer) throw new Error('expected data')
-    expect(answer.data.group).toBe('g1')
+    expect(answer.data.target).toEqual({ kind: 'group', group: 'g1' })
     expect(answer.data.rows).toBe(SITES)
     expect(answer.data.times.times).toEqual([1, 2, 3])
     expect(Array.from(answer.data.layer)).toEqual([2, 2, 5, -1, -1])
@@ -464,6 +468,74 @@ describe('FrameCache.want', () => {
     if (result.stale || !('failed' in result)) throw new Error('expected a failure')
     expect(result.failed.reason).toContain('time')
     expect(cache.get(cache.key('g', 1, 104, 'mean', DIGEST))).toBeUndefined()
+  })
+
+  describe('a set', () => {
+    const SET = { kind: 'set' as const, by: 'oname', value: 'hds', groups: ['g1', 'g2'] }
+
+    function frameFor(meta: { group: string | null; set: { by: string; value: string } | null; orderDigest?: string }) {
+      mocks.fetchObsFrame.mockImplementation(async (_target: unknown, iteration: number, time: number, stat: string) => ({
+        ok: true,
+        values: Float32Array.from([1, 2]),
+        meta: { iteration, time, stat, orderDigest: DIGEST, nSites: 2, nAtTime: 2, nRowsHidden: 0, nFinite: 2, ...meta },
+      }))
+    }
+
+    it('asks for the set itself and keeps the frame that names it', async () => {
+      frameFor({ group: null, set: { by: 'oname', value: 'hds' } })
+      const cache = new FrameCache('run')
+      const result = await cache.want(SET, DIGEST, 1, TEN, 4, 'mean')
+      if (result.stale || 'failed' in result) throw new Error('expected values')
+      expect(mocks.fetchObsFrame.mock.calls[0][0]).toEqual(SET)
+      expect(cache.get(cache.key(SET, 1, 104, 'mean', DIGEST))).toBe(result.values)
+      // A group named like the set's key text is still another frame.
+      expect(cache.get(cache.key('oname = hds · 2 groups', 1, 104, 'mean', DIGEST))).toBeUndefined()
+    })
+
+    it('refuses a frame for another value of the column and colours nothing', async () => {
+      frameFor({ group: null, set: { by: 'oname', value: 'sfr' } })
+      const cache = new FrameCache('run')
+      const result = await cache.want(SET, DIGEST, 1, TEN, 4, 'mean')
+      if (result.stale || !('failed' in result)) throw new Error('expected a failure')
+      expect(result.failed.reason).toBe('asked for the set oname = hds but the answer was for the set oname = sfr, so it colours nothing')
+      expect(cache.get(cache.key(SET, 1, 104, 'mean', DIGEST))).toBeUndefined()
+    })
+
+    it("refuses a group's frame for the set, and a set's frame for a group", async () => {
+      frameFor({ group: 'g1', set: null })
+      const forSet = await new FrameCache('run').want(SET, DIGEST, 1, TEN, 4, 'mean')
+      if (forSet.stale || !('failed' in forSet)) throw new Error('expected a failure')
+      expect(forSet.failed.reason).toContain('asked for the set oname = hds but the answer was for group g1')
+
+      frameFor({ group: null, set: { by: 'oname', value: 'hds' } })
+      const forGroup = await new FrameCache('run').want('g1', DIGEST, 1, TEN, 4, 'mean')
+      if (forGroup.stale || !('failed' in forGroup)) throw new Error('expected a failure')
+      expect(forGroup.failed.reason).toContain('asked for group g1 but the answer was for the set oname = hds')
+    })
+
+    it("refuses a set's frame cut from another observation table", async () => {
+      frameFor({ group: null, set: { by: 'oname', value: 'hds' }, orderDigest: 'digest-b' })
+      const result = await new FrameCache('run').want(SET, DIGEST, 1, TEN, 4, 'mean')
+      if (result.stale || !('failed' in result)) throw new Error('expected a failure')
+      expect(result.failed.reason).toContain('different observation table')
+    })
+
+    it('loads a set through the same slot as a group and keeps its target', async () => {
+      const rows = [row({ siteId: 1, group: 'g1' }), row({ siteId: 2, group: 'g2' })]
+      mocks.fetchObsSites.mockResolvedValue({ ok: true, rows, orderDigest: DIGEST, notes: [] })
+      mocks.fetchObsTimes.mockResolvedValue({ ok: true, payload: timesPayload({ group: null, set: { by: 'oname', value: 'hds' }, n_sites: 2 }) })
+      const source = createObservationStatSource({ runId: 'run' })
+      const answer = await source.loadGroup(SET)
+      if (answer.stale || 'failed' in answer) throw new Error('expected data')
+      expect(answer.data.target).toBe(SET)
+      expect(mocks.fetchObsSites.mock.calls[0][0]).toBe(SET)
+      expect(siteGroupOf(answer.data, 1)).toBe('g2')
+      // The same set again is no new request; a group of it is.
+      await source.loadGroup(SET)
+      expect(mocks.fetchObsSites).toHaveBeenCalledTimes(1)
+      await source.loadGroup('g1')
+      expect(mocks.fetchObsSites).toHaveBeenCalledTimes(2)
+    })
   })
 
   it('refuses a frame cut for another observation table than the sites, and keeps nothing', async () => {
