@@ -22,6 +22,7 @@ const obsApi = vi.hoisted(() => ({
   fetchObs1to1: vi.fn(),
   fetchObsResidHist: vi.fn(),
   fetchObsPoints: vi.fn(),
+  fetchObsGroupSets: vi.fn(),
 }))
 vi.mock('../src/data/obs', async () => ({
   ...(await vi.importActual<typeof import('../src/data/obs')>('../src/data/obs')),
@@ -176,6 +177,8 @@ beforeEach(() => {
   obsApi.fetchObs1to1.mockReset()
   obsApi.fetchObsResidHist.mockReset()
   obsApi.fetchObsPoints.mockReset()
+  obsApi.fetchObsGroupSets.mockReset()
+  obsApi.fetchObsGroupSets.mockResolvedValue({ ok: true, orderDigest: 'd', rule: 'one value per group', sets: [], notes: [] })
   obsApi.fetchObs1to1.mockResolvedValue({ ok: false, artifact: 'obs_1to1', reason: 'no 1:1 in this test' })
   obsApi.fetchObsResidHist.mockResolvedValue({ ok: false, artifact: 'obs_agg', reason: 'no histogram in this test' })
   obsApi.fetchObsPoints.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'no points in this test' })
@@ -1584,5 +1587,124 @@ describe('long names in the panel tables', () => {
     await vi.waitFor(() => expect(groupRows(host).length).toBe(2))
     sortButton(host, 'Group').click()
     expect(names(host)).toEqual(['aa_group:zzzz-99z', 'zz_group:bore-21b'])
+  })
+})
+
+describe('a group set drawn on the map', () => {
+  const SET_LINE = 'The map draws oname = hds · 2 groups. Click a group above to list its sites.'
+
+  function setsAnswer(notes: string[] = []) {
+    return {
+      ok: true,
+      orderDigest: 'd',
+      rule: 'one value per group',
+      sets: [{ by: 'oname', value: 'hds', groups: ['g1', 'g2'], nGroups: 2, nSites: 3 }],
+      notes,
+    }
+  }
+
+  beforeEach(() => {
+    obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('g1'), group('g2'), group('g3')]))
+    obsApi.fetchObsGroupSets.mockResolvedValue(setsAnswer())
+    obsApi.fetchObsSites.mockImplementation(async (name: string) => sitesAnswer([site(name === 'g3' ? 70 : 60, `${name}_site`)]))
+  })
+
+  async function open(over: Partial<ObsPanelOptions> = {}) {
+    const view = mount(over)
+    await vi.waitFor(() => expect(groupRows(view.host).length).toBe(3))
+    return view
+  }
+
+  const marked = (host: HTMLElement): string[] =>
+    groupRows(host)
+      .filter((r) => r.getAttribute('aria-selected') === 'true')
+      .map((r) => r.dataset.group!)
+
+  it('marks no group and names the set in the site list and the group fit', async () => {
+    const { host } = await open({ store: makeStore(['g1', 'g2']) })
+
+    await vi.waitFor(() => expect(host.querySelector('.obs-sites > .fold-body')?.textContent).toContain(SET_LINE))
+    expect(marked(host)).toEqual([])
+    expect(host.querySelector('.obs-fit > .fold-body')?.textContent).toContain(SET_LINE)
+    expect(obsApi.fetchObsSites).not.toHaveBeenCalled()
+  })
+
+  it('stops showing a group picked before once another view draws a set', async () => {
+    const { host, store } = await open()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+
+    store.set({ obsGroups: new Set(['g1', 'g2']) }, 'map')
+    store.flush()
+
+    await vi.waitFor(() => expect(host.querySelector('.obs-sites > .fold-body')?.textContent).toContain(SET_LINE))
+    expect(marked(host)).toEqual([])
+    expect(siteRows(host)).toEqual([])
+    expect(host.querySelector('.obs-sites > .fold-summary')?.textContent).toBe('Sites')
+    expect(host.querySelector('.obs-fit > .fold-summary')?.textContent).toBe('Group fit')
+    expect(host.querySelector('.obs-fit > .fold-body')?.textContent).toContain(SET_LINE)
+  })
+
+  it('draws one group again when it is picked in the table under a set', async () => {
+    const { host, store } = await open({ store: makeStore(['g1', 'g2']) })
+    await vi.waitFor(() => expect(host.querySelector('.obs-sites')?.textContent).toContain(SET_LINE))
+    const writes: string[][] = []
+    store.subscribe(
+      (s) => s.obsGroups,
+      (next, _prev, origins) => {
+        if (origins.has('obs')) writes.push([...next.obsGroups])
+      },
+    )
+
+    groupRows(host)[2].click()
+    store.flush()
+
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    expect(marked(host)).toEqual(['g3'])
+    expect(writes).toEqual([['g3']])
+    expect(cell(siteRows(host)[0], 'site').textContent).toBe('g3_site')
+    expect(host.querySelector('.obs-sites')?.textContent).not.toContain(SET_LINE)
+  })
+
+  it('marks no group and shows the prompt for a mix of groups that is no set', async () => {
+    const { host, store } = await open()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+
+    store.set({ obsGroups: new Set(['g1', 'g3']) }, 'map')
+    store.flush()
+
+    await vi.waitFor(() => expect(siteRows(host)).toEqual([]))
+    expect(marked(host)).toEqual([])
+    expect(host.querySelector('.obs-sites')?.textContent).toContain('Click a group above to list its sites.')
+    expect(host.querySelector('.obs-sites')?.textContent).not.toContain('The map draws')
+  })
+
+  it("shows the sets' notes once, after the groups' own notes", async () => {
+    obsApi.fetchObsGroups.mockResolvedValue(groupsAnswer([group('g1'), group('g2'), group('g3')], ['a groups note']))
+    obsApi.fetchObsGroupSets.mockResolvedValue(setsAnswer(['g3 is left out of every set: its oname differs between observations']))
+    const { host, handle } = await open()
+    const lines = (): string[] => [...host.querySelectorAll('.obs-notices > .wrap-note')].map((l) => l.textContent ?? '').filter((t) => t !== '')
+
+    await vi.waitFor(() => expect(lines()).toContain('g3 is left out of every set: its oname differs between observations'))
+    handle.onHide()
+    handle.onShow()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(lines()).toEqual(['a groups note', 'g3 is left out of every set: its oname differs between observations'])
+    expect(obsApi.fetchObsGroupSets).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds one notice line naming the artifact and reason when the sets cannot be read, and changes nothing else', async () => {
+    obsApi.fetchObsGroupSets.mockResolvedValue({ ok: false, artifact: 'obs_index', reason: 'the sets were not built' })
+    const { host, store } = await open()
+    const lines = (): string[] => [...host.querySelectorAll('.obs-notices > .wrap-note')].map((l) => l.textContent ?? '').filter((t) => t !== '')
+
+    await vi.waitFor(() => expect(lines().length).toBe(1))
+    expect(lines()[0]).toContain('obs_index: the sets were not built')
+    store.set({ obsGroups: new Set(['g2']) }, 'map')
+    store.flush()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    expect(marked(host)).toEqual(['g2'])
   })
 })
