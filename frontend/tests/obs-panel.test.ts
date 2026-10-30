@@ -1421,3 +1421,136 @@ describe('the folding sections', () => {
     expect(sectionOf(host, 'obs-sites').getAttribute('data-folded')).toBe('false')
   })
 })
+
+// The panel is too tall while more than `room` of its folding sections are open; null never fits.
+function stubPanelOverflow(room: number | null): void {
+  const isPanel = (el: HTMLElement) => el.classList.contains('obs-panel')
+  const open = (el: HTMLElement) => el.querySelectorAll(':scope > .fold-section[data-folded="false"]').length
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return isPanel(this) ? 400 : 0
+  })
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    if (!isPanel(this)) return 0
+    return room === null || open(this) > room ? 1000 : 400
+  })
+}
+
+function foldedOf(host: HTMLElement): Record<string, boolean> {
+  return Object.fromEntries(SECTIONS.map(({ cls }) => [cls, sectionOf(host, cls).getAttribute('data-folded') === 'true']))
+}
+
+const storedFolds = () => (localStorage as unknown as { keys(): string[] }).keys().filter((k) => k.startsWith('pesto.fold.'))
+
+describe('the room a site plot gets', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, 'well_a'), site(41, 'well_b')]))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // A group chosen and its sites listed, before the panel is made too tall.
+  async function withSites() {
+    const view = await openWithGroups()
+    groupRows(view.host)[0].click()
+    await vi.waitFor(() => expect(siteRows(view.host).length).toBe(2))
+    view.store.flush()
+    return view
+  }
+
+  function pickSite(view: { host: HTMLElement; store: SelectionStore }): void {
+    siteRows(view.host)[0].click()
+    view.store.flush()
+  }
+
+  it('folds Group fit, then Groups, then the site list after a site pick, storing nothing and leaving the plots open', async () => {
+    const expected = [
+      { room: 3, folded: ['obs-fit'] },
+      { room: 2, folded: ['obs-fit', 'obs-groups'] },
+      { room: null, folded: ['obs-fit', 'obs-groups', 'obs-sites'] },
+    ]
+    for (const { room, folded } of expected) {
+      document.body.innerHTML = ''
+      vi.restoreAllMocks()
+      const view = await withSites()
+      stubPanelOverflow(room)
+      pickSite(view)
+      const state = foldedOf(view.host)
+      expect(Object.keys(state).filter((cls) => state[cls]).sort(), `room ${room}`).toEqual([...folded].sort())
+      expect(state['obs-spaghetti']).toBe(false)
+      expect(storedFolds()).toEqual([])
+      view.handle.dispose()
+    }
+  })
+
+  it('folds a section the viewer chose open only after those never chosen, and keeps the stored choice', async () => {
+    localStorage.setItem('pesto.fold.obs-fit', 'open')
+    const expected = [
+      { room: 3, folded: ['obs-groups'] },
+      { room: 2, folded: ['obs-groups', 'obs-sites'] },
+      { room: null, folded: ['obs-groups', 'obs-sites', 'obs-fit'] },
+    ]
+    for (const { room, folded } of expected) {
+      document.body.innerHTML = ''
+      vi.restoreAllMocks()
+      const view = await withSites()
+      stubPanelOverflow(room)
+      pickSite(view)
+      const state = foldedOf(view.host)
+      expect(
+        SECTIONS.map(({ cls }) => cls).filter((cls) => state[cls]).sort(),
+        `room ${room}`,
+      ).toEqual([...folded].sort())
+      expect(localStorage.getItem('pesto.fold.obs-fit')).toBe('open')
+      view.handle.dispose()
+    }
+  })
+
+  it('folds nothing after a site pick when the tab fits', async () => {
+    const view = await withSites()
+    stubPanelOverflow(4)
+    pickSite(view)
+    expect(Object.values(foldedOf(view.host)).some(Boolean)).toBe(false)
+  })
+
+  it('folds nothing while the tab is hidden, since a hidden tab has no height', async () => {
+    const view = await withSites()
+    view.handle.onHide()
+    stubPanelOverflow(null)
+    view.store.set({ sites: new Set([40]) }, 'map')
+    view.store.flush()
+    expect(Object.values(foldedOf(view.host)).some(Boolean)).toBe(false)
+  })
+
+  it('folds the other open sections from the bottom, storing each, when the viewer opens Group fit and it does not fit', async () => {
+    const view = await withSites()
+    foldButtonOf(view.host, 'obs-fit').click()
+    stubPanelOverflow(null)
+    foldButtonOf(view.host, 'obs-fit').click()
+    expect(foldedOf(view.host)).toEqual({ 'obs-groups': true, 'obs-sites': true, 'obs-spaghetti': true, 'obs-fit': false })
+    expect(localStorage.getItem('pesto.fold.obs-fit')).toBe('open')
+    for (const key of ['obs-groups', 'obs-sites', 'obs-plots']) expect(localStorage.getItem(`pesto.fold.${key}`), key).toBe('folded')
+  })
+
+  it('stops folding as soon as the opened section fits', async () => {
+    const view = await withSites()
+    foldButtonOf(view.host, 'obs-fit').click()
+    stubPanelOverflow(3)
+    foldButtonOf(view.host, 'obs-fit').click()
+    expect(foldedOf(view.host)).toEqual({ 'obs-groups': true, 'obs-sites': false, 'obs-spaghetti': false, 'obs-fit': false })
+  })
+
+  it('puts the site list notes under its rows', async () => {
+    obsApi.fetchObsSites.mockResolvedValue(sitesAnswer([site(40, 'well_a')], ['3 sites have no position']))
+    const { host } = await openWithGroups()
+    groupRows(host)[0].click()
+    await vi.waitFor(() => expect(siteRows(host).length).toBe(1))
+    const grid = host.querySelector('.obs-sites .obs-grid')!
+    const notes = host.querySelector('.obs-sites .obs-site-notes')!
+    expect(notes.textContent).toBe('3 sites have no position')
+    expect(grid.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(grid.nextElementSibling).toBe(notes)
+  })
+})

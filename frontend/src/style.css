@@ -530,12 +530,22 @@ body {
   max-height: 40%;
 }
 
-/* A floor so the plots below never squeeze the site list out of sight on a laptop-height panel. */
+/* The site list's prompt is one line; the floor below applies once it lists sites. */
 .obs-sites {
   flex: 0 1 auto;
-  min-height: 7.5rem;
   max-height: 40%;
   overflow: hidden;
+}
+
+/* A floor so the plots never squeeze the site list out of sight: its title line, the one-line hint,
+   the header and four 24px rows. The floors are what make a too-tall tab fold its sections. */
+.obs-sites[data-folded='false']:has(.obs-grid) {
+  min-height: calc(24px + var(--space-xs) + 17px + 26px + 4 * 24px);
+}
+
+/* The server's notes add up to two lines under the rows. */
+.obs-sites[data-folded='false']:has(.obs-site-notes) {
+  min-height: calc(24px + var(--space-xs) + 17px + 26px + 4 * 24px + var(--space-xs) + 34px);
 }
 
 /* The grid scrolls sideways as one piece, so the header stays over its columns
@@ -549,8 +559,9 @@ body {
   scrollbar-color: var(--axis) var(--gridline);
 }
 
+/* The header and four rows. */
 .obs-sites .obs-grid {
-  min-height: 6rem;
+  min-height: calc(26px + 4 * 24px);
 }
 
 .obs-grid-header,
@@ -630,11 +641,11 @@ body {
   flex-basis: 8em;
 }
 
-/* Notes the server sent with the site list: a few lines, then they scroll. */
+/* Notes the server sent with the site list sit under the rows: two lines, then they scroll. */
 .obs-site-notes {
   flex: 0 0 auto;
-  max-height: 4.5rem;
-  margin-bottom: var(--space-xs);
+  max-height: 34px;
+  margin-top: var(--space-xs);
 }
 
 .obs-col-figure[data-column^='rmse'] {
@@ -682,10 +693,16 @@ body {
   width: 100%;
 }
 
-/* A floor so the chosen site's spaghetti is never squeezed to a sliver. */
+/* With no site chosen the section is its one-line prompt. */
 .obs-spaghetti {
-  min-height: 8rem;
   max-height: 50%;
+}
+
+/* G-14-2: holding a plot, the section is never below one whole site panel: its title line, the
+   panel's title, the 200px plot and two 17px legend lines. More panels and lines scroll inside. */
+.obs-spaghetti[data-folded='false']:has(.obs-spaghetti-plot) {
+  min-height: calc(24px + var(--space-xs) + 21px + 200px + 2 * 17px);
+  max-height: none;
 }
 
 .obs-spaghetti canvas {
