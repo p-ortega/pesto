@@ -129,10 +129,10 @@ def _shared_rows(a, b, max_real, max_par):
 
 
 @pytest.mark.slow
-def test_the_two_benchmark_runs_are_refused_a_join(forecast_run, hm_run):
+def test_the_two_benchmark_runs_are_refused_a_join(forecast_run, hm_run, case_file):
     """Same realization names, different draws: matching names alone must not join two runs."""
     fed_in = _read_or_skip(forecast_run / "pt_pe_forecast.jcb")
-    iteration_1 = _read_or_skip(hm_run / "site_a.1.par.jcb")
+    iteration_1 = _read_or_skip(case_file(hm_run, ".1.par.jcb"))
 
     _pairs, rows, cols_a, cols_b = _shared_rows(fed_in, iteration_1, max_real=40, max_par=200)
     for row_a, row_b in rows:
@@ -141,10 +141,10 @@ def test_the_two_benchmark_runs_are_refused_a_join(forecast_run, hm_run):
 
 
 @pytest.mark.slow
-def test_genuine_ancestry_is_detected_by_values(forecast_run):
+def test_genuine_ancestry_is_detected_by_values(forecast_run, case_file):
     """The forecast's fed-in ensemble and the one it used are the same draws, and the values say so."""
     fed_in = _read_or_skip(forecast_run / "pt_pe_forecast.jcb")
-    used = _read_or_skip(forecast_run / "site_a.0.par.bin")
+    used = _read_or_skip(case_file(forecast_run, ".0.par.bin"))
 
     assert set(fed_in.real_names) == set(used.real_names)
     _pairs, rows, cols_a, cols_b = _shared_rows(fed_in, used, max_real=40, max_par=2000)

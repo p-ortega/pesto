@@ -154,7 +154,7 @@ def test_two_grid_files_keep_the_sorted_first_and_name_the_other(tmp_path):
 
 
 @pytest.mark.slow
-def test_disv_run_names_the_grid_file_it_did_not_keep(disv_run):
+def test_disv_run_names_the_grid_file_it_did_not_keep(disv_run, case_file):
     """The real gap 02-06-SUMMARY.md recorded: two .grb files exist, and the
     caller must be told about the one that was not kept."""
     layout = discover(disv_run)
@@ -164,7 +164,7 @@ def test_disv_run_names_the_grid_file_it_did_not_keep(disv_run):
     grid_ambiguities = [a for a in layout.ambiguities if a.slot == "grid file"]
     assert len(grid_ambiguities) == 1
     ambiguity = grid_ambiguities[0]
-    assert "site_b.disv.grb" in ambiguity.rejected
+    assert case_file(disv_run, ".disv.grb").name in ambiguity.rejected
     assert ambiguity.note() in layout.notes
 
 
@@ -693,7 +693,7 @@ def test_starting_ensemble_path_climbing_outside_the_run_directory_is_named_and_
 
 @pytest.mark.slow
 def test_restarted_run_names_every_starting_and_restart_ensemble_it_could_not_find(
-    restarted_run,
+    restarted_run, case_file
 ):
     """The real mirror of the one-kind-present case: this run holds
     observation ensembles across four iterations and no parameter
@@ -718,9 +718,10 @@ def test_restarted_run_names_every_starting_and_restart_ensemble_it_could_not_fi
     assert layout.starting_par_ens is None
     assert layout.starting_obs_ens is None
     assert layout.restart_obs_ens is None
-    assert any("restart.site_a.1.par.jcb" in note for note in layout.notes)
-    assert any("restart.site_a.obs+noise.jcb" in note for note in layout.notes)
-    assert any("restart.site_a.1.obs.jcb" in note for note in layout.notes)
+    case = case_file(restarted_run, "").name
+    assert any(f"restart.{case}.1.par.jcb" in note for note in layout.notes)
+    assert any(f"restart.{case}.obs+noise.jcb" in note for note in layout.notes)
+    assert any(f"restart.{case}.1.obs.jcb" in note for note in layout.notes)
 
 
 def test_unreadable_control_file_yields_a_layout_not_an_exception(tmp_path):
@@ -823,20 +824,20 @@ def test_inventory_matches_every_artifact_the_generator_wrote_in_both_directions
 
 
 @pytest.mark.slow
-def test_forecast_run_reports_the_real_directorys_full_inventory(forecast_run):
+def test_forecast_run_reports_the_real_directorys_full_inventory(forecast_run, case_file):
     """The realistic NOPTMAX<=0 case: a real forecast directory holding
     2,167,174 observations."""
     layout = discover(forecast_run)
 
-    assert layout.case == "site_a"
+    assert layout.case == case_file(forecast_run, "").name
     assert layout.noptmax == -1
     assert 0 in layout.par_ens
-    assert layout.par_ens[0].name == "site_a.0.par.bin"
+    assert layout.par_ens[0].name == f"{layout.case}.0.par.bin"
     assert layout.grid is not None
     assert layout.grid.name == "coarse.disv.grb"
     assert len(layout.phi) == 6
     assert 0 in layout.pdc
-    assert layout.pdc[0].name == "site_a.0.pdc.csv"
+    assert layout.pdc[0].name == f"{layout.case}.0.pdc.csv"
 
     # Deviation from this plan's literal text, recorded in the SUMMARY: the
     # working copy on this machine currently holds pt_pe_forecast.jcb on
@@ -885,19 +886,19 @@ def test_a_run_holding_only_one_ensemble_kind_reports_the_other_as_empty_in_both
 
 
 @pytest.mark.slow
-def test_hm_run_names_the_stray_control_file_it_did_not_keep(hm_run):
+def test_hm_run_names_the_stray_control_file_it_did_not_keep(hm_run, case_file):
     """What the reader is responsible for on this real directory: its own
     inventory, and -- new -- the second, 70 MB *.pst file this directory
     genuinely holds, named rather than silently discarded."""
     layout = discover(hm_run)
 
-    assert layout.case == "site_a"
+    assert layout.case == case_file(hm_run, "").name
     assert layout.noptmax == 10
     assert 0 in layout.iterations
     assert 1 in layout.iterations
     assert set(layout.par_ens) <= set(layout.iterations)
     assert layout.pcs_file(1) is not None
-    assert layout.pcs_file(1).name == "site_a.1.pcs.csv"
+    assert layout.pcs_file(1).name == f"{layout.case}.1.pcs.csv"
 
     control_ambiguities = [a for a in layout.ambiguities if a.slot == "control file"]
     assert len(control_ambiguities) == 1

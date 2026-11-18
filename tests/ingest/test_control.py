@@ -278,8 +278,8 @@ def test_empty_observation_section_is_an_empty_typed_table_or_a_named_failure(tm
 
 
 @pytest.mark.slow
-def test_reads_a_real_forecast_run_pstfrom_control_file(forecast_run):
-    pst_path = forecast_run / "site_a.pst"
+def test_reads_a_real_forecast_run_pstfrom_control_file(forecast_run, case_file):
+    pst_path = case_file(forecast_run, ".pst")
 
     tables = read_control(pst_path)
 
@@ -296,8 +296,8 @@ def test_reads_a_real_forecast_run_pstfrom_control_file(forecast_run):
 
 
 @pytest.mark.slow
-def test_reads_a_real_hm_run_control_file_and_leaves_it_untouched(hm_run):
-    pst_path = hm_run / "site_a.pst"
+def test_reads_a_real_hm_run_control_file_and_leaves_it_untouched(hm_run, case_file):
+    pst_path = case_file(hm_run, ".pst")
 
     before = _snapshot(hm_run)
     tables = read_control(pst_path)

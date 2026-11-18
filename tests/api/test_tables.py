@@ -332,8 +332,8 @@ def test_a_realization_sidecar_at_a_foreign_cache_version_is_refused_not_served_
 
 
 @pytest.mark.slow
-def test_reads_a_real_forecast_runs_parameter_table(tmp_path, forecast_run):
-    pst_path = forecast_run / "site_a.pst"
+def test_reads_a_real_forecast_runs_parameter_table(tmp_path, forecast_run, case_file):
+    pst_path = case_file(forecast_run, ".pst")
     tables = read_control(pst_path)
     assert isinstance(tables, ControlTables)
 

@@ -289,10 +289,10 @@ def test_pesto_model_never_imports_or_calls_a_reprojection_library():
 
 
 @pytest.mark.slow
-def test_a_real_run_at_a_northing_near_7e6_is_off_by_no_more_than_float32_rounding(disv_run):
+def test_a_real_run_at_a_northing_near_7e6_is_off_by_no_more_than_float32_rounding(disv_run, case_file):
     from pesto.model.mf6 import Mf6Adapter
 
-    adapter = Mf6Adapter(disv_run / "site_b.disv.grb")
+    adapter = Mf6Adapter(case_file(disv_run, ".disv.grb"))
 
     mesh = adapter.grid_mesh()
     geometry = adapter.geometry()

@@ -88,16 +88,16 @@ def test_a_corrupt_ensemble_file_costs_one_artifact_not_the_whole_run(tmp_path):
 
 
 @pytest.mark.slow
-def test_the_same_path_reads_a_real_pestpp_ies_run(forecast_run):
+def test_the_same_path_reads_a_real_pestpp_ies_run(forecast_run, case_file):
     """The identical tracer path against a real benchmark directory: finds
     the control file, reports the real ``noptmax``, and returns realization
     names taken from inside the file rather than stringified indices
     (READ-04, stated as a real behaviour rather than a tautology)."""
     layout = discover(forecast_run)
-    assert layout.case == "site_a"
+    assert layout.case == case_file(forecast_run, "").name
     assert layout.noptmax == -1
     assert 0 in layout.par_ens
-    assert layout.par_ens[0].name == "site_a.0.par.bin"
+    assert layout.par_ens[0].name == f"{layout.case}.0.par.bin"
 
     tables = read_control(layout.pst_path)
     assert isinstance(tables, ControlTables)

@@ -651,7 +651,7 @@ def test_the_notes_sidecar_is_recorded_so_truncating_it_makes_the_artifact_read_
 
 
 @pytest.mark.slow
-def test_at_bounds_matches_a_real_benchmarks_pcs_csv_group_counts(disv_run):
+def test_at_bounds_matches_a_real_benchmarks_pcs_csv_group_counts(disv_run, case_file):
     from pesto.ingest.control import read_control
     from pesto.ingest.discover import discover
     from pesto.ingest.ensfile import read_ensemble
@@ -685,7 +685,7 @@ def test_at_bounds_matches_a_real_benchmarks_pcs_csv_group_counts(disv_run):
     pargp = tables.par["pargp"].astype(str).to_numpy()
     pesto_counts = pd.Series(counts, index=pargp).groupby(level=0).sum()
 
-    pcs = pd.read_csv(disv_run / "site_b.1.pcs.csv")
+    pcs = pd.read_csv(case_file(disv_run, ".1.pcs.csv"))
     pcs["expected"] = pcs["num_at_near_lbound"] + pcs["num_at_near_ubound"]
 
     matched_groups = [g for g in pcs["group"] if g in pesto_counts.index]

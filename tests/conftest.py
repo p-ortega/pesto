@@ -23,6 +23,18 @@ import pytest
 
 
 @pytest.fixture(scope="session")
+def case_file():
+    """A benchmark run's own file, named from the control file that has a .rec beside it, so
+    tests never spell a real case name. Some runs hold a stray second .pst with no .rec."""
+
+    def find(run_dir: Path, suffix: str) -> Path:
+        (pst,) = [p for p in run_dir.glob("*.pst") if p.with_suffix(".rec").exists()]
+        return run_dir / f"{pst.stem}{suffix}"
+
+    return find
+
+
+@pytest.fixture(scope="session")
 def benchmark_root() -> Path:
     return Path(os.environ.get("PESTO_BENCH", Path.home() / "dev" / "data" / "pesto-bench"))
 
@@ -46,7 +58,7 @@ def hm_run(benchmark_root: Path) -> Path:
 @pytest.fixture(scope="session")
 def disv_run(benchmark_root: Path) -> Path:
     """The only benchmark run holding two ``.grb`` files -- ``org.grb`` and
-    ``site_b.disv.grb`` -- the real, unresolved grid-file ambiguity."""
+    ``<case>.disv.grb`` -- the real, unresolved grid-file ambiguity."""
     run_dir = benchmark_root / "hm_20251104154614"
     if not run_dir.is_dir():
         pytest.skip(f"benchmark run directory not found: {run_dir}")

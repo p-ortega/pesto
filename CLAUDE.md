@@ -65,3 +65,7 @@ properly, and tells you nothing about whether the code works.
 ## Planning files
 
 `.planning/` and `docs/` are gitignored. Never commit specs, plans, or GSD artifacts.
+
+`DECISIONS.md` at the repo root is the one exception: a short summary of the decisions and where M1
+stands, so the work can move between machines. Keep it current, and keep real run and site names
+out of it and out of everything else in git.
