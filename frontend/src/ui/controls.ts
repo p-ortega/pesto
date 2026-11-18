@@ -335,6 +335,8 @@ export function renderSelectionControls(
 
   function clearRefusal(): void {
     refusalLine.textContent = ''
+    // Refused text left in the box would read as the shown realization once its reason is gone.
+    if (goInput.getAttribute('aria-invalid') === 'true') goInput.value = ''
     goInput.removeAttribute('aria-invalid')
     goInput.removeAttribute('aria-describedby')
   }

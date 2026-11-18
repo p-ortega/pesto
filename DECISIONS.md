@@ -135,7 +135,7 @@ which the grid leaves out on purpose.
 The open work: **the user's own sign-off** of the agent checks above. Nothing else is open for M1.
 
 Known follow-ups, all advisory: a sites or times answer that names no group is still taken as
-the group asked for (the server always names it; many test stubs do not); the Go-to box keeps refused text; two tests can miss a same-size CSV
+the group asked for (the server always names it; many test stubs do not); two tests can miss a same-size CSV
 edit; pesto's own control-file read can tip the cold label; a mixed group keeps one rule in the
 group table; on `hm_20251104154614` the model's OBS6 input is skipped because its grid file is not
 the run's.

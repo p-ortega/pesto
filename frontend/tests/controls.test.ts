@@ -1105,6 +1105,27 @@ describe('renderSelectionControls', () => {
       expect(noteText(refusal(el))).toBe(`realization "${typed}" is not in iteration 0`)
     })
 
+    it('empties a refused name from the box when a slider move clears the refusal', () => {
+      const { el } = mount(THREE_NAMES)
+      commit(el, 'zzz')
+
+      slider(el).value = '1'
+      slider(el).dispatchEvent(new Event('input'))
+
+      expect(noteText(refusal(el)) ?? '').toBe('')
+      expect(goBox(el).value).toBe('')
+    })
+
+    it('keeps a name being typed when nothing was refused', () => {
+      const { el } = mount(THREE_NAMES)
+      goBox(el).value = 'r0'
+
+      slider(el).value = '1'
+      slider(el).dispatchEvent(new Event('input'))
+
+      expect(goBox(el).value).toBe('r0')
+    })
+
     it('treats an empty box as nothing to do and clears an earlier refusal', () => {
       const { el, onSelectionChange } = mount(THREE_NAMES)
       commit(el, 'zzz')
