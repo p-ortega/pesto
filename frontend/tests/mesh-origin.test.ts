@@ -166,6 +166,27 @@ function readoutText(root: HTMLElement): string {
   return root.querySelector('.floating-bottom-right')?.textContent ?? ''
 }
 
+// First in the file: a map mounted by a later test can build its own pick index late and add a call.
+describe('the pick index', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('is prepared once, with the drawn mesh, after the first draw', async () => {
+    const { preparePickIndex } = await import('../src/gl/picking')
+    await mounted({ ...MESH_BODY, origin: [0, 0] })
+    await vi.waitFor(() => expect(preparePickIndex).toHaveBeenCalledTimes(1))
+    const mesh = vi.mocked(preparePickIndex).mock.calls[0][0]
+    expect(mesh.nCells).toBe(1)
+    expect(Array.from(mesh.positions)).toEqual(Array.from(POSITIONS))
+  })
+})
+
 describe('gridMesh reads the origin', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -211,25 +232,5 @@ describe('the readout of a pilot-point dot', () => {
     await vi.waitFor(() => expect(root.querySelector('.floating-bottom-left')?.textContent).toContain('points on this layer'))
     clickDot(root)
     expect(readoutText(root)).toContain('x 0, y 1 · layer 1 (index 0)')
-  })
-})
-
-describe('the pick index', () => {
-  beforeEach(() => {
-    document.body.innerHTML = ''
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.clearAllMocks()
-  })
-
-  it('is prepared once, with the drawn mesh, after the first draw', async () => {
-    const { preparePickIndex } = await import('../src/gl/picking')
-    await mounted({ ...MESH_BODY, origin: [0, 0] })
-    await vi.waitFor(() => expect(preparePickIndex).toHaveBeenCalledTimes(1))
-    const mesh = vi.mocked(preparePickIndex).mock.calls[0][0]
-    expect(mesh.nCells).toBe(1)
-    expect(Array.from(mesh.positions)).toEqual(Array.from(POSITIONS))
   })
 })
