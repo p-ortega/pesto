@@ -1754,6 +1754,19 @@ body {
   flex-basis: 100%;
 }
 
+/* "Go to" stays on one line; the name box takes what is left, whatever the font's width. */
+.go-to-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  white-space: nowrap;
+}
+
+.go-to-row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* The slider shares its line with the value beside it. */
 .card-row-control > input[type='range'] {
   flex: 1 1 64px;

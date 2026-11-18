@@ -265,7 +265,7 @@ export function renderSelectionControls(
   // Go to: type or pick a realization by name. The text is looked up as a
   // name, exactly as typed -- never read as a slider position.
   const goLabel = parameterOnly(document.createElement('label'))
-  goLabel.classList.add('label', 'card-row-full')
+  goLabel.classList.add('label', 'card-row-full', 'go-to-row')
   goLabel.textContent = 'Go to'
   const goInput = document.createElement('input')
   goInput.type = 'text'
