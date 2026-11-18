@@ -114,6 +114,8 @@ agent checks; the user has not signed them off.
 - Review 10 step 3 (Group fit) and step 5 (Obs tab widths): pass after fixes.
 - Review 14 re-checks 1, 3, 7 and 9: pass after fixes.
 - Review 9 step 1 (Params tab widths): pass after a fix.
+- Review 9 step 2 (noise wording, on the forecast run): pass. The header reads "noise: off (from
+  .rec)" and the Config tab uses .rec and ies_no_noise terms, with no "sources disagree".
 
 Fixes made on the way: Site plots no longer squeezed under Group fit's title; Obs table columns in
 rem so headers line up with rows; tabs and section controls wrap on a narrow panel; the divider stops
@@ -126,11 +128,11 @@ with Linux baselines. On Linux run the Playwright checks with `PESTO_PW_CHANNEL=
 the installed Chrome. Chrome on the laptop is maximized and will not resize; check laptop layouts by
 loading the app in a 1440x763 iframe.
 
-The open work, in order:
+Slow tests on Linux with all four bench runs: 166 passed, 45 skipped, 2 xfailed (52 min). The one
+failure on the way was the test, not the app: the 1:1 count check now counts 1e30 dry-cell values,
+which the grid leaves out on purpose.
 
-1. **Review 9 step 2:** noise wording, on the forecast run (not yet copied to the laptop).
-2. **Slow tests** (`uv run pytest -m slow`) once all four bench runs are on the laptop.
-3. **The user's own sign-off** of the agent checks above.
+The open work: **the user's own sign-off** of the agent checks above. Nothing else is open for M1.
 
 Known follow-ups, all advisory: a sites or times answer that names no group is still taken as
 the group asked for (the server always names it; many test stubs do not); the Go-to box keeps refused text; two tests can miss a same-size CSV
