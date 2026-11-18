@@ -527,6 +527,30 @@ describe('drawing a set of observation groups on the map', () => {
     chooseGroup(root, 'g2')
     await vi.waitFor(() => expect(Array.from(lastPoints(layer)![0])).toEqual(f32(1.5, 0.5)))
   })
+
+  it('hides the time slider when several groups are chosen and the sets cannot be read', async () => {
+    const { root, store, stub, layer } = await mounted()
+    stub.groupSets = 'fail'
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+    await vi.waitFor(() => expect(lastPointCount(layer)).toBe(1))
+    const slider = root.querySelector('.time-slider') as HTMLElement
+    await vi.waitFor(() => expect(slider.hidden).toBe(false))
+    store.set({ obsGroups: new Set(['g1', 'g2']) }, 'other')
+    await vi.waitFor(() => expect(noticeText(root)).toContain('the group sets could not be read'))
+    expect(slider.hidden).toBe(true)
+  })
+
+  it('asks for the sets again the next time the group menu takes focus after a failed read', async () => {
+    const { root, store, stub, layer } = await mounted()
+    stub.groupSets = 'fail'
+    store.set({ colour: { source: 'obs', stat: 'resid_mean' } }, 'other')
+    await vi.waitFor(() => expect(lastPointCount(layer)).toBe(1))
+    await vi.waitFor(() => expect(groupSelect(root).querySelector('option[data-obs-sets-failed]')).not.toBeNull())
+    stub.groupSets = 'ok'
+    groupSelect(root).dispatchEvent(new FocusEvent('focus'))
+    await vi.waitFor(() => expect(setOption(root)).not.toBeNull())
+    expect(groupSelect(root).querySelector('option[data-obs-sets-failed]')).toBeNull()
+  })
 })
 
 describe('a set reads as a set wherever the map names what it draws', () => {

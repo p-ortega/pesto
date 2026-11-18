@@ -3508,6 +3508,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
       if (serial !== obsSerial) return
       if (!sets.ok) {
         obsTargetInUse = null
+        obsTimeReady = false
+        obsSlider?.hide()
         showObsNotice(`${selection.obsGroups.size} observation groups are chosen but the group sets could not be read`, `${sets.artifact}: ${sets.reason}`)
         if (obsActive) clearObsDots()
         return
