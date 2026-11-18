@@ -422,7 +422,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   let lastOpened: FoldHandle | null = null
   // A card that grows on its own, such as Data gaining the observation rows, folds what no longer fits.
   const stackObserver =
-    typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settleGrowth(stackCards, stackOverflows, growthOptions())) : null
+    typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settleStack()) : null
   // Scrolls the stack alone, as scrollIntoView with block 'nearest' would, but never an ancestor of it.
   function scrollIntoStack(el: HTMLElement): void {
     const top = el.offsetTop
@@ -435,8 +435,11 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const fold = renderFold({
       ...options,
       onUserToggle: (folded) => {
+        // Measured at full height, so the folds below see the real overflow.
+        topLeftEl.classList.remove('stack-full')
         if (folded) {
           if (lastOpened === fold) lastOpened = null
+          markStackFull()
           return
         }
         lastOpened = fold
@@ -446,12 +449,24 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
           legendFold.setFolded(true)
           syncLegendHeight()
         }
+        markStackFull()
         scrollIntoStack(fold.el)
       },
     })
     stackCards.push(fold)
     stackObserver?.observe(fold.el)
     return fold
+  }
+  // Nothing left to fold and still too tall: the open card scrolls inside itself, so the stack never does.
+  function markStackFull(): void {
+    if (stackOverflows()) topLeftEl.classList.add('stack-full')
+  }
+  // Measured at full height and marked again in one pass, so the card ends where it began and the
+  // resize observer is not fired again by the mark.
+  function settleStack(): void {
+    topLeftEl.classList.remove('stack-full')
+    settleGrowth(stackCards, stackOverflows, growthOptions())
+    markStackFull()
   }
   // G-14-1: when the stack grows on its own it folds quietly what does not fit, never the card just opened.
   function growthOptions(): { keep: FoldHandle | null; between: () => void } {
@@ -2042,7 +2057,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // The top-left stack stops above the legend, so an open legend never covers its last cards.
     new ResizeObserver(() => {
       syncLegendHeight()
-      settleGrowth(stackCards, stackOverflows, growthOptions())
+      settleStack()
     }).observe(legendFold.el)
   }
 
@@ -3275,7 +3290,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     if (fresh) showObsLegend(null)
     sectionView.refresh()
     // The Data card has just gained its observation rows.
-    settleGrowth(stackCards, stackOverflows, growthOptions())
+    settleStack()
   }
 
   // Nothing is drawn as a dot: a failure or an empty group says so, and no stale dot stays.
@@ -3330,7 +3345,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     obsParked = false
     obsNoticeEl.textContent = ''
     restoreParameterLook()
-    settleGrowth(stackCards, stackOverflows, growthOptions())
+    settleStack()
   }
 
   // The chosen iteration has no observation statistics: never another iteration's, the parameter colouring instead.
@@ -4211,7 +4226,7 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     // First look: what would not fit starts folded, a stored open card too, but nothing is stored.
     // The legend's observer runs after this frame; measure it now so the stack's room is already right.
     syncLegendHeight()
-    settleGrowth(stackCards, stackOverflows, growthOptions())
+    settleStack()
     // Still the first draw: the Basemap card and the folds above can move the band, so fit once more if they did.
     if (!userMovedPlan && camera && mesh && Math.abs(leftBandCss() - fittedBandCss) >= 1) {
       camera.fit(mesh.bounds, 0.04, planInset())

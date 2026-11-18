@@ -1681,6 +1681,29 @@ body {
   max-width: 256px;
 }
 
+/* With nothing left to fold, the open card gives up height and scrolls its own body. It widens
+   by the scrollbar instead of squeezing its 240px rows. */
+.floating-top-left.stack-full > .fold-card[data-folded='false'] {
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: fit-content;
+  max-width: none;
+}
+
+.floating-top-left.stack-full > .fold-card[data-folded='false'] > .fold-body {
+  min-height: 0;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* The body scrolls; its rows keep their own height. */
+.floating-top-left.stack-full > .fold-card[data-folded='false'] > .fold-body > * {
+  flex-shrink: 0;
+}
+
 /* A folded card is one line: 4px above and below its 24px button instead of 8px. */
 .floating-top-left > .fold-card[data-folded='true'] {
   padding-top: var(--space-xs);

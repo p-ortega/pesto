@@ -315,6 +315,20 @@ describe('the Data and Colours cards', () => {
     expect(card(root, 'data').getAttribute('data-folded')).toBe('true')
   })
 
+  it('lets the open card scroll inside itself once nothing is left to fold, and takes that back when the stack fits', async () => {
+    const root = await mountReady()
+    await vi.waitFor(() => expect(card(root, 'basemap')).not.toBeNull())
+    const stack = root.querySelector('.floating-top-left') as HTMLElement
+    foldButton(root, 'colours').click()
+    expect(stack.classList.contains('stack-full')).toBe(false)
+    stubStackOverflow()
+    foldButton(root, 'colours').click()
+    expect(stack.classList.contains('stack-full')).toBe(true)
+    vi.restoreAllMocks()
+    foldButton(root, 'colours').click()
+    expect(stack.classList.contains('stack-full')).toBe(false)
+  })
+
   it('at first look folds Basemap, Overlays and then Colours when the stack would not fit, keeps Data open and stores nothing', async () => {
     stubStackOverflow()
     const root = await mountReady()
