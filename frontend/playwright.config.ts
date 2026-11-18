@@ -7,6 +7,9 @@
 // fails and says so.
 import { defineConfig, devices } from '@playwright/test'
 
+// Set PESTO_PW_CHANNEL=chrome to drive an installed Chrome instead of Playwright's own Chromium.
+const channel = process.env.PESTO_PW_CHANNEL ? { channel: process.env.PESTO_PW_CHANNEL } : {}
+
 export default defineConfig({
   testDir: 'tests/visual',
   timeout: 10 * 60 * 1000,
@@ -23,6 +26,7 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
+        ...channel,
         launchOptions: {
           args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
         },
@@ -35,6 +39,7 @@ export default defineConfig({
       testMatch: /slider-latency\.spec\.ts$/,
       use: {
         ...devices['Desktop Chrome'],
+        ...channel,
         launchOptions: {
           args: ['--use-angle=metal', '--enable-gpu'],
         },
