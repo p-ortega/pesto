@@ -423,6 +423,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
   // A card that grows on its own, such as Data gaining the observation rows, folds what no longer fits.
   const stackObserver =
     typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settleStack()) : null
+  // The stack's own room shrinks too, as when a wrapped notice makes the map shorter.
+  stackObserver?.observe(topLeftEl)
   // Scrolls the stack alone, as scrollIntoView with block 'nearest' would, but never an ancestor of it.
   function scrollIntoStack(el: HTMLElement): void {
     const top = el.offsetTop
