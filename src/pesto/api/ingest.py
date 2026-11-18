@@ -506,23 +506,18 @@ async def stream_ingest_events(request: Request):
         return problem(409, "no ingest is running")
 
     async def gen():
-        # A snapshot taken once, up front: the queue holds these same rows
-        # too (on_progress appends to both), so the loop below discards
-        # exactly this many queue items rather than replaying them twice.
-        snapshot = list(state.rows)
-        to_skip = len(snapshot)
-        for row in snapshot:
-            yield _progress_frame(row)
+        # Rows are sent from state.rows by count, and the queue only wakes the
+        # loop: a row the worker thread queued can land after the end marker.
+        sent = 0
         while True:
+            while sent < len(state.rows):
+                yield _progress_frame(state.rows[sent])
+                sent += 1
+            if state.done:
+                break
             if await request.is_disconnected():
-                break
-            row = await state.queue.get()
-            if to_skip > 0:
-                to_skip -= 1
-                continue
-            if row is None:
-                break
-            yield _progress_frame(row)
+                return
+            await state.queue.get()
         if state.error is not None:
             yield _error_frame(state.error)
         elif state.manifest is not None:
