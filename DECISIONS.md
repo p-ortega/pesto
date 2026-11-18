@@ -4,7 +4,7 @@ The plans live in `.planning/`, which is not in git. This file carries the decis
 and the current state, so an agent on a new machine can pick up without them. The hard rules are in
 `CLAUDE.md` and the app's working notes are in `AGENTS.md`. Read those first.
 
-Last updated 2026-11-18.
+Last updated 2026-11-18, on the Linux laptop.
 
 ## What pesto is
 
@@ -101,21 +101,25 @@ uv run pesto ~/dev/data/pesto-bench/hm_20250406221554 --no-browser --port 8792 \
 
 ## Where M1 stands
 
-Phase 14 build plans 14-01 to 14-24 are merged. The open work, in order:
+Phase 14 build plans 14-01 to 14-24 are merged. The code review of the Phase 14 gap work ran on
+2026-11-18 and its real findings are fixed: the Obs lists redraw when their section opens, the time
+slider hides when the group sets cannot be read, a failed group-set read is retried, and noise notes
+name files as the frontend does. Two Linux-only hangs are fixed too: the ingest event stream could
+lose its end marker, and ingest workers now start with spawn instead of fork. The open work, in order:
 
 1. **Review 10, step 3 (Group fit).** The plots and range check out. The title clash with the
-   simulated axis label is fixed and built, but not yet checked in Chrome. Two things not yet raised
-   with the user: about 2 points per iteration fall outside the drawn 1-99% range (by design, and
-   the legend says so), and the notes under Group fit repeat the same counts twice.
+   simulated axis label is fixed and built, but not yet checked in Chrome. The notes under Group fit
+   no longer repeat the legend's counts. About 2 points per iteration fall outside the drawn 1-99%
+   range, by design, and the legend says so.
 2. **Review 10, step 5:** Obs tab widths.
 3. **Review 14 re-checks:** steps 1 (colour steps), 3 (Select base), 7 (Obs tab crowding) and
    9 (laptop fit).
 4. **Review 9 re-checks:** step 1 (Params tab) and step 2 (noise wording), on the forecast run.
 5. **Plan 14-25, final gates.** The fast Python suite takes about 13 minutes and `mesh.spec` about
    10, so ask before running either. Re-save the mesh baseline if needed.
-6. Code review of the Phase 14 gap work.
 
-Known follow-ups, all advisory: the Go-to box keeps refused text; two tests can miss a same-size CSV
+Known follow-ups, all advisory: a sites or times answer that names no group is still taken as
+the group asked for (the server always names it; many test stubs do not); the Go-to box keeps refused text; two tests can miss a same-size CSV
 edit; pesto's own control-file read can tip the cold label; a mixed group keeps one rule in the
 group table; on `hm_20251104154614` the model's OBS6 input is skipped because its grid file is not
 the run's.
