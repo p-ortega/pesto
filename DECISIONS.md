@@ -105,18 +105,32 @@ Phase 14 build plans 14-01 to 14-24 are merged. The code review of the Phase 14 
 2026-11-18 and its real findings are fixed: the Obs lists redraw when their section opens, the time
 slider hides when the group sets cannot be read, a failed group-set read is retried, and noise notes
 name files as the frontend does. Two Linux-only hangs are fixed too: the ingest event stream could
-lose its end marker, and ingest workers now start with spawn instead of fork. The open work, in order:
+lose its end marker, and ingest workers now start with spawn instead of fork.
 
-1. **Review 10, step 3 (Group fit).** The plots and range check out. The title clash with the
-   simulated axis label is fixed and built, but not yet checked in Chrome. The notes under Group fit
-   no longer repeat the legend's counts. About 2 points per iteration fall outside the drawn 1-99%
-   range, by design, and the legend says so.
-2. **Review 10, step 5:** Obs tab widths.
-3. **Review 14 re-checks:** steps 1 (colour steps), 3 (Select base), 7 (Obs tab crowding) and
-   9 (laptop fit).
-4. **Review 9 re-checks:** step 1 (Params tab) and step 2 (noise wording), on the forecast run.
-5. **Plan 14-25, final gates.** The fast Python suite takes about 13 minutes and `mesh.spec` about
-   10, so ask before running either. Re-save the mesh baseline if needed.
+On 2026-11-18 the agent ran the open review steps in Chrome on the Linux laptop, on hm with a
+scratch cache, at 1440x763 (the laptop page) and at the divider's narrowest and widest. These are
+agent checks; the user has not signed them off.
+
+- Review 10 step 3 (Group fit) and step 5 (Obs tab widths): pass after fixes.
+- Review 14 re-checks 1, 3, 7 and 9: pass after fixes.
+- Review 9 step 1 (Params tab widths): pass after a fix.
+
+Fixes made on the way: Site plots no longer squeezed under Group fit's title; Obs table columns in
+rem so headers line up with rows; tabs and section controls wrap on a narrow panel; the divider stops
+at 608px of map and 18rem of panel; the readout never covers the legend; the open map card scrolls
+inside itself when nothing is left to fold; long site names wrap; the histogram legend fits a narrow
+chart.
+
+Gates: frontend 2471 tests, fast Python suite 2451 passed (14.5 min on Linux), `mesh.spec` 14/14
+with Linux baselines. On Linux run the Playwright checks with `PESTO_PW_CHANNEL=chrome`, which uses
+the installed Chrome. Chrome on the laptop is maximized and will not resize; check laptop layouts by
+loading the app in a 1440x763 iframe.
+
+The open work, in order:
+
+1. **Review 9 step 2:** noise wording, on the forecast run (not yet copied to the laptop).
+2. **Slow tests** (`uv run pytest -m slow`) once all four bench runs are on the laptop.
+3. **The user's own sign-off** of the agent checks above.
 
 Known follow-ups, all advisory: a sites or times answer that names no group is still taken as
 the group asked for (the server always names it; many test stubs do not); the Go-to box keeps refused text; two tests can miss a same-size CSV
