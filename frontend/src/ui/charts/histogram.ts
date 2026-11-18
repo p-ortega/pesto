@@ -218,10 +218,17 @@ export function drawHistogram(
   ctx.textAlign = 'right'
   for (const tick of yAxis.ticks) ctx.fillText(tick.label, left - 6, tick.px)
 
-  let legendX = left
   const legendY = 8
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
+  const entries = [...spec.series.map((s) => s.label), ...(overlay !== null ? [overlay.label] : [])]
+  const entryWidth = (label: string) => SWATCH + 6 + ctx.measureText(label).width + 16
+  const total = entries.reduce((sum, label) => sum + entryWidth(label), 0)
+  // A narrow chart starts the row at its own edge, then cuts each label to an equal share.
+  let legendX = left + total <= size.width ? left : 4
+  const fits = legendX + total <= size.width
+  const share = (size.width - legendX) / Math.max(entries.length, 1)
+  const cut = (label: string): string => (fits ? label : fitText(ctx, label, share - SWATCH - 6 - 16))
   spec.series.forEach((series, index) => {
     ctx.globalAlpha = FILL_ALPHA
     ctx.fillStyle = slots[index]
@@ -230,8 +237,9 @@ export function drawHistogram(
     ctx.strokeStyle = slots[index]
     ctx.strokeRect(legendX, legendY, SWATCH, SWATCH)
     ctx.fillStyle = tokens.inkPrimary
-    ctx.fillText(series.label, legendX + SWATCH + 6, legendY - 1)
-    legendX += SWATCH + 6 + ctx.measureText(series.label).width + 16
+    const label = cut(series.label)
+    ctx.fillText(label, legendX + SWATCH + 6, legendY - 1)
+    legendX += entryWidth(label)
   })
   if (overlay !== null) {
     ctx.globalAlpha = dimAlpha
@@ -239,9 +247,17 @@ export function drawHistogram(
     ctx.strokeRect(legendX, legendY, SWATCH, SWATCH)
     ctx.globalAlpha = 1
     ctx.fillStyle = tokens.inkPrimary
-    ctx.fillText(overlay.label, legendX + SWATCH + 6, legendY - 1)
+    ctx.fillText(cut(overlay.label), legendX + SWATCH + 6, legendY - 1)
   }
 
   ctx.restore()
   return true
+}
+
+/** The label cut at its end with an ellipsis so it fits in `width` px. */
+function fitText(ctx: Chart2D, label: string, width: number): string {
+  if (ctx.measureText(label).width <= width) return label
+  let n = label.length
+  while (n > 1 && ctx.measureText(`${label.slice(0, n)}…`).width > width) n -= 1
+  return `${label.slice(0, n)}…`
 }

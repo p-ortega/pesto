@@ -157,6 +157,15 @@ describe('drawHistogram', () => {
     expect(posteriorOutline.state.dash).toEqual([])
   })
 
+  it('keeps the legend inside a narrow chart, cutting each label with an ellipsis', () => {
+    const { ctx, calls } = createRecording2d()
+    const width = 200
+    drawHistogram(ctx, twoSeries(), TOKENS, { width, height: 240 })
+    const legend = calls.filter((c) => c.method === 'fillText' && c.state.fillStyle === TOKENS.inkPrimary)
+    expect(legend.some((c) => String(c.args[0]).endsWith('…'))).toBe(true)
+    for (const c of legend) expect(Number(c.args[1]) + String(c.args[0]).length * 6).toBeLessThanOrEqual(width)
+  })
+
   it('writes the axis label and the log tick labels in ink tokens', () => {
     const { ctx, calls } = createRecording2d()
     drawHistogram(ctx, twoSeries(), TOKENS, SIZE)
