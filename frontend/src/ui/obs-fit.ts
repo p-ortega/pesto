@@ -357,6 +357,9 @@ function boxSize(box: HTMLElement): ChartSize {
   return { width: box.clientWidth, height: box.clientHeight }
 }
 
+// Server notes whose counts the histogram's own legend lines already give.
+const HIST_LEGEND_REPEATS = /^only iteration|zero-weight observation\(s\) with a target are included|have no measured value|have no valid realization/
+
 // What the histogram's legend says besides the colours: the sign, the zero-weight count and every count left out.
 function histLegend(payload: ObsResidHistPayload): string[] {
   const lines = ['residual: simulated minus observed']
@@ -626,7 +629,7 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     legend.classList.add('obs-fit-legend')
     section.appendChild(legend)
     for (const text of histLegend(payload)) line(legend, text)
-    for (const note of payload.notes) line(legend, note, true)
+    for (const note of payload.notes.filter((n) => !HIST_LEGEND_REPEATS.test(n))) line(legend, note, true)
   }
 
   function mountPanel(row: HTMLElement, spec: DensitySpec, label: string, sets: PointSet[]): void {

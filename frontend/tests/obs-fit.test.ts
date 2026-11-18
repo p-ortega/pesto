@@ -620,6 +620,24 @@ describe('the residual histogram', () => {
     expect(text).toContain('last, iteration 1: 4 outside the drawn range')
   })
 
+  it('leaves out server notes that repeat its own counts, and keeps the dry-cell note', async () => {
+    const notes = [
+      '3 zero-weight observation(s) with a target are included',
+      '1 observation(s) have no measured value (0 sentinel, 1 without a numeric value) and are left out',
+      'iteration 1: 2 observation(s) have no valid realization and are left out',
+      'iteration 1: 4 observation(s) have a sentinel residual (a dry or no-flow placeholder) and are left out',
+    ]
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer({ notes }))
+    const m = mount()
+    await histDrawn(m)
+
+    const text = residText(m.host)
+    expect(text).not.toContain('zero-weight observation(s)')
+    expect(text).not.toContain('have no measured value')
+    expect(text).not.toContain('have no valid realization')
+    expect(text).toContain('4 observation(s) have a sentinel residual')
+  })
+
   it('counts the observations with no valid realization at the first iteration too', async () => {
     obsApi.fetchObsResidHist.mockResolvedValue(
       residAnswer({ left_out: { no_value: 0, sentinel: 0, no_valid_realization: { first: 5, last: 2 } } }),
