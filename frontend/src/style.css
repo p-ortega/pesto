@@ -707,6 +707,11 @@ body {
   max-height: 50%;
 }
 
+/* Open with no plot, it keeps its prompt's height; shrinking it slid Group fit's title over its own. */
+.obs-spaghetti.fold-card.fold-section[data-folded='false']:not(:has(.obs-spaghetti-plot)) {
+  flex-shrink: 0;
+}
+
 /* G-14-2: holding a plot, the section is never below one whole site panel: its title line, the
    panel's title, the 200px plot and two 17px legend lines. More panels and lines scroll inside. */
 .obs-spaghetti[data-folded='false']:has(.obs-spaghetti-plot) {

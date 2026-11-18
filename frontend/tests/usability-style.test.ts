@@ -157,8 +157,9 @@ describe('the Obs tab floors', () => {
     expect(floor).toBeGreaterThan(8 * 16)
   })
 
-  it('keeps the empty plot prompt to its line, with no floor of its own', () => {
+  it('keeps the empty plot prompt to its line, with no floor of its own, and never shrinks it under that line', () => {
     expect(rule('.obs-spaghetti')).not.toMatch(/min-height/)
+    expect(rule(".obs-spaghetti.fold-card.fold-section[data-folded='false']:not(:has(.obs-spaghetti-plot))")).toMatch(/flex-shrink:\s*0;/)
   })
 
   it("holds the site list's title, hint, header and four rows once it lists sites", () => {
