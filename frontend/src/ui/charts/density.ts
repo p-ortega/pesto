@@ -26,7 +26,8 @@ export interface PlotArea {
   height: number
 }
 
-const MARGIN = { left: 52, right: 12, top: 28, bottom: 40 }
+// The top holds two rows: the panel title, then the y-axis label, so the two never run together.
+const MARGIN = { left: 52, right: 12, top: 44, bottom: 40 }
 const FONT = '12px system-ui, sans-serif'
 const TICKS = 5
 // Room between the widest y label and the axis line: the 6 px label gap plus a little air.
@@ -148,7 +149,7 @@ export function drawDensity(
 
   ctx.fillStyle = tokens.inkPrimary
   ctx.textAlign = 'right'
-  ctx.fillText(spec.title, right, top - 18)
+  ctx.fillText(spec.title, right, top - 36)
 
   ctx.restore()
   return true

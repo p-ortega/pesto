@@ -231,7 +231,7 @@ describe('the 1:1 density panels', () => {
 // ---- points on top of the panels ----
 
 // The density's square plot area in a 400 by 280 canvas, worked out here from its margins.
-const AREA = { left: 114, top: 28, side: 212 }
+const AREA = { left: 122, top: 44, side: 196 }
 const LO = -2
 const HI = 12
 
