@@ -232,11 +232,15 @@ def test_every_1to1_group_counts_every_finite_simulated_value_of_a_target_and_ev
             k = item["iteration"]
             finite = _finite_target_values(stored[k], start, stop, has_target)
             binned = int(summed.get((group, k), 0))
-            assert binned + item["n_outside"] == finite, (
-                f"{group} iteration {k}: {binned} binned + {item['n_outside']} outside is not "
-                f"the {finite} finite simulated values of its observations with a target"
+            # A 1e30 dry-cell value is finite but left out of the grid and counted on its own.
+            dry = item["n_sentinel"]
+            assert binned + item["n_outside"] + dry == finite, (
+                f"{group} iteration {k}: {binned} binned + {item['n_outside']} outside + {dry} sentinel "
+                f"is not the {finite} finite simulated values of its observations with a target"
             )
-            assert item["n_points"] == finite, f"{group} iteration {k}: n_points {item['n_points']} != {finite}"
+            assert item["n_points"] + dry == finite, (
+                f"{group} iteration {k}: n_points {item['n_points']} + {dry} sentinel != {finite}"
+            )
             drawn += 1
     _untouched(ingested)
     if drawn == 0:
