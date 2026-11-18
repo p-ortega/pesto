@@ -177,6 +177,13 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* The divider stops before the 256px left cards and 304px right cards meet, with 16px gutters. */
+  min-width: calc(256px + 304px + 3 * 16px);
+}
+
+/* The divider stops before the panel is narrower than its tabs and a table's name column. */
+.side-panel {
+  min-width: 18rem;
 }
 
 .divider {
@@ -1065,6 +1072,9 @@ body {
   position: absolute;
   bottom: var(--space-md);
   right: var(--space-md);
+  /* Never reaches the 256px left band, so a narrow map keeps the legend clear. */
+  max-width: calc(100% - 256px - 3 * var(--space-md));
+  box-sizing: border-box;
 }
 
 /* The selection-where notice sits directly above the readout it explains. */

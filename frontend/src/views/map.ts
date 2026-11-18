@@ -68,6 +68,7 @@ export function mountMap(root: HTMLElement, opts: MountMapOptions): void {
   mapColumn.classList.add('map-column')
   const dividerEl = document.createElement('div')
   const rightPanelHost = document.createElement('div')
+  rightPanelHost.classList.add('side-panel')
   panel.appendChild(mapColumn)
   panel.appendChild(dividerEl)
   panel.appendChild(rightPanelHost)
