@@ -11,6 +11,7 @@ every job still queued behind a worker that dies (T-04-01).
 from __future__ import annotations
 
 import json
+import multiprocessing
 import signal
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -175,7 +176,8 @@ def _run_isolated(fn, *args):
     the guard belongs at both the callee and the call site rather than
     trusting either alone.
     """
-    with ProcessPoolExecutor(max_workers=1) as pool:
+    # Spawn, as on macOS: Linux defaults to fork, which can deadlock when forked from the threaded server.
+    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
         future = pool.submit(fn, *args)
         try:
             return True, future.result()
