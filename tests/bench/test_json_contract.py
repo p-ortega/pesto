@@ -18,6 +18,7 @@ from fixtures.synthetic_run import PP_GROUP, write_synthetic_run
 from pesto.bench.cli import main
 from pesto.bench.limits import speed_limits_dict
 from pesto.ingest.runner import Progress
+from pesto.bench.measure import PURGE_COMMAND
 
 
 def _copy_ready_cache(run: Path):
@@ -139,7 +140,7 @@ def test_the_server_and_observation_blocks_are_present(bench) -> None:
         assert _number(block["resident_bytes"]) and _number(block["resident_fraction"])
     assert isinstance(block["files"], int) and isinstance(block["missing"], list)
     assert isinstance(block["largest_resident"], list)
-    assert isinstance(block["method"], str) and "sudo purge" in block["note"]
+    assert isinstance(block["method"], str) and PURGE_COMMAND in block["note"]
     for ingest in body["ingests"]:
         assert "read_mb_per_second" in ingest
     rows = {row["speed_limit"]: row for row in body["verdicts"]}

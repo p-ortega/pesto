@@ -40,6 +40,7 @@ from pesto.bench.report import (
 from pesto.cache.manifest import SourceFingerprint
 from pesto.ingest import runner
 from pesto.ingest.runner import Progress, ingest_run
+from pesto.bench.measure import PURGE_COMMAND
 
 
 def _row(artifact: str, state: str, seconds: float = 0.0, index: int = 0) -> Progress:
@@ -485,12 +486,12 @@ def test_a_probe_that_finds_pages_in_memory_labels_not_cold_with_the_three_large
     assert "50.00%" in cache.note and "e.bin" in cache.note and "b.bin" not in cache.note
 
 
-def test_every_label_names_sudo_purge_as_the_users_own_step(tmp_path: Path) -> None:
+def test_every_label_names_the_cache_drop_as_the_users_own_step(tmp_path: Path) -> None:
     source = _sized(tmp_path, "a.bin", 100)
     for probe in (lambda path: 0, lambda path: 100):
         note = page_residency([source], probe=probe).note
-        assert "sudo purge" in note and "pesto never runs it" in note
-    assert "sudo purge" in page_residency([], probe=lambda path: 0).note
+        assert PURGE_COMMAND in note and "pesto never runs it" in note
+    assert PURGE_COMMAND in page_residency([], probe=lambda path: 0).note
 
 
 def test_the_table_has_one_as_found_cache_line_and_its_note(tmp_path: Path) -> None:

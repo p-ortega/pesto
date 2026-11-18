@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 import time
 from fractions import Fraction
 from pathlib import Path
@@ -312,8 +313,10 @@ def _rate(total: int, seconds: float) -> float | None:
 # A page probe takes one file path and returns how many of its bytes are in memory.
 PageProbe = Callable[[Path], int]
 _PAGE_METHOD = "mincore on a read-only mapping (no file contents are read)"
+# The command that empties the OS file cache: purge on macOS, the page cache on Linux.
+PURGE_COMMAND = "sudo purge" if sys.platform == "darwin" else "sync; echo 1 | sudo tee /proc/sys/vm/drop_caches"
 _PURGE_STEP = (
-    "sudo purge is your own step, in your own terminal right before pesto bench; "
+    f"{PURGE_COMMAND} is your own step, in your own terminal right before pesto bench; "
     "pesto never runs it"
 )
 

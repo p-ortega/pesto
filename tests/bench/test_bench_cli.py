@@ -11,6 +11,7 @@ import pytest
 from ingest.fixtures import make_run
 
 from pesto.bench.limits import speed_limits_dict
+from pesto.bench.measure import PURGE_COMMAND
 
 
 def snapshot(folder: Path) -> dict[str, tuple[bool, int, int]]:
@@ -305,7 +306,7 @@ def test_the_as_found_line_and_json_carry_the_page_check_and_no_cold_read(
         "source_bytes", "resident_bytes", "resident_fraction", "files", "missing", "label", "method", "note",
     }
     assert block["label"] == "cold" and block["resident_bytes"] == 0 and block["files"] > 0
-    assert "sudo purge" in block["note"] and "pesto never runs it" in block["note"]
+    assert PURGE_COMMAND in block["note"] and "pesto never runs it" in block["note"]
 
     table = format_table(result)
     assert len([x for x in table.splitlines() if "As-found cache:" in x]) == 1
