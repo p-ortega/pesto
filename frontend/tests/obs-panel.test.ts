@@ -520,18 +520,18 @@ describe('the narrow-panel layout', () => {
   }
 
   it('gives the name column a minimum width', () => {
-    expect(rule('.obs-col-name')).toMatch(/min-width:\s*\d+(\.\d+)?em/)
+    expect(rule('.obs-col-name')).toMatch(/min-width:\s*\d+(\.\d+)?rem/)
   })
 
   it('scrolls the grid sideways as one piece, with the header and rows kept wide', () => {
     expect(rule('.obs-grid')).toMatch(/overflow-x:\s*auto/)
-    expect(css).toMatch(/\.obs-grid-header,\s*\.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*\d+em/)
+    expect(css).toMatch(/\.obs-grid-header,\s*\.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*\d+rem/)
   })
 
   it('keeps the group table wide enough for its columns and never scrolls its rows apart from the header', () => {
-    // 10em name + 4 figures + 1 text + 2 rmse + 2 conflict columns, plus nine 8px gaps.
+    // 10rem name + 4 figures + 1 text + 2 rmse + 2 conflict columns, plus nine 8px gaps.
     const floor = 10 + 4 * 5.5 + 5.5 + 2 * 8.5 + 2 * 5.5 + (9 * 8) / 16
-    const wide = Number(/\.obs-grid-header,\s*\.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)em/.exec(css)?.[1])
+    const wide = Number(/\.obs-grid-header,\s*\.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)rem/.exec(css)?.[1])
     expect(wide).toBeGreaterThanOrEqual(floor)
     expect(rule('.obs-grid > .scroll-pane')).toMatch(/overflow-x:\s*hidden/)
   })
@@ -540,8 +540,8 @@ describe('the narrow-panel layout', () => {
     // Params: 8 + 4 + 4.5 + 5.5 + 4 x 6.5em, seven 8px gaps and 4px padding each side.
     const params = Number(/\.params-groups \.group-header,\s*\.params-groups \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)em/.exec(css)?.[1])
     expect(params).toBeGreaterThanOrEqual(8 + 4 + 4.5 + 5.5 + 4 * 6.5 + (7 * 8 + 8) / 16)
-    // Selected sites: two 10em name columns, two 5.5em columns and three 8px gaps.
-    const selected = Number(/\.obs-selected \.obs-grid-header,\s*\.obs-selected \.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)em/.exec(css)?.[1])
+    // Selected sites: two 10rem name columns, two 5.5rem columns and three 8px gaps.
+    const selected = Number(/\.obs-selected \.obs-grid-header,\s*\.obs-selected \.obs-grid > \.scroll-pane\s*\{[^}]*min-width:\s*(\d+)rem/.exec(css)?.[1])
     expect(selected).toBeGreaterThanOrEqual(2 * 10 + 2 * 5.5 + (3 * 8) / 16)
     expect(rule('.params-groups .scroll-pane')).toMatch(/overflow-x:\s*hidden/)
     expect(rule('.obs-selected .scroll-pane')).toMatch(/overflow-x:\s*hidden/)

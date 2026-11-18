@@ -575,7 +575,7 @@ body {
 
 .obs-grid-header,
 .obs-grid > .scroll-pane {
-  min-width: 70em;
+  min-width: 70rem;
 }
 
 /* The rows never scroll sideways on their own, or they would slide out of step with the header. */
@@ -583,9 +583,19 @@ body {
   overflow-x: hidden;
 }
 
+/* Both keep room for the rows' scrollbar, so a stretching name column is one width in each. */
+.obs-grid-header,
+.obs-grid > .scroll-pane {
+  scrollbar-gutter: stable;
+}
+
+.obs-grid-header {
+  overflow-y: hidden;
+}
+
 .obs-sites .obs-grid-header,
 .obs-sites .obs-grid > .scroll-pane {
-  min-width: 36em;
+  min-width: 36rem;
 }
 
 .obs-grid > .scroll-pane {
@@ -634,20 +644,20 @@ body {
 /* The name column takes the stretch and never less than a readable width. */
 .obs-col-name {
   flex: 3 1 0;
-  min-width: 10em;
+  min-width: 10rem;
 }
 
 .obs-col-figure {
-  flex: 0 0 5.5em;
+  flex: 0 0 5.5rem;
   text-align: right;
 }
 
 .obs-col-text {
-  flex: 0 0 5.5em;
+  flex: 0 0 5.5rem;
 }
 
 .obs-col-text[data-column='placement'] {
-  flex-basis: 8em;
+  flex-basis: 8rem;
 }
 
 /* Notes the server sent with the site list sit under the rows: two lines, then they scroll. */
@@ -658,7 +668,7 @@ body {
 }
 
 .obs-col-figure[data-column^='rmse'] {
-  flex-basis: 8.5em;
+  flex-basis: 8.5rem;
 }
 
 .obs-grid-header > .obs-col-figure .sort-button {
@@ -1100,6 +1110,11 @@ body {
   white-space: nowrap;
 }
 
+/* In the Obs name column the cut keeps the column's floor, so the rows stay under their header. */
+.obs-col-name.name-cut {
+  min-width: 10rem;
+}
+
 .name-head {
   flex: 0 1 auto;
   min-width: 0;
@@ -1184,7 +1199,7 @@ body {
 
 .obs-selected .obs-grid-header,
 .obs-selected .obs-grid > .scroll-pane {
-  min-width: 33em;
+  min-width: 33rem;
 }
 
 .obs-selected .scroll-pane {
@@ -1193,7 +1208,7 @@ body {
 
 .params-selected [role='row'] > :first-child,
 .obs-selected [role='row'] > :first-child {
-  min-width: 10em;
+  min-width: 10rem;
   overflow-wrap: anywhere;
 }
 
