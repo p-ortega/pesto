@@ -249,7 +249,7 @@ class NoiseFact:
 
 
 # How the screen names each reading's origin: by the PEST++ file, not by an internal label.
-_SOURCE_FILE = {"run record": ".rec", "control file": ".pst"}
+_SOURCE_FILE = {"run record": ".rec", "control file": ".pst", "files present": "run folder", "cache": "pesto cache"}
 _NOISE_KINDS = frozenset({"drawn_noise", "loaded_obs_ensemble", "standard_deviation_column"})
 _NOISE_SHOWN = {
     "reset_to_no_noise": "noise off: pestpp reset ies_no_noise to true",
@@ -262,7 +262,7 @@ _NOISE_DECIDED_TEXT = {
     "run_record": "pesto uses the .rec, where pestpp says what it did",
     "ies_no_noise": "pesto uses ies_no_noise in the .pst",
     "observation_ensemble_option": "pesto uses the observation ensemble the .pst names",
-    "standard_deviation_column": "pesto uses the standard_deviation column in the .pst",
+    "standard_deviation_column": "pesto uses the standard_deviation column of the observation data the .pst reads",
     "undetermined": "pesto could not tell whether pestpp added noise",
 }
 
