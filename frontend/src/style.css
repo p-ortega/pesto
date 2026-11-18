@@ -742,6 +742,11 @@ body {
   height: 200px;
 }
 
+/* A site name with no spaces breaks anywhere rather than widening the panel past its section. */
+.obs-spaghetti-title {
+  overflow-wrap: anywhere;
+}
+
 /* The Config tab: a heading, then one row per setup fact in a pane that
    scrolls inside the frame. A fact's value and its source sit side by side
    with a real gap, and extra readings hang under it. */
