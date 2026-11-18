@@ -253,8 +253,10 @@ body {
   min-height: 0;
 }
 
+/* A narrow panel wraps the tabs onto a second line rather than widening the page. */
 .tabs-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-sm);
   flex: none;
   border-bottom: 1px solid var(--hairline);
@@ -1622,7 +1624,8 @@ body {
    and the button on one line, and a body that shrinks to the room the panel gives it. */
 .fold-card.fold-section {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  /* The title never goes below 6em; a narrow panel wraps the controls beside it instead. */
+  grid-template-columns: minmax(6em, 1fr) minmax(0, max-content) auto;
   grid-template-rows: auto minmax(0, 1fr);
   row-gap: var(--space-xs);
   min-height: 0;
@@ -1631,8 +1634,11 @@ body {
 .fold-section > .fold-actions {
   grid-area: 1 / 2;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: var(--space-sm);
+  min-width: 0;
 }
 
 .fold-section > .fold-button {
