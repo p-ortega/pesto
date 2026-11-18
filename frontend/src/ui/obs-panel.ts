@@ -473,6 +473,9 @@ export function renderObsPanel(host: HTMLElement, opts: ObsPanelOptions): ObsPan
       return
     }
     lastOpened = fold
+    // The list drew its window while it had no height.
+    if (!hidden && fold === groupsFold) groupsGrid?.redraw()
+    if (!hidden && fold === sitesFold) sitesGrid?.redraw()
     foldOthersToFit(fold, stack(), overflows)
   }
   // G-14-2: a section the viewer is not using folds to its title line, as the map's cards do.
