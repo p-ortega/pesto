@@ -191,6 +191,16 @@ export function renderObsColourControls(target: HTMLElement | ObsColourRows, opt
       option.textContent = 'Group sets could not be read'
       option.title = reason
       groupSelect.appendChild(option)
+      // A failed read is not kept, so the next visit to the menu asks again.
+      groupSelect.addEventListener(
+        'focus',
+        () => {
+          if (disposed) return
+          option.remove()
+          appendSets(rows)
+        },
+        { once: true },
+      )
     }
     void load().then(
       (answer) => {
