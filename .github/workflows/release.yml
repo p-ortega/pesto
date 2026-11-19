@@ -1,0 +1,72 @@
+name: release
+
+# Pushing a tag like v0.1.0a1 builds the wheel, tries it on all three systems
+# and attaches it to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: astral-sh/setup-uv@v5
+      - name: Build the wheel with the frontend inside
+        run: uv build --wheel
+        env:
+          PESTO_BUILD_FRONTEND: "1"
+      - name: Check the tag matches the version in pyproject.toml
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ls "dist/pesto-${version}-py3-none-any.whl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  try:
+    name: try the wheel on ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install the wheel as a tool
+        shell: bash
+        run: uv tool install dist/*.whl
+      - name: Start pesto and fetch its page
+        shell: bash
+        run: python scripts/try_install.py
+
+  publish:
+    needs: try
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true

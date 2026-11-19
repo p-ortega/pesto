@@ -12,6 +12,12 @@ import sys
 from pathlib import Path
 
 
+def _version() -> str:
+    from pesto import __version__
+
+    return __version__
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     # Only a first argument of exactly "bench" is the measuring command, so
@@ -36,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="PEST working directory to open. Omit to choose one in the app.",
     )
+    parser.add_argument("--version", action="version", version=f"pesto {_version()}")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default: pick a free one)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser tab")

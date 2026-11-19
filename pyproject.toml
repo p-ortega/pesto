@@ -1,7 +1,21 @@
 [project]
 name = "pesto"
-version = "0.1.0"
+version = "0.1.0a1"
+description = "A fast browser viewer for finished PEST++ IES runs on MODFLOW 6 models"
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Pablo Ortega" }]
 requires-python = ">=3.11"
+keywords = ["pest", "pestpp", "pestpp-ies", "modflow", "groundwater", "uncertainty", "ensemble"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Hydrology",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.34",
@@ -20,6 +34,11 @@ test = [
     "pytest-cov>=5.0",
     "httpx>=0.28",
 ]
+
+[project.urls]
+Repository = "https://github.com/p-ortega/pesto"
+Issues = "https://github.com/p-ortega/pesto/issues"
+Changelog = "https://github.com/p-ortega/pesto/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pesto = "pesto.cli:main"
