@@ -1677,8 +1677,8 @@ export function mountMapView(host: HTMLElement, opts: MapViewOptions): MapViewHa
     const [pr, pg, pb] = readColorToken('--page-plane')
     const halo: [number, number, number] = pr + pg + pb > ir + ig + ib ? [pr, pg, pb] : [ir, ig, ib]
     target.setAccentColor([ar, ag, ab], halo)
-    // The ring takes the colour the canvas is cleared to, so a dot reads on any fill.
-    target.setPointRingColor([pr, pg, pb])
+    // The ring is ink, so a dot whose value sits at the pale middle of a ramp still shows on the page.
+    target.setPointRingColor([ir, ig, ib])
     target.setHatchColors([ir, ig, ib], [pr, pg, pb])
     const [sr, sg, sb] = readColorToken('--surface')
     target.setSurfaceColor([sr, sg, sb])
