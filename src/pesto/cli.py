@@ -42,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="PEST working directory to open. Omit to choose one in the app.",
     )
+    parser.add_argument(
+        "--example",
+        action="store_true",
+        help="Open a small made-up run that ships with pesto, to try the app with no data of your own",
+    )
     parser.add_argument("--version", action="version", version=f"pesto {_version()}")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default: pick a free one)")
@@ -59,6 +64,16 @@ def main(argv: list[str] | None = None) -> int:
     if cache_override is not None and str(cache_override) == "":
         parser.error("--cache-dir must not be empty")
 
+    run_dir = args.path
+    if args.example:
+        if run_dir is not None:
+            parser.error("--example opens pesto's own example run, so it takes no path")
+        from pesto.example import ensure_example_run, example_run_dir
+
+        if not example_run_dir().is_dir():
+            print(f"Writing the example run to {example_run_dir()} (a few seconds, once)", flush=True)
+        run_dir = ensure_example_run()
+
     from pesto.launch import serve
 
     try:
@@ -66,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             open_browser=not args.no_browser,
-            run_dir=args.path,
+            run_dir=run_dir,
             cache_override=cache_override,
         )
     except NotADirectoryError as exc:

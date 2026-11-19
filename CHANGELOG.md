@@ -11,3 +11,4 @@ The first alpha, for testing on macOS, Linux and Windows.
 - Section view along a line drawn on the map.
 - A panel for the run's settings, read from the `.pst` and `.rec` files.
 - Light and dark themes.
+- `pesto --example` opens a small made-up run, so the app can be tried with no data.

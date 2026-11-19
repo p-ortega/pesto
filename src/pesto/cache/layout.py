@@ -24,6 +24,11 @@ CACHE_VERSION = 3
 _DIR_NAME = ".pesto"
 
 
+def cache_base() -> Path:
+    """pesto's own folder in the user's cache area."""
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "pesto"
+
+
 def _fallback_root(run_dir: Path) -> Path:
     """A stable path under ``~/.cache/pesto/`` keyed on the resolved run path.
 
@@ -36,8 +41,7 @@ def _fallback_root(run_dir: Path) -> Path:
     segments or separators.
     """
     digest = hashlib.sha256(str(run_dir.resolve()).encode()).hexdigest()[:16]
-    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return base / "pesto" / digest
+    return cache_base() / digest
 
 
 def probe_writable(folder: Path) -> bool:

@@ -56,6 +56,14 @@ With pip instead, inside an environment of your own:
 pip install https://github.com/p-ortega/pesto/releases/download/v0.1.0a1/pesto-0.1.0a1-py3-none-any.whl
 ```
 
+## Try it
+
+No run of your own at hand? pesto carries a small made-up one:
+
+```
+pesto --example
+```
+
 ## Use
 
 ```
@@ -76,6 +84,7 @@ Useful options:
 
 | Option | What it does |
 | --- | --- |
+| `--example` | Open the made-up example run. |
 | `--cache-dir DIR` | Keep the cache in `DIR`. |
 | `--port PORT` | Use a fixed port instead of a free one. |
 | `--no-browser` | Print the address instead of opening a tab. |
