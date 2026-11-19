@@ -21,6 +21,10 @@ pesto is a viewer for finished [PEST++ IES](https://github.com/usgs/pestpp) runs
 models. Point it at a run folder and it opens in your browser: parameter fields on the model grid,
 observation fit, and the run's settings, all linked.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="pesto on its example run: switching iterations on the map, picking an observation site to see its plot, and cutting a section" width="900">
+</p>
+
 It runs on your own machine. Nothing is uploaded, and pesto never changes a run's files.
 
 > **Alpha.** This is an early release for testing. Expect rough edges, and please
