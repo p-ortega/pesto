@@ -6,7 +6,7 @@
 // hold one.
 
 import { ApiError, fsList, fsOpen, fsRoots, type DirEntry, type OpenResult } from '../data/client'
-import { renderHeader, renderNotice, renderStatusBar } from './chrome'
+import { logoSvg, renderHeader, renderNotice, renderStatusBar } from './chrome'
 import { currentTheme, setTheme, type ThemeChoice } from './theme'
 
 interface Crumb {
@@ -23,17 +23,51 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
   const header = document.createElement('div')
   header.classList.add('header')
+  const welcome = document.createElement('div')
+  welcome.classList.add('welcome')
+
+  const hero = document.createElement('div')
+  hero.classList.add('welcome-hero')
+  const mark = document.createElement('div')
+  mark.classList.add('welcome-mark')
+  mark.innerHTML = logoSvg(72)
+  const words = document.createElement('div')
+  words.classList.add('welcome-words')
+  const name = document.createElement('div')
+  name.classList.add('welcome-name')
+  name.textContent = 'pesto'
+  const tagline = document.createElement('div')
+  tagline.classList.add('welcome-tagline')
+  tagline.textContent = 'See a finished PEST++ IES run on its MODFLOW 6 grid, fast.'
+  words.appendChild(name)
+  words.appendChild(tagline)
+  hero.appendChild(mark)
+  hero.appendChild(words)
+
   const panel = document.createElement('div')
-  panel.classList.add('surface')
+  panel.classList.add('surface', 'welcome-panel')
+  const panelTitle = document.createElement('div')
+  panelTitle.classList.add('heading')
+  panelTitle.textContent = 'Open a run folder'
+  const panelHint = document.createElement('div')
+  panelHint.classList.add('label', 'wrap-note')
+  panelHint.textContent =
+    'Browse to the folder that holds the .pst control file and its ensembles, then press Open. ' +
+    'Your run stays on this machine and its files are never changed.'
   const crumbBar = document.createElement('div')
+  crumbBar.classList.add('welcome-crumbs')
   const noticeArea = document.createElement('div')
   const list = document.createElement('ul')
-  list.classList.add('scroll-pane')
+  list.classList.add('scroll-pane', 'welcome-list')
   const statusBar = document.createElement('div')
   statusBar.classList.add('status-bar')
 
   root.appendChild(header)
-  root.appendChild(panel)
+  root.appendChild(welcome)
+  welcome.appendChild(hero)
+  welcome.appendChild(panel)
+  panel.appendChild(panelTitle)
+  panel.appendChild(panelHint)
   panel.appendChild(crumbBar)
   panel.appendChild(noticeArea)
   panel.appendChild(list)
@@ -44,7 +78,7 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
   function paintHeader(): void {
     renderHeader(header, {
-      title: 'Choose a run directory',
+      title: 'Open a run',
       themeChoice: currentTheme(),
       onThemeChange: (choice: ThemeChoice) => {
         setTheme(choice)
@@ -149,6 +183,7 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
     for (const entry of entries) {
       const item = document.createElement('li')
+      item.classList.add('welcome-row')
       // WINDOWS.md #13's sweep: an entry's marker, name, reason and Open
       // button are adjacent inline elements with nothing between them --
       // the same run-together shape the notices had, fixed the same way
@@ -156,12 +191,14 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
       item.style.display = 'flex'
       item.style.gap = 'var(--space-sm)'
       const nameButton = document.createElement('button')
+      nameButton.classList.add('welcome-entry')
       nameButton.style.display = 'inline-flex'
       nameButton.style.gap = 'var(--space-sm)'
 
       if (entry.isRun) {
         const marker = document.createElement('span')
-        marker.textContent = '● run'
+        marker.classList.add('welcome-run-tag')
+        marker.textContent = 'PEST++ run'
         nameButton.appendChild(marker)
       }
 
@@ -178,6 +215,7 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
       if (entry.reason) {
         nameButton.disabled = true
         const reasonEl = document.createElement('span')
+        reasonEl.classList.add('welcome-reason')
         reasonEl.textContent = entry.reason
         item.appendChild(reasonEl)
         list.appendChild(item)
@@ -205,13 +243,17 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
       const openButton = document.createElement('button')
       openButton.textContent = 'Open'
+      openButton.classList.add('welcome-open')
       if (entry.isRun) {
         openButton.addEventListener('click', () => {
           openRun(entry)
         })
       } else {
+        // A plain folder is only a step on the way, so its reason waits in the tooltip.
         openButton.disabled = true
+        openButton.title = OPEN_ACTION_REASON
         const reasonEl = document.createElement('span')
+        reasonEl.classList.add('welcome-reason', 'welcome-not-run')
         reasonEl.textContent = OPEN_ACTION_REASON
         item.appendChild(reasonEl)
       }

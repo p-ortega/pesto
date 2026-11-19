@@ -248,8 +248,7 @@ export interface RenderHeaderOptions {
  * real `<select>`, keyboard reachable by construction (MAP-11).
  */
 // The pesto mascot: a side-on mortar heaped with pesto, the pestle plunged in, a basil leaf and a face.
-const LOGO_SVG =
-  '<svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true">' +
+const LOGO_BODY =
   '<g transform="translate(27 32) rotate(40)">' +
   '<path d="M-5.5 2 L-3.6 -30 L3.6 -30 L5.5 2 Z" fill="var(--brand-cream)"/>' +
   '<circle cx="0" cy="-31" r="4.7" fill="var(--brand-cream)"/>' +
@@ -270,13 +269,16 @@ const LOGO_SVG =
   '<circle cx="41.8" cy="44" r="0.55" fill="var(--brand-glint)"/>' +
   '<path d="M29.6 45.6 Q32 48 34.4 45.6" fill="none" stroke="var(--chrome-bg)" stroke-width="1.3" stroke-linecap="round"/>' +
   '<ellipse cx="17.2" cy="46.6" rx="2.2" ry="1.3" fill="var(--brand-cheek)" opacity=".85"/>' +
-  '<ellipse cx="46.8" cy="46.6" rx="2.2" ry="1.3" fill="var(--brand-cheek)" opacity=".85"/>' +
-  '</svg>'
+  '<ellipse cx="46.8" cy="46.6" rx="2.2" ry="1.3" fill="var(--brand-cheek)" opacity=".85"/>'
+
+export function logoSvg(size: number): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">${LOGO_BODY}</svg>`
+}
 
 function brandMark(): HTMLElement {
   const brand = document.createElement('span')
   brand.classList.add('brand')
-  brand.innerHTML = LOGO_SVG
+  brand.innerHTML = logoSvg(26)
   const word = document.createElement('span')
   word.textContent = 'pesto'
   brand.appendChild(word)

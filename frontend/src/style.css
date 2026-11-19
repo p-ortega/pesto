@@ -2063,3 +2063,147 @@ input[type='radio'] {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* The start screen: the mascot and one line about pesto, then the folder browser in a card. */
+.welcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: var(--space-xl) var(--space-md);
+  box-sizing: border-box;
+}
+
+.welcome-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+/* The mascot is drawn for the dark bars, so it sits on a dark tile here too. */
+.welcome-mark {
+  display: flex;
+  padding: var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--chrome-bg);
+  box-shadow: var(--shadow-sm);
+}
+
+.welcome-words {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.welcome-name {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--ink-primary);
+}
+
+.welcome-tagline {
+  font-size: 15px;
+  color: var(--ink-secondary);
+}
+
+.welcome-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.welcome-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.welcome-crumbs button {
+  padding: 2px var(--space-xs);
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-secondary);
+}
+
+.welcome-crumbs button:last-child {
+  color: var(--ink-primary);
+  font-weight: 600;
+}
+
+.welcome-crumbs button + button::before {
+  content: '\203A';
+  margin-right: var(--space-sm);
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+
+.welcome-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: max(12rem, calc(100vh - 24rem));
+}
+
+.welcome-row {
+  align-items: center;
+  padding: var(--space-xs) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.welcome-row:last-child {
+  border-bottom: 0;
+}
+
+.welcome-entry {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  padding: var(--space-xs) var(--space-sm);
+  border-color: transparent;
+  background: transparent;
+  font-size: 14px;
+  text-align: left;
+}
+
+.welcome-entry:hover:not(:disabled) {
+  background: var(--accent-tint);
+}
+
+.welcome-run-tag {
+  order: 2;
+  font-size: 11px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+
+.welcome-reason {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* A plain folder shows no Open and no reason; the reason is the button's tooltip. */
+.welcome-not-run,
+.welcome-open:disabled {
+  display: none;
+}
+
+.welcome-open {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+  font-weight: 600;
+}

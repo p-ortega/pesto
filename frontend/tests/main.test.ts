@@ -194,7 +194,7 @@ describe('the screen router', () => {
     await bootMain()
 
     await vi.waitFor(() => {
-      expect(screenHasText('Choose a run directory')).toBe(true)
+      expect(screenHasText('Open a run folder')).toBe(true)
     })
     expect(stub.calls).toContain('GET /api/run/config')
     expect(stub.calls.some((call) => call.includes('ingest'))).toBe(false)
@@ -482,7 +482,7 @@ describe('the screen router', () => {
 
     findButtonByText('Go back').click()
     await vi.waitFor(() => {
-      expect(screenHasText('Choose a run directory')).toBe(true)
+      expect(screenHasText('Open a run folder')).toBe(true)
     })
     expect(run.activeRunId()).toBeNull()
   })
@@ -503,7 +503,7 @@ describe('the screen router', () => {
     findButtonByText('Go back').click()
 
     await vi.waitFor(() => {
-      expect(screenHasText('Choose a run directory')).toBe(true)
+      expect(screenHasText('Open a run folder')).toBe(true)
     })
   })
 
@@ -559,7 +559,7 @@ describe('the screen router', () => {
     await bootMain()
 
     await vi.waitFor(() => {
-      expect(screenHasText('Choose a run directory')).toBe(true)
+      expect(screenHasText('Open a run folder')).toBe(true)
     })
 
     // Once the run is opened, its cache turns out to be fully fresh.
