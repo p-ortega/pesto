@@ -11,19 +11,20 @@ import xml.etree.ElementTree as ET
 
 
 def main(path: str) -> int:
-    shown = 0
+    failed = []
     for case in ET.parse(path).getroot().iter("testcase"):
         for kind in ("failure", "error"):
             problem = case.find(kind)
-            if problem is None:
-                continue
-            name = f"{case.get('classname')}::{case.get('name')}"
-            text = (problem.get("message") or "") + "\n" + (problem.text or "")[-1500:]
-            # GitHub reads %0A as a line break inside one annotation.
-            body = text.strip().replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-            print(f"::error title={name}::{body}")
-            shown += 1
-    print(f"{shown} failed test(s)")
+            if problem is not None:
+                failed.append((f"{case.get('classname')}::{case.get('name')}", problem))
+    # GitHub keeps only ten error lines per step, so the full list of names goes first, as one.
+    if failed:
+        print(f"::error title={len(failed)} failed test(s)::" + "%0A".join(name for name, _ in failed))
+    for name, problem in failed:
+        text = (problem.get("message") or "") + "\n" + (problem.text or "")[-1500:]
+        # GitHub reads %0A as a line break inside one annotation.
+        body = text.strip().replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title={name}::{body}")
     return 0
 
 

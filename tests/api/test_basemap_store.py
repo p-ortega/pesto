@@ -198,7 +198,7 @@ def test_a_record_with_an_unsafe_or_unusable_value_is_unavailable_with_a_reason(
     assert opened.get("/api/run/basemap").json()["status"] == "unavailable"
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses permission bits")
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="permission bits do not bind root, and Windows has none")
 def test_an_unreadable_record_is_unavailable_not_none(tmp_path, monkeypatch):
     opened = open_run(tmp_path, monkeypatch)
     path = _record_file(opened)

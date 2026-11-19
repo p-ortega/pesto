@@ -28,7 +28,7 @@ from pesto.api.prefs import read_last_run, read_recent_runs, write_last_run
 
 BASE_URL = "http://127.0.0.1"
 
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+_IS_ROOT = not hasattr(os, "geteuid") or os.geteuid() == 0
 
 
 def _client(app) -> TestClient:
@@ -188,7 +188,7 @@ def test_ids_are_stable_across_two_listings(
     assert {e["id"] for e in first} == {e["id"] for e in second}
 
 
-@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+@pytest.mark.skipif(_IS_ROOT, reason="permission bits do not bind root, and Windows has none")
 def test_unreadable_child_directory_is_listed_with_a_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -274,7 +274,7 @@ def test_run_marker_opens_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert is_run_directory(tmp_path) == (True, None)
 
 
-@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+@pytest.mark.skipif(_IS_ROOT, reason="permission bits do not bind root, and Windows has none")
 def test_run_marker_reports_a_reason_for_an_unreadable_directory(tmp_path: Path) -> None:
     locked = tmp_path / "locked"
     locked.mkdir()
@@ -378,7 +378,7 @@ def test_list_and_open_leave_the_listed_directory_untouched(
     assert after_entries == before_entries
 
 
-@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+@pytest.mark.skipif(_IS_ROOT, reason="permission bits do not bind root, and Windows has none")
 def test_opening_a_read_only_git_run_directory_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

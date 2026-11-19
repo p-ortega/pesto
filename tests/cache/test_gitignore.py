@@ -14,7 +14,7 @@ import pytest
 
 from pesto.cache.gitignore import ensure_gitignored
 
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+_IS_ROOT = not hasattr(os, "geteuid") or os.geteuid() == 0
 
 
 def test_a_git_repository_gets_the_ignore_line(tmp_path):
@@ -36,7 +36,7 @@ def test_a_successful_write_reports_no_failure(tmp_path):
     assert ensure_gitignored(run) is None
 
 
-@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+@pytest.mark.skipif(_IS_ROOT, reason="permission bits do not bind root, and Windows has none")
 def test_a_read_only_run_directory_does_not_raise_and_reports_why(tmp_path):
     run = tmp_path / "run"
     run.mkdir()

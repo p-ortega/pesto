@@ -22,6 +22,19 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _home_follows_the_HOME_variable_on_windows(monkeypatch):
+    """Tests move the home folder by setting HOME; Windows reads USERPROFILE, so follow HOME there."""
+    if os.name != "nt":
+        return
+    real_home = Path.home
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: cls(os.environ["HOME"]) if os.environ.get("HOME") else real_home()),
+    )
+
+
 @pytest.fixture(scope="session")
 def case_file():
     """A benchmark run's own file, named from the control file that has a .rec beside it, so

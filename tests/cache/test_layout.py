@@ -22,7 +22,7 @@ from pesto.cache.layout import (
     run_id_for,
 )
 
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+_IS_ROOT = not hasattr(os, "geteuid") or os.geteuid() == 0
 
 
 def test_cache_sits_beside_the_run_when_writable(tmp_path):
@@ -229,7 +229,7 @@ def test_for_run_reports_no_gitignore_note_on_a_plain_directory(tmp_path):
     assert layout.gitignore_note is None
 
 
-@pytest.mark.skipif(_IS_ROOT, reason="chmod 0o000 has no effect for root")
+@pytest.mark.skipif(_IS_ROOT, reason="permission bits do not bind root, and Windows has none")
 def test_for_run_on_a_read_only_git_run_directory_succeeds_and_carries_the_note(tmp_path, monkeypatch):
     run = tmp_path / "run"
     run.mkdir()

@@ -115,7 +115,7 @@ def test_a_different_recorded_version_reads_back_as_the_default(tmp_path, monkey
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False, reason="root bypasses permission bits")
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="permission bits do not bind root, and Windows has none")
 def test_write_view_state_with_an_unwritable_store_directory_raises_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     cache_dir = tmp_path / ".cache"
@@ -219,7 +219,7 @@ def test_put_view_with_no_run_open_returns_409(tmp_path, monkeypatch):
     assert response.status_code == 409
 
 
-@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False, reason="root bypasses permission bits")
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="permission bits do not bind root, and Windows has none")
 def test_put_view_whose_write_fails_still_returns_200(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     cache_root = tmp_path / "run" / ".pesto"

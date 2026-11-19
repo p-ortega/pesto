@@ -382,7 +382,7 @@ def test_under_the_real_cap_every_file_is_checked(opened):
     assert listing["skipped"]["not_checked"] == 0
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses permission bits")
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="permission bits do not bind root, and Windows has none")
 def test_a_file_that_cannot_be_opened_is_counted_unreadable_and_gets_no_id(opened):
     put_png(opened.images, "fine.png", 2, 2)
     locked = put_png(opened.images, "locked.png", 2, 2)
