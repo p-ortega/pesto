@@ -5,7 +5,7 @@
 <h1 align="center">pesto</h1>
 
 <p align="center">
-  A fast viewer for finished PEST++ IES runs on MODFLOW 6 models.
+  A wannabe fast, generic, responsive viewer for PESTPP runs
 </p>
 
 <p align="center">
