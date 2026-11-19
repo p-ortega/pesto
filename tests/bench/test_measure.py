@@ -173,6 +173,7 @@ def test_the_json_carries_the_two_pick_limits() -> None:
     assert limits["pick_p95_ms"] == 1.0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the bench measures a cold disk read the POSIX way")
 def test_time_ingest_adds_up_the_workers_own_seconds() -> None:
     rows = [
         _row("par_ens/0", "started", index=0),
@@ -547,6 +548,7 @@ def test_a_probe_that_raises_gives_not_measured_with_the_error_text(tmp_path: Pa
     assert cache.label != "cold"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the bench measures a cold disk read the POSIX way")
 def test_without_ctypes_or_mincore_the_label_is_not_measured_and_the_method_says_why(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

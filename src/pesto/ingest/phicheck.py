@@ -620,7 +620,7 @@ def write_phi_check(
             "notes": notes,
         }
         written = write_atomic_text(path, json.dumps(payload, indent=2, allow_nan=False))
-        files = (CacheFile(path=str(path.relative_to(layout.root)), bytes=written),)
+        files = (CacheFile(path=path.relative_to(layout.root).as_posix(), bytes=written),)
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
         path.unlink(missing_ok=True)
@@ -633,7 +633,7 @@ def load_phi_check(iteration: int, layout: CacheLayout) -> PhiCheck | ReadFailur
     name = f"phi_check/{iteration}"
     path = layout.phi_check(iteration)
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _fail(name, path, f"could not read {path.name}: {exc}")
     if not isinstance(raw, dict):

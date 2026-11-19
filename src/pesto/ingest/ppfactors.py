@@ -68,7 +68,7 @@ def _read_template(path: Path) -> dict[str, str]:
     """Pilot-point name (lowercased) to parameter name, from a PEST
     template file: first line ``ptf <marker>``, then one point per line
     with the parameter name between two markers."""
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or not lines[0].lower().startswith("ptf"):
         raise _Refused(f"template {path.name} does not start with a 'ptf' line")
     parts = lines[0].split()
@@ -94,7 +94,7 @@ def _read_factor_header(path: Path) -> tuple[list[str], int, bool]:
     text factor file, without keeping any weight. Counts cells the way
     pyemu's parser does: a line's ``nfac`` pairs may spill onto the next
     lines, and each cell counts once."""
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         f.readline()  # the pilot-point file name, unused
         f.readline()  # the zone file name, unused
         dims = f.readline().split()
@@ -194,7 +194,7 @@ def _text_groups(run_dir: Path, mult2model: Path, par: pd.DataFrame, shape: Grid
                 PpGroup(
                     group=group,
                     layer=layer,
-                    factor_file=str(fac_path.relative_to(run_dir)),
+                    factor_file=fac_path.relative_to(run_dir).as_posix(),
                     format="text",
                     parnames=tuple(parnames),
                     pp_names=tuple(names),
@@ -274,7 +274,7 @@ def _binary_groups(run_dir, factor_files, par, shape):
                     PpGroup(
                         group=str(group),
                         layer=layer,
-                        factor_file=str(path.relative_to(run_dir)),
+                        factor_file=path.relative_to(run_dir).as_posix(),
                         format="binary",
                         parnames=tuple(by_point[p] for p in ordered),
                         pp_names=tuple(ordered),
@@ -337,7 +337,7 @@ def write_pp_index(index: PpIndex, layout: CacheLayout) -> WrittenArtifact | Rea
         notes = tuple(f"{group}: {reason}" for group, reason in index.not_interpolable)
         return WrittenArtifact(
             name=ARTIFACT_NAME,
-            files=(CacheFile(path=str(layout.pp_index.relative_to(layout.root)), bytes=n),),
+            files=(CacheFile(path=layout.pp_index.relative_to(layout.root).as_posix(), bytes=n),),
             notes=notes,
         )
     except Exception as exc:
@@ -347,7 +347,7 @@ def write_pp_index(index: PpIndex, layout: CacheLayout) -> WrittenArtifact | Rea
 def load_pp_index(layout: CacheLayout) -> PpIndex | ReadFailure:
     path = layout.pp_index
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return ReadFailure(name=ARTIFACT_NAME, path=str(path), reason=f"failed to read {path.name}: {exc}")
     if not isinstance(raw, dict) or raw.get("cache_version") != CACHE_VERSION:

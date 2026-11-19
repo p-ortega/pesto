@@ -88,9 +88,9 @@ def write_control(tables: ControlTables, layout: CacheLayout) -> WrittenArtifact
 
         root = layout.root
         files = (
-            CacheFile(path=str(par_path.relative_to(root)), bytes=par_bytes),
-            CacheFile(path=str(obs_path.relative_to(root)), bytes=obs_bytes),
-            CacheFile(path=str(notes_path.relative_to(root)), bytes=notes_bytes),
+            CacheFile(path=par_path.relative_to(root).as_posix(), bytes=par_bytes),
+            CacheFile(path=obs_path.relative_to(root).as_posix(), bytes=obs_bytes),
+            CacheFile(path=notes_path.relative_to(root).as_posix(), bytes=notes_bytes),
         )
         return WrittenArtifact(name="control", files=files, notes=tuple(notes))
     except Exception as exc:
@@ -111,7 +111,7 @@ def _read_notes_json(notes_path: Path) -> dict | ReadFailure:
     """Read ``notes.json`` and check its shape and ``cache_version``, the one
     place both table readers do it."""
     try:
-        raw = json.loads(notes_path.read_text())
+        raw = json.loads(notes_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return ReadFailure(
             name="control",

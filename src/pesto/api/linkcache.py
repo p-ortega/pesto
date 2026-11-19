@@ -151,7 +151,7 @@ def scan_factor_file(path, group) -> PpFactorIndex | ReadFailure:
 
     npp = len(group.pp_names)
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for _ in range(4 + npp):
                 f.readline()
             tokens = f.read().split()

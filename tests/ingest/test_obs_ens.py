@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -209,6 +210,7 @@ def test_a_file_missing_one_control_name_fails_with_the_counts_and_writes_nothin
     assert states["obs_ens/1"].state == "ok"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no kill signal to send a worker")
 def test_a_worker_killed_while_reading_an_observation_file_leaves_a_named_failed_row(
     tmp_path, in_process, monkeypatch
 ):

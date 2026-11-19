@@ -362,8 +362,8 @@ def write_par_hist(first: int, last: int, layout: CacheLayout) -> WrittenArtifac
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
         written.append(sidecar_path)
         files = (
-            CacheFile(path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes),
-            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes),
+            CacheFile(path=payload_path.relative_to(layout.root).as_posix(), bytes=payload_bytes),
+            CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=sidecar_bytes),
         )
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:

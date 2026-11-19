@@ -193,10 +193,10 @@ def write_elev(
 
         root = layout.root
         files = (
-            CacheFile(path=str(elev_path.relative_to(root)), bytes=elev_bytes),
-            CacheFile(path=str(ring_path.relative_to(root)), bytes=ring_bytes),
-            CacheFile(path=str(start_path.relative_to(root)), bytes=start_bytes),
-            CacheFile(path=str(json_path.relative_to(root)), bytes=json_bytes),
+            CacheFile(path=elev_path.relative_to(root).as_posix(), bytes=elev_bytes),
+            CacheFile(path=ring_path.relative_to(root).as_posix(), bytes=ring_bytes),
+            CacheFile(path=start_path.relative_to(root).as_posix(), bytes=start_bytes),
+            CacheFile(path=json_path.relative_to(root).as_posix(), bytes=json_bytes),
         )
         return WrittenArtifact(name=_NAME, files=files, notes=tuple(notes))
     except Exception as exc:
@@ -321,7 +321,7 @@ def elev_outdated(layout: CacheLayout) -> bool:
     the one its counts are taken at, or cannot be read to tell; it is then rebuilt
     on the next ingest."""
     try:
-        raw = json.loads((layout.grid / "elev.json").read_text())
+        raw = json.loads((layout.grid / "elev.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
     return _stored_elev_dtype(raw) != _ELEV_DTYPE
@@ -333,7 +333,7 @@ def load_elev(layout: CacheLayout) -> ElevArrays | ReadFailure:
     the count the sidecar declares."""
     json_path = layout.grid / "elev.json"
     try:
-        raw = json.loads(json_path.read_text())
+        raw = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return ReadFailure(name=_NAME, path=str(json_path), reason=f"failed to read elev.json: {exc}")
     if not isinstance(raw, dict):

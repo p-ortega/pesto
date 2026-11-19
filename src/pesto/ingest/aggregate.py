@@ -510,7 +510,7 @@ def write_par_agg(
             return fileobj.tell()
 
         written_bytes = write_atomic_bytes(target, _write_payload)
-        file_entry = CacheFile(path=str(target.relative_to(layout.root)), bytes=written_bytes)
+        file_entry = CacheFile(path=target.relative_to(layout.root).as_posix(), bytes=written_bytes)
 
         # Written after the table, never before: a reader must never find a
         # sidecar naming a file that is not there yet (write_mesh's rule).
@@ -523,7 +523,7 @@ def write_par_agg(
         }
         notes_bytes = write_atomic_text(notes_target, json.dumps(notes_payload, indent=2))
         notes_entry = CacheFile(
-            path=str(notes_target.relative_to(layout.root)), bytes=notes_bytes
+            path=notes_target.relative_to(layout.root).as_posix(), bytes=notes_bytes
         )
 
         return WrittenArtifact(name=name, files=(file_entry, notes_entry), notes=tuple(notes))

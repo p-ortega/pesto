@@ -150,7 +150,7 @@ def contributors(run_dir: Path, group: PpGroup, cell: int) -> list[tuple[str, fl
     if group.format != "text":
         return ReadFailure(name=group.group, path=str(path), reason=f"{group.factor_file} is a binary factor file, and pesto lists the points behind a cell only from text factor files")
     try:
-        with path.open() as f:
+        with path.open(encoding="utf-8") as f:
             for _ in range(4):
                 f.readline()
             npp = len(group.pp_names)

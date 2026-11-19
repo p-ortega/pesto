@@ -23,13 +23,16 @@ def write_atomic_text(target: Path, payload: str) -> int:
     """Write ``payload`` to ``target`` atomically. Returns the byte count
     written."""
     directory = target.parent
+    # UTF-8 with no newline translation, so the file holds the same bytes on every system.
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", dir=directory, prefix=".ingest-", suffix=".tmp", delete=False
+        mode="w", dir=directory, prefix=".ingest-", suffix=".tmp", delete=False, encoding="utf-8", newline=""
     )
     tmp_path = Path(tmp.name)
     replaced = False
     try:
-        written = tmp.write(payload)
+        tmp.write(payload)
+        # Bytes, not characters: the manifest compares this with the file's size on disk.
+        written = len(payload.encode("utf-8"))
         tmp.flush()
         os.fsync(tmp.fileno())
         tmp.close()

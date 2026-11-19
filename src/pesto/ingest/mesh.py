@@ -129,13 +129,13 @@ def write_mesh(
 
         root = layout.root
         files = (
-            CacheFile(path=str(positions_path.relative_to(root)), bytes=positions_bytes),
-            CacheFile(path=str(cell_index_path.relative_to(root)), bytes=cell_index_bytes),
-            CacheFile(path=str(indices_path.relative_to(root)), bytes=indices_bytes),
-            CacheFile(path=str(mesh_json_path.relative_to(root)), bytes=mesh_json_bytes),
+            CacheFile(path=positions_path.relative_to(root).as_posix(), bytes=positions_bytes),
+            CacheFile(path=cell_index_path.relative_to(root).as_posix(), bytes=cell_index_bytes),
+            CacheFile(path=indices_path.relative_to(root).as_posix(), bytes=indices_bytes),
+            CacheFile(path=mesh_json_path.relative_to(root).as_posix(), bytes=mesh_json_bytes),
         )
         if idomain_bytes is not None:
-            files += (CacheFile(path=str(idomain_path.relative_to(root)), bytes=idomain_bytes),)
+            files += (CacheFile(path=idomain_path.relative_to(root).as_posix(), bytes=idomain_bytes),)
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
         return ReadFailure(
@@ -192,7 +192,7 @@ def _read_sidecar(layout: CacheLayout) -> "dict | ReadFailure":
     ``load_mesh`` makes."""
     mesh_json_path = layout.grid / "mesh.json"
     try:
-        raw = json.loads(mesh_json_path.read_text())
+        raw = json.loads(mesh_json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return ReadFailure(
             name="grid", path=str(mesh_json_path), reason=f"failed to read {mesh_json_path.name}: {exc}"
@@ -315,7 +315,7 @@ def load_mesh(layout: CacheLayout) -> "MeshBuffers | ReadFailure":
     mesh_json_path = layout.grid / "mesh.json"
 
     try:
-        raw = json.loads(mesh_json_path.read_text())
+        raw = json.loads(mesh_json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return ReadFailure(
             name=name, path=str(mesh_json_path), reason=f"failed to read {mesh_json_path.name}: {exc}"

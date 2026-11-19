@@ -286,8 +286,8 @@ def write_obs_agg(
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
         written.append(sidecar_path)
         files = (
-            CacheFile(path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes),
-            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes),
+            CacheFile(path=payload_path.relative_to(layout.root).as_posix(), bytes=payload_bytes),
+            CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=sidecar_bytes),
         )
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
@@ -319,7 +319,7 @@ def _open_stat_file(
     are all checked before a read-only memory map is handed back. Returns the
     sidecar, the map, the stat names and the digest."""
     try:
-        sidecar = json.loads(sidecar_path.read_text())
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _fail(name, sidecar_path, f"could not read sidecar {sidecar_path.name}: {exc}")
     if not isinstance(sidecar, dict):
@@ -546,8 +546,8 @@ def write_noise_agg(
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
         written.append(sidecar_path)
         files = (
-            CacheFile(path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes),
-            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes),
+            CacheFile(path=payload_path.relative_to(layout.root).as_posix(), bytes=payload_bytes),
+            CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=sidecar_bytes),
         )
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:

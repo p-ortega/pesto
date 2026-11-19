@@ -994,7 +994,7 @@ def base_by_iteration(layout: CacheLayout) -> tuple[Reading, ...]:
             seen.append((iteration, None, f"par_ens/{iteration} is {artifact.state}: {reason}"))
             continue
         try:
-            names = tuple(str(n) for n in json.loads(layout.par_reals(iteration).read_text())["names"])
+            names = tuple(str(n) for n in json.loads(layout.par_reals(iteration).read_text(encoding="utf-8"))["names"])
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
             seen.append(
                 (iteration, None, f"the realization names for iteration {iteration} could not be read: {error}")
@@ -1247,7 +1247,7 @@ def write_config(config: RunConfig, layout: CacheLayout) -> WrittenArtifact | Re
             "par_iterations": list(config.par_iterations),
         }
         written = write_atomic_text(target, json.dumps(payload, indent=2))
-        cache_file = CacheFile(path=str(target.relative_to(layout.root)), bytes=written)
+        cache_file = CacheFile(path=target.relative_to(layout.root).as_posix(), bytes=written)
         return WrittenArtifact(name=name, files=(cache_file,), notes=tuple(config.notes))
     except Exception as exc:
         return ReadFailure(
@@ -1329,7 +1329,7 @@ def config_outdated(layout: CacheLayout) -> bool:
     """Whether ``config.json`` needs writing again: it is missing, unreadable,
     or carries no readable facts of the current version. Reads only the one file."""
     try:
-        data = json.loads(layout.config.read_text())
+        data = json.loads(layout.config.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return True
     if not isinstance(data, dict):
@@ -1352,7 +1352,7 @@ def load_config(layout: CacheLayout) -> RunConfig:
     is recorded as unknown rather than passed through as a fabricated fact.
     """
     try:
-        data = json.loads(layout.config.read_text())
+        data = json.loads(layout.config.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return _empty_config()
 

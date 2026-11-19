@@ -394,14 +394,14 @@ def load_known_names(cache_root: Path) -> KnownNames:
     root = Path(cache_root)
 
     try:
-        notes = json.loads((root / "control" / "notes.json").read_text())
+        notes = json.loads((root / "control" / "notes.json").read_text(encoding="utf-8"))
         known.add(notes.get("par_groups", ()))
         known.add(notes.get("obs_groups", ()))
     except Exception:  # noqa: BLE001
         pass
     for path in sorted((root / "reals").glob("*.reals.json")) if (root / "reals").is_dir() else ():
         try:
-            known.add(json.loads(path.read_text()).get("names", ()))
+            known.add(json.loads(path.read_text(encoding="utf-8")).get("names", ()))
         except Exception:  # noqa: BLE001
             known.notes.append("a realization name list could not be read")
 
@@ -449,7 +449,7 @@ def load_known_names(cache_root: Path) -> KnownNames:
             if path.stat().st_size > 64 * 1024 * 1024:
                 known.notes.append("an ensemble name list was too large to load")
                 continue
-            lines = [line for line in path.read_text().splitlines() if line]
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
             if lines:
                 known.add_column(pa.array(lines, type=pa.string()))
         except Exception:  # noqa: BLE001

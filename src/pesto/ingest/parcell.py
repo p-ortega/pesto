@@ -131,8 +131,8 @@ def write_par_cell(
 
         root = layout.root
         files = (
-            CacheFile(path=str(parquet_path.relative_to(root)), bytes=parquet_bytes),
-            CacheFile(path=str(json_path.relative_to(root)), bytes=json_bytes),
+            CacheFile(path=parquet_path.relative_to(root).as_posix(), bytes=parquet_bytes),
+            CacheFile(path=json_path.relative_to(root).as_posix(), bytes=json_bytes),
         )
         return WrittenArtifact(name="par_cell", files=files, notes=tuple(notes))
     except Exception as exc:
@@ -149,7 +149,7 @@ def load_par_cell(layout: CacheLayout) -> ParCellTable | ReadFailure:
     parquet_path = layout.grid / "par_cell.parquet"
 
     try:
-        raw = json.loads(json_path.read_text())
+        raw = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _failure(json_path, f"failed to read {json_path.name}: {exc}")
     if not isinstance(raw, dict):

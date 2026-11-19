@@ -146,7 +146,7 @@ def write_reals(
             "notes": notes,
         }
         written = write_atomic_text(target, json.dumps(payload, indent=2))
-        return CacheFile(path=str(target.relative_to(layout.root)), bytes=written)
+        return CacheFile(path=target.relative_to(layout.root).as_posix(), bytes=written)
     except Exception as exc:
         return ReadFailure(
             name=name,
@@ -365,7 +365,7 @@ def write_par_ensemble(
 
         payload_bytes = write_atomic_bytes(payload_path, _write_payload)
         payload_entry = CacheFile(
-            path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes
+            path=payload_path.relative_to(layout.root).as_posix(), bytes=payload_bytes
         )
         written.append(payload_entry)
 
@@ -375,7 +375,7 @@ def write_par_ensemble(
             parnames_path, lambda f: f.write(parnames_text.encode("utf-8"))
         )
         parnames_entry = CacheFile(
-            path=str(parnames_path.relative_to(layout.root)), bytes=parnames_bytes
+            path=parnames_path.relative_to(layout.root).as_posix(), bytes=parnames_bytes
         )
         written.append(parnames_entry)
 
@@ -386,7 +386,7 @@ def write_par_ensemble(
             parmap_path, lambda f: f.write(parmap_array.tobytes())
         )
         parmap_entry = CacheFile(
-            path=str(parmap_path.relative_to(layout.root)), bytes=parmap_bytes
+            path=parmap_path.relative_to(layout.root).as_posix(), bytes=parmap_bytes
         )
         written.append(parmap_entry)
 
@@ -437,7 +437,7 @@ def write_par_ensemble(
         root = layout.root
         files = [
             payload_entry,
-            CacheFile(path=str(sidecar_path.relative_to(root)), bytes=sidecar_bytes),
+            CacheFile(path=sidecar_path.relative_to(root).as_posix(), bytes=sidecar_bytes),
             parnames_entry,
             parmap_entry,
             reals_result,
@@ -484,7 +484,7 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
     sidecar_path = layout.ens / f"par_{iteration}.json"
 
     try:
-        raw = sidecar_path.read_text()
+        raw = sidecar_path.read_text(encoding="utf-8")
     except OSError as exc:
         return ReadFailure(
             name=name,
@@ -564,7 +564,7 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
         )
 
     try:
-        par_names = tuple((layout.ens / parnames_file).read_text().splitlines())
+        par_names = tuple((layout.ens / parnames_file).read_text(encoding="utf-8").splitlines())
         block_to_control = np.fromfile(layout.ens / block_to_control_file, dtype="<i4")
 
         map_block = next(b for b in blocks if b.name == "map")

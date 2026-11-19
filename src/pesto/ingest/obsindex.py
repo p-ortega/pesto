@@ -54,7 +54,7 @@ def sentinel_rule_outdated(sidecar_path: Path) -> bool:
     """Whether the sidecar at ``sidecar_path`` was written before the current sentinel rule:
     missing, unreadable, or carrying no ``sentinel_rule_version`` of the current number."""
     try:
-        data = json.loads(sidecar_path.read_text())
+        data = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
     return not isinstance(data, dict) or data.get("sentinel_rule_version") != SENTINEL_RULE_VERSION
@@ -743,7 +743,7 @@ def write_obs_index(index: ObsIndex, layout: CacheLayout) -> WrittenArtifact | R
 
         def record(path: Path, size: int) -> None:
             written.append(path)
-            files.append(CacheFile(path=str(path.relative_to(root)), bytes=size))
+            files.append(CacheFile(path=path.relative_to(root).as_posix(), bytes=size))
 
         record(
             layout.obs_order,
@@ -807,7 +807,7 @@ def load_obs_index(layout: CacheLayout) -> ObsIndex | ReadFailure:
     the digest over the parts ``digest_covers`` names."""
     meta_path = layout.obs_index_meta
     try:
-        raw = json.loads(meta_path.read_text())
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _failure(meta_path, f"failed to read {meta_path.name}: {exc}")
     if not isinstance(raw, dict):

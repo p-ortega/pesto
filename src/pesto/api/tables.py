@@ -173,7 +173,7 @@ def _read_par_reals(layout: CacheLayout, iteration: int) -> list | Response:
     artifact = f"par_reals/{iteration}"
 
     try:
-        raw = json.loads(target.read_text())
+        raw = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return problem(
             404,

@@ -546,8 +546,8 @@ def write_par_change(
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
         written.append(sidecar_path)
         files = (
-            CacheFile(path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes),
-            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes),
+            CacheFile(path=payload_path.relative_to(layout.root).as_posix(), bytes=payload_bytes),
+            CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=sidecar_bytes),
         )
         return WrittenArtifact(name=name, files=files, notes=tuple(notes))
     except Exception as exc:
@@ -568,7 +568,7 @@ def write_par_change(
 
 def _read_json(name: str, path: Path) -> dict | ReadFailure:
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _fail(name, path, f"could not read {path.name}: {exc}")
     if not isinstance(raw, dict):
@@ -841,9 +841,12 @@ def _base_names(text: str, *folders: Path) -> str:
     The ``folders`` the caller knows about are cut out first as whole strings,
     because the pattern below stops at a space in a folder name."""
     for folder in sorted(map(str, folders), key=len, reverse=True):
-        for sep in ("/", "\\"):
-            text = text.replace(folder + sep, "")
-        text = text.replace(folder, Path(folder).name)
+        # Windows prints a path in an error with its backslashes doubled, so cut that spelling too.
+        doubled = folder.replace("\\", "\\\\")
+        for spelling in dict.fromkeys((doubled, folder)):
+            for sep in ("/", "\\\\", "\\"):
+                text = text.replace(spelling + sep, "")
+            text = text.replace(spelling, Path(folder).name)
     return _ABSOLUTE_PATH.sub(r"\1", text)
 
 
@@ -1354,7 +1357,7 @@ def write_par_groups(run_dir: Path, layout: CacheLayout) -> WrittenArtifact | Re
         }
         # allow_nan=False makes a stray NaN fail here instead of writing a file no browser can parse.
         size = write_atomic_text(path, json.dumps(payload, indent=2, allow_nan=False))
-        files = (CacheFile(path=str(path.relative_to(layout.root)), bytes=size),)
+        files = (CacheFile(path=path.relative_to(layout.root).as_posix(), bytes=size),)
         return WrittenArtifact(name=name, files=files, notes=tuple(payload["notes"]))
     except Exception as exc:
         return _fail(name, path, f"failed to write the group summary: {exc}")

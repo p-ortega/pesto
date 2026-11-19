@@ -63,7 +63,7 @@ def _shape(layout: CacheLayout) -> GridShape | Response:
     no vertex or triangle buffer, so it never reads them."""
     path = layout.grid / "mesh.json"
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         if raw.get("cache_version") != CACHE_VERSION:
             raise ValueError(f"written at cache_version {raw.get('cache_version')!r}, expected {CACHE_VERSION}")
         return GridShape(ncpl=int(raw["n_cells"]), nlay=int(raw["nlay"]), nrow=None, ncol=None)

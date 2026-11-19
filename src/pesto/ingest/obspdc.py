@@ -427,8 +427,8 @@ def write_pdc(
         }
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(payload, indent=2))
         files = (
-            CacheFile(path=str(parquet_path.relative_to(layout.root)), bytes=parquet_bytes),
-            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes),
+            CacheFile(path=parquet_path.relative_to(layout.root).as_posix(), bytes=parquet_bytes),
+            CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=sidecar_bytes),
         )
         return WrittenArtifact(name=name, files=files, notes=table.notes)
     except Exception as exc:
@@ -445,7 +445,7 @@ def load_pdc(iteration: int, layout: CacheLayout) -> PdcTable | ReadFailure:
     sidecar_path = layout.pdc_meta(iteration)
     parquet_path = layout.pdc(iteration)
     try:
-        raw = json.loads(sidecar_path.read_text())
+        raw = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _fail(name, sidecar_path, f"could not read sidecar {sidecar_path.name}: {exc}")
     if not isinstance(raw, dict):

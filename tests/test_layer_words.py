@@ -11,7 +11,7 @@ import pytest
 
 from pesto import layer_words as words
 
-CASES = json.loads((Path(__file__).parent / "fixtures" / "layer_words_cases.json").read_text())
+CASES = json.loads((Path(__file__).parent / "fixtures" / "layer_words_cases.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("case", CASES, ids=[f"{c['fn']}{c['args']}" for c in CASES])

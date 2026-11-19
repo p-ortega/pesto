@@ -577,7 +577,9 @@ def test_an_unreadable_factor_file_is_noted_and_the_direct_rows_still_answer(tmp
     body = _get(client, layer=0, cells="1").json()
 
     assert [p["parnme"] for p in body["pars"]] == ["par0"]
-    assert body["par_notes"] == ["group G4: could not read g.fac: No such file or directory"]
+    # The last words are the system's own, and differ between systems.
+    assert len(body["par_notes"]) == 1
+    assert body["par_notes"][0].startswith("group G4: could not read g.fac: ")
 
 
 def test_a_factor_file_naming_a_point_it_never_listed_is_noted(tmp_path, in_process):

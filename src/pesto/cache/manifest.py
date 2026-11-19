@@ -329,7 +329,7 @@ class Manifest:
         populated manifest that reports something fresh.
         """
         try:
-            data = json.loads(layout.manifest.read_text())
+            data = json.loads(layout.manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return cls(cache_version=CACHE_VERSION, run_dir="")
 

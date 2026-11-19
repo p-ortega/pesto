@@ -112,7 +112,7 @@ def write_obs_ensemble(
         sidecar_path = layout.obs_ens_meta(iteration)
         if sidecar_path.exists():
             _remove_written(
-                [CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=0)], layout
+                [CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=0)], layout
             )
 
         counted = {"nan": 0}
@@ -131,7 +131,7 @@ def write_obs_ensemble(
         payload_path = layout.obs_ens(iteration)
         payload_bytes = write_atomic_bytes(payload_path, _write_payload)
         written.append(
-            CacheFile(path=str(payload_path.relative_to(layout.root)), bytes=payload_bytes)
+            CacheFile(path=payload_path.relative_to(layout.root).as_posix(), bytes=payload_bytes)
         )
 
         reals_result = write_reals(data.real_names, iteration, layout, "obs")
@@ -161,7 +161,7 @@ def write_obs_ensemble(
         }
         sidecar_bytes = write_atomic_text(sidecar_path, json.dumps(sidecar, indent=2))
         written.append(
-            CacheFile(path=str(sidecar_path.relative_to(layout.root)), bytes=sidecar_bytes)
+            CacheFile(path=sidecar_path.relative_to(layout.root).as_posix(), bytes=sidecar_bytes)
         )
         return WrittenArtifact(name=name, files=tuple(written), notes=tuple(notes))
     except Exception as exc:
@@ -187,7 +187,7 @@ def load_obs_ensemble(iteration: int, layout: CacheLayout) -> StoredObsEnsemble 
     sidecar_path = layout.obs_ens_meta(iteration)
     payload_path = layout.obs_ens(iteration)
     try:
-        sidecar = json.loads(sidecar_path.read_text())
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _fail(name, sidecar_path, f"could not read sidecar {sidecar_path.name}: {exc}")
     if not isinstance(sidecar, dict):

@@ -38,12 +38,12 @@ def ensure_gitignored(run_dir: Path) -> str | None:
 
     gitignore = run_dir / ".gitignore"
     try:
-        existing = gitignore.read_text() if gitignore.exists() else ""
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
         lines = existing.splitlines()
         if _IGNORE_LINE in lines or ".pesto" in lines:
             return None
 
-        with gitignore.open("a") as f:
+        with gitignore.open("a", encoding="utf-8", newline="\n") as f:
             if existing and not existing.endswith("\n"):
                 f.write("\n")
             f.write(_IGNORE_LINE + "\n")

@@ -524,8 +524,8 @@ def _write_pilot_points(run_dir: Path, groups: list[_Group], par_names: list[str
             where = f"{point} {grid.x[i, j]:.2f} {grid.y[i, j]:.2f} 1"
             data_lines.append(f"{where} 1.0")
             tpl_lines.append(f"{where} ~   {par_names[group.start + n]}   ~")
-        (run_dir / pp_file).write_text("\n".join(data_lines) + "\n")
-        (run_dir / f"{pp_file}.tpl").write_text("\n".join(tpl_lines) + "\n")
+        (run_dir / pp_file).write_text("\n".join(data_lines) + "\n", encoding="utf-8", newline="\n")
+        (run_dir / f"{pp_file}.tpl").write_text("\n".join(tpl_lines) + "\n", encoding="utf-8", newline="\n")
 
         cells, weights = _pp_weights(group, grid)
         lines = [pp_file, "zone.junk", f"{NCOL} {NROW}", str(group.count), *points]
@@ -534,13 +534,13 @@ def _write_pilot_points(run_dir: Path, groups: list[_Group], par_names: list[str
             pairs = " ".join(f"{p + 1} {row[p]:.6f}" for p in used.tolist())
             # node, 1 for interpolation in log space, point count, offset, then point and weight pairs
             lines.append(f"{cell + 1} 1 {used.size} 0.0 {pairs}")
-        (run_dir / fac_file).write_text("\n".join(lines) + "\n")
+        (run_dir / fac_file).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         link_rows.append(
             (f"org/{group.name[:-2]}.txt", f"{group.name[:-2]}.txt", f"mult/{group.name}_inst0_pp.csv", fac_file, pp_file)
         )
     lines = [",org_file,model_file,mlt_file,fac_file,pp_file"]
     lines.extend(f"{n},{','.join(row)}" for n, row in enumerate(link_rows))
-    (run_dir / "mult2model_info.csv").write_text("\n".join(lines) + "\n")
+    (run_dir / "mult2model_info.csv").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def _phi(sim: np.ndarray, target: np.ndarray, weights: np.ndarray) -> np.ndarray:
@@ -557,7 +557,7 @@ def _write_phi(path: Path, real_names: list[str], rows: dict[int, dict[str, floa
         cells = [iteration, total_runs, numbers.mean(), numbers.std(ddof=1), numbers.min(), numbers.max()]
         cells.extend(phi.get(name, "") for name in real_names)
         lines.append(",".join(repr(float(c)) if isinstance(c, float) else str(c) for c in cells))
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def _write_pdc(path: Path, names: list[str], sim: np.ndarray, noisy: np.ndarray) -> np.ndarray:
@@ -573,7 +573,7 @@ def _write_pdc(path: Path, names: list[str], sim: np.ndarray, noisy: np.ndarray)
             cells.extend(repr(float(v)) for v in (mean, std, values.min(), values.max(), mean - std, mean + std))
         cells.append(repr(float(distance[column])))
         lines.append(",".join(cells))
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return conflicts
 
 
@@ -609,7 +609,7 @@ def _write_pcs(path: Path, rows: list[tuple]) -> None:
         "num_at_near_lbound,percent_at_near_lbound,num_std_decrease"
     ]
     lines.extend(",".join(repr(v) if isinstance(v, float) else str(v) for v in row) for row in rows)
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def _write_rec(path: Path, active: dict[int, int], changes: dict[int, list[tuple]]) -> None:
@@ -664,7 +664,7 @@ def _write_rec(path: Path, active: dict[int, int], changes: dict[int, list[tuple
                 f" {n_lb:>10} {pct_lb:>10.4g} {n_dec:>11}"
             )
         lines.extend(["", f"...saved parameter change summary to {CASE}.{iteration}.pcs.csv"])
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 # ---------------------------------------------------------------------------

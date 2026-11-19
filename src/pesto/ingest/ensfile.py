@@ -142,7 +142,7 @@ def _read_csv_matrix(
     the run that produced the file (the documented ``standard_deviation``
     case), so a note names the column rather than silently fixing it.
     """
-    with open(file_path, newline="") as f:
+    with open(file_path, newline="", encoding="utf-8") as f:
         reader = csv_module.reader(f)
         try:
             header = next(reader)

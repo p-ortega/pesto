@@ -191,6 +191,7 @@ def test_a_crafted_header_cannot_overflow_the_arithmetic(tmp_path, monkeypatch):
     assert "its header implies a file of" in result.reason
 
 
+@pytest.mark.skipif(not hasattr(os, "sysconf"), reason="the test reads memory size the POSIX way")
 def test_memory_budget_is_sixty_percent_of_physical_memory():
     physical = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 

@@ -652,7 +652,7 @@ def _write_config_artifact(
     first: _RealNamesOnly | None = None
     if first_iteration is not None:
         try:
-            reals_data = json.loads(layout.par_reals(first_iteration).read_text())
+            reals_data = json.loads(layout.par_reals(first_iteration).read_text(encoding="utf-8"))
             first = _RealNamesOnly(real_names=tuple(reals_data.get("names", [])))
         except (OSError, json.JSONDecodeError, TypeError, AttributeError):
             first = None
