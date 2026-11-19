@@ -350,7 +350,8 @@ def _build_groups(state, cache_root, layout: CacheLayout, first: int, last: int 
     if isinstance(bounds, ReadFailure):
         return bounds
 
-    notes = [RMSE_RULE]
+    # Named, so the sentence does not sit at the top of the Obs tab with nothing to say what it defines.
+    notes = [f"RMSE in these tables: {RMSE_RULE}"]
     residuals: list[np.ndarray | None] = []
     for iteration in (first, last):
         if iteration is None:

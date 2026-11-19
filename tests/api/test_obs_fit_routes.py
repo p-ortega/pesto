@@ -135,7 +135,7 @@ def test_n_placed_is_null_and_the_notes_name_obs_cell_when_it_is_unavailable(tmp
     table = _arrow(response).to_pandas()
     assert table["n_placed"].isna().all()
     assert any("obs_cell" in n and "the grid file could not be read" in n for n in _notes(response))
-    assert any(obs1to1.RMSE_RULE == n for n in _notes(response))
+    assert any(n.endswith(obs1to1.RMSE_RULE) for n in _notes(response))
 
 
 def test_with_one_iteration_the_last_end_is_null_and_a_note_says_so(tmp_path, in_process):  # noqa: F811

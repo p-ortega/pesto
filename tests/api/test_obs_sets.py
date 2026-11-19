@@ -311,8 +311,8 @@ def test_one_note_names_the_text_columns_that_make_no_set(tmp_path, in_process):
     assert not any(s["by"] == "usecol" for s in body["sets"])
     made_none = [t for t in body["notes"] if "no set" in t and t.startswith("text column")]
     assert made_none == [
-        "text column 'usecol' makes no set, since no value in it is held by every row of more "
-        "than one group"
+        "text column 'usecol' gives no set of groups: no value in it is shared by more than one "
+        "whole group"
     ]
     assert "obsnme, obgnme, the time columns (datetime, time)" in body["rule"]
     assert "(id, x, y, z, icpl, layer, k, i, j)" in body["rule"]
