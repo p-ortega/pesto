@@ -60,13 +60,13 @@ used it there by hand yet, so expect more rough edges.
 2. Install pesto:
 
    ```
-   uv tool install https://github.com/p-ortega/pesto/releases/download/v0.1.0a1/pesto-0.1.0a1-py3-none-any.whl
+   uv tool install https://github.com/p-ortega/pesto/releases/download/v0.1.0a2/pesto-0.1.0a2-py3-none-any.whl
    ```
 
 pip works too, inside your own environment:
 
 ```
-pip install https://github.com/p-ortega/pesto/releases/download/v0.1.0a1/pesto-0.1.0a1-py3-none-any.whl
+pip install https://github.com/p-ortega/pesto/releases/download/v0.1.0a2/pesto-0.1.0a2-py3-none-any.whl
 ```
 
 ## Try it

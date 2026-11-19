@@ -1,6 +1,6 @@
 [project]
 name = "pesto"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "A fast browser viewer for finished PEST++ IES runs on MODFLOW 6 models"
 readme = "README.md"
 license = "BSD-3-Clause"

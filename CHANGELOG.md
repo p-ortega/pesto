@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0a2
+
+- Charts in the right panel are readable. Each one can be enlarged over the map.
+- Time series: linear or log axis, fit all or fit observed, switches for each part, drag to zoom,
+  and a readout of the values under the pointer.
+- 1:1 plots and histograms: linear or log, and bigger by default.
+
 ## 0.1.0a1
 
 The first alpha, for testing on macOS, Linux and Windows. On Windows the tests pass, but it has
