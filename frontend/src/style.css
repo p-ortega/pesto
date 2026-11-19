@@ -874,6 +874,12 @@ input[type='radio'] {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.config-row:last-child {
+  border-bottom: 0;
 }
 
 .config-main,
@@ -885,11 +891,35 @@ input[type='radio'] {
   overflow-wrap: anywhere;
 }
 
-.config-line {
-  padding-left: var(--space-md);
+/* The fact's name sits on its own line, so every answer starts at the same left edge. */
+.config-main .config-label {
+  flex: 0 0 100%;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.config-source,
+.config-main .config-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.config-line {
+  padding-left: var(--space-md);
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+/* The file a reading came from is a small tag, so it never reads as part of the answer. */
+.config-source {
+  font-size: 11px;
+  padding: 0 var(--space-xs);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--page-plane);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+
 .config-muted {
   color: var(--ink-muted);
 }
