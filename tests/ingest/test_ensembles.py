@@ -839,11 +839,11 @@ def test_a_successful_write_par_ensemble_is_unchanged_by_the_cleanup_machinery(t
     assert isinstance(result, WrittenArtifact)
     root = layout.root
     expected_order = [
-        str(layout.par_ens(0).relative_to(root)),
-        str((layout.ens / "par_0.json").relative_to(root)),
-        str((layout.ens / "par_0.parnames.txt").relative_to(root)),
-        str((layout.ens / "par_0.parmap.i32").relative_to(root)),
-        str((layout.reals / "par_0.reals.json").relative_to(root)),
+        layout.par_ens(0).relative_to(root).as_posix(),
+        (layout.ens / "par_0.json").relative_to(root).as_posix(),
+        (layout.ens / "par_0.parnames.txt").relative_to(root).as_posix(),
+        (layout.ens / "par_0.parmap.i32").relative_to(root).as_posix(),
+        (layout.reals / "par_0.reals.json").relative_to(root).as_posix(),
     ]
     assert [f.path for f in result.files] == expected_order
     for cache_file in result.files:

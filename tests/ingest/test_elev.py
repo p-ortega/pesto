@@ -258,7 +258,7 @@ def test_elev_f64_is_the_top_then_each_layers_bottom_little_endian(tmp_path):
 def _snapshot(root, *, dirs=True):
     # A folder's own mtime moves when a file is added to it, so the cache side compares files only.
     return {
-        str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns)
+        p.relative_to(root).as_posix(): (p.stat().st_size, p.stat().st_mtime_ns)
         for p in sorted(root.rglob("*"))
         if dirs or p.is_file()
     }

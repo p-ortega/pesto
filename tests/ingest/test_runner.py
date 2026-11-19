@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import os
 import multiprocessing
 import threading
 from pathlib import Path
@@ -114,6 +115,7 @@ def test_crashed_worker_reason_names_the_artifact_and_says_no_result():
     assert reason != repr(exc)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no kill signal to send a worker")
 def test_signal_killed_worker_reason_names_the_signal():
     ok, exc = _run_isolated(fixtures.signal_worker)
     assert ok is False
@@ -125,6 +127,7 @@ def test_signal_killed_worker_reason_names_the_signal():
     assert "par_ens/0" in reason
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no kill signal to send a worker")
 def test_signal_and_crash_reasons_differ_in_wording():
     _, signal_exc = _run_isolated(fixtures.signal_worker)
     _, crash_exc = _run_isolated(fixtures.crash_worker)
@@ -1585,7 +1588,7 @@ def test_the_elev_worker_writes_its_four_files_under_the_cache_root_and_nothing_
     assert not isinstance(grid, ReadFailure), grid
     assert not isinstance(elev, ReadFailure), elev
     assert sorted(f.path for f in elev.files) == sorted(
-        str(Path("grid") / name) for name in ("elev.f64", "ring.f64", "ring_start.u32", "elev.json")
+        f"grid/{name}" for name in ("elev.f64", "ring.f64", "ring_start.u32", "elev.json")
     )
     for f in elev.files:
         assert (cache_root / f.path).stat().st_size == f.bytes
