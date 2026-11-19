@@ -25,7 +25,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --extra test
       # Slow tests need real runs that are not in the repository.
-      - run: uv run pytest -m "not slow" -q
+      - run: uv run pytest -m "not slow" -q --junitxml=report.xml
+      - name: List the failed tests
+        if: failure()
+        run: uv run python scripts/ci_failures.py report.xml
 
   frontend:
     runs-on: ubuntu-latest
