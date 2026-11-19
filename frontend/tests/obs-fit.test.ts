@@ -9,6 +9,8 @@ import type { Obs1to1Payload, ObsBrushPayload, ObsResidHistPayload, SitePoints }
 import { emptySelection } from '../src/state/rules'
 import { createSelectionStore, type SelectionStore } from '../src/state/selection'
 import { renderGroupFit, type GroupFitHandle } from '../src/ui/obs-fit'
+import { chartChoices, resetChartChoices } from '../src/ui/charts/choices'
+import { closeEnlarged } from '../src/ui/charts/enlarge'
 import type { DensitySpec } from '../src/ui/charts/density'
 import type { HistogramSpec } from '../src/ui/charts/histogram'
 import { createRecording2d, type RecordedCall } from './support/recording-2d'
@@ -1158,5 +1160,231 @@ describe('clicking a 1:1 point', () => {
     click(fitCanvas(m.host), px(2) + 7, py(3))
 
     expect([...m.store.get().sites]).toEqual([9])
+  })
+})
+
+// ---- Enlarge and the scale switches ----
+
+function buttonIn(root: ParentNode, text: string): HTMLButtonElement {
+  const found = [...root.querySelectorAll('button')].find((b) => b.textContent === text)
+  if (!found) throw new Error(`no button reads "${text}"`)
+  return found
+}
+
+function mapArea(): HTMLElement {
+  const map = document.createElement('div')
+  map.classList.add('map-area')
+  document.body.appendChild(map)
+  return map
+}
+
+function lastDensitySpec(): DensitySpec {
+  const specs = densitySpecs()
+  return specs[specs.length - 1]
+}
+
+describe('the 1:1 plot controls', () => {
+  afterEach(() => {
+    closeEnlarged()
+    resetChartChoices()
+  })
+
+  it('draws both axes on a log scale when the range is above zero, and remembers it', async () => {
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ lo: 1, hi: 100 }))
+    const m = mount()
+    await drawn(m)
+    expect(lastDensitySpec().scale).toBe('linear')
+    const scale = m.host.querySelector('.obs-fit-1to1 [aria-label="Scale of both axes of the 1:1 plot"]')!
+
+    density.drawDensity.mockClear()
+    buttonIn(scale, 'log').click()
+
+    expect(densitySpecs().map((s) => s.scale)).toEqual(['log', 'log'])
+    expect(buttonIn(scale, 'log').getAttribute('aria-pressed')).toBe('true')
+    expect(chartChoices.oneToOne.scale).toBe('log')
+  })
+
+  it('refuses log with the reason as its tooltip when the range reaches below zero, and stays linear', async () => {
+    const m = mount()
+    await drawn(m)
+    const scale = m.host.querySelector('.obs-fit-1to1 [aria-label="Scale of both axes of the 1:1 plot"]')!
+    const log = buttonIn(scale, 'log')
+
+    expect(log.getAttribute('aria-disabled')).toBe('true')
+    expect(log.title).toBe('A log axis needs every value above zero, and the drawn range starts at -2.')
+    density.drawDensity.mockClear()
+    log.click()
+
+    expect(densitySpecs()).toEqual([])
+    expect(buttonIn(scale, 'linear').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('draws linear, never a refused log, when log was chosen on another group', async () => {
+    chartChoices.oneToOne.scale = 'log'
+    const m = mount()
+    await drawn(m)
+
+    expect(densitySpecs().every((s) => s.scale === 'linear')).toBe(true)
+    expect(m.host.textContent).not.toContain('could not be drawn')
+  })
+
+  it('keeps a range bar that runs to zero or below on a log plot, cut at the plot edge', async () => {
+    chartChoices.oneToOne.scale = 'log'
+    obsApi.fetchObs1to1.mockResolvedValue(
+      answer({ lo: 1, hi: 100, grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A', { obsval: [2], mean: [3], q05: [-5], q95: [4], weighted: [true] })] }),
+    )
+    const m = mount()
+    await drawn(m)
+
+    const bar = m.calls.filter((c) => c.method === 'lineTo' && c.state.lineWidth === 1.5)
+    expect(bar.length).toBeGreaterThan(0)
+    expect(m.calls.filter((c) => c.method === 'moveTo' || c.method === 'lineTo').every((c) => c.args.every(Number.isFinite))).toBe(true)
+  })
+
+  it('opens large over the map with its controls, redraws at the new size, and goes back on Escape', async () => {
+    const map = mapArea()
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
+      return this.closest('.chart-enlarged') ? 640 : 280
+    })
+    const m = mount()
+    await drawn(m)
+    const canvases = () => [...document.querySelectorAll<HTMLCanvasElement>('.chart-row canvas')]
+    expect(canvases().map((c) => c.height)).toEqual([280, 280])
+
+    buttonIn(m.host.querySelector('.obs-fit-1to1')!, 'Enlarge').click()
+
+    const panel = map.querySelector('.chart-enlarged-panel')!
+    expect(panel.querySelector('.heading')!.textContent).toBe('1:1 plot of group gw_head')
+    expect(panel.querySelectorAll('canvas').length).toBe(2)
+    expect(canvases().map((c) => c.height)).toEqual([640, 640])
+    expect(buttonIn(panel, 'log')).toBeTruthy()
+    expect(panel.querySelector('.obs-fit-legend')).not.toBeNull()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+    expect(m.host.querySelectorAll('.obs-fit-1to1 canvas').length).toBe(2)
+    expect(canvases().map((c) => c.height)).toEqual([280, 280])
+  })
+
+  it('follows a change of the selected sites while enlarged, with the new points', async () => {
+    const map = mapArea()
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([sitePoints(7, 'well B')]))
+    const m = mount()
+    await drawn(m)
+    buttonIn(m.host.querySelector('.obs-fit-1to1')!, 'Enlarge').click()
+
+    m.store.set({ sites: new Set([7]) }, 'test')
+    m.store.flush()
+
+    await vi.waitFor(() => expect(map.querySelector('.obs-fit-legend')?.textContent).toContain('circles, selected sites: 1'))
+    expect(map.querySelectorAll('.chart-enlarged').length).toBe(1)
+    expect(map.querySelectorAll('canvas').length).toBe(2)
+    // The side panel still holds only the note, never a second copy of the chart.
+    expect(m.host.querySelectorAll('.obs-fit-1to1 canvas').length).toBe(0)
+  })
+
+  it('closes when the group changes, never left showing the old group', async () => {
+    const map = mapArea()
+    const m = mount()
+    await drawn(m)
+    buttonIn(m.host.querySelector('.obs-fit-1to1')!, 'Enlarge').click()
+
+    m.handle.setGroup('other')
+
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+  })
+
+  it('selects a site from a click on the enlarged plot, as in the side panel', async () => {
+    const map = mapArea()
+    obsApi.fetchObs1to1.mockResolvedValue(answer({ grids: [grid(0, 7)], outlying: [sitePoints(1, 'well A')] }))
+    obsApi.fetchObsPoints.mockResolvedValue(pointsAnswer([]))
+    const m = mount()
+    await drawn(m)
+    buttonIn(m.host.querySelector('.obs-fit-1to1')!, 'Enlarge').click()
+
+    click(map.querySelector('canvas')!, px(2), py(3))
+
+    expect([...m.store.get().sites]).toEqual([1])
+  })
+})
+
+describe('the residual histogram controls', () => {
+  afterEach(() => {
+    closeEnlarged()
+    resetChartChoices()
+  })
+
+  it('switches the density axis to log and back, and remembers it', async () => {
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount()
+    await histDrawn(m)
+    expect(lastHistSpec().yScale).toBe('linear')
+    const axis = m.host.querySelector('.obs-fit-resid [aria-label="Scale of the density axis"]')!
+
+    buttonIn(axis, 'log').click()
+    expect(lastHistSpec().yScale).toBe('log')
+    expect(chartChoices.residual.scale).toBe('log')
+
+    buttonIn(axis, 'linear').click()
+    expect(lastHistSpec().yScale).toBe('linear')
+  })
+
+  it('refuses log with a reason when no bin holds a value', async () => {
+    const empty = [0, 0, 0, 0, 0]
+    obsApi.fetchObsResidHist.mockResolvedValue(
+      residAnswer({ first: { iteration: 0, n: 0, counts: empty, density: empty }, last: { iteration: 1, n: 0, counts: empty, density: empty } }),
+    )
+    const m = mount()
+    await histDrawn(m)
+    const log = buttonIn(m.host.querySelector('.obs-fit-resid [aria-label="Scale of the density axis"]')!, 'log')
+
+    expect(log.getAttribute('aria-disabled')).toBe('true')
+    expect(log.title).toContain('no bin holds a value')
+    log.click()
+    expect(lastHistSpec().yScale).toBe('linear')
+  })
+
+  it('opens large over the map and its brush still selects sites there', async () => {
+    const map = mapArea()
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    obsApi.fetchObsBrush.mockResolvedValue(brushAnswer())
+    const m = mount()
+    await brushReady(m)
+
+    buttonIn(m.host.querySelector('.obs-fit-resid')!, 'Enlarge').click()
+    const panel = map.querySelector('.chart-enlarged-panel')!
+    expect(panel.querySelector('.heading')!.textContent).toBe('Residual histogram of group gw_head')
+    expect(panel.querySelectorAll('canvas').length).toBe(1)
+    // The brush switch and the legend came with the chart.
+    expect(panel.querySelector('.brush-switch')).not.toBeNull()
+
+    dragPx(map.querySelector('canvas')!, hpx(-1), hpx(1))
+    await vi.waitFor(() => expect(obsApi.fetchObsBrush).toHaveBeenCalledTimes(1))
+
+    buttonIn(map, 'Close').click()
+    expect(m.host.querySelectorAll('.obs-fit-resid canvas').length).toBe(1)
+  })
+
+  it('closes both enlarged charts when the tab is hidden', async () => {
+    const map = mapArea()
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount()
+    await histDrawn(m)
+    buttonIn(m.host.querySelector('.obs-fit-resid')!, 'Enlarge').click()
+
+    m.handle.onHide()
+
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+  })
+
+  it('never runs the chart names, switches and Enlarge buttons together', async () => {
+    loadRealStylesheet()
+    obsApi.fetchObsResidHist.mockResolvedValue(residAnswer())
+    const m = mount()
+    await histDrawn(m)
+    await drawn(m)
+    expectNoRunTogetherText(m.host, 'obs-fit.ts chart controls')
+    document.head.textContent = ''
   })
 })

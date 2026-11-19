@@ -27,10 +27,14 @@ import { selectSites } from '../state/rules'
 import type { SelectionStore } from '../state/selection'
 import { attachBrush, type BrushHandle, type BrushKeys } from './charts/brush'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
-import { densityLayout, drawDensity, type DensitySpec } from './charts/density'
+import { chartChoices, type ScaleKind } from './charts/choices'
+import { chartName, chartSwitch, chartToolbar, enlargeButton } from './charts/controls'
+import { densityLayout, densityLogRefusal, drawDensity, type DensityScale, type DensitySpec } from './charts/density'
+import { enlargeChart, type EnlargeHandle } from './charts/enlarge'
 import {
   drawHistogram,
   histogramLayout,
+  histogramLogRefusal,
   type Chart2D,
   type ChartSize,
   type HistogramOverlay,
@@ -56,7 +60,7 @@ export interface GroupFitHandle {
 }
 
 const PANEL_HEIGHT = 280
-const HIST_HEIGHT = 220
+const HIST_HEIGHT = 240
 const MARKER_RADIUS = 3
 const BAR_WIDTH = 1.5
 // How far from a drawn point, in css px, a click still picks its site.
@@ -195,8 +199,11 @@ function drawPointSets(
   tokens: ChartTokens,
   sets: PointSet[],
   dim: PointDim,
+  scale: DensityScale = 'linear',
 ): DrawnPoint[] {
-  const { area, xAxis, yAxis } = densityLayout(ctx, size, range[0], range[1])
+  const { area, xAxis, yAxis } = densityLayout(ctx, size, range[0], range[1], scale)
+  // On a log axis a bar end at or below zero has no pixel; the clip cuts it at the plot edge either way.
+  const barPx = (value: number): number => yAxis.toPx(scale === 'log' ? Math.max(value, range[0]) : value)
   const drawn: DrawnPoint[] = []
   ctx.save()
   ctx.beginPath()
@@ -213,7 +220,7 @@ function drawPointSets(
       if (points.length === 0) continue
       ctx.globalAlpha = alpha
       const bars = points.flatMap((p) =>
-        p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: yAxis.toPx(p.q05), high: yAxis.toPx(p.q95) }],
+        p.q05 === null || p.q95 === null ? [] : [{ x: xAxis.toPx(p.obsval), low: barPx(p.q05), high: barPx(p.q95) }],
       )
       drawRangeBars(ctx, bars, { colour, width: BAR_WIDTH })
       const marks = points.map((p) => ({ x: xAxis.toPx(p.obsval), y: yAxis.toPx(p.mean), hollow: p.hollow }))
@@ -406,16 +413,21 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
   const fitSlot = new LatestWins<Obs1to1Result>()
   const pointsSlot = new LatestWins<ObsPointsResult>()
 
+  let fitEnlarged: EnlargeHandle | null = null
+  let histEnlarged: EnlargeHandle | null = null
+
   let titleEl: HTMLElement | null = null
   let fitSection: HTMLElement | null = null
   let histSection: HTMLElement | null = null
 
   function destroyFitHosts(): void {
+    fitEnlarged?.close()
     for (const canvas of fitHosts) canvas.destroy()
     fitHosts = []
   }
 
   function destroyHistHost(): void {
+    histEnlarged?.close()
     histBrush?.dispose()
     histBrush = null
     histHost?.destroy()
@@ -581,23 +593,62 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       notice(section, 'The residual histogram could not be read', `the server answered for group ${payload.group}, not ${group}`)
       return
     }
+    // The chart, its controls and its legend sit in one frame, so Enlarge moves them together.
+    let legendHost: HTMLElement = section
     if (drawableHist(payload)) {
       const base = histSpec(payload)
+      const frame = document.createElement('div')
+      frame.classList.add('chart-frame')
+      section.appendChild(frame)
+      legendHost = frame
+      const toolbar = chartToolbar()
+      frame.appendChild(toolbar)
       const box = document.createElement('div')
+      box.classList.add('chart-box')
       box.style.height = `${HIST_HEIGHT}px`
-      section.appendChild(box)
-      const failure = line(section, '')
+      frame.appendChild(box)
+      const failure = line(frame, '')
       failure.style.color = 'var(--status-warning)'
       failure.hidden = true
+      const refusal = histogramLogRefusal(base)
+      const yScale = (): ScaleKind => (refusal === null ? chartChoices.residual.scale : 'linear')
       histHost = createCanvasHost(box, {
         label: `Residual histogram of group ${payload.group}, simulated minus observed, as densities`,
         context: opts.context2d,
         draw: (ctx, size) => {
-          const ok = drawHistogram(ctx, withBrush(base), readChartTokens(document.documentElement), size)
+          const ok = drawHistogram(ctx, { ...withBrush(base), yScale: yScale() }, readChartTokens(document.documentElement), size)
           failure.hidden = ok
           failure.textContent = ok ? '' : 'The histogram could not be drawn: its bin edges or densities were not usable.'
         },
       })
+      toolbar.append(
+        chartName('Residual histogram'),
+        chartSwitch<ScaleKind>({
+          key: 'density-axis',
+          label: 'Density axis',
+          ariaLabel: 'Scale of the density axis',
+          value: yScale(),
+          options: [
+            { value: 'linear', text: 'linear', title: 'Bar heights on a linear axis' },
+            { value: 'log', text: 'log', title: 'Bar heights on a log axis, so low bins show beside tall ones', refused: refusal },
+          ],
+          onPick: (value) => {
+            chartChoices.residual.scale = value
+            histHost?.redraw()
+          },
+        }).el,
+        enlargeButton(() => {
+          if (hidden) return
+          histEnlarged = enlargeChart({
+            title: `Residual histogram of group ${payload.group}`,
+            frame,
+            onResize: () => histHost?.redraw(),
+            onClose: () => {
+              histEnlarged = null
+            },
+          })
+        }),
+      )
       const canvas = box.querySelector('canvas')
       if (canvas !== null) {
         // The layout is worked out from the box at each press, so a resize never leaves the brush on old pixels.
@@ -615,10 +666,10 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
           onBrush: (range, keys) => brush(payload, range, keys),
         })
       }
-      renderBrushSwitch(section, payload)
+      renderBrushSwitch(frame, payload)
       brushNoteEl = document.createElement('div')
       brushNoteEl.classList.add('obs-fit-brush-note')
-      section.appendChild(brushNoteEl)
+      frame.appendChild(brushNoteEl)
       showBrushNote()
       if (hidden) histHost.onHide()
       else histHost.redraw()
@@ -626,17 +677,22 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       notice(section, 'No residual histogram for this group', payload.refused ?? 'the server sent no bin edges and gave no reason')
     }
     const legend = document.createElement('div')
-    legend.classList.add('obs-fit-legend')
-    section.appendChild(legend)
+    legend.classList.add('obs-fit-legend', 'chart-legend')
+    legendHost.appendChild(legend)
     for (const text of histLegend(payload)) line(legend, text)
     for (const note of payload.notes.filter((n) => !HIST_LEGEND_REPEATS.test(n))) line(legend, note, true)
   }
 
+  // A remembered log choice that this group's range cannot take falls back to linear, and the switch says why.
+  function fitScale(lo: number): DensityScale {
+    return chartChoices.oneToOne.scale === 'log' && densityLogRefusal(lo) === null ? 'log' : 'linear'
+  }
+
   function mountPanel(row: HTMLElement, spec: DensitySpec, label: string, sets: PointSet[]): void {
     const cell = document.createElement('div')
-    cell.style.flex = '1 1 0'
-    cell.style.minWidth = '0'
+    cell.classList.add('chart-cell')
     const box = document.createElement('div')
+    box.classList.add('chart-box')
     box.style.height = `${PANEL_HEIGHT}px`
     cell.appendChild(box)
     const failure = line(cell, '')
@@ -649,8 +705,9 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       context: opts.context2d,
       draw: (ctx, size) => {
         const tokens = readChartTokens(document.documentElement)
-        const drawn = drawDensity(ctx, spec, tokens, size)
-        points = drawn ? drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets, pointDim()) : []
+        const scale = fitScale(spec.lo)
+        const drawn = drawDensity(ctx, { ...spec, scale }, tokens, size)
+        points = drawn ? drawPointSets(ctx, size, [spec.lo, spec.hi], tokens, sets, pointDim(), scale) : []
         failure.hidden = drawn
         failure.textContent = drawn ? '' : 'The 1:1 plot could not be drawn: its grid or range was not usable.'
       },
@@ -671,6 +728,8 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
 
   function renderFit(): void {
     if (fitSection === null) return
+    // An enlarged 1:1 plot follows a redraw, as when the selected sites change.
+    const follow = fitEnlarged !== null
     destroyFitHosts()
     const section = fitSection
     section.textContent = ''
@@ -696,10 +755,47 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     }
     const chosenSites = selected !== null && selected.answer.ok ? selected.answer.payload.sites : []
     const shadeMax = largestCount(payload)
+    const frame = document.createElement('div')
+    frame.classList.add('chart-frame')
+    section.appendChild(frame)
+    const toolbar = chartToolbar()
+    frame.appendChild(toolbar)
+    const enlarge = (focus: boolean): void => {
+      if (hidden) return
+      fitEnlarged = enlargeChart({
+        title: `1:1 plot of group ${payload.group}`,
+        frame,
+        focus,
+        onResize: () => {
+          for (const canvas of fitHosts) canvas.redraw()
+        },
+        onClose: () => {
+          fitEnlarged = null
+        },
+      })
+    }
+    toolbar.append(
+      chartName('1:1 plot'),
+      chartSwitch<ScaleKind>({
+        key: 'scale',
+        label: 'Scale',
+        ariaLabel: 'Scale of both axes of the 1:1 plot',
+        value: fitScale(lo),
+        options: [
+          { value: 'linear', text: 'linear', title: 'Both axes linear' },
+          { value: 'log', text: 'log', title: 'Both axes on a log scale', refused: densityLogRefusal(lo) },
+        ],
+        onPick: (value) => {
+          chartChoices.oneToOne.scale = value
+          for (const canvas of fitHosts) canvas.redraw()
+        },
+      }).el,
+      enlargeButton(() => enlarge(true)),
+    )
     const row = document.createElement('div')
+    row.classList.add('chart-row')
     row.style.display = 'flex'
-    row.style.gap = 'var(--space-sm)'
-    section.appendChild(row)
+    frame.appendChild(row)
     const panels: Panel[] = []
     for (const grid of payload.grids) {
       const outlying = placePoints(payload.outlying, grid.iteration, lo, hi)
@@ -722,11 +818,12 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
       mountPanel(row, spec, `1:1 plot of group ${payload.group}, iteration ${grid.iteration}, as a density of ensemble values`, sets)
     }
     const legend = document.createElement('div')
-    legend.classList.add('obs-fit-legend')
-    section.appendChild(legend)
+    legend.classList.add('obs-fit-legend', 'chart-legend')
+    frame.appendChild(legend)
     for (const text of fitLegend(payload, panels, selected)) line(legend, text)
     const shown = payload.notes.filter((note) => !note.startsWith('only iteration') && !/outside the drawn range/.test(note))
     for (const note of shown) line(legend, note, true)
+    if (follow) enlarge(false)
   }
 
   function buildSkeleton(): void {
@@ -870,6 +967,9 @@ export function renderGroupFit(host: HTMLElement, opts: GroupFitOptions): GroupF
     },
     onHide() {
       hidden = true
+      // A hidden tab draws nothing, so its charts do not stay up over the map.
+      fitEnlarged?.close()
+      histEnlarged?.close()
       for (const canvas of fitHosts) canvas.onHide()
       histHost?.onHide()
     },

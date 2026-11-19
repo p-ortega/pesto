@@ -838,9 +838,9 @@ input[type='radio'] {
 }
 
 /* G-14-2: holding a plot, the section is never below one whole site panel: its title line, the
-   panel's title, the 200px plot and two 17px legend lines. More panels and lines scroll inside. */
+   panel's 24px title row and the 240px plot. The legend, more panels and the plot options scroll inside. */
 .obs-spaghetti[data-folded='false']:has(.obs-spaghetti-plot) {
-  min-height: calc(24px + var(--space-xs) + 21px + 200px + 2 * 17px);
+  min-height: calc(24px + var(--space-xs) + 24px + 240px);
   max-height: none;
 }
 
@@ -1170,10 +1170,10 @@ input[type='radio'] {
   outline-offset: -2px;
 }
 
-/* G-14-6: holding a chart, never below its title line, the whole 200px chart and the two lines
-   under it (sigma ratio and mean change); a floor above 40% wins over the cap. */
+/* G-14-6: holding a chart, never below its title line, the chart's 24px row of controls, the whole
+   200px chart and the two lines under it (sigma ratio and mean change); a floor above 40% wins over the cap. */
 .params-detail-host[data-folded='false']:has(.params-chart) {
-  min-height: calc(24px + var(--space-xs) + 200px + 2 * 17px + 2 * var(--space-xs));
+  min-height: calc(24px + var(--space-xs) + 24px + var(--space-xs) + 200px + 2 * 17px + 2 * var(--space-xs));
 }
 
 /* The section's title line names the group or parameter, so the detail's own title would say it twice. */
@@ -2319,4 +2319,232 @@ input[type='radio'] {
 
 .report-link:hover {
   text-decoration: underline;
+}
+
+/* What every chart carries above it: its name, its switches and the Enlarge button, wrapping
+   on a narrow panel. */
+.chart-frame {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.chart-title-row,
+.chart-toolbar,
+.chart-switch,
+.chart-enlarged-placeholder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.chart-title-row {
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.chart-title-row > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.chart-toolbar {
+  column-gap: var(--space-md);
+  margin: var(--space-xs) 0;
+}
+
+.chart-toolbar[hidden] {
+  display: none;
+}
+
+/* Inside a frame the frame's own gap spaces the row. */
+.chart-frame > .chart-toolbar {
+  margin: 0;
+}
+
+/* The site name takes the room; the two quiet buttons stay together at the end of the row. */
+.chart-title-row > .obs-spaghetti-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chart-toolbar button,
+.chart-title-row button,
+.chart-enlarged-placeholder button {
+  font-size: 12px;
+  padding: 0 var(--space-sm);
+  min-height: 24px;
+}
+
+.chart-name {
+  font-weight: 600;
+  color: var(--ink-primary);
+}
+
+.chart-hint {
+  color: var(--ink-muted);
+}
+
+/* A choice this chart cannot draw stays in reach, so its tooltip can say why. */
+.chart-switch button[aria-disabled='true'] {
+  color: var(--ink-muted);
+  border-style: dashed;
+  cursor: default;
+}
+
+/* Quiet until wanted; pushed to the end of its row. */
+.chart-enlarge-button {
+  margin-left: auto;
+}
+
+.chart-title-row > .chart-enlarge-button {
+  margin-left: 0;
+}
+
+.chart-enlarge-button,
+.chart-options-button {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chart-enlarge-button:hover:not(:disabled),
+.chart-options-button:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--ink-primary);
+}
+
+/* The 1:1 panels sit side by side when each has room for a readable square, and stack when not. */
+.chart-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.chart-cell {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* The time series plot takes a drag to zoom and a move to read values. */
+.obs-spaghetti-plot {
+  position: relative;
+  cursor: crosshair;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.chart-readout {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-md);
+  max-width: 70%;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+
+.chart-readout[hidden] {
+  display: none;
+}
+
+/* One chart shown large: it covers the map it was opened beside, never the side panel. */
+.chart-enlarged {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  padding: var(--space-md);
+  background: color-mix(in srgb, var(--page-plane) 70%, transparent);
+  pointer-events: auto;
+}
+
+/* With no map on the page it covers the page instead. */
+.chart-enlarged.chart-enlarged-page {
+  position: fixed;
+  z-index: 20;
+}
+
+.chart-enlarged-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-md);
+  color: var(--ink-primary);
+}
+
+.chart-enlarged-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.chart-enlarged-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: var(--axis) var(--gridline);
+}
+
+/* The panel's head names the chart, and it is already enlarged. */
+.chart-enlarged-body .chart-title-row,
+.chart-enlarged-body .chart-name,
+.chart-enlarged-body .chart-enlarge-button {
+  display: none;
+}
+
+.chart-enlarged-body > .chart-frame,
+.chart-enlarged-body > .obs-spaghetti-stage,
+.chart-enlarged-body .obs-spaghetti-panels,
+.chart-enlarged-body .obs-spaghetti-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Each chart box takes the room the panel has, and never less than it had in the side panel. */
+.chart-enlarged-body .chart-row {
+  flex: 1 1 auto;
+  min-height: 240px;
+}
+
+.chart-enlarged-body .chart-cell {
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-enlarged-body .chart-box,
+.chart-enlarged-body .params-chart,
+.chart-enlarged-body .obs-spaghetti-plot {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 240px;
+}
+
+.chart-enlarged-body .chart-legend,
+.chart-enlarged-body .obs-spaghetti-legend {
+  flex: 0 0 auto;
+  max-height: 30%;
+  overflow-y: auto;
+  scrollbar-color: var(--axis) var(--gridline);
 }

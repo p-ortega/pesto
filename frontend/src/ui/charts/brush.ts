@@ -39,7 +39,7 @@ interface Press {
   live: [number, number] | null
 }
 
-export function attachBrush(canvas: HTMLCanvasElement, options: BrushOptions): BrushHandle {
+export function attachBrush(canvas: HTMLElement, options: BrushOptions): BrushHandle {
   let press: Press | null = null
 
   // Charts draw in css px (the host scales for the device), so css px from the box is the plot's space.

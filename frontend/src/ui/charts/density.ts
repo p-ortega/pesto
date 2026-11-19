@@ -3,7 +3,7 @@
 // panels can share it, with the 1:1 line drawn corner to corner. Counts are
 // stored row by row along y (index iy * nBins + ix); iy runs up the plot.
 
-import { linearAxis, type Axis } from './axes'
+import { linearAxis, logAxis, type Axis } from './axes'
 import type { ChartSize, Chart2D } from './histogram'
 import { drawDiagonal } from './marks'
 import type { ChartTokens } from './tokens'
@@ -17,6 +17,15 @@ export interface DensitySpec {
   title: string
   xLabel: string
   yLabel: string
+  /** Both axes together. 'log' needs lo above zero; linear when not given. */
+  scale?: DensityScale
+}
+
+export type DensityScale = 'linear' | 'log'
+
+/** Why the two axes cannot be log axes over this range, or null when they can. */
+export function densityLogRefusal(lo: number): string | null {
+  return lo > 0 ? null : `A log axis needs every value above zero, and the drawn range starts at ${Number(lo.toPrecision(4))}.`
 }
 
 export interface PlotArea {
@@ -50,7 +59,12 @@ export interface DensityLayout {
   yAxis: Axis
 }
 
-function axesFor(area: PlotArea, lo: number, hi: number): DensityLayout {
+function axesFor(area: PlotArea, lo: number, hi: number, scale: DensityScale): DensityLayout {
+  if (scale === 'log') {
+    const xAxis = logAxis([lo, hi], [area.left, area.left + area.width])
+    const yAxis = logAxis([lo, hi], [area.top + area.height, area.top])
+    if (xAxis !== null && yAxis !== null) return { area, xAxis, yAxis }
+  }
   return {
     area,
     xAxis: linearAxis([lo, hi], [area.left, area.left + area.width], TICKS),
@@ -60,19 +74,19 @@ function axesFor(area: PlotArea, lo: number, hi: number): DensityLayout {
 
 // The left margin fits the widest y label, so a long label is never cut at the canvas edge.
 // Two passes, because the margin changes the side and so the ticks.
-export function densityLayout(ctx: Chart2D, size: ChartSize, lo: number, hi: number): DensityLayout {
+export function densityLayout(ctx: Chart2D, size: ChartSize, lo: number, hi: number, scale: DensityScale = 'linear'): DensityLayout {
   // Font is set and put back by hand, not with save(), so a refused draw leaves no calls.
   const font = ctx.font
   ctx.font = FONT
   const widest = (layout: DensityLayout) =>
     Math.max(0, ...layout.yAxis.ticks.map((tick) => ctx.measureText(tick.label).width))
   let margin = MARGIN.left
-  let layout = axesFor(densityPlotArea(size, margin), lo, hi)
+  let layout = axesFor(densityPlotArea(size, margin), lo, hi, scale)
   for (let pass = 0; pass < 2; pass++) {
     const needed = Math.ceil(widest(layout)) + LABEL_GAP
     if (needed <= margin) break
     margin = needed
-    layout = axesFor(densityPlotArea(size, margin), lo, hi)
+    layout = axesFor(densityPlotArea(size, margin), lo, hi, scale)
   }
   ctx.font = font
   return layout
@@ -101,13 +115,16 @@ export function drawDensity(
   size: ChartSize,
 ): boolean {
   if (!isValid(spec)) return false
-  const { area, xAxis, yAxis } = densityLayout(ctx, size, spec.lo, spec.hi)
+  const log = spec.scale === 'log'
+  if (log && densityLogRefusal(spec.lo) !== null) return false
+  const { area, xAxis, yAxis } = densityLayout(ctx, size, spec.lo, spec.hi, spec.scale)
   if (area.width <= 0) return false
   const { left, top, width, height } = area
   const right = left + width
   const bottom = top + height
 
   const cell = width / spec.nBins
+  const step = (spec.hi - spec.lo) / spec.nBins
   const shadeTop = Math.log1p(spec.shadeMax)
 
   ctx.save()
@@ -120,7 +137,16 @@ export function drawDensity(
       const count = spec.counts[iy * spec.nBins + ix]
       if (count === 0) continue
       ctx.globalAlpha = Math.min(1, Math.log1p(count) / shadeTop)
-      ctx.fillRect(left + ix * cell, bottom - (iy + 1) * cell, cell, cell)
+      if (log) {
+        // The bins are equal steps of value, so on a log axis each cell is drawn between its own two edges.
+        const x0 = xAxis.toPx(spec.lo + ix * step)
+        const x1 = xAxis.toPx(spec.lo + (ix + 1) * step)
+        const y0 = yAxis.toPx(spec.lo + iy * step)
+        const y1 = yAxis.toPx(spec.lo + (iy + 1) * step)
+        ctx.fillRect(x0, y1, x1 - x0, y0 - y1)
+      } else {
+        ctx.fillRect(left + ix * cell, bottom - (iy + 1) * cell, cell, cell)
+      }
     }
   }
   ctx.globalAlpha = 1
@@ -138,11 +164,11 @@ export function drawDensity(
   ctx.fillStyle = tokens.inkMuted
   ctx.textBaseline = 'top'
   ctx.textAlign = 'center'
-  for (const tick of xAxis.ticks) ctx.fillText(tick.label, tick.px, bottom + 4)
+  for (const tick of xAxis.ticks) if (tick.label !== '') ctx.fillText(tick.label, tick.px, bottom + 4)
   ctx.fillText(spec.xLabel, (left + right) / 2, bottom + 22)
   ctx.textBaseline = 'middle'
   ctx.textAlign = 'right'
-  for (const tick of yAxis.ticks) ctx.fillText(tick.label, left - 6, tick.px)
+  for (const tick of yAxis.ticks) if (tick.label !== '') ctx.fillText(tick.label, left - 6, tick.px)
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
   ctx.fillText(spec.yLabel, left, top - 18)

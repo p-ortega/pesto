@@ -7,6 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ParGroupRow, ParHistPayload, ParValuesPayload, SigmaRatio } from '../src/data/par'
 import type { ChartTokens } from '../src/ui/charts/tokens'
+import { chartChoices, resetChartChoices } from '../src/ui/charts/choices'
+import { closeEnlarged } from '../src/ui/charts/enlarge'
 import { renderGroupDetail, renderParameterDetail, type GroupDetailOptions } from '../src/ui/params-detail'
 import { createRecording2d, type RecordedCall } from './support/recording-2d'
 import { expectNoRunTogetherText, loadRealStylesheet } from './support/run-together'
@@ -503,5 +505,115 @@ describe('the parameter detail', () => {
 
     expect(barsOf(calls, 'tok-series-1').length).toBe(N_BINS)
     expect(barsOf(calls, 'tok-series-2').length).toBe(0)
+  })
+})
+
+describe('the histogram controls', () => {
+  afterEach(() => {
+    closeEnlarged()
+    resetChartChoices()
+  })
+
+  function button(root: ParentNode, text: string): HTMLButtonElement {
+    const found = [...root.querySelectorAll('button')].find((b) => b.textContent === text)
+    if (!found) throw new Error(`no button reads "${text}"`)
+    return found
+  }
+
+  function mapArea(): HTMLElement {
+    const map = document.createElement('div')
+    map.classList.add('map-area')
+    document.body.appendChild(map)
+    return map
+  }
+
+  it('redraws with the density axis on a log scale, so a low bin stands taller, and remembers the choice', () => {
+    const density = DENSITY_A.map((d, i) => (i === 0 ? 0.0001 : d))
+    const { host, calls } = mountGroup({ hist: { ok: true, payload: hist({ first: { iteration: 0, n: 294, counts: [], density }, last: null }) } })
+    const linear = barsOf(calls, 'tok-series-1')[0].args[3] as number
+
+    calls.length = 0
+    button(host, 'log').click()
+
+    expect(barsOf(calls, 'tok-series-1')[0].args[3] as number).toBeGreaterThan(linear + 5)
+    expect(button(host, 'log').getAttribute('aria-pressed')).toBe('true')
+    expect(chartChoices.parameter.scale).toBe('log')
+
+    // The next histogram opens the way this one was left.
+    const next = mountParameter({ ok: true, payload: values() })
+    expect(button(next.host, 'log').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('refuses log with a reason when no bin holds a value', () => {
+    const empty = DENSITY_A.map(() => 0)
+    const { host, calls } = mountGroup({ hist: { ok: true, payload: hist({ first: { iteration: 0, n: 0, counts: [], density: empty }, last: null }) } })
+    const log = button(host, 'log')
+
+    expect(log.getAttribute('aria-disabled')).toBe('true')
+    expect(log.title).toContain('no bin holds a value')
+    calls.length = 0
+    log.click()
+    expect(calls).toEqual([])
+  })
+
+  it('opens large over the map under the group name, redraws at the new size, and goes back on Close', () => {
+    const map = mapArea()
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
+      return this.closest('.chart-enlarged') ? 600 : 200
+    })
+    const { host } = mountGroup()
+    const canvas = host.querySelector('canvas')!
+    expect(canvas.height).toBe(200)
+
+    button(host, 'Enlarge').click()
+
+    const panel = map.querySelector('.chart-enlarged-panel')!
+    expect(panel.querySelector('.heading')!.textContent).toBe('Group hk: histograms')
+    expect(panel.contains(canvas)).toBe(true)
+    expect(canvas.height).toBe(600)
+    expect(button(panel, 'log')).toBeTruthy()
+    // The figures stay in the side panel, beside the note that says where the chart went.
+    expect(host.textContent).toContain('shown enlarged over the map')
+    expect(host.textContent).toContain('sigma ratio 0.42')
+
+    button(map, 'Close').click()
+
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+    expect(host.contains(canvas)).toBe(true)
+    expect(canvas.height).toBe(200)
+  })
+
+  it('closes on Escape, and when the detail is replaced or its tab is hidden', () => {
+    const map = mapArea()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const { ctx } = createRecording2d()
+    const open = () => {
+      const handle = renderParameterDetail(host, {
+        parameter: 'hk_0001',
+        values: { ok: true, payload: values() },
+        isHidden: () => false,
+        context: () => ctx,
+        tokens: () => TOKENS,
+      })
+      button(host, 'Enlarge').click()
+      expect(map.querySelector('.heading')!.textContent).toBe('Parameter hk_0001: distribution')
+      return handle
+    }
+
+    open()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+
+    open().destroy()
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+
+    open().onHide()
+    expect(map.querySelector('.chart-enlarged')).toBeNull()
+  })
+
+  it('never runs the switch label, its buttons and Enlarge together', () => {
+    const { host } = mountGroup()
+    expectNoRunTogetherText(host, 'params-detail.ts chart controls')
   })
 })

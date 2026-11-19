@@ -28,12 +28,16 @@ import { readColorToken } from '../gl/color-token'
 import { createContext, type GlContext } from '../gl/context'
 import { LineLayer, type LinePanel, type LineSeries } from '../gl/line-layer'
 import type { SelectionStore } from '../state/selection'
-import { linearAxis } from './charts/axes'
+import { linearAxis, logAxis } from './charts/axes'
 import { BASE_STYLE, baseLegendFor } from './charts/base-style'
+import { attachBrush, drawBrushBand, type BrushHandle } from './charts/brush'
 import { createCanvasHost, type CanvasHost } from './charts/canvas-host'
+import { chartChoices, type RangeKind, type ScaleKind, type SeriesPart } from './charts/choices'
+import { chartSwitch, chartToggle, chartToolbar, enlargeButton, focusedControl, refocusControl } from './charts/controls'
+import { enlargeChart, type EnlargeHandle } from './charts/enlarge'
 import type { Chart2D, ChartSize } from './charts/histogram'
 import { drawBand, drawCursor, drawMarkers, drawPolyline, type MarkerPoint } from './charts/marks'
-import { timeAxis, timeAxisTitle } from './charts/time-axis'
+import { formatTimeValue, timeAxis, timeAxisTitle } from './charts/time-axis'
 import { readChartTokens, readDimAlpha, type ChartTokens } from './charts/tokens'
 
 export interface SpaghettiOptions {
@@ -56,7 +60,7 @@ export interface SpaghettiHandle {
 
 export const MAX_SPAGHETTI_PANELS = 8
 
-const PANEL_HEIGHT = 200
+const PANEL_HEIGHT = 240
 // Room inside a panel's box for tick labels (left) and ticks plus the axis title (bottom).
 const MARGIN = { left: 48, right: 12, top: 8, bottom: 34 }
 const MIN_INNER_PX = 20
@@ -85,6 +89,32 @@ interface PreparedSeries {
   nNaN: number
   nSentinel: number
   line: LineSeries
+  /** The same series as log10 values, made the first time a log axis draws it. */
+  logLine?: LineSeries
+  /** Per observation time, made the first time the range or the readout needs it. */
+  stats?: SeriesStats
+}
+
+interface SeriesStats {
+  mean: Float64Array
+  q05: Float64Array
+  q95: Float64Array
+}
+
+/** How one site's panel is drawn under the current choices and zoom. */
+interface Drawn {
+  key: string
+  log: boolean
+  /** Why this site cannot take a log axis, or null when it can. */
+  logRefusal: string | null
+  xDomain: [number, number]
+  zoomed: boolean
+  /** Observation times inside the x range. */
+  inView: number
+  /** Native units on a linear axis, log10 on a log axis. */
+  yDomain: [number, number]
+  /** Realization values in view that lie beyond the y range and run off the plot. */
+  beyond: number
 }
 
 interface PreparedSite {
@@ -97,6 +127,9 @@ interface PreparedSite {
   /** Subtracted from every time before it becomes a float32 x offset. */
   t0: number
   yDomain: [number, number]
+  /** The lowest and highest value of anything the site draws; not a number when it draws nothing. */
+  valueMin: number
+  valueMax: number
   noTime: number
   unordered: boolean
 }
@@ -115,6 +148,7 @@ interface PanelView {
   id: number
   entry: SiteEntry | undefined
   plot: HTMLElement | null
+  readout?: HTMLElement | null
 }
 
 interface Geometry {
@@ -312,7 +346,8 @@ function prepare(
     const pad = (hi - lo) * 0.05
     yDomain = [lo - pad, hi + pad]
   }
-  return { site, series, problems, xLo, xHi, t0, yDomain, noTime, unordered }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) lo = hi = Number.NaN
+  return { site, series, problems, xLo, xHi, t0, yDomain, valueMin: lo, valueMax: hi, noTime, unordered }
 }
 
 function markerCounts(site: ObsSitePayload): { filled: number; hollow: number; sentinel: number; notNumber: number } {
@@ -329,52 +364,202 @@ function markerCounts(site: ObsSitePayload): { filled: number; hollow: number; s
 
 const ZERO_WEIGHT_WORDS = 'zero weight: a model output, not fitted'
 
-/** Every line the legend shows for one site, in the order they are read. */
-function legendLines(prepared: PreparedSite, pickOf: (s: PreparedSeries) => SeriesPick | null | undefined): string[] {
+type Shown = Record<SeriesPart, boolean>
+
+const PARTS: SeriesPart[] = ['first', 'last', 'observed', 'noise', 'base']
+
+/** 'only' is the one ingested iteration; it goes with the last-iteration switch. */
+function roleShown(role: Role, show: Shown): boolean {
+  return role === 'first' ? show.first : show.last
+}
+
+function figure(value: number): string {
+  return Number.isFinite(value) ? Number(value.toPrecision(5)).toString() : 'no value'
+}
+
+function quantile(sorted: Float32Array, p: number): number {
+  const at = (sorted.length - 1) * p
+  const below = Math.floor(at)
+  const above = Math.ceil(at)
+  return sorted[below] + (sorted[above] - sorted[below]) * (at - below)
+}
+
+function statsOf(s: PreparedSeries): SeriesStats {
+  if (s.stats) return s.stats
+  const stats: SeriesStats = {
+    mean: new Float64Array(s.count).fill(Number.NaN),
+    q05: new Float64Array(s.count).fill(Number.NaN),
+    q95: new Float64Array(s.count).fill(Number.NaN),
+  }
+  const row = new Float32Array(s.nReal)
+  for (let r = 0; r < s.count; r++) {
+    let n = 0
+    let sum = 0
+    for (let j = 0; j < s.nReal; j++) {
+      const v = s.values[r * s.nReal + j]
+      if (!Number.isFinite(v)) continue
+      row[n++] = v
+      sum += v
+    }
+    if (n === 0) continue
+    const sorted = row.subarray(0, n).sort()
+    stats.mean[r] = sum / n
+    stats.q05[r] = quantile(sorted, 0.05)
+    stats.q95[r] = quantile(sorted, 0.95)
+  }
+  s.stats = stats
+  return stats
+}
+
+function logLineOf(s: PreparedSeries): LineSeries {
+  if (!s.logLine) {
+    const values = new Float32Array(s.values.length)
+    // Only used when every value is above zero; a gap stays a gap.
+    for (let i = 0; i < values.length; i++) values[i] = Math.log10(s.values[i])
+    s.logLine = { ...s.line, values }
+  }
+  return s.logLine
+}
+
+function logRefusalOf(prepared: PreparedSite): string | null {
+  if (prepared.valueMin > 0) return null
+  if (!Number.isFinite(prepared.valueMin)) return 'A log axis needs a value above zero, and this site has no value to draw.'
+  return `A log axis needs every value above zero, and this site's lowest value is ${figure(prepared.valueMin)}.`
+}
+
+function drawnKey(zoom: [number, number] | null, choices: typeof chartChoices.series): string {
+  return [choices.scale, choices.range, ...PARTS.map((part) => Number(choices.show[part])), zoom?.join(',') ?? ''].join('|')
+}
+
+function describeDrawn(prepared: PreparedSite, zoom: [number, number] | null, choices: typeof chartChoices.series): Drawn {
+  const { site, series } = prepared
+  const show = choices.show
+  const logRefusal = logRefusalOf(prepared)
+  const log = choices.scale === 'log' && logRefusal === null
+  const xDomain: [number, number] = zoom ?? [prepared.xLo, prepared.xHi]
+  const key = drawnKey(zoom, choices)
+
+  const rows: number[] = []
+  for (let i = 0; i < site.time.length; i++) {
+    const t = site.time[i]
+    if (Number.isFinite(t) && t >= xDomain[0] && t <= xDomain[1]) rows.push(i)
+  }
+  const base = { key, log, logRefusal, xDomain, zoomed: zoom !== null, inView: rows.length }
+  // Nothing changed from the first draw: the whole site, every part, a linear axis.
+  if (!log && zoom === null && choices.range === 'all' && PARTS.every((part) => show[part])) {
+    return { ...base, yDomain: prepared.yDomain, beyond: 0 }
+  }
+
+  let lo = Number.POSITIVE_INFINITY
+  let hi = Number.NEGATIVE_INFINITY
+  const widen = (value: number | null): void => {
+    if (value === null || !Number.isFinite(value)) return
+    if (value < lo) lo = value
+    if (value > hi) hi = value
+  }
+  const drawn = series.filter((s) => roleShown(s.role, show))
+  for (const s of drawn) {
+    if (choices.range === 'all') {
+      for (const r of rows) for (let j = 0; j < s.nReal; j++) widen(s.values[r * s.nReal + j])
+    } else {
+      const stats = statsOf(s)
+      for (const r of rows) {
+        widen(stats.q05[r])
+        widen(stats.q95[r])
+        if (show.base) for (const j of s.baseIndex) widen(s.values[r * s.nReal + j])
+      }
+    }
+  }
+  if (show.observed) for (const r of rows) if (hasMarker(site, r)) widen(site.obsval[r])
+  if (show.noise && site.noise.available) {
+    for (const r of rows) {
+      widen(site.noise.q05[r])
+      widen(site.noise.q95[r])
+    }
+  }
+  // Nothing shown in view: keep the whole site's range so the axis still reads.
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    lo = prepared.valueMin
+    hi = prepared.valueMax
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { ...base, yDomain: prepared.yDomain, beyond: 0 }
+
+  let a = log ? Math.log10(lo) : lo
+  let b = log ? Math.log10(hi) : hi
+  const pad = a === b ? (log ? 0.5 : 1) : (b - a) * 0.05
+  a -= pad
+  b += pad
+  let beyond = 0
+  if (choices.range === 'observed') {
+    const low = log ? 10 ** a : a
+    const high = log ? 10 ** b : b
+    for (const s of drawn) {
+      for (const r of rows) {
+        for (let j = 0; j < s.nReal; j++) {
+          const v = s.values[r * s.nReal + j]
+          if (Number.isFinite(v) && (v < low || v > high)) beyond += 1
+        }
+      }
+    }
+  }
+  return { ...base, yDomain: [a, b], beyond }
+}
+
+/** Every line the legend shows for one site, in the order they are read. A hidden part has no line. */
+function legendLines(
+  prepared: PreparedSite,
+  pickOf: (s: PreparedSeries) => SeriesPick | null | undefined,
+  show: Shown = chartChoices.series.show,
+): string[] {
   const lines: string[] = []
-  for (const s of prepared.series) {
+  const series = prepared.series.filter((s) => roleShown(s.role, show))
+  for (const s of series) {
     const count = plural(s.nReal, 'realization', 'realizations')
     if (s.role === 'first') lines.push(`first iteration ${s.iteration}: ${count}`)
     else if (s.role === 'last') lines.push(`last iteration ${s.iteration}: ${count}`)
     else lines.push(`only iteration ${s.iteration} was ingested: ${count}`)
   }
   lines.push(...prepared.problems)
-  lines.push(...selectionLines(prepared.series, pickOf))
+  lines.push(...selectionLines(series, pickOf))
 
-  if (prepared.series.some((s) => s.baseIndex.length > 0)) lines.push(BASE_STYLE.legend)
-  for (const s of prepared.series) {
-    if (s.baseIndex.length === 0) lines.push(baseLegendFor(s.iteration, false))
-    if (s.baseNote) lines.push(s.baseNote)
+  if (show.base) {
+    if (series.some((s) => s.baseIndex.length > 0)) lines.push(BASE_STYLE.legend)
+    for (const s of series) {
+      if (s.baseIndex.length === 0) lines.push(baseLegendFor(s.iteration, false))
+      if (s.baseNote) lines.push(s.baseNote)
+    }
   }
 
   const site = prepared.site
-  const counts = markerCounts(site)
-  if (counts.filled > 0) lines.push('filled marker: observed value, weight above zero')
-  if (counts.hollow > 0) lines.push(`hollow marker: ${ZERO_WEIGHT_WORDS}`)
-  if (site.inequality !== 'none') lines.push(`observations are inequality constraints (${site.inequality})`)
-  const unmarked = counts.sentinel + counts.notNumber
-  if (unmarked > 0) {
-    const reasons = [
-      counts.sentinel > 0 ? `${counts.sentinel} sentinel` : null,
-      counts.notNumber > 0 ? `${counts.notNumber} not a number` : null,
-    ].filter((reason): reason is string => reason !== null)
-    lines.push(
-      `${plural(unmarked, 'observation has', 'observations have')} no measured value (${reasons.join(', ')}), so ${unmarked === 1 ? 'it has' : 'they have'} no marker`,
-    )
+  if (show.observed) {
+    const counts = markerCounts(site)
+    if (counts.filled > 0) lines.push('filled marker: observed value, weight above zero')
+    if (counts.hollow > 0) lines.push(`hollow marker: ${ZERO_WEIGHT_WORDS}`)
+    if (site.inequality !== 'none') lines.push(`observations are inequality constraints (${site.inequality})`)
+    const unmarked = counts.sentinel + counts.notNumber
+    if (unmarked > 0) {
+      const reasons = [
+        counts.sentinel > 0 ? `${counts.sentinel} sentinel` : null,
+        counts.notNumber > 0 ? `${counts.notNumber} not a number` : null,
+      ].filter((reason): reason is string => reason !== null)
+      lines.push(
+        `${plural(unmarked, 'observation has', 'observations have')} no measured value (${reasons.join(', ')}), so ${unmarked === 1 ? 'it has' : 'they have'} no marker`,
+      )
+    }
   }
 
   if (site.noise.available) {
     const base = site.noise.base === 'not present' ? 'the noise file has no base' : 'base excluded'
-    lines.push(`noise band: 5 to 95 percent of ${site.noise.source}; ${base}`)
+    if (show.noise) lines.push(`noise band: 5 to 95 percent of ${site.noise.source}; ${base}`)
   } else {
     lines.push(`no noise band: ${site.noise.reason}`)
   }
 
-  const missing = prepared.series.reduce((sum, s) => sum + s.nNaN, 0)
+  const missing = series.reduce((sum, s) => sum + s.nNaN, 0)
   if (missing > 0) {
     lines.push(`${plural(missing, 'simulated value is', 'simulated values are')} missing; their lines break there, never joined`)
   }
-  const sentinels = prepared.series.reduce((sum, s) => sum + s.nSentinel, 0)
+  const sentinels = series.reduce((sum, s) => sum + s.nSentinel, 0)
   if (sentinels > 0) {
     lines.push(`${plural(sentinels, 'simulated value is', 'simulated values are')} a sentinel (a dry or no-flow placeholder) and left out; their lines break there`)
   }
@@ -385,6 +570,95 @@ function legendLines(prepared: PreparedSite, pickOf: (s: PreparedSeries) => Seri
     lines.push('observations are not in time order; lines join them in the order the file lists them')
   }
   lines.push(`x axis: ${timeAxisTitle(site.time_kind)}`)
+  return lines
+}
+
+/** What the legend adds once the scale, range or zoom is not the default. */
+function viewLines(prepared: PreparedSite, drawn: Drawn, choices: typeof chartChoices.series): string[] {
+  const lines: string[] = []
+  if (drawn.log) lines.push('value axis: log scale')
+  else if (choices.scale === 'log' && drawn.logRefusal !== null) lines.push(`value axis: linear. ${drawn.logRefusal}`)
+  if (choices.range === 'observed') {
+    lines.push(
+      `value range: fits the observed values, the noise band, base and the 5th to 95th percentile of the realizations; ${plural(drawn.beyond, 'realization value lies', 'realization values lie')} beyond it and ${drawn.beyond === 1 ? 'runs' : 'run'} off the plot`,
+    )
+  }
+  if (drawn.zoomed) {
+    const kind = prepared.site.time_kind
+    const total = prepared.site.time.length - prepared.noTime
+    lines.push(
+      `zoomed to ${formatTimeValue(kind, drawn.xDomain[0])} to ${formatTimeValue(kind, drawn.xDomain[1])}: ${drawn.inView.toLocaleString('en-US')} of ${plural(total, 'observation time', 'observation times')} in view; double-click the plot to see all`,
+    )
+  }
+  return lines
+}
+
+const PART_BUTTONS: Array<{ part: SeriesPart; text: string; title: string }> = [
+  { part: 'first', text: 'first iteration', title: 'Show or hide the realizations of the first iteration' },
+  { part: 'last', text: 'last iteration', title: 'Show or hide the realizations of the last iteration' },
+  { part: 'observed', text: 'observed', title: 'Show or hide the markers of the observed values' },
+  { part: 'noise', text: 'noise band', title: 'Show or hide the 5 to 95 percent band of the observation noise' },
+  { part: 'base', text: 'base', title: 'Show or hide the bold line of the base realization' },
+]
+
+/** The parts this site has, so a switch is only offered for something that can be drawn. */
+function partsOf(prepared: PreparedSite): Set<SeriesPart> {
+  const parts = new Set<SeriesPart>()
+  for (const s of prepared.series) {
+    parts.add(s.role === 'first' ? 'first' : 'last')
+    if (s.baseIndex.length > 0) parts.add('base')
+  }
+  const counts = markerCounts(prepared.site)
+  if (counts.filled + counts.hollow > 0) parts.add('observed')
+  if (prepared.site.noise.available) parts.add('noise')
+  return parts
+}
+
+/** The observation with a time nearest to `t` inside the drawn range, or -1. */
+function nearestRow(times: readonly number[], t: number, range: [number, number]): number {
+  let best = -1
+  let gap = Number.POSITIVE_INFINITY
+  for (let i = 0; i < times.length; i++) {
+    const at = times[i]
+    if (!Number.isFinite(at) || at < range[0] || at > range[1]) continue
+    const d = Math.abs(at - t)
+    if (d < gap) {
+      gap = d
+      best = i
+    }
+  }
+  return best
+}
+
+/** What the readout says for one observation time: the time, then each shown part's value there. */
+function readoutLines(prepared: PreparedSite, row: number, show: Shown): string[] {
+  const { site } = prepared
+  const lines = [formatTimeValue(site.time_kind, site.time[row])]
+  if (show.observed) {
+    if (hasMarker(site, row)) lines.push(`observed ${figure(site.obsval[row] as number)}${site.weighted[row] ? '' : ' (zero weight)'}`)
+    else lines.push('observed: no measured value')
+  }
+  // The last iteration first: it is the answer; the first iteration is what it started from.
+  const series = prepared.series.filter((s) => roleShown(s.role, show)).reverse()
+  for (const s of series) {
+    const name = s.role === 'first' ? 'first iteration' : s.role === 'last' ? 'last iteration' : 'iteration'
+    const stats = statsOf(s)
+    if (!Number.isFinite(stats.mean[row])) {
+      lines.push(`${name} ${s.iteration}: no simulated value`)
+      continue
+    }
+    lines.push(
+      `${name} ${s.iteration}: mean ${figure(stats.mean[row])}, 5th to 95th percentile ${figure(stats.q05[row])} to ${figure(stats.q95[row])}`,
+    )
+    if (show.base) for (const j of s.baseIndex) lines.push(`base, iteration ${s.iteration}: ${figure(s.values[row * s.nReal + j])}`)
+  }
+  if (show.noise && site.noise.available) {
+    const low = site.noise.q05[row]
+    const high = site.noise.q95[row]
+    if (low !== null && high !== null && Number.isFinite(low) && Number.isFinite(high)) {
+      lines.push(`noise band: ${figure(low)} to ${figure(high)}`)
+    }
+  }
   return lines
 }
 
@@ -451,6 +725,26 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
   let moreSites = 0
   const loaded = new Map<number, SiteEntry>()
   const slot = new LatestWins<Map<number, SiteEntry>>()
+
+  // ---- how each panel is drawn: choices shared by every site, zoom and hover per site ----
+
+  const zooms = new Map<number, [number, number]>()
+  const drawnOf = new WeakMap<PreparedSite, Drawn>()
+  let hover: { id: number; row: number } | null = null
+  let dragBand: { id: number; range: [number, number] } | null = null
+  let brushes: BrushHandle[] = []
+  let enlargedId: number | null = null
+  let enlarged: EnlargeHandle | null = null
+  let disposed = false
+
+  function drawnFor(id: number, prepared: PreparedSite): Drawn {
+    const zoom = zooms.get(id) ?? null
+    const cached = drawnOf.get(prepared)
+    if (cached?.key === drawnKey(zoom, chartChoices.series)) return cached
+    const next = describeDrawn(prepared, zoom, chartChoices.series)
+    drawnOf.set(prepared, next)
+    return next
+  }
 
   // ---- the realization selection, matched by name per iteration ----
 
@@ -579,7 +873,11 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     const wanted = new Map<string, LineSeries>()
     for (const view of views) {
       if (view.entry?.ok !== true) continue
-      for (const s of view.entry.prepared.series) wanted.set(s.key, s.line)
+      const log = drawnFor(view.id, view.entry.prepared).log
+      for (const s of view.entry.prepared.series) {
+        if (log) wanted.set(`${s.key}:log`, logLineOf(s))
+        else wanted.set(s.key, s.line)
+      }
     }
     for (const key of [...uploaded]) {
       if (!wanted.has(key)) {
@@ -621,6 +919,8 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
       const g = geometryOf(view.plot)
       if (g === null) continue
       const prepared = view.entry.prepared
+      const drawn = drawnFor(view.id, prepared)
+      const show = chartChoices.series.show
       panels.push({
         viewport: [
           Math.round(g.x0 * ratio),
@@ -628,12 +928,14 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
           Math.round((g.x1 - g.x0) * ratio),
           Math.round((g.y1 - g.y0) * ratio),
         ],
-        xDomain: [prepared.xLo - prepared.t0, prepared.xHi - prepared.t0],
-        yDomain: prepared.yDomain,
-        strips: prepared.series.map((s) => {
-          const faded = pickOf(s)?.ok === true
-          return { key: s.key, rgba: roleColour(s.role, stripAlpha(s.nReal) * (faded ? dim : 1)) }
-        }),
+        xDomain: [drawn.xDomain[0] - prepared.t0, drawn.xDomain[1] - prepared.t0],
+        yDomain: drawn.yDomain,
+        strips: prepared.series
+          .filter((s) => roleShown(s.role, show))
+          .map((s) => {
+            const faded = pickOf(s)?.ok === true
+            return { key: drawn.log ? `${s.key}:log` : s.key, rgba: roleColour(s.role, stripAlpha(s.nReal) * (faded ? dim : 1)) }
+          }),
       })
     }
     lines.draw(panels)
@@ -641,9 +943,10 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
 
   // ---- the two 2D layers ----
 
-  function axesOf(prepared: PreparedSite, g: Geometry) {
-    const x = timeAxis(prepared.site.time_kind, [prepared.xLo, prepared.xHi], [g.x0, g.x1])
-    const y = linearAxis(prepared.yDomain, [g.y1, g.y0])
+  function axesOf(prepared: PreparedSite, drawn: Drawn, g: Geometry) {
+    const x = timeAxis(prepared.site.time_kind, drawn.xDomain, [g.x0, g.x1])
+    const logY = drawn.log ? logAxis([10 ** drawn.yDomain[0], 10 ** drawn.yDomain[1]], [g.y1, g.y0]) : null
+    const y = logY ?? linearAxis(drawn.yDomain, [g.y1, g.y0])
     return { x: x.axis, y, title: x.title }
   }
 
@@ -653,12 +956,12 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
       if (view.entry?.ok !== true || view.plot === null) continue
       const g = geometryOf(view.plot)
       if (g === null) continue
-      drawPanelBack(ctx, tokens, view.entry.prepared, g)
+      drawPanelBack(ctx, tokens, view.entry.prepared, drawnFor(view.id, view.entry.prepared), g)
     }
   }
 
-  function drawPanelBack(ctx: Chart2D, tokens: ChartTokens, prepared: PreparedSite, g: Geometry): void {
-    const { x, y, title } = axesOf(prepared, g)
+  function drawPanelBack(ctx: Chart2D, tokens: ChartTokens, prepared: PreparedSite, drawn: Drawn, g: Geometry): void {
+    const { x, y, title } = axesOf(prepared, drawn, g)
     ctx.save()
     ctx.lineWidth = 1
     ctx.strokeStyle = tokens.gridline
@@ -675,10 +978,19 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     ctx.restore()
 
     const noise = prepared.site.noise
-    if (noise.available) {
+    if (noise.available && chartChoices.series.show.noise) {
       const xs = prepared.site.time.map((t) => (Number.isFinite(t) ? x.toPx(t) : Number.NaN))
       const px = (v: number | null): number | null => (v === null || !Number.isFinite(v) ? null : y.toPx(v))
+      // Only a changed range can push the band past the plot; the first draw fits it whole.
+      const clip = drawn.yDomain !== prepared.yDomain
+      if (clip) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(g.x0, g.y0, g.x1 - g.x0, g.y1 - g.y0)
+        ctx.clip()
+      }
       drawBand(ctx, xs, noise.q05.map(px), noise.q95.map(px), tokens.series2, BAND_ALPHA)
+      if (clip) ctx.restore()
     }
 
     ctx.save()
@@ -709,13 +1021,15 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
       if (view.entry?.ok !== true || view.plot === null) continue
       const g = geometryOf(view.plot)
       if (g === null) continue
-      drawPanelFront(ctx, tokens, accent, view.entry.prepared, g)
+      drawPanelFront(ctx, tokens, accent, view, view.entry.prepared, g)
     }
   }
 
-  function drawPanelFront(ctx: Chart2D, tokens: ChartTokens, accent: string, prepared: PreparedSite, g: Geometry): void {
-    const { x, y } = axesOf(prepared, g)
+  function drawPanelFront(ctx: Chart2D, tokens: ChartTokens, accent: string, view: PanelView, prepared: PreparedSite, g: Geometry): void {
+    const { x, y } = axesOf(prepared, drawnFor(view.id, prepared), g)
     const { site } = prepared
+    const show = chartChoices.series.show
+    const series = prepared.series.filter((s) => roleShown(s.role, show))
     ctx.save()
     ctx.beginPath()
     ctx.rect(g.x0, g.y0, g.x1 - g.x0, g.y1 - g.y0)
@@ -728,18 +1042,26 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
       drawPolyline(ctx, xs, ys, { colour: s.role === 'first' ? tokens.inkMuted : tokens.series1, width })
     }
     // Every selected line goes down before any base line, so base stays on top in both iterations.
-    for (const s of prepared.series) {
+    for (const s of series) {
       const pick = pickOf(s)
       if (pick?.ok === true) for (const j of pick.columns) column(s, j, SELECTED_WIDTH)
     }
-    for (const s of prepared.series) for (const j of s.baseIndex) column(s, j, BASE_STYLE.lineWidth)
+    if (show.base) for (const s of series) for (const j of s.baseIndex) column(s, j, BASE_STYLE.lineWidth)
 
-    const points: MarkerPoint[] = []
-    for (let i = 0; i < site.time.length; i++) {
-      if (!hasMarker(site, i)) continue
-      points.push({ x: xs[i], y: y.toPx(site.obsval[i] as number), hollow: !site.weighted[i] })
+    if (show.observed) {
+      const points: MarkerPoint[] = []
+      for (let i = 0; i < site.time.length; i++) {
+        if (!hasMarker(site, i)) continue
+        points.push({ x: xs[i], y: y.toPx(site.obsval[i] as number), hollow: !site.weighted[i] })
+      }
+      drawMarkers(ctx, points, { shape: 'circle', radius: MARKER_RADIUS, colour: tokens.inkPrimary })
     }
-    drawMarkers(ctx, points, { shape: 'circle', radius: MARKER_RADIUS, colour: tokens.inkPrimary })
+
+    if (dragBand !== null && dragBand.id === view.id) {
+      drawBrushBand(ctx, { top: g.y0, bottom: g.y1 }, dragBand.range, x.toPx, tokens)
+    }
+    // The hover line is muted ink; the accent line below is the map's time.
+    if (hover !== null && hover.id === view.id) drawCursor(ctx, xs[hover.row], g.y0, g.y1, tokens.inkMuted)
 
     const at = cursorTime(site.group)
     if (at !== null) {
@@ -890,14 +1212,170 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     if (dimProblem !== null) textLine(note, dimProblem)
   }
 
+  // A choice changes every panel, so all are rebuilt; focus goes back to the control that was pressed.
+  function rebuild(): void {
+    const panels = [...panelsEl.children] as HTMLElement[]
+    const at = panels.findIndex((panel) => panel.contains(document.activeElement))
+    const key = at < 0 ? null : focusedControl(panels[at])
+    renderPanels()
+    redrawAll()
+    const again = panelsEl.children[at]
+    if (again instanceof HTMLElement) refocusControl(again, key)
+  }
+
+  function setZoom(id: number, range: [number, number] | null): void {
+    if (range === null) zooms.delete(id)
+    else zooms.set(id, range)
+    rebuild()
+  }
+
+  function showReadout(view: PanelView): void {
+    const el = view.readout
+    if (!el) return
+    el.textContent = ''
+    const at = hover !== null && hover.id === view.id && view.entry?.ok === true ? hover.row : -1
+    el.hidden = at < 0
+    if (at < 0 || view.entry?.ok !== true) return
+    for (const text of readoutLines(view.entry.prepared, at, chartChoices.series.show)) textLine(el, text)
+  }
+
+  function setHover(view: PanelView, row: number): void {
+    const next = row < 0 ? null : { id: view.id, row }
+    if (next?.id === hover?.id && next?.row === hover?.row) return
+    hover = next
+    showReadout(view)
+    if (!hidden) front?.redraw()
+  }
+
+  // The plot's own box takes the pointer: a drag across zooms the time axis, a move reads values.
+  function wirePlot(view: PanelView, plot: HTMLElement, prepared: PreparedSite): void {
+    const left = (): number => MARGIN.left
+    const right = (): number => plot.clientWidth - MARGIN.right
+    const axis = () => timeAxis(prepared.site.time_kind, drawnFor(view.id, prepared).xDomain, [left(), right()]).axis
+    brushes.push(
+      attachBrush(plot, {
+        plotLeft: left,
+        plotRight: right,
+        invert: (px) => axis().invert(px),
+        onDrag: (range) => {
+          dragBand = range === null ? null : { id: view.id, range }
+          if (!hidden) front?.redraw()
+        },
+        onBrush: (range) => {
+          if (range[1] > range[0]) setZoom(view.id, range)
+        },
+      }),
+    )
+    plot.addEventListener('pointermove', (event) => {
+      // A drag is choosing a range; the readout waits until it ends.
+      if (dragBand !== null) return
+      const px = event.clientX - plot.getBoundingClientRect().left
+      if (px < left() || px > right()) return setHover(view, -1)
+      setHover(view, nearestRow(prepared.site.time, axis().invert(px), drawnFor(view.id, prepared).xDomain))
+    })
+    plot.addEventListener('pointerleave', () => setHover(view, -1))
+    plot.addEventListener('dblclick', () => {
+      if (zooms.has(view.id)) setZoom(view.id, null)
+    })
+  }
+
+  function renderToolbar(panel: HTMLElement, view: PanelView, prepared: PreparedSite, drawn: Drawn): void {
+    const choices = chartChoices.series
+    const toolbar = chartToolbar()
+    // In the narrow side panel the switches stay folded away until asked for, so the plot keeps its room.
+    toolbar.hidden = !choices.options && enlargedId === null
+    panel.appendChild(toolbar)
+    toolbar.append(
+      chartSwitch<ScaleKind>({
+        key: 'scale',
+        label: 'Scale',
+        ariaLabel: 'Scale of the value axis',
+        value: drawn.log ? 'log' : 'linear',
+        options: [
+          { value: 'linear', text: 'linear', title: 'Value axis on a linear scale' },
+          { value: 'log', text: 'log', title: 'Value axis on a log scale', refused: drawn.logRefusal },
+        ],
+        onPick: (value) => {
+          choices.scale = value
+          rebuild()
+        },
+      }).el,
+      chartSwitch<RangeKind>({
+        key: 'range',
+        label: 'Range',
+        ariaLabel: 'What the value axis fits',
+        value: choices.range,
+        options: [
+          { value: 'all', text: 'fit all', title: 'The value axis fits every realization' },
+          {
+            value: 'observed',
+            text: 'fit observed',
+            title:
+              'The value axis fits the observed values, the noise band, base and the 5th to 95th percentile of the realizations, so one far-off realization does not flatten the plot',
+          },
+        ],
+        onPick: (value) => {
+          choices.range = value
+          rebuild()
+        },
+      }).el,
+    )
+    const parts = partsOf(prepared)
+    const showGroup = document.createElement('div')
+    showGroup.classList.add('chart-switch')
+    showGroup.setAttribute('role', 'group')
+    showGroup.setAttribute('aria-label', 'Parts of the plot that are shown')
+    const showLabel = document.createElement('span')
+    showLabel.classList.add('label')
+    showLabel.textContent = 'Show:'
+    showGroup.appendChild(showLabel)
+    for (const { part, text, title } of PART_BUTTONS) {
+      if (!parts.has(part)) continue
+      const only = part === 'last' && prepared.series.some((s) => s.role === 'only')
+      showGroup.appendChild(
+        chartToggle({
+          key: `show:${part}`,
+          text: only ? 'iteration' : text,
+          title: only ? 'Show or hide the realizations of the one ingested iteration' : title,
+          pressed: choices.show[part],
+          onToggle: (pressed) => {
+            choices.show[part] = pressed
+            rebuild()
+          },
+        }),
+      )
+    }
+    toolbar.appendChild(showGroup)
+    if (drawn.zoomed) {
+      const reset = document.createElement('button')
+      reset.type = 'button'
+      reset.textContent = 'Reset zoom'
+      reset.title = 'Show the whole time range again (or double-click the plot)'
+      reset.dataset.control = 'reset-zoom'
+      reset.addEventListener('click', () => setZoom(view.id, null))
+      toolbar.appendChild(reset)
+    } else {
+      const hint = document.createElement('span')
+      hint.classList.add('label', 'chart-hint')
+      hint.textContent = 'Drag across the plot to zoom.'
+      toolbar.appendChild(hint)
+    }
+  }
+
   function renderPanels(): void {
+    for (const brush of brushes) brush.dispose()
+    brushes = []
+    hover = null
+    dragBand = null
     panelsEl.textContent = ''
     for (const view of views) {
       const panel = hostDiv(panelsEl, 'obs-spaghetti-panel')
       view.plot = null
+      view.readout = null
+      const titleRow = hostDiv(panel, 'chart-title-row')
       const title = document.createElement('div')
       title.classList.add('body', 'obs-spaghetti-title')
-      panel.appendChild(title)
+      titleRow.appendChild(title)
       if (view.entry === undefined) {
         title.textContent = `Site ${view.id}`
         textLine(panel, 'Loading…', true)
@@ -909,12 +1387,32 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
         continue
       }
       const prepared = view.entry.prepared
+      const drawn = drawnFor(view.id, prepared)
       title.textContent = prepared.site.site
+      const options = document.createElement('button')
+      options.type = 'button'
+      options.classList.add('chart-options-button')
+      options.textContent = 'Plot options'
+      options.title = 'Show or hide the scale, range and show/hide switches of the site plots'
+      options.dataset.control = 'options'
+      options.setAttribute('aria-expanded', String(chartChoices.series.options))
+      options.addEventListener('click', () => {
+        chartChoices.series.options = !chartChoices.series.options
+        rebuild()
+      })
+      titleRow.append(options, enlargeButton(() => openEnlarged(view.id, prepared.site.site)))
+      renderToolbar(panel, view, prepared, drawn)
       const plot = hostDiv(panel, 'obs-spaghetti-plot')
-      plot.style.height = `${PANEL_HEIGHT}px`
+      // Enlarged, the panel over the map sizes the plot; in the side panel it has its own height.
+      if (enlargedId === null) plot.style.height = `${PANEL_HEIGHT}px`
       view.plot = plot
+      const readout = hostDiv(plot, 'chart-readout')
+      readout.setAttribute('role', 'status')
+      readout.hidden = true
+      view.readout = readout
+      wirePlot(view, plot, prepared)
       const legend = hostDiv(panel, 'obs-spaghetti-legend')
-      for (const line of legendLines(prepared, pickOf)) textLine(legend, line)
+      for (const line of [...legendLines(prepared, pickOf), ...viewLines(prepared, drawn, chartChoices.series)]) textLine(legend, line)
       const noise = prepared.site.noise
       if (noise.available) legend.title = `${noise.n_real_used} realizations used for the noise band`
     }
@@ -924,6 +1422,25 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
         ? 'Spaghetti plot of the realizations of the selected sites'
         : `Spaghetti plot of the realizations of ${names.join(', ')}`,
     )
+  }
+
+  // ---- one site's plot shown large over the map ----
+
+  function openEnlarged(id: number, name: string): void {
+    if (hidden) return
+    enlargedId = id
+    enlarged = enlargeChart({
+      title: name,
+      frame: stage,
+      placeholder: `The plot of ${name} is shown enlarged over the map. The other site plots come back when it is closed.`,
+      onResize: () => redrawAll(),
+      onClose: () => {
+        enlarged = null
+        enlargedId = null
+        if (!disposed) sync()
+      },
+    })
+    sync()
   }
 
   function refresh(): void {
@@ -950,9 +1467,14 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
 
   function sync(): void {
     const ids = [...store.get().sites]
-    const shown = ids.slice(0, MAX_SPAGHETTI_PANELS)
-    moreSites = ids.length - shown.length
-    for (const id of [...loaded.keys()]) if (!shown.includes(id)) loaded.delete(id)
+    for (const id of [...zooms.keys()]) if (!ids.includes(id)) zooms.delete(id)
+    // An enlarged site that leaves the selection closes its panel; close() comes back here with none enlarged.
+    if (enlarged !== null && enlargedId !== null && !ids.includes(enlargedId)) return enlarged.close()
+    const listed = ids.slice(0, MAX_SPAGHETTI_PANELS)
+    // Enlarged, the stage holds that one site; the others stay loaded for when it closes.
+    const shown = enlargedId === null ? listed : [enlargedId]
+    moreSites = enlargedId === null ? ids.length - listed.length : 0
+    for (const id of [...loaded.keys()]) if (!listed.includes(id) && id !== enlargedId) loaded.delete(id)
     views = shown.map((id) => ({ id, entry: loaded.get(id), plot: null }))
     const missing = shown.filter((id) => !loaded.has(id))
     loadProblem = null
@@ -986,6 +1508,7 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
     (s) => ({ sites: s.sites, runId: s.runId }),
     (next, prev) => {
       if (next.runId !== prev.runId) {
+        zooms.clear()
         loaded.clear()
         timesOf.clear()
         timesReads.clear()
@@ -1045,11 +1568,16 @@ export function renderSpaghetti(host: HTMLElement, opts: SpaghettiOptions): Spag
       }
     },
     onHide() {
+      // A hidden tab draws nothing, so its plot does not stay up over the map.
+      enlarged?.close()
       hidden = true
       back?.onHide()
       front?.onHide()
     },
     dispose() {
+      disposed = true
+      enlarged?.close()
+      for (const brush of brushes) brush.dispose()
       unsubscribeSites()
       unsubscribeReals()
       unsubscribeCursor()

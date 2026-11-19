@@ -6,7 +6,10 @@
 
 import type { ParGroupRow, ParGroupsPayload, ParHistPayload, ParHistResult, ParValuesPayload, ParValuesResult, SigmaRatio } from '../data/par'
 import { createCanvasHost } from './charts/canvas-host'
-import { drawHistogram, type Chart2D } from './charts/histogram'
+import { chartChoices, type ScaleKind } from './charts/choices'
+import { chartSwitch, chartToolbar, enlargeButton } from './charts/controls'
+import { enlargeChart, type EnlargeHandle } from './charts/enlarge'
+import { drawHistogram, histogramLogRefusal, type Chart2D, type HistogramSpec } from './charts/histogram'
 import { readChartTokens, type ChartTokens } from './charts/tokens'
 import { renderNotice, type RenderNoticeOptions } from './chrome'
 
@@ -130,31 +133,81 @@ function histogramSpec(input: HistogramInput) {
   }
 }
 
-// One canvas in its own box. A draw that the kit refuses says so under the chart instead of leaving it blank.
-function mountChart(parent: HTMLElement, input: HistogramInput, label: string, opts: ChartOptions): DetailHandle {
+// One canvas in its own box, under its scale switch and Enlarge button. A draw that the kit
+// refuses says so under the chart instead of leaving it blank.
+function mountChart(parent: HTMLElement, input: HistogramInput, label: string, title: string, opts: ChartOptions): DetailHandle {
+  const frame = document.createElement('div')
+  frame.classList.add('chart-frame')
+  parent.appendChild(frame)
+  const toolbar = chartToolbar()
+  frame.appendChild(toolbar)
   const box = document.createElement('div')
   box.classList.add('params-chart')
-  parent.appendChild(box)
+  frame.appendChild(box)
   const failure = document.createElement('div')
   failure.classList.add('label', 'wrap-note')
   failure.style.color = 'var(--status-warning)'
   failure.hidden = true
-  parent.appendChild(failure)
+  frame.appendChild(failure)
 
-  const spec = histogramSpec(input)
+  const base: HistogramSpec = histogramSpec(input)
+  const refusal = histogramLogRefusal(base)
+  // A remembered log choice that this chart cannot draw falls back to linear, and the switch says why.
+  const scale = (): ScaleKind => (refusal === null ? chartChoices.parameter.scale : 'linear')
   const host = createCanvasHost(box, {
     label,
     context: opts.context,
     draw: (ctx, size) => {
       const tokens = opts.tokens ? opts.tokens() : readChartTokens(box)
-      const drawn = drawHistogram(ctx, spec, tokens, size)
+      const drawn = drawHistogram(ctx, { ...base, yScale: scale() }, tokens, size)
       failure.hidden = drawn
       failure.textContent = drawn ? '' : 'The histogram could not be drawn: its bin edges or densities were not usable.'
     },
   })
+
+  let enlarged: EnlargeHandle | null = null
+  toolbar.append(
+    chartSwitch<ScaleKind>({
+      key: 'density-axis',
+      label: 'Density axis',
+      ariaLabel: 'Scale of the density axis',
+      value: scale(),
+      options: [
+        { value: 'linear', text: 'linear', title: 'Bar heights on a linear axis' },
+        { value: 'log', text: 'log', title: 'Bar heights on a log axis, so low bins show beside tall ones', refused: refusal },
+      ],
+      onPick: (value) => {
+        chartChoices.parameter.scale = value
+        host.redraw()
+      },
+    }).el,
+    enlargeButton(() => {
+      if (opts.isHidden()) return
+      enlarged = enlargeChart({
+        title,
+        frame,
+        onResize: () => host.redraw(),
+        onClose: () => {
+          enlarged = null
+        },
+      })
+    }),
+  )
+
   if (opts.isHidden()) host.onHide()
   else host.redraw()
-  return { onShow: host.onShow, onHide: host.onHide, destroy: host.destroy }
+  return {
+    onShow: host.onShow,
+    onHide: () => {
+      // A hidden tab draws nothing, so its chart does not stay up over the map.
+      enlarged?.close()
+      host.onHide()
+    },
+    destroy: () => {
+      enlarged?.close()
+      host.destroy()
+    },
+  }
 }
 
 function drawable(hist: ParHistPayload): hist is ParHistPayload & {
@@ -270,7 +323,7 @@ function addGroupChart(parent: HTMLElement, opts: GroupDetailOptions): DetailHan
         ? `iteration ${payload.first.iteration}`
         : `prior, iteration ${payload.first.iteration} and posterior, iteration ${payload.last.iteration}`
     const label = `Histograms of group ${row.group}, ${iterations}, as densities. ${sigmaLabel(row.sigma_ratio)}`
-    handle = mountChart(parent, { space: payload.space, edges: payload.edges, first: payload.first, last: payload.last }, label, opts)
+    handle = mountChart(parent, { space: payload.space, edges: payload.edges, first: payload.first, last: payload.last }, label, `Group ${row.group}: histograms`, opts)
   } else {
     notice(parent, {
       title: 'No histogram for this group',
@@ -336,6 +389,7 @@ export function renderParameterDetail(host: HTMLElement, opts: ParameterDetailOp
     host,
     { space: payload.space, edges: payload.edges, first: payload.first, last: payload.last },
     `Distribution of parameter ${payload.parameter} in group ${payload.group}, ${iterations}, as densities.`,
+    `Parameter ${payload.parameter}: distribution`,
     opts,
   )
   line(host, moments(payload.last === null ? 'iteration' : 'prior', payload.first, payload.space))

@@ -60,6 +60,8 @@ export interface HistogramSpec {
   overlay?: HistogramOverlay | null
   /** Alpha for what is faded: bars outside the band and the overlay. 1 when not given. */
   dimAlpha?: number
+  /** The density axis. 'log' is drawn only when histogramLogRefusal gives null; linear when not given. */
+  yScale?: 'linear' | 'log'
 }
 
 export interface HistogramLayout {
@@ -114,6 +116,15 @@ function buildXAxis(spec: HistogramSpec, range: [number, number]): Axis | null {
   return logAxis([10 ** first, 10 ** last], range)
 }
 
+function positiveDensities(spec: HistogramSpec): number[] {
+  return [...spec.series.flatMap((s) => s.density), ...(spec.overlay?.density ?? [])].filter((d) => Number.isFinite(d) && d > 0)
+}
+
+/** Why the density axis cannot be a log axis, or null when it can. */
+export function histogramLogRefusal(spec: HistogramSpec): string | null {
+  return positiveDensities(spec).length === 0 ? 'A log axis needs a bin above zero, and no bin holds a value.' : null
+}
+
 // The plot area and x axis drawHistogram uses, so a brush reads the same pixels; null when it would refuse.
 export function histogramLayout(spec: HistogramSpec, size: ChartSize): HistogramLayout | null {
   if (!isValid(spec)) return null
@@ -150,7 +161,11 @@ export function drawHistogram(
   const overlay = spec.overlay ?? null
   const dimAlpha = spec.dimAlpha ?? 1
   const yMax = Math.max(...spec.series.flatMap((s) => s.density), ...(overlay?.density ?? []))
-  const yAxis = linearAxis([0, yMax > 0 ? yMax : 1], [bottom, top], Y_TICKS)
+  // A log axis starts half a step under the smallest bar, so that bar still has a height.
+  const positive = spec.yScale === 'log' ? positiveDensities(spec) : []
+  const logY = positive.length > 0 ? logAxis([Math.min(...positive) / 2, yMax], [bottom, top]) : null
+  const yAxis = logY ?? linearAxis([0, yMax > 0 ? yMax : 1], [bottom, top], Y_TICKS)
+  const floorPx = logY === null ? undefined : bottom
   const slots = [tokens.series1, tokens.series2]
 
   ctx.save()
@@ -173,7 +188,7 @@ export function drawHistogram(
 
   const faded = spec.edges.slice(1).map((_, i) => band !== null && outsideBand(spec.edges, i, band))
   spec.series.forEach((series, index) => {
-    const bars = barRects(spec.edges, series.density, xAxis, yAxis, spec.space)
+    const bars = barRects(spec.edges, series.density, xAxis, yAxis, spec.space, floorPx)
     ctx.fillStyle = slots[index]
     bars.forEach((bar, i) => {
       ctx.globalAlpha = faded[i] ? FILL_ALPHA * dimAlpha : FILL_ALPHA
@@ -194,7 +209,7 @@ export function drawHistogram(
     ctx.globalAlpha = dimAlpha
     ctx.strokeStyle = slots[overlay.slot]
     ctx.lineWidth = 1
-    for (const bar of barRects(spec.edges, overlay.density, xAxis, yAxis, spec.space)) ctx.strokeRect(bar.x, bar.y, bar.w, bar.h)
+    for (const bar of barRects(spec.edges, overlay.density, xAxis, yAxis, spec.space, floorPx)) ctx.strokeRect(bar.x, bar.y, bar.w, bar.h)
     ctx.globalAlpha = 1
   }
 
@@ -216,7 +231,7 @@ export function drawHistogram(
   ctx.fillText(spec.xLabel, (left + right) / 2, bottom + 22)
   ctx.textBaseline = 'middle'
   ctx.textAlign = 'right'
-  for (const tick of yAxis.ticks) ctx.fillText(tick.label, left - 6, tick.px)
+  for (const tick of yAxis.ticks) if (tick.label !== '') ctx.fillText(tick.label, left - 6, tick.px)
 
   const legendY = 8
   ctx.textAlign = 'left'
