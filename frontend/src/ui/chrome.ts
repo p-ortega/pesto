@@ -26,7 +26,7 @@ interface ToneStyle {
 // Every tone carries an icon and a word together, never colour alone
 // (visual contract § 11) -- identity survives for a colour-blind reader.
 const TONE_STYLE: Record<NoticeTone, ToneStyle> = {
-  info: { icon: 'ℹ', word: 'Note', colorVar: 'var(--status-good)' },
+  info: { icon: 'ℹ', word: 'Note', colorVar: 'var(--ink-muted)' },
   warning: { icon: '⚠', word: 'Warning', colorVar: 'var(--status-warning)' },
   serious: { icon: '⚠', word: 'Serious', colorVar: 'var(--status-serious)' },
   critical: { icon: '✕', word: 'Critical', colorVar: 'var(--status-critical)' },
@@ -376,22 +376,26 @@ export function renderNotice(el: HTMLElement, opts: RenderNoticeOptions): void {
 
   const notice = document.createElement('div')
   notice.classList.add('notice-parts')
-  notice.style.color = style.colorVar
-
+  // Only the icon and tone word carry the tone colour; coloured sentences read as alarms.
   const iconEl = document.createElement('span')
   iconEl.textContent = style.icon
+  iconEl.style.color = style.colorVar
   notice.appendChild(iconEl)
 
   const wordEl = document.createElement('span')
+  wordEl.classList.add('notice-word')
   wordEl.textContent = style.word
+  wordEl.style.color = style.colorVar
   notice.appendChild(wordEl)
 
   const titleEl = document.createElement('span')
+  titleEl.classList.add('notice-title')
   titleEl.textContent = opts.title
   notice.appendChild(titleEl)
 
   if (opts.detail) {
     const detailEl = document.createElement('span')
+    detailEl.classList.add('notice-detail')
     detailEl.textContent = opts.detail
     notice.appendChild(detailEl)
   }

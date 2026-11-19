@@ -1213,6 +1213,17 @@ input[type='radio'] {
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-xs);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-primary);
+}
+
+.notice-word {
+  font-weight: 600;
+}
+
+.notice-detail {
+  color: var(--ink-secondary);
 }
 
 .truncate {
