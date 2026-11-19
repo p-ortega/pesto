@@ -5,25 +5,42 @@
    tokens -- nothing in this file picks a colour of its own. */
 
 :root {
-  --page-plane: #f9f9f7;
-  --surface: #fcfcfb;
-  --ink-primary: #0b0b0b;
-  --ink-secondary: #52514e;
-  --ink-muted: #898781;
-  --gridline: #e1e0d9;
-  --axis: #c3c2b7;
-  --hairline: rgba(11, 11, 11, 0.1);
+  --page-plane: #eeefea;
+  --surface: #ffffff;
+  --ink-primary: #151a16;
+  --ink-secondary: #4a5249;
+  --ink-muted: #6e766d;
+  --gridline: #dee1da;
+  --axis: #c7ccc3;
+  --hairline: rgba(21, 26, 22, 0.12);
   /* The outside-the-model edge on the canvas; 10% vanished on the light page. */
-  --model-edge: rgba(11, 11, 11, 0.22);
-  --accent: #2a78d6;
+  --model-edge: rgba(21, 26, 22, 0.22);
+  /* Basil: pesto's one interface accent. */
+  --accent: #2e7d4f;
+  --accent-tint: #edf6f0;
+  --accent-ink: #256840;
   /* Categorical slots 1 and 2: the two series a chart draws, prior and posterior. */
   --series-1: #2a78d6;
   --series-2: #eb6834;
 
-  --status-good: #0ca30c;
-  --status-warning: #fab219;
-  --status-serious: #ec835a;
-  --status-critical: #d03b3b;
+  /* One set for both themes, mid-tone so each reads on a light and a dark surface. */
+  --status-good: #3a9a5b;
+  --status-warning: #c98a1e;
+  --status-serious: #d9704a;
+  --status-critical: #d24a44;
+
+  /* The top and bottom bars stay dark herb green in both themes. */
+  --chrome-bg: #16211b;
+  --chrome-raised: #22322a;
+  --chrome-line: #2c3f34;
+  --chrome-ink: #eef3ef;
+  --chrome-muted: #9aafa3;
+  --brand-cream: #e9e2cc;
+  --brand-basil: #5fb85f;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --shadow-sm: 0 1px 2px rgba(21, 26, 22, 0.08);
 
   /* How faint an unselected row or mark draws while its kind has a selection. */
   --dim-alpha: 0.35;
@@ -36,18 +53,21 @@
 }
 
 [data-theme='dark'] {
-  --page-plane: #0d0d0d;
-  --surface: #1a1a19;
-  --ink-primary: #ffffff;
-  --ink-secondary: #c3c2b7;
-  --ink-muted: #898781;
-  --gridline: #2c2c2a;
-  --axis: #383835;
-  --hairline: rgba(255, 255, 255, 0.1);
-  --model-edge: rgba(255, 255, 255, 0.1);
-  --accent: #3987e5;
+  --page-plane: #0f1411;
+  --surface: #19201b;
+  --ink-primary: #eef3ef;
+  --ink-secondary: #b9c7be;
+  --ink-muted: #8a988e;
+  --gridline: #29332c;
+  --axis: #36433a;
+  --hairline: rgba(238, 243, 239, 0.12);
+  --model-edge: rgba(238, 243, 239, 0.12);
+  --accent: #5fb85f;
+  --accent-tint: #1f3326;
+  --accent-ink: #8fd48a;
   --series-1: #3987e5;
   --series-2: #d95926;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --dim-alpha: 0.3;
 }
 
@@ -65,6 +85,38 @@ body {
 /* Every control gets a visible focus ring by construction (MAP-11). */
 :focus-visible {
   outline: 2px solid var(--accent);
+}
+
+/* Controls share one quiet look: a hairline box with a small radius, the accent only when pressed. */
+button,
+select,
+input:not([type='range']):not([type='checkbox']):not([type='radio']) {
+  font: inherit;
+  color: var(--ink-primary);
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-sm);
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--ink-muted);
+}
+
+button[aria-pressed='true'] {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+input[type='range'],
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
 }
 
 /* A disabled control reads as muted rather than merely greyed by the
@@ -125,6 +177,43 @@ body {
   flex-wrap: wrap;
   gap: var(--space-md);
   padding: var(--space-sm) var(--space-md);
+  background: var(--chrome-bg);
+  color: var(--chrome-ink);
+}
+
+.header .heading {
+  color: var(--chrome-ink);
+}
+
+.header label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--chrome-muted);
+}
+
+.header select,
+.header button {
+  background: var(--chrome-raised);
+  border-color: var(--chrome-line);
+  color: var(--chrome-ink);
+}
+
+.header .chip {
+  background: var(--chrome-raised);
+  border-color: transparent;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-right: var(--space-sm);
+  padding-right: var(--space-md);
+  border-right: 1px solid var(--chrome-line);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .status-bar {
@@ -132,6 +221,13 @@ body {
   flex-wrap: wrap;
   gap: var(--space-md);
   padding: var(--space-sm) var(--space-md);
+  background: var(--chrome-bg);
+  color: var(--chrome-muted);
+  font-size: 12px;
+}
+
+.status-bar > span > span:last-child {
+  color: var(--chrome-ink);
 }
 
 /* A status-bar or header field is a label span next to a value span --
@@ -214,6 +310,8 @@ body {
   pointer-events: auto;
   background: var(--surface);
   border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
   padding: var(--space-sm);
 }
 
@@ -272,6 +370,7 @@ body {
 .tab {
   background: none;
   border: 0;
+  border-radius: 0;
   border-bottom: 2px solid transparent;
   padding: var(--space-sm) var(--space-md);
   margin-bottom: -1px;
@@ -280,7 +379,7 @@ body {
 }
 
 .tab[aria-selected='true'] {
-  color: var(--ink-primary);
+  color: var(--accent-ink);
   font-weight: 600;
   border-bottom-color: var(--accent);
 }
@@ -965,7 +1064,7 @@ body {
   align-items: center;
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--hairline);
-  border-radius: var(--space-md);
+  border-radius: var(--radius-sm);
   background: var(--surface);
 }
 
