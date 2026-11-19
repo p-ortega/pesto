@@ -165,12 +165,16 @@ def _workers_of(pool: ProcessPoolExecutor) -> list:
 
 def _first_exit_code(procs: list) -> int | None:
     """The first exit code among ``procs``, waiting a moment for a dying worker to be reaped."""
-    for proc in procs:
-        # The pool can report itself broken before the dead worker's exit code is collected.
-        proc.join(timeout=2.0)
-        if proc.exitcode is not None:
-            return proc.exitcode
-    return None
+    # The pool can report itself broken before the dead worker's exit code is collected, and its
+    # own clean-up thread may be collecting it at the same moment, so ask again for a short while.
+    deadline = time.monotonic() + 2.0
+    while True:
+        for proc in procs:
+            if proc.exitcode is not None:
+                return proc.exitcode
+        if not procs or time.monotonic() >= deadline:
+            return None
+        time.sleep(0.02)
 
 
 def _run_isolated(fn, *args):
