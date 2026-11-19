@@ -170,10 +170,21 @@ are read into memory on Windows instead of mapped (Windows will not replace a ma
 folder names are cut from Windows error text. All six test jobs pass (Linux, macOS and Windows on
 Python 3.11 and 3.13). Nobody has used pesto by hand on Windows yet.
 
-Still open for the MVP: the readable charts of item 6, a wording pass on notes and hints, and the user's own try of the release
-on their machines. The Mac map picture `mesh-synthetic-run-chromium-darwin.png` predates the new
-page colour and must be retaken on a Mac. Whether the agent notes (`AGENTS.md`, `CLAUDE.md`, this
-file) stay at the repo root is the user's call and is not decided.
+Also done on 2026-11-19: the readable charts of item 6 (released as `v0.1.0a2`), browser-checked
+on the example run and on hm, including the side panel at its narrowest; and a first wording pass
+(the RMSE sentence at the top of the Obs tab is named, and the group-set note is plainer). The
+report button's GitHub link was checked on the example run: it carries the same text the dialog
+shows, with no names in it. It was not submitted.
+
+Nothing the agent can do alone is open for the MVP. What is left is the user's:
+- trying the release on their own machines, Windows above all, since nobody has used it by hand
+  there;
+- signing off the agent checks above;
+- saying yes to retaking two Linux map pictures in `mesh.spec` (the bottom bar gained the report
+  button, so the map area changed height), and retaking the Mac picture
+  `mesh-synthetic-run-chromium-darwin.png` on a Mac;
+- deciding whether the agent notes (`AGENTS.md`, `CLAUDE.md`, this file) stay at the repo root;
+- deciding whether the README tagline also goes on the welcome page and in `pyproject.toml`.
 
 To release: set the version in `pyproject.toml` and `src/pesto/__init__.py`, then push a tag
 `v<version>`. The GitHub API allows only 60 unsigned requests an hour, so poll a run's result
