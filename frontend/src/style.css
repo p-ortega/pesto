@@ -438,9 +438,11 @@ input[type='radio'] {
   scrollbar-color: var(--axis) var(--gridline);
 }
 
+/* One font size for both, so the em column widths of the header match the rows under it. */
 .params-groups .group-header,
 .params-groups .scroll-pane {
-  min-width: 57em;
+  font-size: 14px;
+  min-width: 59em;
 }
 
 .params-groups .scroll-pane {
@@ -513,20 +515,22 @@ input[type='radio'] {
    the Group column never goes below 12em, and the grid's width grows to make room for it. */
 .group-row > :nth-child(1),
 .group-header > :nth-child(1) {
-  flex: 3 1 0;
+  /* Fixed, not stretched: the rows lose width to their scrollbar, and a stretch would shift them off the header. */
+  flex: 0 0 12em;
   min-width: 12em;
   overflow-wrap: anywhere;
 }
 
 .group-row > :nth-child(2),
 .group-header > :nth-child(2) {
-  flex: 2 1 0;
+  flex: 0 0 4em;
   min-width: 4em;
 }
 
 .group-row > :nth-child(3),
 .group-header > :nth-child(3) {
-  flex: 0 0 4.5em;
+  /* Wide enough for "not stated" on one line. */
+  flex: 0 0 6em;
 }
 
 .group-row > :nth-child(4),
@@ -1767,6 +1771,24 @@ input[type='radio'] {
   align-items: center;
   gap: var(--space-sm);
   min-width: 0;
+}
+
+/* The fold arrow is a quiet square, not a raised button. */
+.fold-button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-color: transparent;
+  background: none;
+  color: var(--ink-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.fold-button:hover:not(:disabled) {
+  background: var(--gridline);
+  border-color: transparent;
+  color: var(--ink-primary);
 }
 
 .fold-section > .fold-button {
