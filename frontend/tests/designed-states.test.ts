@@ -291,6 +291,7 @@ describe('every remaining state is a designed state', () => {
     })
     expect(root.querySelector('.header')).not.toBeNull()
     expect(root.querySelector('.status-bar')).not.toBeNull()
+    expect(root.querySelector('.status-bar .report-button')?.textContent).toBe('Report a problem')
     const frame = root.querySelector('.map-frame')
     expect(frame).not.toBeNull()
     expect(frame!.children.length).toBe(3)

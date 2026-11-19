@@ -19,6 +19,7 @@ import {
 } from '../data/client'
 import { readEvents as readProgressStream, type SseEvent } from '../data/sse'
 import { renderHeader, renderNotice, renderStatusBar, type RenderNoticeOptions } from './chrome'
+import { reportButton } from './report'
 import { currentTheme, setTheme, type ThemeChoice } from './theme'
 
 export function formatBytes(bytes: number): string {
@@ -47,6 +48,17 @@ function addNotice(container: HTMLElement, opts: RenderNoticeOptions): void {
   const el = document.createElement('div')
   renderNotice(el, opts)
   container.appendChild(el)
+}
+
+// A failure message with "Report a problem" directly beside it.
+function addFailureNotice(container: HTMLElement, opts: RenderNoticeOptions): void {
+  const row = document.createElement('div')
+  row.classList.add('report-beside')
+  const el = document.createElement('div')
+  renderNotice(el, opts)
+  row.appendChild(el)
+  row.appendChild(reportButton())
+  container.appendChild(row)
 }
 
 function activatesOnEnter(el: HTMLButtonElement, run: () => void): void {
@@ -118,11 +130,18 @@ export async function mountEstimate(root: HTMLElement, opts: MountEstimateOption
   controls.appendChild(agreeButton)
   controls.appendChild(declineButton)
 
+  const statusBar = document.createElement('div')
+  statusBar.classList.add('status-bar')
+  // Pushed to the foot of the page, as on the other screens.
+  statusBar.style.marginTop = 'auto'
+  root.appendChild(statusBar)
+  renderStatusBar(statusBar, {})
+
   let estimate: IngestEstimate
   try {
     estimate = await ingestEstimate()
   } catch {
-    addNotice(noticeArea, { title: 'the projected size could not be read', tone: 'critical' })
+    addFailureNotice(noticeArea, { title: 'the projected size could not be read', tone: 'critical' })
     return
   }
 
@@ -202,6 +221,7 @@ interface RowElements {
   writtenEl: HTMLElement
   durationEl: HTMLElement
   reasonEl: HTMLElement
+  reportEl: HTMLElement
   notesEl: HTMLElement
 }
 
@@ -232,6 +252,8 @@ function createRowSkeleton(name: string): RowElements {
   durationEl.classList.add('tabular-nums')
   const reasonEl = document.createElement('span')
   reasonEl.classList.add('wrap-note')
+  // Holds "Report a problem" once the row has failed, and nothing before that.
+  const reportEl = document.createElement('span')
   const notesEl = document.createElement('ul')
 
   item.appendChild(iconEl)
@@ -241,9 +263,10 @@ function createRowSkeleton(name: string): RowElements {
   item.appendChild(writtenEl)
   item.appendChild(durationEl)
   item.appendChild(reasonEl)
+  item.appendChild(reportEl)
   item.appendChild(notesEl)
 
-  return { item, iconEl, wordEl, sourceEl, writtenEl, durationEl, reasonEl, notesEl }
+  return { item, iconEl, wordEl, sourceEl, writtenEl, durationEl, reasonEl, reportEl, notesEl }
 }
 
 // A `started` row does not yet know its written size or its duration --
@@ -264,6 +287,8 @@ function applyRowState(elements: RowElements, row: ProgressRow): void {
   elements.durationEl.textContent = known ? formatSeconds(row.seconds) : '—'
 
   elements.reasonEl.textContent = row.state === 'failed' && row.reason ? row.reason : ''
+  elements.reportEl.textContent = ''
+  if (row.state === 'failed') elements.reportEl.appendChild(reportButton())
 
   elements.notesEl.textContent = ''
   for (const note of row.notes) {
@@ -312,7 +337,7 @@ function renderClosingReport(noticeArea: HTMLElement, statusBar: HTMLElement, st
   } else {
     for (const [name, capability] of blocked) {
       for (const block of capability.blockedBy) {
-        addNotice(noticeArea, {
+        addFailureNotice(noticeArea, {
           title: `${CAPABILITY_LABELS[name]} is unavailable`,
           detail: `${block.artifact}: ${block.reason}`,
           tone: 'warning',
@@ -381,6 +406,7 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
   for (const notice of opts.notices ?? []) {
     addNotice(noticeArea, notice)
   }
+  renderStatusBar(statusBar, {})
 
   activatesOnEnter(cancelButton, () => {
     cancelButton.disabled = true
@@ -397,7 +423,7 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
     try {
       state = await ingestState()
     } catch {
-      addNotice(noticeArea, { title: 'the closing report could not be read', tone: 'critical' })
+      addFailureNotice(noticeArea, { title: 'the closing report could not be read', tone: 'critical' })
       opts.onFinished()
       return
     }
@@ -410,6 +436,17 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
       void handleDone()
       return
     }
+    if (event.event === 'error') {
+      // The ingest itself stopped; the server sends a problem body, not a row.
+      let detail: string | undefined
+      try {
+        detail = (JSON.parse(event.data) as { detail?: string }).detail
+      } catch {
+        detail = undefined
+      }
+      addFailureNotice(noticeArea, { title: 'the ingest failed', detail, tone: 'critical' })
+      return
+    }
     upsertRow(rowsList, rowsByArtifact, toProgressRow(JSON.parse(event.data)))
   }
 
@@ -417,7 +454,7 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
     try {
       await ingestStart()
     } catch {
-      addNotice(noticeArea, { title: 'the ingest could not be started', tone: 'critical' })
+      addFailureNotice(noticeArea, { title: 'the ingest could not be started', tone: 'critical' })
       return
     }
 
@@ -425,7 +462,7 @@ export function mountProgress(root: HTMLElement, opts: MountProgressOptions): ()
       await readProgressStream(ingestEventsUrl(), handleEvent, controller.signal)
     } catch {
       if (!controller.signal.aborted) {
-        addNotice(noticeArea, { title: 'the progress stream was interrupted', tone: 'serious' })
+        addFailureNotice(noticeArea, { title: 'the progress stream was interrupted', tone: 'serious' })
       }
     }
   }

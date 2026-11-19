@@ -30,6 +30,7 @@ from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 from starlette.responses import StreamingResponse as _EventStreamResponse
 
+from pesto.api.errorlog import record_exception, record_failure
 from pesto.api.problem import problem, redact_paths
 from pesto.cache.layout import CACHE_VERSION, CacheLayout, probe_writable, run_id_for
 from pesto.cache.manifest import Manifest
@@ -470,6 +471,11 @@ async def start_ingest(request: Request) -> JSONResponse:
             )
         except Exception as exc:  # noqa: BLE001 - reported to the stream, not swallowed
             state.error = exc
+            record_exception(request.app.state, "ingest", exc)
+        else:
+            for name, artifact in state.manifest.artifacts.items():
+                if artifact.state == "failed":
+                    record_failure(request.app.state, "ingest", name, artifact.reason)
         finally:
             # A failed or cancelled ingest may already have rewritten files,
             # so the memo goes either way, and before the stream ends.

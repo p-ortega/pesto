@@ -2207,3 +2207,116 @@ input[type='radio'] {
   color: var(--surface);
   font-weight: 600;
 }
+
+/* "Report a problem": a quiet button, and a dialog with the basemap picker's look. */
+
+.report-button {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  padding: 0 var(--space-xs);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.report-button:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--ink-primary);
+}
+
+/* Always the last thing on the bar, whatever fields a screen adds after it. */
+.status-bar > .report-button {
+  order: 1;
+  margin-left: auto;
+  color: var(--chrome-muted);
+}
+
+.status-bar > .report-button:hover:not(:disabled) {
+  color: var(--chrome-ink);
+}
+
+/* A failure message with the button beside it. */
+.report-beside {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.report-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--page-plane) 70%, transparent);
+}
+
+.report-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: min(46rem, 92%);
+  max-height: 86%;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-md);
+  color: var(--ink-primary);
+}
+
+.report-status {
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.report-status:empty {
+  display: none;
+}
+
+.report-status.refused {
+  color: var(--ink-primary);
+}
+
+.report-text {
+  flex: 1 1 auto;
+  min-height: 12rem;
+  height: 50vh;
+  resize: none;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+  color: var(--ink-primary);
+  background: var(--page-plane);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+}
+
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.report-link {
+  font: inherit;
+  color: var(--accent-ink);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-sm);
+  text-decoration: none;
+}
+
+.report-link:hover {
+  text-decoration: underline;
+}

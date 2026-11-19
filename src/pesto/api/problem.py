@@ -26,6 +26,8 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
+from pesto.api.errorlog import note_problem, record_exception, route_name
+
 if TYPE_CHECKING:
     from pesto.ingest.failures import ReadFailure
 
@@ -82,6 +84,7 @@ def problem(
         body["detail"] = redact_paths(detail)
     if extra:
         body.update({k: v for k, v in extra.items() if k not in body})
+    note_problem(status_code, title, artifact, detail)
 
     response = JSONResponse(
         body,
@@ -132,3 +135,9 @@ def install_problem_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         title = exc.detail if isinstance(exc.detail, str) else HTTPStatus(exc.status_code).phrase
         return problem(exc.status_code, title, headers=exc.headers)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_problem(request: Request, exc: Exception) -> JSONResponse:
+        # Kept for the problem report; the message itself stays out of the response.
+        record_exception(request.app.state, route_name(request.scope), exc, status=500)
+        return problem(500, "pesto hit an error it did not expect")

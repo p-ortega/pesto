@@ -5,6 +5,7 @@
 // in this module picks a colour of its own.
 
 import { listWords, mismatchWords, type BaseFactState } from '../data/config'
+import { reportButton } from './report'
 import type { ThemeChoice } from './theme'
 
 const THEME_CHOICES: readonly ThemeChoice[] = ['dark', 'light', 'system']
@@ -359,6 +360,8 @@ export function renderStatusBar(el: HTMLElement, fields: StatusFields): void {
 
     el.appendChild(field)
   }
+  // Every status bar ends with the report button; CSS keeps it at the right end.
+  el.appendChild(reportButton())
 }
 
 export interface RenderNoticeOptions {

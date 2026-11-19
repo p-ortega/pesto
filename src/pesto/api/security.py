@@ -48,6 +48,7 @@ import secrets
 from fastapi import FastAPI, Request
 from starlette.responses import Response
 
+from pesto.api.errorlog import begin_request, end_request, route_name
 from pesto.api.problem import problem
 
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -102,6 +103,11 @@ def install_security(app: FastAPI, token: str) -> None:
             if not hmac.compare_digest(supplied, token):
                 return _problem_response(401, "invalid or missing token")
 
-        response: Response = await call_next(request)
+        # Problem responses of status 500 and up are kept for the problem report.
+        pending = begin_request()
+        try:
+            response: Response = await call_next(request)
+        finally:
+            end_request(request.app.state, pending, route_name(request.scope))
         response.headers["Referrer-Policy"] = _REFERRER_POLICY
         return response

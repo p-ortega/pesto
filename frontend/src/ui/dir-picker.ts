@@ -272,5 +272,7 @@ export function mountPicker(root: HTMLElement, opts: { onOpened: (result: OpenRe
 
   paintHeader()
   paintCrumbs()
+  // So the bar and its report button are there before, or without, the first listing.
+  renderStatusBar(statusBar, {})
   void load(null)
 }
