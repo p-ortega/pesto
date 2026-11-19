@@ -150,12 +150,27 @@ def _exit_code_of(pool: ProcessPoolExecutor) -> int | None:
     not run yet.
     """
     try:
-        for proc in list(pool._processes.values()):
-            if proc.exitcode is not None:
-                return proc.exitcode
-        return None
+        return _first_exit_code(list(pool._processes.values()))
     except Exception:
         return None
+
+
+def _workers_of(pool: ProcessPoolExecutor) -> list:
+    """The pool's worker processes right now, or an empty list when that cannot be read."""
+    try:
+        return list(pool._processes.values())
+    except Exception:
+        return []
+
+
+def _first_exit_code(procs: list) -> int | None:
+    """The first exit code among ``procs``, waiting a moment for a dying worker to be reaped."""
+    for proc in procs:
+        # The pool can report itself broken before the dead worker's exit code is collected.
+        proc.join(timeout=2.0)
+        if proc.exitcode is not None:
+            return proc.exitcode
+    return None
 
 
 def _run_isolated(fn, *args):
@@ -179,12 +194,15 @@ def _run_isolated(fn, *args):
     # Spawn, as on macOS: Linux defaults to fork, which can deadlock when forked from the threaded server.
     with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
         future = pool.submit(fn, *args)
+        # Held from the start: a broken pool may drop its workers before the exit code is asked for.
+        workers = _workers_of(pool)
         try:
             return True, future.result()
         except Exception as exc:
             if isinstance(exc, BrokenProcessPool):
                 try:
-                    exc.exitcode = _exit_code_of(pool)
+                    code = _first_exit_code(workers)
+                    exc.exitcode = code if code is not None else _exit_code_of(pool)
                 except Exception:
                     exc.exitcode = None
             return False, exc

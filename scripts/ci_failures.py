@@ -17,14 +17,22 @@ def main(path: str) -> int:
             problem = case.find(kind)
             if problem is not None:
                 failed.append((f"{case.get('classname')}::{case.get('name')}", problem))
-    # GitHub keeps only ten error lines per step, so the full list of names goes first, as one.
-    if failed:
-        print(f"::error title={len(failed)} failed test(s)::" + "%0A".join(name for name, _ in failed))
+    # GitHub keeps ten error lines per step and cuts long ones, so pack short reasons into a few.
+    lines = []
     for name, problem in failed:
-        text = (problem.get("message") or "") + "\n" + (problem.text or "")[-1500:]
-        # GitHub reads %0A as a line break inside one annotation.
+        reason = " ".join((problem.get("message") or "").split())[:260]
+        lines.append(f"{name} :: {reason}")
+    chunks, chunk = [], ""
+    for line in lines:
+        if chunk and len(chunk) + len(line) > 3400:
+            chunks.append(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        chunks.append(chunk)
+    for i, text in enumerate(chunks[:10], start=1):
         body = text.strip().replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-        print(f"::error title={name}::{body}")
+        print(f"::error title={len(failed)} failed test(s), part {i} of {len(chunks)}::{body}")
     return 0
 
 
