@@ -247,16 +247,19 @@ export interface RenderHeaderOptions {
  * them once the run's configuration has landed. The theme control is a
  * real `<select>`, keyboard reachable by construction (MAP-11).
  */
-// A mortar of pesto with the pestle sunk in it and a basil leaf, drawn in the brand tokens.
+// A mortar seen from the side: pesto heaped over the rim, the pestle plunged into it, a basil leaf.
 const LOGO_SVG =
-  '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">' +
-  '<ellipse cx="12" cy="11.5" rx="9.5" ry="2.4" fill="var(--brand-cream)"/>' +
-  '<ellipse cx="12" cy="11.6" rx="8.2" ry="1.7" fill="var(--brand-basil)"/>' +
-  '<path d="M11.4 12.6 L18.2 2.4" stroke="var(--brand-cream)" stroke-width="2.8" stroke-linecap="round"/>' +
-  '<ellipse cx="11.2" cy="12.9" rx="2.8" ry="0.6" fill="var(--brand-basil)"/>' +
-  '<path d="M2.5 11.5 A9.5 2 0 0 0 21.5 11.5 A9.5 8.5 0 0 1 2.5 11.5Z" fill="var(--brand-cream)"/>' +
-  '<rect x="8.5" y="20.5" width="7" height="2" rx="1" fill="var(--brand-cream)"/>' +
-  '<path d="M3.5 8.2c0-3 2.2-4.8 5.2-4.8 0 3-2.2 4.8-5.2 4.8z" fill="var(--brand-basil)"/>' +
+  '<svg width="24" height="24" viewBox="0 0 64 64" aria-hidden="true">' +
+  '<g transform="translate(27 32) rotate(40)">' +
+  '<path d="M-5.5 2 L-3.6 -30 L3.6 -30 L5.5 2 Z" fill="var(--brand-cream)"/>' +
+  '<circle cx="0" cy="-31" r="4.7" fill="var(--brand-cream)"/>' +
+  '</g>' +
+  '<path d="M21 25 C12.5 24 8.5 17 9.5 9 C17.5 10 22.5 17 21 25 Z" fill="var(--brand-leaf)"/>' +
+  '<path d="M12 29 Q32 13 52 29 Z" fill="var(--brand-basil)"/>' +
+  '<rect x="6" y="28" width="52" height="5.5" rx="2.75" fill="var(--brand-cream)"/>' +
+  '<path d="M10 33 H54 V36 C54 47 45 54 32 54 C19 54 10 47 10 36 Z" fill="var(--brand-cream)"/>' +
+  '<rect x="27" y="52" width="10" height="6" fill="var(--brand-cream)"/>' +
+  '<rect x="21.5" y="56" width="21" height="4.5" rx="2.25" fill="var(--brand-cream)"/>' +
   '</svg>'
 
 function brandMark(): HTMLElement {
