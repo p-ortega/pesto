@@ -262,15 +262,15 @@ const LOGO_SVG =
   '<rect x="21.5" y="56" width="21" height="4.5" rx="2.25" fill="var(--brand-cream)"/>' +
   '<ellipse cx="23.5" cy="42" rx="3.6" ry="4.6" fill="var(--chrome-bg)"/>' +
   '<ellipse cx="23.9" cy="42.4" rx="2.5" ry="3.4" fill="var(--chrome-bg)"/>' +
-  '<circle cx="22.8" cy="40.6" r="1.15" fill="#fff"/>' +
-  '<circle cx="24.8" cy="44" r="0.55" fill="#fff"/>' +
+  '<circle cx="22.8" cy="40.6" r="1.15" fill="var(--brand-glint)"/>' +
+  '<circle cx="24.8" cy="44" r="0.55" fill="var(--brand-glint)"/>' +
   '<ellipse cx="40.5" cy="42" rx="3.6" ry="4.6" fill="var(--chrome-bg)"/>' +
   '<ellipse cx="40.9" cy="42.4" rx="2.5" ry="3.4" fill="var(--chrome-bg)"/>' +
-  '<circle cx="39.8" cy="40.6" r="1.15" fill="#fff"/>' +
-  '<circle cx="41.8" cy="44" r="0.55" fill="#fff"/>' +
+  '<circle cx="39.8" cy="40.6" r="1.15" fill="var(--brand-glint)"/>' +
+  '<circle cx="41.8" cy="44" r="0.55" fill="var(--brand-glint)"/>' +
   '<path d="M29.6 45.6 Q32 48 34.4 45.6" fill="none" stroke="var(--chrome-bg)" stroke-width="1.3" stroke-linecap="round"/>' +
-  '<ellipse cx="17.2" cy="46.6" rx="2.2" ry="1.3" fill="#F2A08C" opacity=".85"/>' +
-  '<ellipse cx="46.8" cy="46.6" rx="2.2" ry="1.3" fill="#F2A08C" opacity=".85"/>' +
+  '<ellipse cx="17.2" cy="46.6" rx="2.2" ry="1.3" fill="var(--brand-cheek)" opacity=".85"/>' +
+  '<ellipse cx="46.8" cy="46.6" rx="2.2" ry="1.3" fill="var(--brand-cheek)" opacity=".85"/>' +
   '</svg>'
 
 function brandMark(): HTMLElement {
