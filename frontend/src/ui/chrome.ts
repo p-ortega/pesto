@@ -247,12 +247,13 @@ export interface RenderHeaderOptions {
  * them once the run's configuration has landed. The theme control is a
  * real `<select>`, keyboard reachable by construction (MAP-11).
  */
-// A mortar of pesto with its pestle and a basil leaf, drawn in the brand tokens.
+// A mortar of pesto with the pestle sunk in it and a basil leaf, drawn in the brand tokens.
 const LOGO_SVG =
   '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">' +
-  '<path d="M12.5 10 L19.6 2.9" stroke="var(--brand-cream)" stroke-width="2.8" stroke-linecap="round"/>' +
-  '<path d="M2.5 11.5 h19 a9.5 8.5 0 0 1 -19 0z" fill="var(--brand-cream)"/>' +
-  '<ellipse cx="12" cy="11.5" rx="9.5" ry="1.9" fill="var(--brand-basil)"/>' +
+  '<ellipse cx="12" cy="11.5" rx="9.5" ry="2.4" fill="var(--brand-cream)"/>' +
+  '<path d="M12.2 11.4 L18.2 2.4" stroke="var(--brand-cream)" stroke-width="2.8" stroke-linecap="round"/>' +
+  '<ellipse cx="12" cy="11.6" rx="8.2" ry="1.7" fill="var(--brand-basil)"/>' +
+  '<path d="M2.5 11.5 A9.5 2.4 0 0 0 21.5 11.5 A9.5 8.5 0 0 1 2.5 11.5Z" fill="var(--brand-cream)"/>' +
   '<rect x="8.5" y="20.5" width="7" height="2" rx="1" fill="var(--brand-cream)"/>' +
   '<path d="M3.5 8.2c0-3 2.2-4.8 5.2-4.8 0 3-2.2 4.8-5.2 4.8z" fill="var(--brand-basil)"/>' +
   '</svg>'
