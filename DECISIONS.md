@@ -4,7 +4,7 @@ The plans live in `.planning/`, which is not in git. This file carries the decis
 and the current state, so an agent on a new machine can pick up without them. The hard rules are in
 `CLAUDE.md` and the app's working notes are in `AGENTS.md`. Read those first.
 
-Last updated 2026-11-18, on the Linux laptop.
+Last updated 2026-11-19, on the Linux laptop.
 
 ## What pesto is
 
@@ -133,6 +133,31 @@ failure on the way was the test, not the app: the 1:1 count check now counts 1e3
 which the grid leaves out on purpose.
 
 The open work: **the user's own sign-off** of the agent checks above. Nothing else is open for M1.
+
+## The MVP is wider than M1 (user, 2026-11-19)
+
+The user's bar for the MVP is "something we could show the world", for all groundwater modellers.
+M1's review list above is not enough on its own. The MVP also needs:
+
+1. A real look. The user chose pesto's own colours, a light default, and a mortar-and-pestle
+   mascot with a face as the logo. Done: colour tokens for light and dark, dark green top and
+   bottom bars, quiet controls, calmer notes, a tidier Params group table and Config tab, and a
+   welcome page in place of the bare folder list.
+2. An alpha release the user can download and try on macOS, Linux and Windows. The user chose one
+   install command over a double-click app, because the app download was too big:
+   `uv tool install <wheel from the GitHub release>`. The wheel is built with the frontend inside
+   by `.github/workflows/release.yml` when a tag like `v0.1.0a1` is pushed, and is tried on all
+   three systems before the release is made. `.github/workflows/ci.yml` runs the fast tests on
+   all three systems on every push.
+3. A repo that reads like a project: a real `README.md`, `CHANGELOG.md` and project details in
+   `pyproject.toml`.
+4. A built-in example run, `pesto --example`, made up by code so no real data ships.
+
+Still open for the MVP: the example run, screenshots in the README (they must come from the
+example run, never a real one), the first tag and release, and a wording pass on notes and hints.
+The Mac map picture `mesh-synthetic-run-chromium-darwin.png` predates the new page colour and must
+be retaken on a Mac. Whether the agent notes (`AGENTS.md`, `CLAUDE.md`, this file) stay at the repo
+root is the user's call and is not decided.
 
 Known follow-ups, all advisory: a sites or times answer that names no group is still taken as
 the group asked for (the server always names it; many test stubs do not); two tests can miss a same-size CSV
