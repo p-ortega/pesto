@@ -12,8 +12,7 @@
   <a href="https://github.com/p-ortega/pesto/actions/workflows/ci.yml"><img src="https://github.com/p-ortega/pesto/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
   <a href="https://github.com/p-ortega/pesto/releases"><img src="https://img.shields.io/github/v/release/p-ortega/pesto?include_prereleases&label=release&color=2e7d4f" alt="latest release"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-2e7d4f" alt="Python 3.11 or later">
-  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux-2e7d4f" alt="runs on macOS and Linux">
-  <img src="https://img.shields.io/badge/Windows-not%20yet-c98a1e" alt="Windows: not yet">
+  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux%20%7C%20Windows-2e7d4f" alt="runs on macOS, Linux and Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-2e7d4f" alt="BSD 3-Clause license"></a>
   <img src="https://img.shields.io/badge/status-alpha-c98a1e" alt="status: alpha">
 </p>
@@ -44,11 +43,18 @@ of yours. When it does, please [open an issue](https://github.com/p-ortega/pesto
 If pesto cannot place a group on the map or cannot read a file, it tells you why. It does not
 guess.
 
+## When it breaks
+
+Press "Report a problem" in the bottom bar. pesto builds a report and shows you all of it. The
+report leaves out your case name, your folders, and your parameter, group and site names. If you
+are happy with it, one button opens a GitHub issue with the report filled in. Nothing is sent
+unless you submit that issue yourself.
+
 ## Install
 
 You need Python 3.11 or later. The easy way is [uv](https://docs.astral.sh/uv/), which also gets
-Python for you. It works on macOS and Linux. Windows is not ready yet: some of pesto's tests still
-fail there.
+Python for you. It is the same on macOS, Linux and Windows. On Windows the tests pass, but nobody has
+used it there by hand yet, so expect more rough edges.
 
 1. [Install uv](https://docs.astral.sh/uv/getting-started/installation/).
 2. Install pesto:

@@ -2,7 +2,8 @@
 
 ## 0.1.0a1
 
-The first alpha, for testing on macOS and Linux. Windows is not ready yet.
+The first alpha, for testing on macOS, Linux and Windows. On Windows the tests pass, but it has
+not been used by hand yet.
 
 - Open a finished pestpp-ies run on a MODFLOW 6 model and cache it for fast drawing.
 - Parameter fields on the map by group, iteration, layer, realization or statistic.
@@ -11,4 +12,6 @@ The first alpha, for testing on macOS and Linux. Windows is not ready yet.
 - Section view along a line drawn on the map.
 - A panel for the run's settings, read from the `.pst` and `.rec` files.
 - Light and dark themes.
+- A "Report a problem" button builds a report with names and folders left out and opens a
+  filled-in GitHub issue when you ask.
 - `pesto --example` opens a small made-up run, so the app can be tried with no data.

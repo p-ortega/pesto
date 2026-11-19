@@ -153,11 +153,26 @@ M1's review list above is not enough on its own. The MVP also needs:
    `pyproject.toml`.
 4. A built-in example run, `pesto --example`, made up by code so no real data ships.
 
-Still open for the MVP: the example run, screenshots in the README (they must come from the
-example run, never a real one), the first tag and release, and a wording pass on notes and hints.
-The Mac map picture `mesh-synthetic-run-chromium-darwin.png` predates the new page colour and must
-be retaken on a Mac. Whether the agent notes (`AGENTS.md`, `CLAUDE.md`, this file) stay at the repo
-root is the user's call and is not decided.
+5. A "Report a problem" button (user, 2026-11-19: a button the user presses, not automatic
+   sending). pesto builds a report, shows all of it, and opens a filled-in GitHub issue only when
+   asked. The report keeps only pesto's own words and numbers in free text, so case, folder,
+   parameter, group and site names are left out. pesto itself sends nothing.
+
+Done on 2026-11-19: the example run, the README with logo, badges and a recording of the example
+run, the report button, and Windows support. Windows needed real fixes: cache text is now UTF-8
+with plain line endings and sizes counted in bytes, cache paths use forward slashes, cache blocks
+are read into memory on Windows instead of mapped (Windows will not replace a mapped file), and
+folder names are cut from Windows error text. All six test jobs pass (Linux, macOS and Windows on
+Python 3.11 and 3.13). Nobody has used pesto by hand on Windows yet.
+
+Still open for the MVP: a wording pass on notes and hints, and the user's own try of the release
+on their machines. The Mac map picture `mesh-synthetic-run-chromium-darwin.png` predates the new
+page colour and must be retaken on a Mac. Whether the agent notes (`AGENTS.md`, `CLAUDE.md`, this
+file) stay at the repo root is the user's call and is not decided.
+
+To release: set the version in `pyproject.toml` and `src/pesto/__init__.py`, then push a tag
+`v<version>`. The GitHub API allows only 60 unsigned requests an hour, so poll a run's result
+rarely.
 
 Known follow-ups, all advisory: a sites or times answer that names no group is still taken as
 the group asked for (the server always names it; many test stubs do not); two tests can miss a same-size CSV
