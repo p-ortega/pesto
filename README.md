@@ -17,44 +17,45 @@
   <img src="https://img.shields.io/badge/status-alpha-c98a1e" alt="status: alpha">
 </p>
 
-pesto is a viewer for finished [PEST++ IES](https://github.com/usgs/pestpp) runs on MODFLOW 6
-models. Point it at a run folder and it opens in your browser: parameter fields on the model grid,
-observation fit, and the run's settings, all linked.
+pesto opens a finished pestpp-ies run in your browser. You get the parameter fields on the model
+grid, the observations and how well they fit, and what the run was set up to do. It uses
+[pyemu](https://github.com/pypest/pyemu) and [flopy](https://github.com/modflowpy/flopy) to read
+the files and draws on the GPU, so moving a slider should not make you wait.
 
 <p align="center">
   <img src="assets/demo.gif" alt="pesto on its example run: switching iterations on the map, picking an observation site to see its plot, and cutting a section" width="900">
 </p>
 
-It runs on your own machine. Nothing is uploaded, and pesto never changes a run's files.
+This is an alpha. So far it has only been tried on a few MODFLOW 6 runs, so it will break on some
+of yours. When it does, please [open an issue](https://github.com/p-ortega/pesto/issues).
 
-> **Alpha.** This is an early release for testing. Expect rough edges, and please
-> [report what breaks](https://github.com/p-ortega/pesto/issues).
+## What you can do with it
 
-## What it shows
+- Colour the grid by a parameter group. Pick the iteration, layer and realization, or a statistic
+  over the ensemble.
+- Put the observation sites on the map and click one to see its time series, with the prior and
+  the posterior.
+- Look at 1:1 plots and residual histograms per observation group.
+- See prior-data conflict, read from pestpp's own file.
+- Draw a line on the map and cut a section along it.
+- Check what the `.pst` and `.rec` say about noise, iterations and realizations.
 
-- **Parameters on the map.** Colour the grid by any parameter group, iteration, layer and
-  realization, or by a statistic across the ensemble. Dragging a slider redraws at once.
-- **Observations.** Site dots on the map, 1:1 plots and histograms per group, time series per
-  site, and prior-data conflict read from pestpp's own file.
-- **Sections.** Draw a line on the map and see the layers cut along it.
-- **Run settings.** What the `.pst` and `.rec` say about the run: noise, iterations, realizations
-  and the options that matter when reading results.
-- **Honest gaps.** When pesto cannot place a group or read a file, it says so and gives the
-  reason. It does not guess.
+If pesto cannot place a group on the map or cannot read a file, it tells you why. It does not
+guess.
 
 ## Install
 
-pesto needs Python 3.11 or later. The easiest way is [uv](https://docs.astral.sh/uv/), which
-fetches Python for you. It works the same on macOS, Linux and Windows.
+You need Python 3.11 or later. The easy way is [uv](https://docs.astral.sh/uv/), which also gets
+Python for you. It is the same on macOS, Linux and Windows.
 
-1. Install uv, following [its instructions](https://docs.astral.sh/uv/getting-started/installation/).
+1. [Install uv](https://docs.astral.sh/uv/getting-started/installation/).
 2. Install pesto:
 
    ```
    uv tool install https://github.com/p-ortega/pesto/releases/download/v0.1.0a1/pesto-0.1.0a1-py3-none-any.whl
    ```
 
-With pip instead, inside an environment of your own:
+pip works too, inside your own environment:
 
 ```
 pip install https://github.com/p-ortega/pesto/releases/download/v0.1.0a1/pesto-0.1.0a1-py3-none-any.whl
@@ -62,52 +63,46 @@ pip install https://github.com/p-ortega/pesto/releases/download/v0.1.0a1/pesto-0
 
 ## Try it
 
-No run of your own at hand? pesto carries a small made-up one:
+No run at hand? pesto can make a small fake one:
 
 ```
 pesto --example
 ```
 
-## Use
+## Use it on your run
 
 ```
 pesto path/to/run_folder
 ```
 
-pesto opens a browser tab. The first time it sees a run it reads the ensembles into a compact
-cache, which takes from a few seconds to a few minutes for a large run. After that the run opens
-straight away.
+A browser tab opens. The first time, pesto reads the ensembles into a cache. That takes seconds
+for a small run and a few minutes for a big one. After that the run opens right away.
 
 Run `pesto` with no folder to pick one in the app.
 
-The run folder should hold what pestpp-ies leaves behind: the `.pst` control file, the `.rec`
-file, the parameter and observation ensembles (`.par.jcb`/`.obs.jcb` or `.csv`), and the MODFLOW 6
-binary grid file (`.grb`).
-
-Useful options:
+The folder needs what pestpp-ies leaves behind: the `.pst`, the `.rec`, the parameter and
+observation ensembles (`.jcb`, `.bin` or `.csv`) and the MODFLOW 6 binary grid file (`.grb`).
 
 | Option | What it does |
 | --- | --- |
-| `--example` | Open the made-up example run. |
+| `--example` | Open the fake example run. |
 | `--cache-dir DIR` | Keep the cache in `DIR`. |
-| `--port PORT` | Use a fixed port instead of a free one. |
+| `--port PORT` | Use this port instead of a free one. |
 | `--no-browser` | Print the address instead of opening a tab. |
 | `--version` | Print the version. |
 
-### Where the cache goes
+## What pesto does to your files
 
-pesto never changes or re-timestamps a run's own files. The one thing it writes is its cache. The
-cache goes to `--cache-dir` if you give one, otherwise to a `.pesto` folder inside the run folder,
-and if that folder cannot be written (an archive disk, say), to `~/.cache/pesto/`. Pass
-`--cache-dir` to keep a run folder exactly as it is. Deleting a cache is always safe; pesto
-rebuilds it.
+Nothing. It does not change them or touch their dates.
 
-### Privacy
+The only thing it writes is its cache. That goes in a `.pesto` folder inside the run folder. If
+the folder is read-only, it goes to `~/.cache/pesto/`. To keep the run folder exactly as it is,
+pass `--cache-dir`. You can delete a cache any time; pesto builds it again.
 
-The server listens only on `127.0.0.1` and needs the one-time link it prints. Your run never
-leaves your machine, and pesto does not fetch anything from the internet.
+Everything stays on your machine. The server only listens on `127.0.0.1`, and pesto does not use
+the internet.
 
-## Develop
+## Work on it
 
 ```
 git clone https://github.com/p-ortega/pesto
@@ -116,7 +111,7 @@ uv sync --extra test
 uv run pytest -m "not slow"
 ```
 
-The frontend lives in `frontend/` and needs Node:
+The frontend is in `frontend/` and needs Node:
 
 ```
 cd frontend
@@ -125,7 +120,7 @@ npm test
 npm run build
 ```
 
-`npm run build` writes the frontend into the Python package, so run it after any frontend change.
+Run `npm run build` after any frontend change, or the app keeps showing the old one.
 
 ## License
 
