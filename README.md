@@ -1,8 +1,25 @@
-# pesto
+<p align="center">
+  <img src="assets/logo.svg" alt="pesto logo" width="128" height="128">
+</p>
 
-pesto is a fast viewer for finished [PEST++ IES](https://github.com/usgs/pestpp) runs on
-MODFLOW 6 models. Point it at a run folder and it opens in your browser: parameter fields on the
-model grid, observation fit, and the run's settings, all linked.
+<h1 align="center">pesto</h1>
+
+<p align="center">
+  A fast viewer for finished PEST++ IES runs on MODFLOW 6 models.
+</p>
+
+<p align="center">
+  <a href="https://github.com/p-ortega/pesto/actions/workflows/ci.yml"><img src="https://github.com/p-ortega/pesto/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
+  <a href="https://github.com/p-ortega/pesto/releases"><img src="https://img.shields.io/github/v/release/p-ortega/pesto?include_prereleases&label=release&color=2e7d4f" alt="latest release"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-2e7d4f" alt="Python 3.11 or later">
+  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux%20%7C%20Windows-2e7d4f" alt="runs on macOS, Linux and Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-2e7d4f" alt="BSD 3-Clause license"></a>
+  <img src="https://img.shields.io/badge/status-alpha-c98a1e" alt="status: alpha">
+</p>
+
+pesto is a viewer for finished [PEST++ IES](https://github.com/usgs/pestpp) runs on MODFLOW 6
+models. Point it at a run folder and it opens in your browser: parameter fields on the model grid,
+observation fit, and the run's settings, all linked.
 
 It runs on your own machine. Nothing is uploaded, and pesto never changes a run's files.
 
