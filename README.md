@@ -12,7 +12,8 @@
   <a href="https://github.com/p-ortega/pesto/actions/workflows/ci.yml"><img src="https://github.com/p-ortega/pesto/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
   <a href="https://github.com/p-ortega/pesto/releases"><img src="https://img.shields.io/github/v/release/p-ortega/pesto?include_prereleases&label=release&color=2e7d4f" alt="latest release"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-2e7d4f" alt="Python 3.11 or later">
-  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux%20%7C%20Windows-2e7d4f" alt="runs on macOS, Linux and Windows">
+  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux-2e7d4f" alt="runs on macOS and Linux">
+  <img src="https://img.shields.io/badge/Windows-not%20yet-c98a1e" alt="Windows: not yet">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-2e7d4f" alt="BSD 3-Clause license"></a>
   <img src="https://img.shields.io/badge/status-alpha-c98a1e" alt="status: alpha">
 </p>
@@ -46,7 +47,8 @@ guess.
 ## Install
 
 You need Python 3.11 or later. The easy way is [uv](https://docs.astral.sh/uv/), which also gets
-Python for you. It is the same on macOS, Linux and Windows.
+Python for you. It works on macOS and Linux. Windows is not ready yet: some of pesto's tests still
+fail there.
 
 1. [Install uv](https://docs.astral.sh/uv/getting-started/installation/).
 2. Install pesto:

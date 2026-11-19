@@ -22,6 +22,7 @@ from pesto.cache._atomic import write_atomic_bytes, write_atomic_text
 from pesto.cache.layout import CACHE_VERSION, CacheLayout
 from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.failures import ReadFailure
+from pesto.cache.mapped import read_only_f32
 
 if TYPE_CHECKING:
     from pesto.ingest.control import ControlTables
@@ -568,20 +569,8 @@ def load_stored(iteration: int, layout: CacheLayout) -> StoredEnsemble | ReadFai
 
         map_block = next(b for b in blocks if b.name == "map")
         nomap_block = next(b for b in blocks if b.name == "nomap")
-        map_values = np.memmap(
-            payload_path,
-            dtype="<f4",
-            mode="r",
-            offset=map_block.offset_bytes,
-            shape=map_block.shape,
-        )
-        nomap_values = np.memmap(
-            payload_path,
-            dtype="<f4",
-            mode="r",
-            offset=nomap_block.offset_bytes,
-            shape=nomap_block.shape,
-        )
+        map_values = read_only_f32(payload_path, tuple(map_block.shape), map_block.offset_bytes)
+        nomap_values = read_only_f32(payload_path, tuple(nomap_block.shape), nomap_block.offset_bytes)
     except Exception as exc:
         return ReadFailure(
             name=name,

@@ -23,6 +23,7 @@ from pesto.cache.manifest import CacheFile, WrittenArtifact
 from pesto.ingest.ensembles import _remove_written, write_reals
 from pesto.ingest.failures import ReadFailure
 from pesto.ingest.obsindex import ObsIndex, load_obs_index
+from pesto.cache.mapped import read_only_f32
 
 if TYPE_CHECKING:
     from pesto.ingest.ensfile import EnsembleData
@@ -251,7 +252,7 @@ def load_obs_ensemble(iteration: int, layout: CacheLayout) -> StoredObsEnsemble 
             f"it holds {n_obs} observations but the obs_index holds {current.n_obs}",
         )
 
-    values = np.memmap(payload_path, dtype="<f4", mode="r", shape=(n_obs, n_real))
+    values = read_only_f32(payload_path, (n_obs, n_real))
     return StoredObsEnsemble(
         iteration=iteration,
         values=values,

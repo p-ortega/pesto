@@ -2,7 +2,7 @@
 
 ## 0.1.0a1
 
-The first alpha, for testing on macOS, Linux and Windows.
+The first alpha, for testing on macOS and Linux. Windows is not ready yet.
 
 - Open a finished pestpp-ies run on a MODFLOW 6 model and cache it for fast drawing.
 - Parameter fields on the map by group, iteration, layer, realization or statistic.

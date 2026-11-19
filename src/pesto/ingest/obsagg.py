@@ -45,6 +45,7 @@ from pesto.ingest.obsindex import (
     load_obs_index,
 )
 from pesto.ingest.tables import load_control_table
+from pesto.cache.mapped import read_only_f32
 
 OBS_STATS = (
     "mean",
@@ -387,7 +388,7 @@ def _open_stat_file(
             f"it holds {n_obs} observations but the obs_index holds {current.n_obs}",
         )
 
-    values = np.memmap(payload_path, dtype="<f4", mode="r", shape=(n_stats, n_obs))
+    values = read_only_f32(payload_path, (n_stats, n_obs))
     return sidecar, values, stats, digest
 
 
