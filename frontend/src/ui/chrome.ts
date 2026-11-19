@@ -251,9 +251,10 @@ export interface RenderHeaderOptions {
 const LOGO_SVG =
   '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">' +
   '<ellipse cx="12" cy="11.5" rx="9.5" ry="2.4" fill="var(--brand-cream)"/>' +
-  '<path d="M12.2 11.4 L18.2 2.4" stroke="var(--brand-cream)" stroke-width="2.8" stroke-linecap="round"/>' +
   '<ellipse cx="12" cy="11.6" rx="8.2" ry="1.7" fill="var(--brand-basil)"/>' +
-  '<path d="M2.5 11.5 A9.5 2.4 0 0 0 21.5 11.5 A9.5 8.5 0 0 1 2.5 11.5Z" fill="var(--brand-cream)"/>' +
+  '<path d="M11.4 12.6 L18.2 2.4" stroke="var(--brand-cream)" stroke-width="2.8" stroke-linecap="round"/>' +
+  '<ellipse cx="11.2" cy="12.9" rx="2.8" ry="0.6" fill="var(--brand-basil)"/>' +
+  '<path d="M2.5 11.5 A9.5 2 0 0 0 21.5 11.5 A9.5 8.5 0 0 1 2.5 11.5Z" fill="var(--brand-cream)"/>' +
   '<rect x="8.5" y="20.5" width="7" height="2" rx="1" fill="var(--brand-cream)"/>' +
   '<path d="M3.5 8.2c0-3 2.2-4.8 5.2-4.8 0 3-2.2 4.8-5.2 4.8z" fill="var(--brand-basil)"/>' +
   '</svg>'
